@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { Save, Phone, CheckCircle, AlertCircle, ExternalLink, FolderOpen, FileText } from 'lucide-react'
+import { Save, Phone, CheckCircle, AlertCircle, ExternalLink, FolderOpen, FileText, Mail, Upload, Trash2, Eye } from 'lucide-react'
+import { TagsManager } from './TagsManager'
+import { supabase } from '../../lib/supabase'
 
 interface AppSettings {
   whatsappNumber: string
@@ -11,24 +13,27 @@ interface AppSettings {
   saveContractAsPdf: boolean
   saveFormAsPdf: boolean
   googleDriveAttachmentsFolder: string
+  geminiApiKey: string
+  pdfTemplateUrl: string   // URL do PDF modelo
+  // ── E-mail ──
+  adminEmail: string      // e-mail da consultora para receber notificações
+  resendApiKey: string    // chave da API Resend para envio de e-mails
+  fromEmail: string       // e-mail remetente (ex: noreply@seudominio.com)
 }
 
-// Serviço de storage
+// Serviço de storage — salva no localStorage E no Supabase
 const settingsStorageService = {
   async saveSettings(data: AppSettings) {
     try {
       const jsonData = JSON.stringify(data)
-      
-      if (typeof window !== 'undefined' && (window as any).storage) {
-        try {
-          await (window as any).storage.set('app-settings', jsonData, true)
-        } catch (e) {
-          localStorage.setItem('app-settings', jsonData)
-        }
-      } else {
-        localStorage.setItem('app-settings', jsonData)
-      }
-      
+      localStorage.setItem('app-settings', jsonData)
+
+      // Salvar no Supabase para que a Edge Function consiga ler
+      await supabase.from('admin_content').upsert(
+        { type: 'settings', content: data as any, updated_at: new Date().toISOString() },
+        { onConflict: 'type' }
+      )
+
       return { success: true }
     } catch (error) {
       console.error('Erro ao salvar configurações:', error)
@@ -37,50 +42,47 @@ const settingsStorageService = {
   },
 
   async getSettings(): Promise<AppSettings> {
+    const defaults: AppSettings = {
+      whatsappNumber: '',
+      googleDriveFolderId: '',
+      enableWhatsAppNotification: true,
+      notificationMessage: 'Olá! Finalizei todas as etapas da análise de coloração pessoal. Aguardo o retorno! 🎨',
+      redirectUrl: '',
+      enablePdfGeneration: true,
+      saveContractAsPdf: true,
+      saveFormAsPdf: true,
+      googleDriveAttachmentsFolder: '',
+      geminiApiKey: '',
+      pdfTemplateUrl: '',
+      adminEmail: '',
+      resendApiKey: '',
+      fromEmail: '',
+    }
+
     try {
-      let jsonData: string | null = null
-      
-      if (typeof window !== 'undefined' && (window as any).storage) {
-        try {
-          const result = await (window as any).storage.get('app-settings', true)
-          if (result && result.value) {
-            jsonData = result.value
-          }
-        } catch (e) {
-          jsonData = localStorage.getItem('app-settings')
-        }
-      } else {
-        jsonData = localStorage.getItem('app-settings')
+      // Tentar buscar do Supabase primeiro
+      const { data } = await supabase
+        .from('admin_content')
+        .select('content')
+        .eq('type', 'settings')
+        .maybeSingle()
+
+      if (data?.content) {
+        return { ...defaults, ...(data.content as AppSettings) }
       }
-      
-      if (jsonData) {
-        return JSON.parse(jsonData)
-      }
-      
-      return {
-        whatsappNumber: '',
-        googleDriveFolderId: '',
-        enableWhatsAppNotification: true,
-        notificationMessage: 'Olá! Finalizei todas as etapas da análise de coloração pessoal. Aguardo o retorno! 🎨',
-        redirectUrl: '',
-        enablePdfGeneration: true,
-        saveContractAsPdf: true,
-        saveFormAsPdf: true,
-        googleDriveAttachmentsFolder: ''
-      }
+
+      // Fallback para localStorage
+      const local = localStorage.getItem('app-settings')
+      if (local) return { ...defaults, ...JSON.parse(local) }
+
+      return defaults
     } catch (error) {
       console.error('Erro ao carregar configurações:', error)
-      return {
-        whatsappNumber: '',
-        googleDriveFolderId: '',
-        enableWhatsAppNotification: true,
-        notificationMessage: 'Olá! Finalizei todas as etapas. Aguardo retorno! 🎨',
-        redirectUrl: '',
-        enablePdfGeneration: true,
-        saveContractAsPdf: true,
-        saveFormAsPdf: true,
-        googleDriveAttachmentsFolder: ''
+      const local = localStorage.getItem('app-settings')
+      if (local) {
+        try { return { ...defaults, ...JSON.parse(local) } } catch {}
       }
+      return defaults
     }
   }
 }
@@ -155,6 +157,111 @@ const Checkbox = ({ id, checked, onChange, label, description }: any) => (
   </div>
 )
 
+// ── PDF Template Section ────────────────────────────────────────────────────
+
+function PdfTemplateSection({ currentUrl, onSave }: { currentUrl: string; onSave: (url: string) => void }) {
+  const [uploading, setUploading] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || file.type !== 'application/pdf') return
+    e.target.value = ''
+    setUploading(true)
+    try {
+      const path = `pdf-templates/modelo_${Date.now()}.pdf`
+      const { error } = await supabase.storage.from('client-photos').upload(path, file, { contentType: 'application/pdf', upsert: true })
+      if (error) throw error
+      const url = supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl
+      onSave(url)
+      setStatus('saved')
+      setTimeout(() => setStatus('idle'), 3000)
+    } catch (err: any) {
+      alert('Erro ao enviar: ' + err.message)
+      setStatus('error')
+    } finally { setUploading(false) }
+  }
+
+  const handleDelete = async () => {
+    if (!confirm('Remover o PDF modelo?')) return
+    onSave('')
+  }
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-pink-50">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-pink-500 rounded-xl flex items-center justify-center">
+            <FileText className="h-5 w-5 text-white" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">PDF Modelo de Estilo</h2>
+            <p className="text-sm text-gray-500">Faça upload de um PDF de referência para o layout desejado</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-5 space-y-4">
+        <p className="text-sm text-gray-600">
+          Envie um PDF de exemplo com o layout que você quer que o PDF gerado siga. Ele ficará disponível como referência visual para você e sua equipe.
+        </p>
+
+        {currentUrl ? (
+          <div className="flex items-center gap-3 bg-fuchsia-50 border border-fuchsia-200 rounded-xl p-4">
+            <div className="w-10 h-10 bg-fuchsia-100 rounded-lg flex items-center justify-center flex-shrink-0">
+              <FileText className="h-5 w-5 text-fuchsia-600" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-gray-800">PDF modelo carregado</p>
+              <p className="text-xs text-gray-500 truncate">{currentUrl}</p>
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
+              <a href={currentUrl} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-fuchsia-600 text-white rounded-lg text-xs font-medium hover:bg-fuchsia-700">
+                <Eye className="h-3.5 w-3.5" /> Ver PDF
+              </a>
+              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 cursor-pointer">
+                <Upload className="h-3.5 w-3.5" />
+                {uploading ? 'Enviando...' : 'Trocar'}
+                <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={uploading} />
+              </label>
+              <button onClick={handleDelete}
+                className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-100">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <label className={`flex flex-col items-center gap-3 border-2 border-dashed border-fuchsia-200 rounded-xl p-8 cursor-pointer hover:bg-fuchsia-50 transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`}>
+            <div className="w-12 h-12 bg-fuchsia-100 rounded-xl flex items-center justify-center">
+              {uploading
+                ? <div className="animate-spin h-6 w-6 border-2 border-fuchsia-500 border-t-transparent rounded-full" />
+                : <Upload className="h-6 w-6 text-fuchsia-500" />}
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-medium text-gray-700">{uploading ? 'Enviando PDF...' : 'Clique para enviar o PDF modelo'}</p>
+              <p className="text-xs text-gray-400 mt-1">Somente arquivos .pdf</p>
+            </div>
+            <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={uploading} />
+          </label>
+        )}
+
+        {status === 'saved' && (
+          <div className="flex items-center gap-2 text-sm text-green-600">
+            <CheckCircle className="h-4 w-4" /> PDF modelo salvo com sucesso!
+          </div>
+        )}
+
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+          <p className="text-xs text-blue-800">
+            💡 O PDF modelo é uma referência visual. O gerador de PDF da IA segue automaticamente o layout em 2 colunas com seções por categoria (Cabelo, Maquiagem, Roupas, Acessórios).
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsEditor() {
   const [settings, setSettings] = useState<AppSettings>({
     whatsappNumber: '',
@@ -165,7 +272,12 @@ export default function SettingsEditor() {
     enablePdfGeneration: true,
     saveContractAsPdf: true,
     saveFormAsPdf: true,
-    googleDriveAttachmentsFolder: ''
+    googleDriveAttachmentsFolder: '',
+    geminiApiKey: '',
+    pdfTemplateUrl: '',
+    adminEmail: '',
+    resendApiKey: '',
+    fromEmail: '',
   })
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -471,6 +583,194 @@ export default function SettingsEditor() {
         </CardContent>
       </Card>
 
+      {/* ── E-mail (Resend) ─────────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-cyan-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-xl flex items-center justify-center">
+              <Mail className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Envio de E-mails</h2>
+              <p className="text-sm text-gray-500">Configure para enviar contratos assinados por e-mail</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Seu e-mail (para receber notificações)
+            </label>
+            <input
+              type="email"
+              value={settings.adminEmail}
+              onChange={e => setSettings({ ...settings, adminEmail: e.target.value })}
+              placeholder="marilia@mscolors.com.br"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+            />
+            <p className="text-xs text-gray-500 mt-1.5">
+              Você receberá uma cópia do contrato toda vez que uma cliente assinar.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              E-mail remetente
+            </label>
+            <input
+              type="email"
+              value={settings.fromEmail}
+              onChange={e => setSettings({ ...settings, fromEmail: e.target.value })}
+              placeholder="noreply@seudominio.com.br"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+            />
+            <p className="text-xs text-gray-500 mt-1.5">
+              Deve ser um domínio verificado no Resend. Para testes use <span className="font-mono">onboarding@resend.dev</span>.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Chave da API Resend
+            </label>
+            <div className="relative">
+              <input
+                type="password"
+                value={settings.resendApiKey}
+                onChange={e => setSettings({ ...settings, resendApiKey: e.target.value })}
+                placeholder="re_..."
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent font-mono"
+              />
+              {settings.resendApiKey && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">✓ Configurada</span>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5 flex items-center gap-1">
+              Crie sua conta grátis em{' '}
+              <a href="https://resend.com" target="_blank" rel="noopener noreferrer"
+                className="text-blue-600 hover:underline font-medium">
+                resend.com
+              </a>
+              {' '}· Plano gratuito inclui 3.000 e-mails/mês.
+            </p>
+          </div>
+
+          {settings.resendApiKey && settings.adminEmail ? (
+            <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+              <p className="text-sm text-green-800 font-medium mb-1">✅ E-mail configurado</p>
+              <p className="text-sm text-green-700">
+                Contratos assinados serão enviados para a cliente e uma cópia para <strong>{settings.adminEmail}</strong>.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <p className="text-sm text-amber-800">
+                ⚠️ Sem e-mail configurado, contratos não serão enviados por e-mail. O restante do fluxo funciona normalmente.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── 4. Seção Gemini adicionada ─────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-purple-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/>
+                <path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/>
+                <path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Assistente de IA Gemini</h2>
+              <p className="text-sm text-gray-500">Configure a IA de estilo para suas clientes</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          {/* Chave da API */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Chave da API Gemini (Google AI Studio)
+            </label>
+            <div className="relative">
+              <input
+                type="password"
+                value={settings.geminiApiKey}
+                onChange={e => setSettings({ ...settings, geminiApiKey: e.target.value })}
+                placeholder="AIza..."
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono"
+              />
+              {settings.geminiApiKey && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">✓ Configurada</span>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5 flex items-center gap-1">
+              Obtenha sua chave gratuita em{' '}
+              <a
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-violet-600 hover:underline font-medium"
+              >
+                aistudio.google.com
+              </a>
+            </p>
+          </div>
+
+          {/* Recursos habilitados */}
+          <div className="bg-violet-50 border border-violet-100 rounded-xl p-4 space-y-2">
+            <p className="text-sm font-medium text-violet-800">Com a IA ativada, suas clientes poderão:</p>
+            <ul className="space-y-1.5">
+              {[
+                'Conversar com uma consultora de estilo personalizada',
+                'Enviar fotos e visualizar como ficariam com novos cabelos',
+                'Receber sugestões de maquiagem para seu tom de pele',
+                'Descobrir combinações de roupas e acessórios ideais',
+                'Baixar as imagens geradas pela IA',
+              ].map((item, i) => (
+                <li key={i} className="text-sm text-violet-700 flex items-start gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-violet-500 flex-shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M20 6 9 17l-5-5"/>
+                  </svg>
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Instrução por cliente */}
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <p className="text-sm font-medium text-amber-800 mb-1">⚙️ Para cada cliente:</p>
+            <p className="text-sm text-amber-700">
+              Após salvar a chave, acesse o perfil de cada cliente e configure o{' '}
+              <strong>prompt de IA personalizado</strong> com o perfil de coloração, tons de pele, cabelo e preferências dela.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Tags de Informação IA */}
+      <TagsManager />
+
+      {/* ── PDF Modelo ─────────────────────────────────────────── */}
+      <PdfTemplateSection
+        currentUrl={settings.pdfTemplateUrl}
+        onSave={(url) => {
+          const updated = { ...settings, pdfTemplateUrl: url }
+          setSettings(updated)
+          settingsStorageService.saveSettings(updated)
+        }}
+      />
+
       {/* Resumo */}
       <Card>
         <CardHeader>
@@ -513,6 +813,25 @@ export default function SettingsEditor() {
                 <AlertCircle className="h-5 w-5 text-gray-400" />
               )}
             </div>
+
+            {/* ── 4b. Card de status Gemini no Resumo ── */}
+            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm text-gray-700">IA Gemini</span>
+              {settings.geminiApiKey ? (
+                <CheckCircle className="h-5 w-5 text-green-600" />
+              ) : (
+                <AlertCircle className="h-5 w-5 text-gray-400" />
+              )}
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm text-gray-700">E-mail (Resend)</span>
+              {settings.resendApiKey && settings.adminEmail ? (
+                <CheckCircle className="h-5 w-5 text-green-600" />
+              ) : (
+                <AlertCircle className="h-5 w-5 text-gray-400" />
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -529,6 +848,7 @@ export default function SettingsEditor() {
             <li>Fotos e PDFs são enviados para o Google Drive</li>
             <li>Notificação é enviada via WhatsApp (se ativado)</li>
             <li>Cliente é redirecionado para URL configurada (se definida)</li>
+            <li>Cliente acessa a consultora de estilo IA no portal (se Gemini configurado)</li>
           </ol>
         </CardContent>
       </Card>
