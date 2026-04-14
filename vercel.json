@@ -2,8 +2,7 @@
   "experimentalServices": {
     "frontend": {
       "routePrefix": "/",
-      "buildCommand": "npm run build",
-      "outputDirectory": "dist"
+      "buildCommand": "npm run build"
     },
     "backend": {
       "routePrefix": "/api",
