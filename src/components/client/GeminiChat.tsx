@@ -10,6 +10,7 @@ import {
   GeminiMessage, GeminiResponsePart, MaterialData,
 } from '../../lib/geminiService'
 import { supabase } from '../../lib/supabase'
+import { downloadStylePDF } from '../../lib/templatePDFGenerator'
 
 interface ChatMsg {
   id: string; role: 'user' | 'assistant'; text: string
@@ -20,23 +21,18 @@ interface ChatMsg {
   pdfMeta?: PdfMeta
 }
 
-type PdfSection = 'cabelo' | 'maquiagem' | 'roupa' | 'acessorio' | 'geral'
+// PdfSection is now a free string — uses the actual category name (e.g. "Cabelos", "Maquiagens")
+type PdfSection = string
 interface PdfMeta { section: PdfSection; label: string; caption: string }
-const PDF_SECTIONS: Record<PdfSection, { icon: string; title: string }> = {
-  cabelo:    { icon: '✂️', title: 'Cabelo' },
-  maquiagem: { icon: '💄', title: 'Maquiagem' },
-  roupa:     { icon: '👗', title: 'Roupas / Look' },
-  acessorio: { icon: '💎', title: 'Acessórios' },
-  geral:     { icon: '✨', title: 'Estilo Geral' },
-}
 
 interface PromptImage { url: string; storagePath: string; label: string }
 interface Prompt { id: string; name: string; instructions: string; images: PromptImage[]; thumbnail: PromptImage | null; options: string[]; tintReference: string; reference: string }
-interface Category { id: string; name: string; icon: string; type: 'cabelos' | 'geral'; refPhotoType?: '' | 'cabelo' | 'roupa' | 'geral'; prompts: Prompt[] }
+interface Category { id: string; name: string; icon: string; type: 'cabelos' | 'geral'; refPhotoType?: string; prompts: Prompt[] }
 interface FolderConfig { folderName: string; baseInstructions: string; categories: Category[] }
 
 interface ResultFile { url: string; name: string }
-interface RefPhoto { type: 'cabelo' | 'roupa' | 'geral'; label: string; storagePath: string; url: string }
+// type is a dynamic typeId string (e.g. 'cabelo', 'roupa', 'maquiagem', 'geral') — must not be a closed union
+interface RefPhoto { type: string; label: string; storagePath: string; url: string }
 
 interface GeminiChatProps {
   clientName: string; systemPrompt: string
@@ -99,10 +95,8 @@ Fui treinada com base na metodologia e na expertise da especialista **Marília S
 Todas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.
 
 Aqui, você poderá:
-• Visualizar simulações de cabelos, maquiagens e combinações de cores no seu próprio rosto
-• Descobrir quais tons valorizam ainda mais sua beleza
-• Receber sugestões de looks e estilos alinhados com sua identidade
-• Conhecer marcas e produtos ideais para o seu perfil
+• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.
+• Tirar dúvidas sobre sua análise.
 
 Sempre que precisar, estarei aqui para te guiar 🌈`
 
@@ -136,7 +130,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [pdfSelected, setPdfSelected] = useState<Set<string>>(new Set())
   const [pdfGenerating, setPdfGenerating] = useState(false)
 
-  const lastCtx = useRef<{ text: string; isImage: boolean; refPhotoOverride?: { base64: string; mime: string } } | null>(null)
+  const lastCtx = useRef<{ text: string; isImage: boolean; refPhotoOverride?: { base64: string; mime: string }; displayText?: string; mats?: MaterialData[]; isAccessory?: boolean; pdfMeta?: PdfMeta } | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -239,13 +233,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   const handleCatClick = (cat: Category) => { setSelectedCat(cat); setSelectedPrompt(null); setNavState('prompts') }
 
+  // Section key = photo type label when available, else category name.
+  // This groups all categories that share the same refPhotoType (e.g. "Cabelo") into ONE
+  // section in the PDF, instead of creating a separate section per category name.
   const getCategorySection = (cat: Category): PdfSection => {
-    if (cat.type === 'cabelos') return 'cabelo'
-    const n = cat.name.toLowerCase()
-    if (cat.icon === 'gem' || n.includes('acess')) return 'acessorio'
-    if (cat.icon === 'shirt' || cat.refPhotoType === 'roupa') return 'roupa'
-    if (n.includes('maqui')) return 'maquiagem'
-    return 'geral'
+    if (cat.refPhotoType) {
+      // Look up the human-readable label from the client's typed reference photos.
+      // The label is the display name of the photo type (e.g. "Cabelo", "Maquiagem").
+      const refPhoto = referencePhotos.find(p => p.type === cat.refPhotoType)
+      if (refPhoto?.label) return refPhoto.label
+      // Fallback: use the raw typeId so at least it groups consistently
+      return cat.refPhotoType
+    }
+    return cat.name
   }
 
   /**
@@ -283,8 +283,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         `Gere uma imagem realista da cliente usando o acessório exibido na imagem de referência.\n\n` +
         `INSTRUÇÕES ESPECÍFICAS DO ACESSÓRIO:\n${instructions}\n\n` +
         `ORDEM DAS IMAGENS ENVIADAS:\n` +
-        `- IMAGEM 1 = foto real da cliente → esta é a pessoa que deve aparecer na imagem final\n` +
-        `- IMAGEM 2 = referência do acessório → use apenas para copiar o acessório, NUNCA como base de pessoa ou enquadramento\n\n` +
+        `- IMAGEM 1 = referência do acessório → use apenas para copiar o acessório, NUNCA como base de pessoa ou enquadramento\n` +
+        `- ÚLTIMA IMAGEM = foto real da cliente → esta é a BASE OBRIGATÓRIA, a pessoa que deve aparecer na imagem final\n\n` +
         `REGRAS:\n` +
         `- Use a IMAGEM 1 (cliente) como base absoluta da geração\n` +
         `- ADICIONE o acessório da IMAGEM 2 na cliente de forma natural e bem posicionada\n` +
@@ -367,7 +367,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const lid = uid()
     setMessages(prev => [...prev, userMsg, { id: lid, role: 'assistant', text: '', loading: true, timestamp: new Date(), pdfMeta }])
     setInput(''); setLoading(true)
-    lastCtx.current = { text, isImage, refPhotoOverride }
+    lastCtx.current = { text, isImage, refPhotoOverride, displayText, mats, isAccessory, pdfMeta }
 
     try {
       const history: GeminiMessage[] = messages.filter(m => !m.loading && m.id !== messages[0]?.id).map(m => ({ role: m.role === 'user' ? 'user' : 'model', text: m.text || ' ' } as GeminiMessage))
@@ -432,7 +432,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const handleRetry = () => {
     if (!lastCtx.current || loading) return
     setMessages(prev => { const idx = prev.findLastIndex(m => m.role === 'assistant' && (m.error || m.imageGenerationFailed)); return idx === -1 ? prev : prev.filter((_, i) => i !== idx && i !== idx - 1) })
-    handleSend(lastCtx.current.text, lastCtx.current.isImage, undefined, undefined, lastCtx.current.refPhotoOverride)
+    handleSend(lastCtx.current.text, lastCtx.current.isImage, undefined, lastCtx.current.mats, lastCtx.current.refPhotoOverride, lastCtx.current.displayText, lastCtx.current.isAccessory, lastCtx.current.pdfMeta)
   }
 
 
@@ -456,144 +456,30 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     if (!selected.length) return
     setPdfGenerating(true)
     try {
-      const { default: jsPDF } = await import('jspdf')
-
-      // ── Dimensões A4 e grid ─────────────────────────────────
-      const PW = 210, PH = 297, MG = 14
-      const TOTAL_COL = PW - MG * 2        // 182 mm
-      const GAP      = 5                   // gap entre colunas
-      const COL_W    = (TOTAL_COL - GAP * 2) / 3  // ≈ 57.3 mm cada coluna
-      const CELL_H   = 66                  // altura máx da célula de imagem
-      const CAP_H    = 11                  // altura da legenda
-      const ROW_H    = CELL_H + CAP_H      // 77 mm por linha
-
-      // ── Paleta de cores (estilo template Marilia Santos) ───
-      const BG   : [number,number,number] = [249, 246, 241]  // creme
-      const MAUVE: [number,number,number] = [119,  47,  79]  // rose escuro
-      const MAUV2: [number,number,number] = [155,  90, 115]  // rose médio
-      const MGRAY: [number,number,number] = [100,  88,  92]  // cinza quente
-
-      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-
-      // ── Helpers ─────────────────────────────────────────────
-      const fillBg = () => { doc.setFillColor(...BG); doc.rect(0, 0, PW, PH, 'F') }
-
-      const drawFooter = () => {
-        doc.setDrawColor(...MAUV2); doc.setLineWidth(0.3)
-        doc.line(MG, PH - 13, PW - MG, PH - 13)
-        doc.setTextColor(...MAUV2); doc.setFontSize(6.5); doc.setFont('helvetica', 'normal')
-        doc.text('MARILIA SANTOS – COLORAÇÃO PESSOAL', MG, PH - 8)
-        doc.text(clientName, PW / 2, PH - 8, { align: 'center' })
-        doc.text(new Date().toLocaleDateString('pt-BR'), PW - MG, PH - 8, { align: 'right' })
-      }
-
-      // ── CAPA ────────────────────────────────────────────────
-      fillBg()
-      doc.setTextColor(...MAUVE); doc.setFontSize(13); doc.setFont('helvetica', 'bold')
-      doc.text('ANÁLISE  –  COLORAÇÃO PESSOAL', PW / 2, 40, { align: 'center' })
-      doc.setDrawColor(...MAUVE); doc.setLineWidth(0.5)
-      doc.line(MG + 18, 44, PW - MG - 18, 44)
-      doc.setFontSize(22); doc.setFont('helvetica', 'bold')
-      doc.text(clientName, PW / 2, 63, { align: 'center' })
-      doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(...MAUV2)
-      doc.text(new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }), PW / 2, 72, { align: 'center' })
-      doc.setFontSize(46); doc.setFont('helvetica', 'bold'); doc.setTextColor(...MAUVE)
-      doc.text('MS', PW / 2, 148, { align: 'center' })
-      doc.setFontSize(15); doc.text('MARILIA SANTOS', PW / 2, 162, { align: 'center' })
-      doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(...MAUV2)
-      doc.text('Coloração Pessoal', PW / 2, 171, { align: 'center' })
-      drawFooter()
-
-      // ── PÁGINAS DE CONTEÚDO ─────────────────────────────────
-      const sections = (['cabelo','maquiagem','roupa','acessorio','geral'] as PdfSection[])
-        .map(s => ({ s, msgs: selected.filter(m => (m.pdfMeta?.section ?? 'geral') === s) }))
-        .filter(x => x.msgs.length)
-
-      doc.addPage()
-      fillBg()
-      let y = MG + 4
-
-      // Mini-cabeçalho de página de conteúdo
-      const drawPageHeader = () => {
-        doc.setTextColor(...MAUVE); doc.setFontSize(7); doc.setFont('helvetica', 'bold')
-        doc.text('ANÁLISE – COLORAÇÃO PESSOAL', MG, y + 4)
-        doc.setTextColor(...MAUV2); doc.setFontSize(7); doc.setFont('helvetica', 'normal')
-        doc.text(clientName, PW - MG, y + 4, { align: 'right' })
-        doc.setDrawColor(...MAUVE); doc.setLineWidth(0.3)
-        doc.line(MG, y + 7, PW - MG, y + 7)
-        y += 13
-      }
-      drawPageHeader()
-
-      for (const { s, msgs } of sections) {
-        // Checar espaço para título de seção + pelo menos 1 linha
-        if (y + 10 + ROW_H > PH - 17) {
-          drawFooter(); doc.addPage(); fillBg(); y = MG + 4; drawPageHeader()
-        }
-
-        // Título da seção
-        doc.setTextColor(...MAUVE); doc.setFontSize(7.5); doc.setFont('helvetica', 'bold')
-        doc.text(`${PDF_SECTIONS[s].icon}  ${PDF_SECTIONS[s].title.toUpperCase()}`, MG, y + 1)
-        doc.setDrawColor(...MAUV2); doc.setLineWidth(0.25)
-        doc.line(MG, y + 4, MG + 35, y + 4)
-        y += 9
-
-        // Linhas de 3 imagens
-        for (let i = 0; i < msgs.length; i += 3) {
-          const rowMsgs = msgs.slice(i, i + 3)
-
-          // Pré-carregar imagens da linha
-          const rowData = await Promise.all(rowMsgs.map(async (msg) => {
-            const dataUrl = await getImgDataUrl(msg)
-            if (!dataUrl) return null
-            const tmp = new Image(); tmp.src = dataUrl
-            await new Promise(r => { tmp.onload = r; tmp.onerror = r })
-            const ar = (tmp.naturalWidth || 1) / (tmp.naturalHeight || 1)
-            // Fit mantendo proporção dentro da célula
-            let dW: number, dH: number
-            if (ar > COL_W / CELL_H) { dW = COL_W;  dH = COL_W / ar  }
-            else                      { dH = CELL_H; dW = CELL_H * ar }
-            return { msg, dataUrl, dW, dH }
-          }))
-
-          // Quebra de página se necessário
-          if (y + ROW_H > PH - 17) {
-            drawFooter(); doc.addPage(); fillBg(); y = MG + 4; drawPageHeader()
+      // Montar lista de imagens com metadados para o gerador de template
+      const items = await Promise.all(
+        selected.map(async (msg) => {
+          const dataUrl = await getImgDataUrl(msg)
+          if (!dataUrl) return null
+          return {
+            dataUrl,
+            label: msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada',
+            caption: msg.pdfMeta?.caption,
+            section: msg.pdfMeta?.section ?? 'Geral',
           }
+        })
+      )
 
-          // Renderizar cada imagem da linha
-          rowData.forEach((item, ci) => {
-            if (!item) return
-            const cellX = MG + ci * (COL_W + GAP)
-            // Centralizar imagem dentro da célula (sem esticar)
-            const drawX = cellX + (COL_W - item.dW) / 2
-            const drawY = y      + (CELL_H - item.dH) / 2
-            // Fundo branco da célula
-            doc.setFillColor(255, 255, 255)
-            doc.rect(cellX, y, COL_W, CELL_H, 'F')
-            // Imagem
-            doc.addImage(item.dataUrl, 'JPEG', drawX, drawY, item.dW, item.dH)
-            // Legenda — label
-            const label = (item.msg.pdfMeta?.label || item.msg.text?.replace(/\n/g, ' ') || '').slice(0, 28)
-            doc.setTextColor(...MAUVE); doc.setFontSize(6.5); doc.setFont('helvetica', 'bold')
-            doc.text(label, cellX, y + CELL_H + 5)
-            // Legenda — referência/tinta
-            const cap = item.msg.pdfMeta?.caption
-            if (cap && cap !== item.msg.pdfMeta?.label) {
-              doc.setTextColor(...MGRAY); doc.setFontSize(6); doc.setFont('helvetica', 'italic')
-              doc.text(cap.slice(0, 30), cellX, y + CELL_H + 9.5)
-            }
-          })
+      const validItems = items.filter(Boolean) as Array<{
+        dataUrl: string; label: string; caption?: string; section: string
+      }>
 
-          y += ROW_H + 4
-        }
+      if (!validItems.length) { alert('Nenhuma imagem válida encontrada.'); return }
 
-        y += 5
-      }
+      // URL do template — coloque o Modelo.pdf na pasta public/ do projeto
+      const templateUrl = '/Modelo.pdf'
 
-      drawFooter()
-
-      doc.save(`estilo-${clientName.replace(/\s+/g, '-').toLowerCase()}.pdf`)
+      await downloadStylePDF(templateUrl, clientName, validItems)
       setShowPdfModal(false)
     } catch (e: any) { alert('Erro ao gerar PDF: ' + e.message) }
     finally { setPdfGenerating(false) }
@@ -605,9 +491,13 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   )
 
   const PdfModal = () => {
-    const sections = (['cabelo','maquiagem','roupa','acessorio','geral'] as PdfSection[])
-      .map(s => ({ s, msgs: imageMsgs.filter(m => (m.pdfMeta?.section ?? 'geral') === s) }))
-      .filter(x => x.msgs.length)
+    // Build sections in the order they first appear in the chat
+    const seenSections: PdfSection[] = []
+    imageMsgs.forEach(m => {
+      const s = m.pdfMeta?.section ?? 'Geral'
+      if (!seenSections.includes(s)) seenSections.push(s)
+    })
+    const sections = seenSections.map(s => ({ s, msgs: imageMsgs.filter(m => (m.pdfMeta?.section ?? 'Geral') === s) }))
     const allIds = new Set(imageMsgs.map(m => m.id))
     const allSelected = imageMsgs.every(m => pdfSelected.has(m.id))
 
@@ -635,7 +525,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             {sections.map(({ s, msgs }) => (
               <div key={s}>
                 <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
-                  {PDF_SECTIONS[s].icon} {PDF_SECTIONS[s].title}
+                  {s}
                 </p>
                 <div className="grid grid-cols-2 gap-3">
                   {msgs.map(msg => {
@@ -711,7 +601,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border max-w-[300px]">
               <img src={`data:${p.imageMimeType};base64,${p.imageBase64}`} alt="" className="w-full object-cover" />
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
-                <button onClick={() => { const a = document.createElement('a'); a.href = `data:${p.imageMimeType};base64,${p.imageBase64}`; a.download = 'estilo.png'; a.click() }}
+                <button onClick={() => { const a = document.createElement('a'); a.href = `data:${p.imageMimeType};base64,${p.imageBase64}`; a.download = 'Simulação IA.png'; a.click() }}
                   className="opacity-0 group-hover:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg"><Download className="h-5 w-5" /></button>
               </div>
               <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
@@ -723,7 +613,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border max-w-[300px]">
                 <img src={url} alt="" className="w-full object-cover" />
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
-                  <a href={url} download="estilo.png" target="_blank" rel="noopener noreferrer"
+                  <a href={url} download="Simulação IA.png" target="_blank" rel="noopener noreferrer"
                     className="opacity-0 group-hover:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg"><Download className="h-5 w-5" /></a>
                 </div>
                 <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
@@ -824,7 +714,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2.5 py-1 text-xs"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse" /> Online</span>
         {imageMsgs.length > 0 && (
           <button onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setShowPdfModal(true) }}
-            title="Gerar PDF do estilo"
+            title="Gerar PDF"
             className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
             <FileText className="h-3.5 w-3.5" /> PDF
           </button>
@@ -835,14 +725,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         {clientId && messages.length > 1 && (
           <button
             onClick={() => {
-              if (!confirm('Limpar histórico do chat?')) return
+              if (!confirm('Limpar o histórico do chat? As imagens geradas não serão perdidas, mas o PDF incluirá apenas as novas imagens geradas.')) return
               localStorage.removeItem(chatKey(clientId))
+              // Reset result materials flag so the AI context is re-sent on the next message
+              resultMaterialsSent.current = false
               setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
             }}
-            title="Limpar histórico"
-            className="text-white/50 hover:text-white/90 transition-colors"
+            title="Limpar conversa"
+            className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash2 className="h-3.5 w-3.5" /> Limpar
           </button>
         )}
       </div>
@@ -882,7 +774,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f?.type.startsWith('image/')) setPendingImage({ file: f, preview: URL.createObjectURL(f) }); if (e.target) e.target.value = '' }} />
           <textarea value={input} onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(undefined, false) } }}
-            placeholder="Pergunte sobre suas cores, estilo, combinações..."
+            placeholder="Pergunte sobre suas cores, combinações..."
             rows={1} disabled={loading}
             className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-violet-400 disabled:opacity-50 max-h-32"
             style={{ minHeight: '42px' }}

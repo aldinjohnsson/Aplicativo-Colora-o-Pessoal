@@ -6,6 +6,8 @@ import {
   Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { CategoryTypeModal, usePhotoTypes } from './CategoryTypeModal'
+
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -23,8 +25,8 @@ interface Prompt {
 
 interface Category {
   id: string; name: string; icon: string
-  type: 'cabelos' | 'geral'
-  refPhotoType: '' | 'cabelo' | 'roupa' | 'geral'   // qual foto da cliente usar na IA
+  type: string
+  refPhotoType: string   // qual foto da cliente usar na IA
   order: number; prompts: Prompt[]
 }
 
@@ -41,18 +43,11 @@ const uid = () => Math.random().toString(36).slice(2, 8)
 const ICONS: Record<string, any> = { scissors: Scissors, palette: Palette, shirt: Shirt, gem: Gem, folder: FolderOpen }
 const ICON_LIST = Object.keys(ICONS)
 
-const REF_PHOTO_OPTIONS = [
-  { value: '', label: 'Nenhuma' },
-  { value: 'cabelo', label: '✂️ Foto de Cabelo' },
-  { value: 'roupa', label: '👗 Foto de Roupa/Look' },
-  { value: 'geral', label: '📷 Foto Geral/Rosto' },
-]
-
 const DEFAULT_CATS: Category[] = [
-  { id: uid(), name: 'Cabelos', icon: 'scissors', type: 'cabelos', refPhotoType: 'cabelo', order: 0, prompts: [] },
-  { id: uid(), name: 'Maquiagem', icon: 'palette', type: 'geral', refPhotoType: 'geral', order: 1, prompts: [] },
-  { id: uid(), name: 'Roupas', icon: 'shirt', type: 'geral', refPhotoType: 'roupa', order: 2, prompts: [] },
-  { id: uid(), name: 'Acessórios', icon: 'gem', type: 'geral', refPhotoType: 'geral', order: 3, prompts: [] },
+  { id: uid(), name: 'Cabelos', icon: 'scissors', type: 'cabelo', refPhotoType: 'cabelo', order: 0, prompts: [] },
+  { id: uid(), name: 'Maquiagem', icon: 'palette', type: 'maquiagem', refPhotoType: 'maquiagem', order: 1, prompts: [] },
+  { id: uid(), name: 'Roupas', icon: 'shirt', type: 'roupa', refPhotoType: 'roupa', order: 2, prompts: [] },
+  { id: uid(), name: 'Acessórios', icon: 'gem', type: 'maquiagem', refPhotoType: '', order: 3, prompts: [] },
 ]
 
 const newPrompt = (order: number): Prompt => ({
@@ -87,6 +82,8 @@ export function FoldersManager() {
     setFolders(data || [])
     setLoading(false)
   }
+  const { types: photoTypes } = usePhotoTypes()
+  const [typeModalOpen, setTypeModalOpen] = useState(false)
 
   // ── Folder CRUD ────────────────────────────────────────────
 
@@ -105,8 +102,8 @@ export function FoldersManager() {
     if (c.categories) {
       c.categories = c.categories.map((cat: any) => ({
         ...cat,
-        type: cat.type || (cat.icon === 'scissors' ? 'cabelos' : 'geral'),
-        refPhotoType: cat.refPhotoType || (cat.icon === 'scissors' ? 'cabelo' : cat.icon === 'shirt' ? 'roupa' : 'geral'),
+        type: cat.type || (cat.icon === 'scissors' ? 'cabelo' : cat.icon === 'shirt' ? 'roupa' : 'maquiagem'),
+        refPhotoType: cat.refPhotoType === 'geral' ? '' : (cat.refPhotoType || (cat.icon === 'scissors' ? 'cabelo' : cat.icon === 'shirt' ? 'roupa' : '')),
         prompts: (cat.prompts || []).map((p: any) => ({
           ...p,
           thumbnail: p.thumbnail || null,
@@ -154,19 +151,33 @@ export function FoldersManager() {
 
   // ── Category CRUD ──────────────────────────────────────────
 
-  const addCategory = () => {
-    const name = window.prompt('Nome da categoria:')
-    if (!name) return
-    const type = window.confirm('Esta categoria é de cabelos?') ? 'cabelos' : 'geral'
-    const refPhotoType = type === 'cabelos' ? 'cabelo' : 'geral'
-    setConfig(prev => ({
-      ...prev,
-      categories: [...prev.categories, {
-        id: uid(), name, icon: type === 'cabelos' ? 'scissors' : 'folder',
-        type, refPhotoType, order: prev.categories.length, prompts: []
-      }]
-    }))
-  }
+  const handleAddCategoryClick = () => {
+      setTypeModalOpen(true)
+    }
+
+    const handleTypeSelected = (typeId: string, typeName: string) => {
+      setTypeModalOpen(false)
+
+      const newCategory = {
+        id: uid(),
+        name: `Nova Categoria (${typeName})`,
+        icon: 'folder',
+        type: typeId,
+        refPhotoType: typeId,
+        order: config.categories.length,
+        prompts: [],
+      }
+
+      setConfig(prev => ({
+        ...prev,
+        categories: [...prev.categories, newCategory],
+      }))
+    }
+
+    const handleTypeModalCancel = () => {
+      setTypeModalOpen(false)
+      // Cancelled — no category created; user must try again
+    }
 
   const removeCategory = (catId: string) => {
     if (!confirm('Remover categoria?')) return
@@ -176,6 +187,16 @@ export function FoldersManager() {
 
   const updateCat = (catId: string, u: Partial<Category>) => {
     setConfig(prev => ({ ...prev, categories: prev.categories.map(c => c.id === catId ? { ...c, ...u } : c) }))
+  }
+  const handleCategoryTypeChange = (catId: string, typeId: string) => {
+    setConfig(prev => ({
+      ...prev,
+      categories: prev.categories.map(c =>
+        c.id === catId
+          ? { ...c, type: typeId as any, refPhotoType: typeId as any }
+          : c
+      ),
+    }))
   }
 
   // ── Prompt CRUD ────────────────────────────────────────────
@@ -187,7 +208,7 @@ export function FoldersManager() {
     if (!cat) return
     const p = newPrompt(cat.prompts.length)
     p.name = name
-    if (cat.type === 'cabelos') p.options = ['Curto', 'Médio', 'Longo']
+    if (cat.type === 'cabelo') p.options = ['Curto', 'Médio', 'Longo']
     updateCat(catId, { prompts: [...cat.prompts, p] })
     setActivePrompt(p.id)
   }
@@ -384,14 +405,15 @@ export function FoldersManager() {
               <button onClick={() => setConfig(prev => ({ ...prev, categories: DEFAULT_CATS.map(c => ({ ...c, id: uid() })) }))}
                 className="text-xs px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg"><Sparkles className="h-3 w-3 inline mr-1" />Padrão</button>
             )}
-            <button onClick={addCategory} className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg"><Plus className="h-3 w-3 inline mr-1" />Categoria</button>
+            <button onClick={handleAddCategoryClick} className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg"><Plus className="h-3 w-3 inline mr-1" />Categoria</button>
           </div>
         </div>
 
         {config.categories.map(cat => {
           const Icon = ICONS[cat.icon] || FolderOpen
           const isOpen = activeCat === cat.id
-          const refLabel = REF_PHOTO_OPTIONS.find(o => o.value === cat.refPhotoType)?.label || 'Nenhuma'
+          const catType = photoTypes.find(t => t.id === cat.type)
+          const refType = photoTypes.find(t => t.id === cat.refPhotoType)
 
           return (
             <div key={cat.id} className="border border-gray-200 rounded-xl overflow-hidden">
@@ -399,13 +421,17 @@ export function FoldersManager() {
                 onClick={() => { setActiveCat(isOpen ? null : cat.id); setActivePrompt(null) }}>
                 <Icon className="h-4 w-4 text-violet-500" />
                 <span className="font-medium text-sm text-gray-800 flex-1">{cat.name}</span>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${cat.type === 'cabelos' ? 'bg-pink-100 text-pink-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {cat.type === 'cabelos' ? '✂️ Cabelos' : 'Geral'}
-                </span>
-                {cat.refPhotoType && (
+                {catType ? (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ backgroundColor: catType.color + '20', color: catType.color }}>
+                    {catType.icon} {catType.name}
+                  </span>
+                ) : (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">sem tipo</span>
+                )}
+                {refType && (
                   <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full flex items-center gap-1">
                     <Camera className="h-3 w-3" />
-                    {cat.refPhotoType}
+                    {refType.icon} {refType.name}
                   </span>
                 )}
                 <span className="text-xs text-gray-400">{cat.prompts.length}</span>
@@ -415,26 +441,30 @@ export function FoldersManager() {
 
               {isOpen && (
                 <div className="px-4 py-3 border-t border-gray-100 space-y-3">
-                  <div className="flex gap-2 items-end flex-wrap">
-                    <div className="flex-1 min-w-[120px]">
-                      <label className="text-xs text-gray-500">Nome</label>
-                      <input value={cat.name} onChange={e => updateCat(cat.id, { name: e.target.value })} className={`${inp} text-sm`} />
-                    </div>
-                    <div className="w-28">
-                      <label className="text-xs text-gray-500">Tipo</label>
-                      <select value={cat.type} onChange={e => updateCat(cat.id, { type: e.target.value as any })} className={`${inp} text-sm`}>
-                        <option value="cabelos">Cabelos</option>
-                        <option value="geral">Geral</option>
+                  {/* Nome */}
+                  <div>
+                    <label className="text-xs text-gray-500">Nome</label>
+                    <input value={cat.name} onChange={e => updateCat(cat.id, { name: e.target.value })} className={`${inp} text-sm`} />
+                  </div>
+
+                  {/* Tipo + Foto da cliente — only these 2 */}
+                  <div className="flex gap-3 flex-wrap">
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="text-xs text-gray-500 font-medium">Tipo</label>
+                      <select
+                        value={cat.type || ''}
+                        onChange={e => handleCategoryTypeChange(cat.id, e.target.value)}
+                        className={`${inp} text-sm`}
+                      >
+                        {(photoTypes || []).map(t => (
+                          <option key={t.id} value={t.id}>
+                            {t.icon} {t.name}
+                          </option>
+                        ))}
                       </select>
                     </div>
-                    <div className="w-28">
-                      <label className="text-xs text-gray-500">Ícone</label>
-                      <select value={cat.icon} onChange={e => updateCat(cat.id, { icon: e.target.value })} className={`${inp} text-sm`}>
-                        {ICON_LIST.map(i => <option key={i}>{i}</option>)}
-                      </select>
-                    </div>
-                    <div className="w-44">
-                      <label className="text-xs text-gray-500 flex items-center gap-1">
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="text-xs text-gray-500 font-medium flex items-center gap-1">
                         <Camera className="h-3 w-3" /> Foto da cliente (IA)
                       </label>
                       <select
@@ -442,8 +472,11 @@ export function FoldersManager() {
                         onChange={e => updateCat(cat.id, { refPhotoType: e.target.value as any })}
                         className={`${inp} text-sm`}
                       >
-                        {REF_PHOTO_OPTIONS.map(o => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
+                        <option value="">Nenhuma</option>
+                        {(photoTypes || []).map(t => (
+                          <option key={t.id} value={t.id}>
+                            {t.icon} {t.name}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -451,7 +484,7 @@ export function FoldersManager() {
 
                   {cat.refPhotoType && (
                     <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs text-blue-700">
-                      <span className="font-medium">Foto usada na IA:</span> A IA vai utilizar a <strong>{refLabel}</strong> da cliente ao gerar conteúdo nesta categoria
+                      <span className="font-medium">Foto usada na IA:</span> A IA vai utilizar a foto de <strong>{photoTypes.find(t => t.id === cat.refPhotoType)?.name || cat.refPhotoType}</strong> da cliente ao gerar conteúdo nesta categoria
                     </div>
                   )}
 
@@ -522,8 +555,8 @@ export function FoldersManager() {
                             </label>
                           </div>
 
-                          {/* CABELOS: opções + tinta */}
-                          {cat.type === 'cabelos' && (
+                          {/* CABELO: opções + tinta */}
+                          {cat.type === 'cabelo' && (
                             <>
                               <div>
                                 <label className="text-xs font-medium text-gray-600 block mb-1">Comprimentos (opções para a cliente)</label>
@@ -549,8 +582,8 @@ export function FoldersManager() {
                             </>
                           )}
 
-                          {/* GERAL: referência */}
-                          {cat.type === 'geral' && (
+                          {/* Referência geral (para todos os outros tipos) */}
+                          {cat.type !== 'cabelo' && (
                             <div>
                               <label className="text-xs font-medium text-gray-600">📌 Referência (opcional)</label>
                               <input value={prompt.reference} onChange={e => updatePrompt(cat.id, prompt.id, { reference: e.target.value })}
@@ -583,6 +616,12 @@ export function FoldersManager() {
         {saveStatus === 'saved' && <span className="text-sm text-green-600 flex items-center gap-1"><CheckCircle className="h-4 w-4" /> Salvo!</span>}
         {saveStatus === 'error' && <span className="text-sm text-red-600"><AlertCircle className="h-4 w-4 inline" /> Erro</span>}
       </div>
+      <CategoryTypeModal
+        open={typeModalOpen}
+        onSelect={handleTypeSelected}
+        onCancel={handleTypeModalCancel}
+      />
     </div>
+    
   )
 }

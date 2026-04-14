@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Save, Phone, CheckCircle, AlertCircle, ExternalLink, FolderOpen, FileText, Mail, Upload, Trash2, Eye } from 'lucide-react'
 import { TagsManager } from './TagsManager'
+import { PhotoTypesManager } from './PhotoTypesManager'
 import { supabase } from '../../lib/supabase'
 
 interface AppSettings {
@@ -28,11 +29,26 @@ const settingsStorageService = {
       const jsonData = JSON.stringify(data)
       localStorage.setItem('app-settings', jsonData)
 
-      // Salvar no Supabase para que a Edge Function consiga ler
-      await supabase.from('admin_content').upsert(
-        { type: 'settings', content: data as any, updated_at: new Date().toISOString() },
-        { onConflict: 'type' }
-      )
+      // Salvar no Supabase — sem upsert (evita erro 400 por falta de UNIQUE constraint)
+      const { data: existing } = await supabase
+        .from('admin_content')
+        .select('id')
+        .eq('type', 'settings')
+        .maybeSingle()
+
+      if (existing?.id) {
+        await supabase
+          .from('admin_content')
+          .update({ content: data as any })
+          .eq('id', existing.id)
+      } else {
+        await supabase
+          .from('admin_content')
+          .upsert(
+            { type: 'settings', content: data as any },
+            { onConflict: 'type' }
+          )
+      }
 
       return { success: true }
     } catch (error) {
@@ -757,6 +773,9 @@ export default function SettingsEditor() {
           </div>
         </div>
       </div>
+
+      {/* Types de Foto (categorias de análise — usadas pelo PDF e pela IA) */}
+      <PhotoTypesManager />
 
       {/* Tags de Informação IA */}
       <TagsManager />

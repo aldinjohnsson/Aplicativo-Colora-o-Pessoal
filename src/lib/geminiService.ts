@@ -38,10 +38,10 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
   const userParts: any[] = []
 
   if (clientFirst && wantsImage) {
-    // Accessories: client photo FIRST (base subject), then reference materials (what to apply)
+    // Referência e materiais PRIMEIRO (o que aplicar), cliente POR ÚLTIMO (base a preservar)
     if (referencePhotoBase64) userParts.push({ inline_data: { mime_type: referencePhotoMimeType, data: referencePhotoBase64 } })
-    if (userImageBase64) userParts.push({ inline_data: { mime_type: userImageMimeType, data: userImageBase64 } })
     for (const mat of materials) userParts.push({ inline_data: { mime_type: mat.mimeType, data: mat.base64 } })
+    if (userImageBase64) userParts.push({ inline_data: { mime_type: userImageMimeType, data: userImageBase64 } })
   } else {
     // Default: materials first, then client photo
     if (materials.length > 0) {
@@ -53,7 +53,7 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
 
   let finalText = userText
   if (materials.length > 0) finalText += '\n\n[INSTRUÇÃO: Use os materiais anexados como base para sua resposta.]'
-  if (wantsImage && referencePhotoBase64) finalText += '\n\n[INSTRUÇÃO: Foto da cliente anexada. Use como base. Mantenha feições. GERE IMAGEM.]'
+  if (wantsImage && referencePhotoBase64) finalText += '\n\n[INSTRUÇÃO: A ÚLTIMA imagem enviada é a foto da cliente — ela é a BASE OBRIGATÓRIA. Preserve o rosto, feições, tom de pele e EXATAMENTE o mesmo enquadramento, zoom e composição. NÃO recorte o busto. NÃO reposicione a cliente. Aplique SOMENTE o acessório/alteração descrito. GERE IMAGEM.]'
 
   userParts.push({ text: finalText })
   contents.push({ role: 'user', parts: userParts })
@@ -64,7 +64,7 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
   // accessories (glasses, earrings, etc.) from being placed on the face.
   const imgSys = {
     parts: [{
-      text: `REGRA CRÍTICA DE GERAÇÃO DE IMAGEM: Use a foto da cliente como base obrigatória. Preserve a identidade facial da pessoa — mantenha o rosto real, feições, tom de pele, olhos e expressão. Aplique SOMENTE o que for descrito no prompt (cabelo, roupa, acessório, etc.). Nunca substitua ou idealize o rosto da cliente — use sempre a foto real fornecida como base.\n\n${systemPrompt || ''}`
+      text: `REGRA CRÍTICA DE GERAÇÃO DE IMAGEM: Use a foto da cliente como base obrigatória. Preserve a identidade facial da pessoa — mantenha o rosto real, feições, tom de pele, olhos e expressão. Aplique SOMENTE o que for descrito no prompt (cabelo, roupa, acessório, etc.). Nunca substitua ou idealize o rosto da cliente — use sempre a foto real fornecida como base.\n\nREGRA DE COMPOSIÇÃO OBRIGATÓRIA: Mantenha EXATAMENTE o mesmo enquadramento, recorte, zoom e composição da foto original da cliente. NÃO altere a posição da cliente na imagem. NÃO aproxime o zoom. NÃO recorte o corpo ou busto. A imagem gerada deve ter a mesma composição da foto de entrada — apenas aplique o acessório/alteração solicitada.\n\n${systemPrompt || ''}`
     }]
   }
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))

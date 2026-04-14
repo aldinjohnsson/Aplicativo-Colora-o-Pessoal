@@ -1,10 +1,11 @@
 // src/components/admin/AIPromptConfig.tsx
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
-  Wand2, Save, CheckCircle, AlertCircle, Camera, Trash2, Upload,
-  Coins, Plus, Minus, Send, Lock, Unlock
+  Wand2, Save, CheckCircle, Camera, Trash2,
+  Coins, Plus, Minus, Send, Lock, Unlock, RefreshCw
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { photoTypesService, PhotoType } from './PhotoTypesManager'
 
 interface AIPromptConfigProps {
   clientId: string
@@ -14,24 +15,19 @@ interface AIPromptConfigProps {
   releasingResult: boolean
 }
 
-// ── Fotos de referência tipadas ─────────────────────────────
+// ── Foto de referência vinculada a um type ──────────────────
 
-interface RefPhoto {
-  type: 'cabelo' | 'roupa' | 'geral'
-  label: string
+export interface RefPhoto {
+  typeId: string
+  typeName: string
   storagePath: string
   url: string
 }
 
-const PHOTO_SLOTS: { type: RefPhoto['type']; label: string; desc: string; icon: string }[] = [
-  { type: 'cabelo', label: 'Foto para Cabelo', desc: 'Usada pela IA em análises e geração de cabelo', icon: '✂️' },
-  { type: 'roupa', label: 'Foto para Roupas / Look', desc: 'Usada em análises de look e roupas', icon: '👗' },
-  { type: 'geral', label: 'Foto Geral / Rosto', desc: 'Referência padrão (rosto da cliente)', icon: '📷' },
-]
-
 export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, releasingResult }: AIPromptConfigProps) {
+  const [photoTypes, setPhotoTypes] = useState<PhotoType[]>([])
   const [refPhotos, setRefPhotos] = useState<RefPhoto[]>([])
-  const [uploadingType, setUploadingType] = useState<RefPhoto['type'] | null>(null)
+  const [uploadingTypeId, setUploadingTypeId] = useState<string | null>(null)
 
   const [creditsImage, setCreditsImage] = useState(0)
   const [creditsText, setCreditsText] = useState(0)
@@ -42,13 +38,15 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
-  const photoRefs = useRef<Record<string, HTMLInputElement | null>>({})
-
   useEffect(() => { loadData() }, [clientId])
 
   const loadData = async () => {
     setLoading(true)
     try {
+      // Carregar types configurados globalmente
+      const types = await photoTypesService.getAll()
+      setPhotoTypes(types)
+
       const { data: client } = await supabase
         .from('clients')
         .select('ai_reference_photos, ai_reference_photo_path, ai_credits_image, ai_credits_text, ai_credits_used_image, ai_credits_used_text')
@@ -59,55 +57,66 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
       setUsedImage(client?.ai_credits_used_image || 0)
       setUsedText(client?.ai_credits_used_text || 0)
 
-      // Suporte legado: se só tem ai_reference_photo_path, converte para array
+      // Migrar formato legado → novo formato com typeId
       if (client?.ai_reference_photos && Array.isArray(client.ai_reference_photos)) {
-        setRefPhotos(client.ai_reference_photos)
+        const photos: RefPhoto[] = client.ai_reference_photos.map((p: any) => ({
+          typeId: p.typeId || p.type || 'geral',
+          typeName: p.typeName || p.label || p.type || 'Geral',
+          storagePath: p.storagePath,
+          url: p.url,
+        }))
+        setRefPhotos(photos)
       } else if (client?.ai_reference_photo_path) {
+        // legado: só tinha uma foto geral
         const url = supabase.storage.from('client-photos').getPublicUrl(client.ai_reference_photo_path).data.publicUrl
-        setRefPhotos([{ type: 'geral', label: 'Foto Geral/Rosto', storagePath: client.ai_reference_photo_path, url }])
+        setRefPhotos([{ typeId: 'geral', typeName: 'Geral / Rosto', storagePath: client.ai_reference_photo_path, url }])
       } else {
         setRefPhotos([])
       }
-    } catch {} finally { setLoading(false) }
+    } catch (e) {
+      console.error('Erro ao carregar dados:', e)
+    } finally { setLoading(false) }
   }
 
   // ── Fotos ──────────────────────────────────────────────────
 
-  const handlePhotoUpload = async (type: RefPhoto['type'], e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return; e.target.value = ''
-    setUploadingType(type)
+  const handlePhotoUpload = async (type: PhotoType, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    setUploadingTypeId(type.id)
     try {
-      const path = `ai-reference/${clientId}/${type}_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+      const path = `ai-reference/${clientId}/${type.id}_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
       await supabase.storage.from('client-photos').upload(path, file, { contentType: file.type, upsert: true })
       const url = supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl
 
-      const slot = PHOTO_SLOTS.find(s => s.type === type)!
-      const newPhoto: RefPhoto = { type, label: slot.label, storagePath: path, url }
-
-      const updated = [...refPhotos.filter(p => p.type !== type), newPhoto]
+      const newPhoto: RefPhoto = { typeId: type.id, typeName: type.name, storagePath: path, url }
+      const updated = [...refPhotos.filter(p => p.typeId !== type.id), newPhoto]
       setRefPhotos(updated)
 
       await supabase.from('clients').update({
         ai_reference_photos: updated,
-        // Manter legado: se for geral, atualiza ai_reference_photo_path também
-        ...(type === 'geral' ? { ai_reference_photo_path: path } : {}),
+        // manter legado para geral
+        ...(type.id === 'geral' ? { ai_reference_photo_path: path } : {}),
       }).eq('id', clientId)
 
-      setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000)
-    } catch (e: any) { alert('Erro: ' + e.message) }
-    finally { setUploadingType(null) }
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch (err: any) {
+      alert('Erro ao enviar foto: ' + err.message)
+    } finally { setUploadingTypeId(null) }
   }
 
-  const handleDeletePhoto = async (type: RefPhoto['type']) => {
-    if (!confirm('Remover esta foto?')) return
-    const photo = refPhotos.find(p => p.type === type)
+  const handleDeletePhoto = async (typeId: string) => {
+    if (!confirm('Remover esta foto de referência?')) return
+    const photo = refPhotos.find(p => p.typeId === typeId)
     if (!photo) return
     try { await supabase.storage.from('client-photos').remove([photo.storagePath]) } catch {}
-    const updated = refPhotos.filter(p => p.type !== type)
+    const updated = refPhotos.filter(p => p.typeId !== typeId)
     setRefPhotos(updated)
     await supabase.from('clients').update({
       ai_reference_photos: updated,
-      ...(type === 'geral' ? { ai_reference_photo_path: null } : {}),
+      ...(typeId === 'geral' ? { ai_reference_photo_path: null } : {}),
     }).eq('id', clientId)
   }
 
@@ -120,20 +129,25 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
         ai_credits_image: Math.max(0, img),
         ai_credits_text: Math.max(0, txt),
       }).eq('id', clientId)
-      setCreditsImage(Math.max(0, img)); setCreditsText(Math.max(0, txt))
+      setCreditsImage(Math.max(0, img))
+      setCreditsText(Math.max(0, txt))
     } catch {} finally { setSavingCredits(false) }
   }
 
   const handleResetUsed = async () => {
-    if (!confirm('Zerar contadores?')) return
+    if (!confirm('Zerar contadores de uso?')) return
     await supabase.from('clients').update({ ai_credits_used_image: 0, ai_credits_used_text: 0 }).eq('id', clientId)
-    setUsedImage(0); setUsedText(0)
+    setUsedImage(0)
+    setUsedText(0)
   }
 
-  if (loading) return <div className="flex items-center justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-violet-400 border-t-transparent rounded-full" /></div>
+  if (loading) return (
+    <div className="flex items-center justify-center py-12">
+      <div className="animate-spin h-6 w-6 border-2 border-violet-400 border-t-transparent rounded-full" />
+    </div>
+  )
 
-  const photosComplete = refPhotos.filter(p => p.type === 'geral').length > 0
-  const inp = "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+  const hasGeral = refPhotos.some(p => p.typeId === 'geral')
 
   return (
     <div className="space-y-6">
@@ -141,59 +155,75 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
         <h3 className="font-semibold text-gray-900 flex items-center gap-2">
           <Wand2 className="h-5 w-5 text-violet-500" /> Configuração IA — {clientName}
         </h3>
-        <p className="text-sm text-gray-500 mt-0.5">Fotos de referência, créditos e liberação</p>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Fotos de referência por type · créditos · liberação
+        </p>
       </div>
 
-      {/* ── Fotos de referência ── */}
+      {/* ── Fotos de referência por type ── */}
       <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 space-y-4">
-        <div>
-          <p className="text-sm font-semibold text-violet-900 flex items-center gap-2">
-            <Camera className="h-4 w-4" /> Fotos de referência da cliente
-          </p>
-          <p className="text-xs text-violet-700 mt-0.5">
-            A IA usa a foto correta por categoria — cabelo para ✂️, roupas para 👗, geral como padrão
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-violet-900 flex items-center gap-2">
+              <Camera className="h-4 w-4" /> Fotos de referência
+            </p>
+            <p className="text-xs text-violet-700 mt-0.5">
+              Uma foto por type — usada pela IA e no PDF de cada categoria
+            </p>
+          </div>
+          <button onClick={loadData} className="p-1.5 text-violet-400 hover:text-violet-700 hover:bg-violet-100 rounded-lg" title="Recarregar types">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
         </div>
 
+        {photoTypes.length === 0 && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+            ⚠️ Nenhum type configurado. Acesse <strong>Configurações → Types de Foto</strong>.
+          </p>
+        )}
+
         <div className="space-y-3">
-          {PHOTO_SLOTS.map(slot => {
-            const photo = refPhotos.find(p => p.type === slot.type)
-            const isUploading = uploadingType === slot.type
+          {photoTypes.map(type => {
+            const photo = refPhotos.find(p => p.typeId === type.id)
+            const isUploading = uploadingTypeId === type.id
 
             return (
-              <div key={slot.type} className="bg-white rounded-xl border border-violet-100 p-3">
+              <div key={type.id} className="bg-white rounded-xl border border-violet-100 p-3">
                 <div className="flex items-center gap-3">
-                  <div className="text-xl w-8 text-center">{slot.icon}</div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-800">{slot.label}</p>
-                    <p className="text-xs text-gray-400">{slot.desc}</p>
+                  {/* Ícone do type */}
+                  <div
+                    className="w-9 h-9 rounded-lg flex items-center justify-center text-lg flex-shrink-0"
+                    style={{ backgroundColor: type.color + '20', border: `2px solid ${type.color}40` }}
+                  >
+                    {type.icon}
                   </div>
 
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-800">{type.name}</p>
+                    <p className="text-xs text-gray-400 font-mono">type: {type.id}</p>
+                  </div>
+
+                  {/* Foto */}
                   {photo ? (
                     <div className="flex items-center gap-2">
                       <img src={photo.url} alt="" className="w-12 h-12 rounded-lg object-cover border-2 border-violet-200" />
                       <div className="flex flex-col gap-1">
-                        <label className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg cursor-pointer text-center">
-                          <input
-                            type="file" accept="image/*" className="hidden"
-                            onChange={e => handlePhotoUpload(slot.type, e)}
-                          />
+                        <label className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg cursor-pointer text-center whitespace-nowrap">
+                          <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(type, e)} />
                           {isUploading ? '...' : 'Trocar'}
                         </label>
                         <button
-                          onClick={() => handleDeletePhoto(slot.type)}
-                          className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg"
+                          onClick={() => handleDeletePhoto(type.id)}
+                          className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
                         >
                           <Trash2 className="h-3 w-3 inline" />
                         </button>
                       </div>
                     </div>
                   ) : (
-                    <label className={`text-xs px-3 py-2 border border-dashed border-violet-300 rounded-lg cursor-pointer hover:bg-violet-50 text-violet-600 ${isUploading ? 'opacity-60' : ''}`}>
-                      <input
-                        type="file" accept="image/*" className="hidden"
-                        onChange={e => handlePhotoUpload(slot.type, e)}
-                      />
+                    <label className={`text-xs px-3 py-2 border border-dashed border-violet-300 rounded-lg cursor-pointer hover:bg-violet-50 text-violet-600 whitespace-nowrap ${isUploading ? 'opacity-60' : ''}`}>
+                      <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(type, e)} />
                       {isUploading ? 'Enviando...' : '+ Adicionar'}
                     </label>
                   )}
@@ -203,10 +233,16 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
           })}
         </div>
 
-        {!photosComplete && (
+        {!hasGeral && photoTypes.some(t => t.id === 'geral') && (
           <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-            ⚠️ A Foto Geral/Rosto é obrigatória para a IA funcionar
+            ⚠️ A foto do type <strong>Geral / Rosto</strong> é o fallback padrão da IA
           </p>
+        )}
+
+        {saveStatus === 'saved' && (
+          <div className="flex items-center gap-2 text-sm text-green-600">
+            <CheckCircle className="h-4 w-4" /> Foto salva!
+          </div>
         )}
       </div>
 
@@ -233,29 +269,43 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
               <label className="text-xs text-gray-500 block mb-1">📸 Imagens</label>
               <div className="flex items-center gap-1">
                 <button onClick={() => handleSetCredits(creditsImage - 1, creditsText)} disabled={savingCredits || creditsImage <= 0}
-                  className="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center text-red-500 disabled:opacity-30"><Minus className="h-4 w-4" /></button>
-                <input type="number" value={creditsImage} onChange={e => handleSetCredits(parseInt(e.target.value) || 0, creditsText)}
+                  className="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center text-red-500 disabled:opacity-30">
+                  <Minus className="h-4 w-4" />
+                </button>
+                <input type="number" value={creditsImage}
+                  onChange={e => handleSetCredits(parseInt(e.target.value) || 0, creditsText)}
                   className="w-16 text-center border border-gray-300 rounded-lg py-1.5 text-sm font-bold" />
                 <button onClick={() => handleSetCredits(creditsImage + 1, creditsText)} disabled={savingCredits}
-                  className="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center text-green-600 disabled:opacity-30"><Plus className="h-4 w-4" /></button>
+                  className="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center text-green-600 disabled:opacity-30">
+                  <Plus className="h-4 w-4" />
+                </button>
               </div>
             </div>
             <div>
               <label className="text-xs text-gray-500 block mb-1">💬 Textos</label>
               <div className="flex items-center gap-1">
                 <button onClick={() => handleSetCredits(creditsImage, creditsText - 1)} disabled={savingCredits || creditsText <= 0}
-                  className="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center text-red-500 disabled:opacity-30"><Minus className="h-4 w-4" /></button>
-                <input type="number" value={creditsText} onChange={e => handleSetCredits(creditsImage, parseInt(e.target.value) || 0)}
+                  className="w-9 h-9 rounded-lg bg-red-50 flex items-center justify-center text-red-500 disabled:opacity-30">
+                  <Minus className="h-4 w-4" />
+                </button>
+                <input type="number" value={creditsText}
+                  onChange={e => handleSetCredits(creditsImage, parseInt(e.target.value) || 0)}
                   className="w-16 text-center border border-gray-300 rounded-lg py-1.5 text-sm font-bold" />
                 <button onClick={() => handleSetCredits(creditsImage, creditsText + 1)} disabled={savingCredits}
-                  className="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center text-green-600 disabled:opacity-30"><Plus className="h-4 w-4" /></button>
+                  className="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center text-green-600 disabled:opacity-30">
+                  <Plus className="h-4 w-4" />
+                </button>
               </div>
             </div>
           </div>
           <div className="flex gap-2">
             <button onClick={() => handleSetCredits(creditsImage + 10, creditsText + 50)} disabled={savingCredits}
-              className="flex-1 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-medium disabled:opacity-50">+10 img +50 txt</button>
-            <button onClick={handleResetUsed} className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-xs">Zerar usados</button>
+              className="flex-1 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-medium disabled:opacity-50">
+              +10 img +50 txt
+            </button>
+            <button onClick={handleResetUsed} className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-xs">
+              Zerar usados
+            </button>
           </div>
         </div>
       </div>
@@ -291,12 +341,6 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
           </button>
         )}
       </div>
-
-      {saveStatus === 'saved' && (
-        <div className="flex items-center gap-2 text-sm text-green-600">
-          <CheckCircle className="h-4 w-4" /> Foto salva!
-        </div>
-      )}
     </div>
   )
 }

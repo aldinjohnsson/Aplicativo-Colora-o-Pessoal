@@ -596,8 +596,8 @@ function AnalysisScreen({ data }: { data: ClientPortalData }) {
 
 // ── Results ──────────────────────────────────────────────────
 
-// Typed reference photo (mirrors AIPromptConfig)
-interface RefPhoto { type: 'cabelo' | 'roupa' | 'geral'; label: string; storagePath: string; url: string }
+// Typed reference photo — type is the dynamic typeId string (e.g. 'cabelo', 'roupa', 'maquiagem', 'geral')
+interface RefPhoto { type: string; label: string; storagePath: string; url: string }
 
 function ResultScreen({ token, data }: { token: string; data: ClientPortalData }) {
   const result = data.result
@@ -620,16 +620,20 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
 
         // Prefer the new typed photos array; fall back to legacy single path
         if (row?.ai_reference_photos && Array.isArray(row.ai_reference_photos) && row.ai_reference_photos.length > 0) {
-          // Resolve public URLs (storagePath already stored, but url field may be stale — regenerate)
+          // Normalise: AIPromptConfig saves {typeId, typeName, storagePath} — map to {type, label, storagePath, url}
           const photos: RefPhoto[] = row.ai_reference_photos.map((p: any) => ({
-            ...p,
+            type: (p.typeId || p.type || 'geral') as string,
+            label: p.typeName || p.label || p.typeId || p.type || 'Geral',
+            storagePath: p.storagePath,
+            // Always regenerate the public URL — stored url may be stale
             url: supabase.storage.from('client-photos').getPublicUrl(p.storagePath).data.publicUrl,
           }))
           setAiRefPhotos(photos)
-          // Only use the geral photo as the legacy single reference — never use cabelo/roupa as fallback
+          // Use the 'geral' photo as the legacy single ref; if absent use the first available photo
           const geral = photos.find(p => p.type === 'geral')
           if (geral) setAiRefPhotoUrl(geral.url)
-          // If no geral photo, leave aiRefPhotoUrl null — GeminiChat will pick the right typed photo per category
+          else if (photos.length > 0) setAiRefPhotoUrl(photos[0].url)
+          // GeminiChat will pick the correct typed photo per category from refPhotoMap
         } else if (row?.ai_reference_photo_path) {
           const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(row.ai_reference_photo_path)
           setAiRefPhotoUrl(urlData.publicUrl)
