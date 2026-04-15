@@ -347,7 +347,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     if (loading) return
 
     setApiError(null)
-    const apiKey = getGeminiApiKey()
+    const apiKey = await getGeminiApiKey()
     if (!apiKey) { setApiError('Chave da API não configurada.'); return }
 
     // Verificar créditos
