@@ -73,6 +73,14 @@ export function FoldersManager() {
   const [newOpt, setNewOpt] = useState('')
   const [uploadingImg, setUploadingImg] = useState(false)
   const [uploadingThumb, setUploadingThumb] = useState(false)
+  const [autoSaving, setAutoSaving] = useState(false)
+
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isFirstRender = useRef(true)
+  const editingFolderRef = useRef<Folder | null>(null)
+
+  // Mantém ref sincronizada com o estado (evita closure stale no auto-save)
+  useEffect(() => { editingFolderRef.current = editingFolder }, [editingFolder])
 
   useEffect(() => { loadFolders() }, [])
 
@@ -82,6 +90,34 @@ export function FoldersManager() {
     setFolders(data || [])
     setLoading(false)
   }
+
+  // ── Auto-save (debounce 1.5s) — só para pastas já existentes ──
+  useEffect(() => {
+    // Ignora o primeiro render e pastas novas (ainda sem ID real)
+    if (isFirstRender.current) { isFirstRender.current = false; return }
+    const folder = editingFolderRef.current
+    if (!folder || folder.id === 'new') return
+
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+    setAutoSaving(true)
+
+    autoSaveTimer.current = setTimeout(async () => {
+      try {
+        await supabase
+          .from('ai_folders')
+          .update({ name: config.folderName, config, updated_at: new Date().toISOString() })
+          .eq('id', folder.id)
+        setSaveStatus('saved')
+        setTimeout(() => setSaveStatus('idle'), 3000)
+      } catch {
+        setSaveStatus('error')
+      } finally {
+        setAutoSaving(false)
+      }
+    }, 1500)
+
+    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
+  }, [config])
   const { types: photoTypes } = usePhotoTypes()
   const [typeModalOpen, setTypeModalOpen] = useState(false)
 
@@ -90,12 +126,14 @@ export function FoldersManager() {
   const createFolder = () => {
     const name = window.prompt('Nome da pasta (ex: Verão Suave):')
     if (!name?.trim()) return
+    isFirstRender.current = true
     setConfig({ ...emptyConfig(), folderName: name.trim(), categories: DEFAULT_CATS.map(c => ({ ...c, id: uid() })) })
     setEditingFolder({ id: 'new', name: name.trim(), config: emptyConfig(), created_at: '' })
     setActiveCat(null); setActivePrompt(null)
   }
 
   const openFolder = (f: Folder) => {
+    isFirstRender.current = true
     const c: FolderConfig = typeof f.config === 'string' ? JSON.parse(f.config) : { ...f.config }
     // Migrar campos faltantes
     if (!c.driveLink) c.driveLink = ''
@@ -138,13 +176,22 @@ export function FoldersManager() {
     setSaving(true); setSaveStatus('idle')
     try {
       if (editingFolder.id === 'new') {
-        await supabase.from('ai_folders').insert({ name: config.folderName, config })
+        const { data, error } = await supabase
+          .from('ai_folders')
+          .insert({ name: config.folderName, config })
+          .select()
+          .single()
+        if (error) throw error
+        // Agora temos o ID real — auto-save passa a funcionar
+        if (data) {
+          isFirstRender.current = true
+          setEditingFolder({ ...editingFolder, id: data.id })
+        }
       } else {
         await supabase.from('ai_folders').update({ name: config.folderName, config, updated_at: new Date().toISOString() }).eq('id', editingFolder.id)
       }
       setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 3000)
       loadFolders()
-      if (editingFolder.id === 'new') setEditingFolder(null)
     } catch { setSaveStatus('error') }
     finally { setSaving(false) }
   }
@@ -607,14 +654,43 @@ export function FoldersManager() {
       </div>
 
       {/* Save */}
-      <div className="flex items-center gap-3">
-        <button onClick={handleSave} disabled={saving || !config.folderName.trim()}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 disabled:opacity-50">
-          {saving ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" /> : <Save className="h-4 w-4" />}
-          {saving ? 'Salvando...' : 'Salvar pasta'}
-        </button>
-        {saveStatus === 'saved' && <span className="text-sm text-green-600 flex items-center gap-1"><CheckCircle className="h-4 w-4" /> Salvo!</span>}
-        {saveStatus === 'error' && <span className="text-sm text-red-600"><AlertCircle className="h-4 w-4 inline" /> Erro</span>}
+      <div className="flex items-center gap-3 flex-wrap">
+        {editingFolder.id === 'new' ? (
+          // Nova pasta: botão de salvar obrigatório
+          <button onClick={handleSave} disabled={saving || !config.folderName.trim()}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 disabled:opacity-50">
+            {saving ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" /> : <Save className="h-4 w-4" />}
+            {saving ? 'Salvando...' : 'Criar pasta'}
+          </button>
+        ) : (
+          // Pasta existente: auto-save ativo + botão manual como backup
+          <button onClick={handleSave} disabled={saving || autoSaving || !config.folderName.trim()}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 disabled:opacity-50">
+            {saving ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" /> : <Save className="h-4 w-4" />}
+            {saving ? 'Salvando...' : 'Salvar agora'}
+          </button>
+        )}
+
+        {/* Indicadores de status */}
+        {autoSaving && (
+          <span className="text-sm text-violet-500 flex items-center gap-1.5">
+            <div className="animate-spin h-3.5 w-3.5 border-2 border-violet-400 border-t-transparent rounded-full" />
+            Salvando automaticamente...
+          </span>
+        )}
+        {!autoSaving && saveStatus === 'saved' && (
+          <span className="text-sm text-green-600 flex items-center gap-1.5">
+            <CheckCircle className="h-4 w-4" /> Salvo no banco
+          </span>
+        )}
+        {saveStatus === 'error' && (
+          <span className="text-sm text-red-600 flex items-center gap-1.5">
+            <AlertCircle className="h-4 w-4" /> Erro ao salvar
+          </span>
+        )}
+        {editingFolder.id !== 'new' && !autoSaving && saveStatus === 'idle' && (
+          <span className="text-xs text-gray-400">Auto-save ativo</span>
+        )}
       </div>
       <CategoryTypeModal
         open={typeModalOpen}
