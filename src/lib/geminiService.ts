@@ -1,6 +1,8 @@
 // src/lib/geminiService.ts
 // GEMINI ONLY
 
+import { supabase } from './supabase'
+
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 
 export const GEMINI_MODELS = {
@@ -13,8 +15,51 @@ export interface GeminiResponsePart { type: 'text' | 'image'; text?: string; ima
 export interface GeminiResponse { parts: GeminiResponsePart[]; raw: any; imageGenerationFailed: boolean }
 export interface MaterialData { base64: string; mimeType: string }
 
-export function getGeminiApiKey(): string {
-  try { return JSON.parse(localStorage.getItem('app-settings') || '{}')?.geminiApiKey || '' } catch { return '' }
+// Cache em memória para evitar múltiplas chamadas ao Supabase por sessão
+let _cachedApiKey: string | null = null
+let _cacheTime = 0
+const CACHE_TTL = 5 * 60 * 1000 // 5 minutos
+
+export async function getGeminiApiKey(): Promise<string> {
+  // Retorna do cache se ainda válido
+  if (_cachedApiKey !== null && Date.now() - _cacheTime < CACHE_TTL) {
+    return _cachedApiKey
+  }
+
+  try {
+    // 1. Buscar do Supabase (fonte de verdade)
+    const { data } = await supabase
+      .from('admin_content')
+      .select('content')
+      .eq('type', 'settings')
+      .maybeSingle()
+
+    const key = (data?.content as any)?.geminiApiKey || ''
+
+    if (key) {
+      _cachedApiKey = key
+      _cacheTime = Date.now()
+      return key
+    }
+  } catch {
+    // Supabase falhou — cai no fallback
+  }
+
+  // 2. Fallback: localStorage (compatibilidade com dev local)
+  try {
+    const key = JSON.parse(localStorage.getItem('app-settings') || '{}')?.geminiApiKey || ''
+    _cachedApiKey = key
+    _cacheTime = Date.now()
+    return key
+  } catch {
+    return ''
+  }
+}
+
+/** Invalida o cache (chamar após salvar novas configurações) */
+export function invalidateGeminiKeyCache() {
+  _cachedApiKey = null
+  _cacheTime = 0
 }
 
 export async function fileToBase64(file: File): Promise<{ base64: string; mimeType: string }> {
@@ -30,20 +75,16 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
 }): Promise<GeminiResponse> {
   if (!apiKey) throw new Error('Chave da API Gemini não configurada.')
 
-  // forceImage = true quando vem do menu de opções (sempre gera imagem)
-  // forceImage = false quando é texto digitado (nunca gera imagem, só responde)
   const wantsImage = forceImage
 
   const contents: any[] = history.map(m => ({ role: m.role, parts: [{ text: m.text || ' ' }] }))
   const userParts: any[] = []
 
   if (clientFirst && wantsImage) {
-    // Referência e materiais PRIMEIRO (o que aplicar), cliente POR ÚLTIMO (base a preservar)
     if (referencePhotoBase64) userParts.push({ inline_data: { mime_type: referencePhotoMimeType, data: referencePhotoBase64 } })
     for (const mat of materials) userParts.push({ inline_data: { mime_type: mat.mimeType, data: mat.base64 } })
     if (userImageBase64) userParts.push({ inline_data: { mime_type: userImageMimeType, data: userImageBase64 } })
   } else {
-    // Default: materials first, then client photo
     if (materials.length > 0) {
       for (const mat of materials) userParts.push({ inline_data: { mime_type: mat.mimeType, data: mat.base64 } })
     }
@@ -59,9 +100,6 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
   contents.push({ role: 'user', parts: userParts })
 
   const sys = systemPrompt?.trim() ? { parts: [{ text: systemPrompt }] } : undefined
-  // For image generation, prepend a face-preservation directive.
-  // IMPORTANT: must NOT say "sem nenhuma alteração no rosto" because that blocks
-  // accessories (glasses, earrings, etc.) from being placed on the face.
   const imgSys = {
     parts: [{
       text: `REGRA CRÍTICA DE GERAÇÃO DE IMAGEM: Use a foto da cliente como base obrigatória. Preserve a identidade facial da pessoa — mantenha o rosto real, feições, tom de pele, olhos e expressão. Aplique SOMENTE o que for descrito no prompt (cabelo, roupa, acessório, etc.). Nunca substitua ou idealize o rosto da cliente — use sempre a foto real fornecida como base.\n\nREGRA DE COMPOSIÇÃO OBRIGATÓRIA: Mantenha EXATAMENTE o mesmo enquadramento, recorte, zoom e composição da foto original da cliente. NÃO altere a posição da cliente na imagem. NÃO aproxime o zoom. NÃO recorte o corpo ou busto. A imagem gerada deve ter a mesma composição da foto de entrada — apenas aplique o acessório/alteração solicitada.\n\n${systemPrompt || ''}`
@@ -94,7 +132,6 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
       if (!p.text) return p
       let t = p.text.replace(/\[INSTRUÇÃO[^\]]*\]/g, '').trim()
       if (imgFailed) t += '\n\n[SISTEMA: Imagem indisponível. Responda com texto. Avise: "⚠️ Geração de imagem indisponível."]'
-      // Para perguntas de texto, reforçar que use só os materiais
       if (!wantsImage) t += '\n\n[SISTEMA: Responda EXCLUSIVAMENTE com base nos materiais da consultoria, cartela de cores, documentos e observações da cliente. NÃO use conhecimento externo. Se a informação não estiver nos materiais, diga que precisa consultar a consultora Marília.]'
       return { ...p, text: t }
     })}
