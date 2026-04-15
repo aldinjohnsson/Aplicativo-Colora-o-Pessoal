@@ -17,27 +17,50 @@ interface ChatMsg {
   imagePreview?: string; imageBase64?: string; imageMimeType?: string
   responseParts?: GeminiResponsePart[]; timestamp: Date
   loading?: boolean; error?: string; imageGenerationFailed?: boolean
-  savedImageUrls?: string[]   // images uploaded to Storage — survive page reload
+  savedImageUrls?: string[]
   pdfMeta?: PdfMeta
 }
 
-// PdfSection is now a free string — uses the actual category name (e.g. "Cabelos", "Maquiagens")
 type PdfSection = string
 interface PdfMeta { section: PdfSection; label: string; caption: string }
 
 interface PromptImage { url: string; storagePath: string; label: string }
-interface Prompt { id: string; name: string; instructions: string; images: PromptImage[]; thumbnail: PromptImage | null; options: string[]; tintReference: string; reference: string }
-interface Category { id: string; name: string; icon: string; type: 'cabelos' | 'geral'; refPhotoType?: string; prompts: Prompt[] }
+
+/**
+ * Sub-option for comprimento or textura — stored inside each prompt (cabelo only).
+ * Admin configures: name shown to client, cover thumbnail, AI instruction, reference images.
+ */
+interface SubOption {
+  id: string
+  name: string
+  thumbnail: PromptImage | null
+  instruction: string
+  images: PromptImage[]
+}
+
+interface Prompt {
+  id: string
+  name: string
+  instructions: string
+  images: PromptImage[]
+  thumbnail: PromptImage | null
+  options: string[]         // legacy text-only list (fallback)
+  tintReference: string
+  reference: string
+  lengths: SubOption[]      // cabelo: comprimento choices
+  textures: SubOption[]     // cabelo: textura choices
+}
+
+interface Category { id: string; name: string; icon: string; type: 'cabelos' | 'geral' | string; refPhotoType?: string; prompts: Prompt[] }
 interface FolderConfig { folderName: string; baseInstructions: string; categories: Category[] }
 
 interface ResultFile { url: string; name: string }
-// type is a dynamic typeId string (e.g. 'cabelo', 'roupa', 'maquiagem', 'geral') — must not be a closed union
 interface RefPhoto { type: string; label: string; storagePath: string; url: string }
 
 interface GeminiChatProps {
   clientName: string; systemPrompt: string
   referencePhotoUrl?: string | null
-  referencePhotos?: RefPhoto[]   // typed photos (cabelo / roupa / geral)
+  referencePhotos?: RefPhoto[]
   folderConfig?: FolderConfig | null
   clientId?: string
   resultFileUrls?: ResultFile[]
@@ -52,13 +75,12 @@ const ICONS: Record<string, any> = { scissors: Scissors, palette: Palette, shirt
 
 const chatKey = (clientId: string) => `mscolors_chat_${clientId}`
 
-/** Strip heavy base64 from responseParts before saving; keep savedImageUrls */
 function serializeMessages(msgs: ChatMsg[]): string {
   const lean = msgs
     .filter(m => !m.loading && !m.error)
     .map(m => ({
       ...m,
-      imagePreview: undefined,          // object URL — not serializable
+      imagePreview: undefined,
       responseParts: m.responseParts?.map(p =>
         p.type === 'image' ? { type: 'image', imageMimeType: p.imageMimeType } : p
       ),
@@ -73,7 +95,6 @@ function deserializeMessages(raw: string): ChatMsg[] {
   } catch { return [] }
 }
 
-/** Upload a base64 image to Supabase Storage and return its public URL */
 async function uploadChatImage(clientId: string, msgId: string, idx: number, base64: string, mimeType: string): Promise<string | null> {
   try {
     const ext = mimeType.includes('png') ? 'png' : 'jpg'
@@ -107,19 +128,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [loading, setLoading] = useState(false)
   const [apiError, setApiError] = useState<string | null>(null)
 
-  const [navState, setNavState] = useState<'categories' | 'prompts' | 'options' | 'hidden'>('categories')
+  // ── Navigation state ────────────────────────────────────────
+  const [navState, setNavState] = useState<'categories' | 'prompts' | 'lengths' | 'textures' | 'options' | 'hidden'>('categories')
   const [selectedCat, setSelectedCat] = useState<Category | null>(null)
   const [selectedPrompt, setSelectedPrompt] = useState<Prompt | null>(null)
+  const [selectedLength, setSelectedLength] = useState<SubOption | null>(null)
 
   const [refBase64, setRefBase64] = useState<string | null>(null)
   const [refMime, setRefMime] = useState('image/jpeg')
   const [loadingRef, setLoadingRef] = useState(false)
   const [promptMaterials, setPromptMaterials] = useState<MaterialData[]>([])
 
-  // Map of typed reference photos: type → {base64, mime}
   const [refPhotoMap, setRefPhotoMap] = useState<Record<string, { base64: string; mime: string }>>({})
 
-  // Materiais do resultado (PDFs da consultoria) — carregados uma vez
   const [resultMaterials, setResultMaterials] = useState<MaterialData[]>([])
   const [loadingResults, setLoadingResults] = useState(false)
   const resultMaterialsSent = useRef(false)
@@ -136,22 +157,27 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   const categories = (folderConfig?.categories || []).map(c => ({
     ...c, type: c.type || (c.icon === 'scissors' ? 'cabelos' : 'geral') as any,
-    prompts: (c.prompts || []).map(p => ({ ...p, thumbnail: p.thumbnail || null, tintReference: (p as any).tintReference || '', reference: (p as any).reference || '', options: p.options || [] }))
+    prompts: (c.prompts || []).map(p => ({
+      ...p,
+      thumbnail: p.thumbnail || null,
+      tintReference: (p as any).tintReference || '',
+      reference: (p as any).reference || '',
+      options: p.options || [],
+      lengths: (p.lengths || []).map((l: any) => ({ ...l, thumbnail: l.thumbnail || null, images: l.images || [] })),
+      textures: (p.textures || []).map((t: any) => ({ ...t, thumbnail: t.thumbnail || null, images: t.images || [] })),
+    }))
   }))
 
-  // Montar system prompt com observações do resultado
   const fullSystemPrompt = resultObservations
     ? `${systemPrompt || ''}\n\n═══ OBSERVAÇÕES DA CONSULTORA SOBRE ESTA CLIENTE ═══\n${resultObservations}\n\nUse estas observações como base para TODAS as suas respostas.`
     : systemPrompt || ''
 
-  // Carregar foto de referência (legado / fallback "geral")
   useEffect(() => {
     if (!referencePhotoUrl) return
     setLoadingRef(true)
     urlToBase64(referencePhotoUrl).then(r => { if (r) { setRefBase64(r.base64); setRefMime(r.mimeType) } }).finally(() => setLoadingRef(false))
   }, [referencePhotoUrl])
 
-  // Pre-load all typed reference photos into a map for fast access
   useEffect(() => {
     if (!referencePhotos.length) return
     Promise.all(
@@ -163,7 +189,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       const map: Record<string, { base64: string; mime: string }> = {}
       results.forEach(r => { if (r) map[r.type] = { base64: r.base64, mime: r.mime } })
       setRefPhotoMap(map)
-      // Also set the default refBase64 from "geral" if not already set
       if (!referencePhotoUrl && map['geral']) {
         setRefBase64(map['geral'].base64)
         setRefMime(map['geral'].mime)
@@ -171,7 +196,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     })
   }, [referencePhotos])
 
-  // Carregar PDFs/arquivos do resultado como base64
   useEffect(() => {
     if (!resultFileUrls.length) return
     setLoadingResults(true)
@@ -191,7 +215,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     })
   }, [resultFileUrls])
 
-  // Carregar créditos
   useEffect(() => {
     if (!clientId) return
     supabase.rpc('check_ai_credits', { p_client_id: clientId }).then(({ data }) => {
@@ -199,7 +222,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     })
   }, [clientId])
 
-  // Boas-vindas ou histórico salvo
   useEffect(() => {
     if (clientId) {
       const saved = localStorage.getItem(chatKey(clientId))
@@ -211,7 +233,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
   }, [clientName, clientId])
 
-  // Persistir histórico sempre que messages mudar (exceto estado de loading)
   useEffect(() => {
     if (!clientId || messages.length === 0) return
     if (messages.some(m => m.loading)) return
@@ -220,62 +241,51 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
-  // Carregar materiais de um prompt específico
-  const loadPromptMaterials = async (prompt: Prompt): Promise<MaterialData[]> => {
-    if (!prompt.images.length) return []
-    const results = await Promise.all(prompt.images.map(async img => {
-      try { const blob = await (await fetch(img.url)).blob(); return new Promise<MaterialData>((res, rej) => { const r = new FileReader(); r.onload = () => res({ base64: (r.result as string).split(',')[1], mimeType: blob.type }); r.onerror = rej; r.readAsDataURL(blob) }) } catch { return null }
+  // ── Load images from a prompt's image list ─────────────────
+
+  const loadImages = async (images: PromptImage[]): Promise<MaterialData[]> => {
+    if (!images.length) return []
+    const results = await Promise.all(images.map(async img => {
+      try {
+        const blob = await (await fetch(img.url)).blob()
+        return new Promise<MaterialData>((res, rej) => {
+          const r = new FileReader()
+          r.onload = () => res({ base64: (r.result as string).split(',')[1], mimeType: blob.type })
+          r.onerror = rej; r.readAsDataURL(blob)
+        })
+      } catch { return null }
     }))
     return results.filter(Boolean) as MaterialData[]
   }
 
+  const loadPromptMaterials = (prompt: Prompt) => loadImages(prompt.images)
+
   // ── Navigation ─────────────────────────────────────────────
 
-  const handleCatClick = (cat: Category) => { setSelectedCat(cat); setSelectedPrompt(null); setNavState('prompts') }
+  const handleCatClick = (cat: Category) => { setSelectedCat(cat); setSelectedPrompt(null); setSelectedLength(null); setNavState('prompts') }
 
-  // Section key = photo type label when available, else category name.
-  // This groups all categories that share the same refPhotoType (e.g. "Cabelo") into ONE
-  // section in the PDF, instead of creating a separate section per category name.
   const getCategorySection = (cat: Category): PdfSection => {
     if (cat.refPhotoType) {
-      // Look up the human-readable label from the client's typed reference photos.
-      // The label is the display name of the photo type (e.g. "Cabelo", "Maquiagem").
       const refPhoto = referencePhotos.find(p => p.type === cat.refPhotoType)
       if (refPhoto?.label) return refPhoto.label
-      // Fallback: use the raw typeId so at least it groups consistently
       return cat.refPhotoType
     }
     return cat.name
   }
 
-  /**
-   * Selects the best reference photo for a category.
-   * Priority:
-   *  1. Explicit `refPhotoType` set by admin on the category
-   *  2. Type-based inference (cabelos → cabelo, shirt icon → roupa)
-   *  3. Always falls back to 'geral', then to the legacy single refBase64
-   */
   const getRefPhotoForCategory = (cat: Category): { base64: string; mime: string } | undefined => {
-    // 1. Admin-configured override takes full priority
     if (cat.refPhotoType) {
       return refPhotoMap[cat.refPhotoType] || refPhotoMap['geral'] || (refBase64 ? { base64: refBase64, mime: refMime } : undefined)
     }
-    // 2. Type-based inference
     if (cat.type === 'cabelos') {
       return refPhotoMap['cabelo'] || refPhotoMap['geral'] || (refBase64 ? { base64: refBase64, mime: refMime } : undefined)
     }
     if (cat.icon === 'shirt') {
       return refPhotoMap['roupa'] || refPhotoMap['geral'] || (refBase64 ? { base64: refBase64, mime: refMime } : undefined)
     }
-    // 3. Default (acessórios, maquiagem, geral, etc.) → always use face/geral photo
     return refPhotoMap['geral'] || (refBase64 ? { base64: refBase64, mime: refMime } : undefined)
   }
 
-  /**
-   * Builds the image-generation instruction based on category type.
-   * Accessories (gem icon) need different rules: the item goes ON the face/body,
-   * so "NÃO altere NADA no rosto" would block the AI from placing glasses etc.
-   */
   const buildPromptInstruction = (cat: Category, instructions: string, suffix: string): string => {
     const isAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
     if (isAccessory) {
@@ -305,22 +315,117 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     )
   }
 
+  // ── Prompt click ─────────────────────────────────────────────
+  // For cabelos: route through lengths → textures flow (prompt-level sub-options)
+  // For other categories: send directly (or use legacy 'options' as fallback)
+
   const handlePromptClick = async (prompt: Prompt) => {
     setSelectedPrompt(prompt)
     const cat = selectedCat!
-    if (cat.type === 'cabelos' && prompt.options.length > 0) {
-      setNavState('options')
+    const isCabelo = cat.type === 'cabelo' || cat.type === 'cabelos' || cat.icon === 'scissors'
+
+    if (isCabelo) {
+      const hasLengths = (prompt.lengths || []).length > 0
+      const hasTextures = (prompt.textures || []).length > 0
+
+      if (hasLengths) {
+        setNavState('lengths')
+        return
+      }
+      if (hasTextures) {
+        setSelectedLength(null)
+        setNavState('textures')
+        return
+      }
+      // Legacy fallback: text-only options
+      if (prompt.options.length > 0) {
+        setNavState('options')
+        return
+      }
+    }
+
+    // Non-cabelo or cabelo with no sub-options → send directly
+    setNavState('hidden')
+    const mats = await loadPromptMaterials(prompt)
+    setPromptMaterials(mats)
+    const refOverride = getRefPhotoForCategory(cat)
+    const suffix = prompt.reference ? `\n\nApós gerar, informe: "📌 Referência: ${prompt.reference}"` : ''
+    const catIsAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
+    const meta: PdfMeta = { section: getCategorySection(cat), label: prompt.name, caption: prompt.tintReference || prompt.reference || prompt.name }
+    handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, suffix), true, prompt, mats, refOverride, `✨ ${prompt.name}`, catIsAccessory, meta)
+  }
+
+  // ── Length selected ──────────────────────────────────────────
+
+  const handleLengthClick = (length: SubOption) => {
+    setSelectedLength(length)
+    const hasTextures = (selectedPrompt?.textures || []).length > 0
+    if (hasTextures) {
+      setNavState('textures')
     } else {
-      setNavState('hidden')
-      const mats = await loadPromptMaterials(prompt)
-      setPromptMaterials(mats)
-      const refOverride = getRefPhotoForCategory(cat)
-      const suffix = prompt.reference ? `\n\nApós gerar, informe: "📌 Referência: ${prompt.reference}"` : ''
-      const catIsAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
-      const meta: PdfMeta = { section: getCategorySection(cat), label: prompt.name, caption: prompt.tintReference || prompt.reference || prompt.name }
-      handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, suffix), true, prompt, mats, refOverride, `✨ ${prompt.name}`, catIsAccessory, meta)
+      sendHairResult(length, null)
     }
   }
+
+  // ── Texture selected → combine and send ─────────────────────
+
+  const handleTextureClick = (texture: SubOption) => {
+    sendHairResult(selectedLength, texture)
+  }
+
+  // ── Core function: build combined instruction + images and fire ──
+
+  const sendHairResult = async (length: SubOption | null, texture: SubOption | null) => {
+    if (!selectedPrompt || !selectedCat) return
+    setNavState('hidden')
+
+    // Load all reference images: base prompt + selected length + selected texture
+    const [promptMats, lengthMats, textureMats] = await Promise.all([
+      loadPromptMaterials(selectedPrompt),
+      length ? loadImages(length.images) : Promise.resolve([]),
+      texture ? loadImages(texture.images) : Promise.resolve([]),
+    ])
+    const allMats = [...promptMats, ...lengthMats, ...textureMats]
+    setPromptMaterials(allMats)
+
+    const refOverride = getRefPhotoForCategory(selectedCat)
+
+    const suffix = selectedPrompt.tintReference
+      ? `\n\nApós gerar, informe: "🎨 Tinta recomendada: ${selectedPrompt.tintReference}"`
+      : ''
+
+    // Combine base instructions + length + texture
+    const lengthPart = length?.instruction
+      ? `\n\n═══ COMPRIMENTO ═══\n${length.instruction}`
+      : ''
+    const texturePart = texture?.instruction
+      ? `\n\n═══ TEXTURA ═══\n${texture.instruction}`
+      : ''
+
+    const combinedInstructions = `${selectedPrompt.instructions || selectedPrompt.name}${lengthPart}${texturePart}`
+
+    const displayParts = [selectedPrompt.name, length?.name, texture?.name].filter(Boolean)
+    const displayLabel = displayParts.join(' — ')
+
+    const meta: PdfMeta = {
+      section: getCategorySection(selectedCat),
+      label: displayLabel,
+      caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name,
+    }
+
+    handleSend(
+      buildPromptInstruction(selectedCat, combinedInstructions, suffix),
+      true,
+      selectedPrompt,
+      allMats,
+      refOverride,
+      `✨ ${displayLabel}`,
+      false,
+      meta
+    )
+  }
+
+  // ── Legacy text options (non-cabelo or fallback) ────────────
 
   const handleOptionClick = async (option: string) => {
     if (!selectedPrompt || !selectedCat) return
@@ -335,8 +440,17 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   }
 
   const goBack = () => {
-    if (navState === 'options') { setNavState('prompts'); setSelectedPrompt(null) }
-    else if (navState === 'prompts') { setNavState('categories'); setSelectedCat(null) }
+    if (navState === 'textures') {
+      const hasLengths = (selectedPrompt?.lengths || []).length > 0
+      if (hasLengths) { setNavState('lengths') }
+      else { setNavState('prompts'); setSelectedPrompt(null) }
+    } else if (navState === 'lengths') {
+      setNavState('prompts'); setSelectedPrompt(null); setSelectedLength(null)
+    } else if (navState === 'options') {
+      setNavState('prompts'); setSelectedPrompt(null)
+    } else if (navState === 'prompts') {
+      setNavState('categories'); setSelectedCat(null)
+    }
   }
 
   // ── Send ───────────────────────────────────────────────────
@@ -350,7 +464,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const apiKey = await getGeminiApiKey()
     if (!apiKey) { setApiError('Chave da API não configurada.'); return }
 
-    // Verificar créditos
     if (clientId) {
       const available = isImage ? creditsImage : creditsText
       if (available !== null && available <= 0) {
@@ -362,7 +475,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     let uB64: string | undefined, uMime: string | undefined, prev: string | undefined
     if (pendingImage) { const c = await fileToBase64(pendingImage.file); uB64 = c.base64; uMime = c.mimeType; prev = pendingImage.preview; setPendingImage(null) }
 
-    // Show displayText in chat; send full prompt to AI
     const userMsg: ChatMsg = { id: uid(), role: 'user', text: displayText || text || '(foto)', imagePreview: prev, imageBase64: uB64, imageMimeType: uMime, timestamp: new Date() }
     const lid = uid()
     setMessages(prev => [...prev, userMsg, { id: lid, role: 'assistant', text: '', loading: true, timestamp: new Date(), pdfMeta }])
@@ -372,10 +484,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     try {
       const history: GeminiMessage[] = messages.filter(m => !m.loading && m.id !== messages[0]?.id).map(m => ({ role: m.role === 'user' ? 'user' : 'model', text: m.text || ' ' } as GeminiMessage))
 
-      // Materiais a enviar:
-      // - Acessórios: só as imagens do prompt (PDFs da consultoria atrapalham o try-on)
-      // - Primeira mensagem de texto: resultMaterials (PDFs) + prompt materials
-      // - Nas demais: só prompt materials
       let materialsToSend: MaterialData[] = mats || promptMaterials
       if (!isAccessory && !resultMaterialsSent.current && resultMaterials.length > 0) {
         materialsToSend = [...resultMaterials, ...materialsToSend]
@@ -398,7 +506,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       const mainText = response.parts.filter(p => p.type === 'text' && p.text?.trim()).map(p => p.text).join('\n').trim()
       setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: mainText || '✨', responseParts: response.parts, imageGenerationFailed: response.imageGenerationFailed } : m))
 
-      // Upload generated images to Storage so they survive page reload
       if (clientId) {
         const imageParts = response.parts.filter(p => p.type === 'image' && p.imageBase64)
         if (imageParts.length > 0) {
@@ -413,7 +520,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         }
       }
 
-      // Descontar crédito
       if (clientId) {
         const hasImage = response.parts.some(p => p.type === 'image')
         const creditType = hasImage ? 'image' : 'text'
@@ -435,14 +541,11 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     handleSend(lastCtx.current.text, lastCtx.current.isImage, undefined, lastCtx.current.mats, lastCtx.current.refPhotoOverride, lastCtx.current.displayText, lastCtx.current.isAccessory, lastCtx.current.pdfMeta)
   }
 
-
   // ── PDF Export ────────────────────────────────────────────────
 
   const getImgDataUrl = async (msg: ChatMsg): Promise<string | null> => {
-    // Try live base64 first
     const part = msg.responseParts?.find(p => p.type === 'image' && p.imageBase64)
     if (part?.imageBase64) return `data:${part.imageMimeType || 'image/jpeg'};base64,${part.imageBase64}`
-    // Fallback: fetch saved URL
     const url = msg.savedImageUrls?.[0]
     if (!url) return null
     try {
@@ -456,7 +559,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     if (!selected.length) return
     setPdfGenerating(true)
     try {
-      // Montar lista de imagens com metadados para o gerador de template
       const items = await Promise.all(
         selected.map(async (msg) => {
           const dataUrl = await getImgDataUrl(msg)
@@ -465,24 +567,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             dataUrl,
             label: msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada',
             caption: msg.pdfMeta?.caption,
-            section: msg.pdfMeta?.section ?? 'Geral',
+            section: msg.pdfMeta?.section,
           }
         })
       )
-
-      const validItems = items.filter(Boolean) as Array<{
-        dataUrl: string; label: string; caption?: string; section: string
-      }>
-
-      if (!validItems.length) { alert('Nenhuma imagem válida encontrada.'); return }
-
-      // URL do template — coloque o Modelo.pdf na pasta public/ do projeto
-      const templateUrl = '/Modelo.pdf'
-
-      await downloadStylePDF(templateUrl, clientName, validItems)
-      setShowPdfModal(false)
-    } catch (e: any) { alert('Erro ao gerar PDF: ' + e.message) }
-    finally { setPdfGenerating(false) }
+      const validItems = items.filter(Boolean) as any[]
+      if (validItems.length === 0) return
+      await downloadStylePDF({ clientName, items: validItems })
+    } catch (e: any) {
+      alert('Erro ao gerar PDF: ' + e.message)
+    } finally { setPdfGenerating(false) }
   }
 
   const imageMsgs = messages.filter(m =>
@@ -490,43 +584,34 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     (m.responseParts?.some(p => p.type === 'image' && p.imageBase64) || m.savedImageUrls?.length)
   )
 
+  // ── PDF Modal ─────────────────────────────────────────────────
+
   const PdfModal = () => {
-    // Build sections in the order they first appear in the chat
-    const seenSections: PdfSection[] = []
-    imageMsgs.forEach(m => {
-      const s = m.pdfMeta?.section ?? 'Geral'
-      if (!seenSections.includes(s)) seenSections.push(s)
-    })
-    const sections = seenSections.map(s => ({ s, msgs: imageMsgs.filter(m => (m.pdfMeta?.section ?? 'Geral') === s) }))
-    const allIds = new Set(imageMsgs.map(m => m.id))
-    const allSelected = imageMsgs.every(m => pdfSelected.has(m.id))
+    const bySection = imageMsgs.reduce((acc, msg) => {
+      const s = msg.pdfMeta?.section || 'Geral'
+      if (!acc[s]) acc[s] = []
+      acc[s].push(msg)
+      return acc
+    }, {} as Record<string, ChatMsg[]>)
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden">
-          <div className="px-5 py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              <p className="font-semibold">Gerar PDF do Estilo</p>
+      <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4">
+        <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col">
+          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <p className="font-semibold text-gray-900">Exportar PDF</p>
+              <p className="text-xs text-gray-500">{pdfSelected.size} de {imageMsgs.length} imagens selecionadas</p>
             </div>
-            <button onClick={() => setShowPdfModal(false)}><X className="h-5 w-5 opacity-70 hover:opacity-100" /></button>
+            <div className="flex gap-2">
+              <button onClick={() => setPdfSelected(new Set(imageMsgs.map(m => m.id)))} className="text-xs text-violet-600">Todas</button>
+              <button onClick={() => setPdfSelected(new Set())} className="text-xs text-gray-400">Nenhuma</button>
+              <button onClick={() => setShowPdfModal(false)}><X className="h-5 w-5 text-gray-400" /></button>
+            </div>
           </div>
-
-          <div className="px-5 py-2 border-b border-gray-100 flex items-center justify-between">
-            <p className="text-xs text-gray-500">{pdfSelected.size} de {imageMsgs.length} selecionadas</p>
-            <button onClick={() => setPdfSelected(allSelected ? new Set() : new Set(allIds))}
-              className="text-xs text-violet-600 hover:text-violet-800 font-medium flex items-center gap-1">
-              {allSelected ? <Square className="h-3.5 w-3.5" /> : <CheckSquare className="h-3.5 w-3.5" />}
-              {allSelected ? 'Desmarcar todas' : 'Selecionar todas'}
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-            {sections.map(({ s, msgs }) => (
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            {Object.entries(bySection).map(([s, msgs]) => (
               <div key={s}>
-                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
-                  {s}
-                </p>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">{s}</p>
                 <div className="grid grid-cols-2 gap-3">
                   {msgs.map(msg => {
                     const sel = pdfSelected.has(msg.id)
@@ -553,7 +638,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               </div>
             ))}
           </div>
-
           <div className="px-5 py-4 border-t border-gray-100 flex gap-2">
             <button onClick={() => setShowPdfModal(false)}
               className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
@@ -596,7 +680,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               ) : <MdText text={msg.text} />}
             </div>
           )}
-          {/* Fresh images (base64 — current session) */}
           {msg.responseParts?.filter(p => p.type === 'image' && p.imageBase64).map((p, i) => (
             <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border max-w-[300px]">
               <img src={`data:${p.imageMimeType};base64,${p.imageBase64}`} alt="" className="w-full object-cover" />
@@ -607,7 +690,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
             </div>
           ))}
-          {/* Persisted images (URL — restored from storage) */}
           {!msg.responseParts?.some(p => p.type === 'image' && p.imageBase64) &&
             msg.savedImageUrls?.map((url, i) => (
               <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border max-w-[300px]">
@@ -635,8 +717,11 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   const renderNav = () => {
     if (navState === 'hidden' || !categories.length) return null
+
     return (
-      <div className="border-t border-gray-100 bg-white px-4 py-3 max-h-72 overflow-y-auto">
+      <div className="border-t border-gray-100 bg-white px-4 py-3 max-h-80 overflow-y-auto">
+
+        {/* ── Categories ── */}
         {navState === 'categories' && (
           <div className="space-y-2">
             <p className="text-xs font-semibold text-gray-600 text-center">Escolha o que deseja explorar:</p>
@@ -651,11 +736,13 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </div>
           </div>
         )}
+
+        {/* ── Prompts (cor/estilo) ── */}
         {navState === 'prompts' && selectedCat && (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
-              <p className="text-xs font-semibold text-gray-600">{selectedCat.name} — Escolha:</p>
+              <p className="text-xs font-semibold text-gray-600">{selectedCat.name} — Escolha a cor:</p>
             </div>
             <div className="grid grid-cols-3 gap-2">
               {selectedCat.prompts.map(p => (
@@ -672,6 +759,77 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </div>
           </div>
         )}
+
+        {/* ── Comprimento ── */}
+        {navState === 'lengths' && selectedPrompt && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
+              <div className="flex-1">
+                <p className="text-xs font-semibold text-gray-600">{selectedPrompt.name} — Escolha o comprimento:</p>
+                {/* Progress dots: step 1 of 2 (or 3 if textures also exist) */}
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="w-4 h-1 bg-violet-500 rounded-full" />
+                  <span className={`w-4 h-1 rounded-full ${(selectedPrompt.textures || []).length > 0 ? 'bg-gray-200' : 'bg-violet-500'}`} />
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(selectedPrompt.lengths || []).map(length => (
+                <button key={length.id} onClick={() => handleLengthClick(length)} disabled={loading}
+                  className="flex flex-col items-center gap-1 p-1.5 bg-white border border-gray-200 rounded-lg hover:border-violet-300 hover:bg-violet-50 transition-all disabled:opacity-50 text-center">
+                  {length.thumbnail?.url ? (
+                    <img src={length.thumbnail.url} alt={length.name} className="w-full aspect-[4/3] object-cover rounded" />
+                  ) : (
+                    <div className="w-full aspect-[4/3] bg-gradient-to-br from-violet-50 to-purple-100 rounded flex items-center justify-center">
+                      <Scissors className="h-5 w-5 text-violet-300" />
+                    </div>
+                  )}
+                  <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{length.name || '—'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Textura ── */}
+        {navState === 'textures' && selectedPrompt && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
+              <div className="flex-1">
+                <p className="text-xs font-semibold text-gray-600">
+                  {[selectedPrompt.name, selectedLength?.name].filter(Boolean).join(' — ')} — Escolha a textura:
+                </p>
+                {/* Progress dots: final step */}
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="w-4 h-1 bg-violet-500 rounded-full" />
+                  {(selectedPrompt.lengths || []).length > 0 && <span className="w-4 h-1 bg-violet-500 rounded-full" />}
+                  <span className="w-4 h-1 bg-violet-500 rounded-full" />
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(selectedPrompt.textures || []).map(texture => (
+                <button key={texture.id} onClick={() => handleTextureClick(texture)} disabled={loading}
+                  className="flex flex-col items-center gap-1 p-1.5 bg-white border border-gray-200 rounded-lg hover:border-violet-300 hover:bg-violet-50 transition-all disabled:opacity-50 text-center">
+                  {texture.thumbnail?.url ? (
+                    <img src={texture.thumbnail.url} alt={texture.name} className="w-full aspect-[4/3] object-cover rounded" />
+                  ) : (
+                    <div className="w-full aspect-[4/3] bg-gradient-to-br from-cyan-50 to-teal-100 rounded flex items-center justify-center">
+                      <svg className="h-5 w-5 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 12c0-4 3-7 6-7s6 3 6 7-3 7-6 7" /><path d="M9 12c0-2 1.5-3.5 3-3.5" />
+                      </svg>
+                    </div>
+                  )}
+                  <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{texture.name || '—'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Legacy text options (fallback) ── */}
         {navState === 'options' && selectedPrompt && (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -691,6 +849,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </div>
           </div>
         )}
+
       </div>
     )
   }
@@ -727,7 +886,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             onClick={() => {
               if (!confirm('Limpar o histórico do chat? As imagens geradas não serão perdidas, mas o PDF incluirá apenas as novas imagens geradas.')) return
               localStorage.removeItem(chatKey(clientId))
-              // Reset result materials flag so the AI context is re-sent on the next message
               resultMaterialsSent.current = false
               setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
             }}
@@ -748,7 +906,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
       {navState === 'hidden' && categories.length > 0 && (
         <div className="px-4 py-2 border-t border-gray-100 bg-white">
-          <button onClick={() => { setNavState('categories'); setSelectedCat(null); setSelectedPrompt(null) }}
+          <button onClick={() => { setNavState('categories'); setSelectedCat(null); setSelectedPrompt(null); setSelectedLength(null) }}
             className="text-xs text-violet-600 hover:text-violet-800 font-medium flex items-center gap-1"><Wand2 className="h-3 w-3" /> Voltar ao menu</button>
         </div>
       )}
