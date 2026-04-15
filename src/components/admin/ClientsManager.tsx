@@ -2,7 +2,7 @@
 // KanbanBoard integrado com dados reais do Supabase
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Routes, Route, useNavigate, useParams } from 'react-router-dom'
+import { Routes, Route, useNavigate, useParams, NavLink } from 'react-router-dom'
 import {
   Plus, Search, Eye, Trash2, ArrowLeft, Copy, CheckCircle,
   Clock, FileText, Camera, Upload, X, ExternalLink,
@@ -348,7 +348,7 @@ function KanbanColumn({
 
   return (
     <div style={{
-      flexShrink: 0, width: 272, background: t.colBg, borderRadius: 12,
+      flexShrink: 0, width: 'clamp(280px, 22vw, 380px)', background: t.colBg, borderRadius: 12,
       border: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column',
       maxHeight: '100%', overflow: 'hidden',
     }}>
@@ -459,7 +459,7 @@ function KanbanSidebar({
     <div style={{
       position: 'relative',
       width: sidebarOpen ? 220 : 0, flexShrink: 0, background: t.sidebar,
-      borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none', overflow: 'visible',
+      borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none', overflow: 'hidden',
       transition: 'width 0.25s cubic-bezier(0.4,0,0.2,1)',
       display: 'flex', flexDirection: 'column',
     }}>
@@ -529,31 +529,8 @@ function KanbanSidebar({
               <span style={{ fontSize: 11, color: t.text3 }}>{archivedCount}</span>
             </button>
           </div>
-          </div> 
       </div>
-      {/* Trello-style collapse tab */}
-      <button
-        onClick={onToggle}
-        title={sidebarOpen ? 'Recolher menu' : 'Expandir menu'}
-        style={{
-          position: 'absolute', right: -13, top: '50%', transform: 'translateY(-50%)',
-          width: 26, height: 48, borderRadius: '0 8px 8px 0',
-          background: t.surface, border: `1px solid ${t.border}`, borderLeft: 'none',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: t.text3, zIndex: 10, transition: 'background 0.15s',
-          boxShadow: '2px 0 6px rgba(0,0,0,0.08)',
-        }}
-        onMouseEnter={e => {
-          (e.currentTarget as HTMLButtonElement).style.background = t.surface2;
-          (e.currentTarget as HTMLButtonElement).style.color = t.accent;
-        }}
-        onMouseLeave={e => {
-          (e.currentTarget as HTMLButtonElement).style.background = t.surface;
-          (e.currentTarget as HTMLButtonElement).style.color = t.text3;
-        }}
-      >
-        {sidebarOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
-      </button>
+    </div>
     </div>
   )
 }
@@ -774,16 +751,43 @@ function ClientsList() {
       {/* ── Toolbar ──────────────────────────────────────────── */}
       <div style={{
         background: t.surface, borderBottom: `1px solid ${t.border}`,
-        padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10,
-        flexShrink: 0, flexWrap: 'wrap' as const,
+        padding: '0 16px', display: 'flex', alignItems: 'center', gap: 6,
+        flexShrink: 0, height: 48,
       }}>
+        {/* App nav links */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8, flexShrink: 0 }}>
+          {[
+            { to: '/admin/clients', label: 'Clientes' },
+            { to: '/admin/plans', label: 'Planos' },
+            { to: '/admin/folders', label: 'Pastas IA' },
+            { to: '/admin/settings', label: 'Config.' },
+          ].map(({ to, label }) => (
+            <NavLink
+              key={to}
+              to={to}
+              style={({ isActive }) => ({
+                padding: '5px 10px', borderRadius: 6, fontSize: 12, fontWeight: isActive ? 700 : 500,
+                color: isActive ? t.accent : t.text2,
+                background: isActive ? t.accentLight : 'none',
+                textDecoration: 'none', whiteSpace: 'nowrap' as const,
+                transition: 'background 0.15s, color 0.15s',
+              })}
+            >
+              {label}
+            </NavLink>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div style={{ width: 1, height: 20, background: t.border, flexShrink: 0, marginRight: 6 }} />
+
         {/* Sidebar toggle */}
         <button
           onClick={() => setSidebarOpen(v => !v)}
           title={sidebarOpen ? 'Fechar menu' : 'Abrir menu'}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: t.text2, display: 'flex' }}
+          style={{ background: sidebarOpen ? t.surface2 : 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: sidebarOpen ? t.accent : t.text2, display: 'flex', flexShrink: 0 }}
           onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
-          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
+          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = sidebarOpen ? t.surface2 : 'none'}
         >
           <SlidersHorizontal size={16} />
         </button>
@@ -867,84 +871,7 @@ function ClientsList() {
             <List size={15} />
           </button>
         </div>
-
-        {/* New client button */}
-        <button
-          onClick={() => setCreating(v => !v)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
-            borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13,
-            fontWeight: 600, background: t.accent, color: t.accentFg, flexShrink: 0,
-          }}
-          onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.opacity = '0.88'}
-          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.opacity = '1'}
-        >
-          <Plus size={15} /> Nova Cliente
-        </button>
       </div>
-
-      {/* ── Create form (collapsible) ─────────────────────── */}
-      {creating && (
-        <div style={{
-          background: t.surface, borderBottom: `1px solid ${t.border}`,
-          padding: '16px 20px', flexShrink: 0,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: t.text }}>Nova Cliente</span>
-            <button onClick={() => setCreating(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.text3, display: 'flex' }}>
-              <X size={18} />
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {[
-              { label: 'Nome completo *', key: 'full_name', placeholder: 'Maria Silva', type: 'text' },
-              { label: 'E-mail *', key: 'email', placeholder: 'maria@email.com', type: 'email' },
-              { label: 'Telefone', key: 'phone', placeholder: '(11) 99999-9999', type: 'text' },
-              { label: 'Data de Nascimento *', key: 'birth_date', placeholder: '', type: 'date' },
-            ].map(({ label, key, placeholder, type }) => (
-              <div key={key}>
-                <label className="block text-xs font-medium mb-1" style={{ color: t.text2 }}>{label}</label>
-                <input type={type} value={(form as any)[key]} placeholder={placeholder}
-                  onChange={e => setForm({ ...form, [key]: e.target.value })}
-                  style={{
-                    width: '100%', padding: '8px 12px', borderRadius: 8,
-                    border: `1px solid ${t.border}`, background: t.surface2,
-                    fontSize: 13, color: t.text, outline: 'none', boxSizing: 'border-box' as const,
-                  }}
-                />
-              </div>
-            ))}
-            <div>
-              <label className="block text-xs font-medium mb-1" style={{ color: t.text2 }}>Plano *</label>
-              <select value={form.plan_id} onChange={e => setForm({ ...form, plan_id: e.target.value })}
-                style={{
-                  width: '100%', padding: '8px 12px', borderRadius: 8,
-                  border: `1px solid ${t.border}`, background: t.surface2,
-                  fontSize: 13, color: t.text, outline: 'none',
-                }}>
-                <option value="">Selecione um plano</option>
-                {plans.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-          </div>
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <button onClick={handleCreate}
-              style={{
-                padding: '8px 18px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                background: t.accent, color: t.accentFg, fontSize: 13, fontWeight: 600,
-              }}>
-              Criar e Abrir
-            </button>
-            <button onClick={() => setCreating(false)}
-              style={{
-                padding: '8px 14px', borderRadius: 8, border: `1px solid ${t.border}`,
-                background: 'none', cursor: 'pointer', fontSize: 13, color: t.text2,
-              }}>
-              Cancelar
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Body: Sidebar + Main ──────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -976,12 +903,12 @@ function ClientsList() {
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: t.text3 }}>
                   <User size={40} style={{ marginBottom: 12, opacity: 0.4 }} />
                   <p style={{ fontSize: 14, margin: 0, color: t.text2 }}>Nenhuma cliente cadastrada ainda</p>
-                  <p style={{ fontSize: 12, margin: '4px 0 0', color: t.text3 }}>Clique em "Nova Cliente" para começar</p>
+                  <p style={{ fontSize: 12, margin: '4px 0 0', color: t.text3 }}>As clientes aparecerão aqui após o cadastro</p>
                 </div>
               ) : (
                 <div style={{
                   flex: 1, overflowX: 'auto', overflowY: 'hidden',
-                  padding: '14px 20px 20px', display: 'flex', gap: 10, alignItems: 'flex-start',
+                  padding: '16px 20px 20px', display: 'flex', gap: 14, alignItems: 'flex-start',
                 }}>
                   {COL_ORDER.map(key => (
                     <KanbanColumn
