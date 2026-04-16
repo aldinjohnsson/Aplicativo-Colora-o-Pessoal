@@ -567,7 +567,7 @@ function AnalysisScreen({ data }: { data: ClientPortalData }) {
           <div className="bg-rose-50 rounded-xl p-4">
             <p className="text-rose-800 font-semibold capitalize">{formatDeadlineDate(deadlineDate)}</p>
             {daysLeft !== null && daysLeft > 0 && (
-              <p className="text-rose-600 text-sm mt-1">{daysLeft} dia{daysLeft !== 1 ? 's' : ''} útil{daysLeft !== 1 ? 'eis' : ''} restante{daysLeft !== 1 ? 's' : ''}</p>
+              <p className="text-rose-600 text-sm mt-1">{daysLeft} dia{daysLeft !== 1 ? 's' : ''} {daysLeft !== 1 ? 'úteis' : 'útil'} restante{daysLeft !== 1 ? 's' : ''}</p>
             )}
             {daysLeft === 0 && <p className="text-rose-600 text-sm mt-1">Entrega prevista para hoje</p>}
           </div>
@@ -579,13 +579,18 @@ function AnalysisScreen({ data }: { data: ClientPortalData }) {
         <h3 className="font-semibold text-gray-900 mb-3">O que acontece agora?</h3>
         <div className="space-y-3">
           {[
-            { icon: CheckCircle, text: 'Suas fotos e informações foram recebidas', done: true },
-            { icon: Clock, text: 'Realizamos a análise de coloração pessoal', done: false },
-            { icon: Lock, text: 'Você recebe acesso ao resultado completo', done: false },
-          ].map(({ icon: Icon, text, done }) => (
-            <div key={text} className="flex items-center gap-3">
-              <Icon className={`h-5 w-5 flex-shrink-0 ${done ? 'text-green-500' : 'text-gray-300'}`} />
-              <span className={`text-sm ${done ? 'text-gray-800' : 'text-gray-400'}`}>{text}</span>
+            { icon: CheckCircle, text: 'Suas fotos e informações foram recebidas pela consultora', done: true, note: undefined },
+            { icon: Clock, text: 'Revisão detalhada dos dados. Se necessário, entraremos em contato para ajustes ou complementos em até 1 dia útil', done: false, note: undefined },
+            { icon: Clock, text: 'Análise em andamento', done: false, note: 'aqui começa a contagem do prazo' },
+            { icon: Clock, text: 'Análise concluída, preparando materiais', done: false, note: undefined },
+            { icon: Lock, text: 'Seu resultado completo está pronto. Acesso liberado', done: false, note: undefined },
+          ].map(({ icon: Icon, text, done, note }) => (
+            <div key={text} className="flex items-start gap-3">
+              <Icon className={`h-5 w-5 flex-shrink-0 mt-0.5 ${done ? 'text-green-500' : 'text-gray-300'}`} />
+              <div className="flex flex-col">
+                <span className={`text-sm ${done ? 'text-gray-800' : 'text-gray-400'}`}>{text}</span>
+                {note && <span className="text-xs italic text-gray-400 mt-0.5">{note}</span>}
+              </div>
             </div>
           ))}
         </div>

@@ -183,21 +183,28 @@ export const generateContractPDF = async (
   pdf.text(`Telefone: ${clientInfo.phone}`, margin, yPosition)
   yPosition += 15
 
-  // Caixa de confirmação
-  pdf.setDrawColor(100, 100, 100)
-  pdf.setFillColor(240, 240, 240)
-  pdf.roundedRect(margin, yPosition, maxWidth, 20, 3, 3, 'FD')
-  
+  // Caixa de confirmação — altura calculada dinamicamente
   pdf.setFontSize(9)
   pdf.setFont('helvetica', 'italic')
   pdf.setTextColor(80, 80, 80)
-  const confirmationText = '✓ O contratante declara ter lido, compreendido e aceito todos os termos e condições deste contrato.'
-  const confirmationLines = pdf.splitTextToSize(confirmationText, maxWidth - 10)
-  let confirmYPos = yPosition + 6
+  const confirmationText = 'O contratante declara ter lido, compreendido e aceito todos os termos e condicoes deste contrato.'
+  const confirmationLines = pdf.splitTextToSize(confirmationText, maxWidth - 16)
+  const lineHeight = 5
+  const boxPaddingV = 8
+  const boxHeight = boxPaddingV * 2 + confirmationLines.length * lineHeight
+
+  checkNewPage(boxHeight + 5)
+
+  pdf.setDrawColor(100, 100, 100)
+  pdf.setFillColor(240, 240, 240)
+  pdf.roundedRect(margin, yPosition, maxWidth, boxHeight, 3, 3, 'FD')
+
+  let confirmYPos = yPosition + boxPaddingV + 2
   confirmationLines.forEach((line: string) => {
-    pdf.text(line, margin + 5, confirmYPos)
-    confirmYPos += 4
+    pdf.text(line, margin + 8, confirmYPos)
+    confirmYPos += lineHeight
   })
+  yPosition += boxHeight
 
   // ============ RODAPÉ ============
   

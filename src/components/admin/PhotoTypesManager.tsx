@@ -144,7 +144,7 @@ export function PhotoTypesManager() {
       .replace(/\s+/g, '_')
       .replace(/[^a-z0-9_]/g, '')
     if (types.find(t => t.id === id)) {
-      alert('Já existe um type com esse nome.')
+      alert('Já existe um tipo com esse nome.')
       return
     }
     const updated = [...types, { id, name: newName.trim(), icon: newIcon, color: newColor, sort_order: types.length }]
@@ -157,7 +157,7 @@ export function PhotoTypesManager() {
 
   // ── Deletar ────────────────────────────────────────────────────────────────
   const handleDelete = async (id: string) => {
-    if (!confirm('Remover este type? Fotos de referência vinculadas a ele serão preservadas, mas o type não aparecerá mais na lista.')) return
+    if (!confirm('Remover este tipo? Fotos de referência vinculadas a ele serão preservadas, mas o tipo não aparecerá mais na lista.')) return
     const updated = types.filter(t => t.id !== id).map((t, i) => ({ ...t, sort_order: i }))
     setTypes(updated)
     await persist(updated)
@@ -221,7 +221,7 @@ export function PhotoTypesManager() {
               <Layers className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-gray-900">Types de Foto</h2>
+              <h2 className="text-base font-semibold text-gray-900">Tipos de Foto</h2>
               <p className="text-sm text-gray-500">Defina os tipos usados nas categorias, fotos de referência e PDFs</p>
             </div>
           </div>
@@ -238,8 +238,8 @@ export function PhotoTypesManager() {
 
       <div className="px-6 py-5 space-y-4">
         <p className="text-xs text-gray-500">
-          Cada type representa uma <strong>categoria de análise</strong>. A IA usa a foto de referência correta para cada type.
-          O PDF será gerado <strong>separado por type</strong>.
+          Cada tipo representa uma <strong>categoria de análise</strong>. A IA usa a foto de referência correta para cada tipo.
+          O PDF será gerado <strong>separado por tipo</strong>.
         </p>
 
         {/* Lista de types */}
@@ -273,7 +273,7 @@ export function PhotoTypesManager() {
                       value={editDraft.name || ''}
                       onChange={e => setEditDraft(d => ({ ...d, name: e.target.value }))}
                       className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-                      placeholder="Nome do type"
+                      placeholder="Nome do tipo"
                       autoFocus
                     />
 
@@ -327,7 +327,6 @@ export function PhotoTypesManager() {
                   {/* Info */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-800">{t.name}</p>
-                    <p className="text-xs text-gray-400 font-mono">id: {t.id}</p>
                   </div>
 
                   {/* Color badge */}
@@ -346,13 +345,13 @@ export function PhotoTypesManager() {
           ))}
 
           {types.length === 0 && (
-            <p className="text-sm text-gray-400 text-center py-4">Nenhum type configurado ainda.</p>
+            <p className="text-sm text-gray-400 text-center py-4">Nenhum tipo configurado ainda.</p>
           )}
         </div>
 
         {/* Adicionar novo */}
         <div className="border-t border-gray-100 pt-4">
-          <p className="text-xs font-medium text-gray-600 mb-2">Novo type:</p>
+          <p className="text-xs font-medium text-gray-600 mb-2">Novo tipo:</p>
           <div className="flex gap-2 items-center">
             {/* Ícone picker */}
             <div className="relative">
@@ -415,8 +414,8 @@ export function PhotoTypesManager() {
         {/* Info */}
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
           <p className="text-xs text-blue-800">
-            💡 Cada type gera um <strong>PDF separado</strong> com as seções e a foto de referência do tipo.
-            Configure fotos de referência por type na aba <strong>IA</strong> de cada cliente.
+            💡 Cada tipo gera um <strong>PDF separado</strong> com as seções e a foto de referência do tipo.
+            Configure fotos de referência por tipo na aba <strong>IA</strong> de cada cliente.
           </p>
         </div>
       </div>
