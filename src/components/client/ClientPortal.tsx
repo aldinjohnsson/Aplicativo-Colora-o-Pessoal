@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { Palette, Check, Lock, Circle, Clock, CheckCircle, ChevronDown, ChevronUp, X, Upload, Send, Camera, Play, AlertCircle, FileText, ExternalLink, Download } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
-import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
+import { formatDeadlineDate, calendarDaysUntil, businessDaysUntil } from '../../lib/deadlineCalculator'
 import { supabase } from '../../lib/supabase'
 import { GeminiChat } from './GeminiChat'
 
@@ -95,6 +95,9 @@ export function ClientPortal() {
         )}
         {data.client.status === 'awaiting_photos' && (
           <PhotoStep token={token!} data={data} onDone={reload} />
+        )}
+        {data.client.status === 'photos_submitted' && (
+          <ReviewScreen />
         )}
         {data.client.status === 'in_analysis' && (
           <AnalysisScreen data={data} />
@@ -204,6 +207,7 @@ function FormStep({ token, data, onDone }: { token: string; data: ClientPortalDa
 
       for (const [key, value] of Object.entries(values)) {
         if (value instanceof File) {
+          // Campo de imagem com maxImages === 1 (File único)
           const path = `form-attachments/${data.client.id}/${Date.now()}_${value.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
           const { error: uploadError } = await supabase.storage
             .from('client-photos')
@@ -213,6 +217,21 @@ function FormStep({ token, data, onDone }: { token: string; data: ClientPortalDa
 
           const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(path)
           processedValues[key] = urlData.publicUrl
+        } else if (Array.isArray(value) && value.length > 0 && value[0] instanceof File) {
+          // Campo de imagem com múltiplos arquivos (maxImages > 1)
+          const urls: string[] = []
+          for (const file of value as File[]) {
+            const path = `form-attachments/${data.client.id}/${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+            const { error: uploadError } = await supabase.storage
+              .from('client-photos')
+              .upload(path, file, { contentType: file.type, upsert: false })
+
+            if (uploadError) throw uploadError
+
+            const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(path)
+            urls.push(urlData.publicUrl)
+          }
+          processedValues[key] = urls
         } else {
           processedValues[key] = value
         }
@@ -359,39 +378,113 @@ function FormField({ field, value, onChange }: { field: any; value: any; onChang
         </div>
       )
 
-    case 'image':
+    case 'image': {
+      const maxImages = field.maxImages && field.maxImages > 1 ? field.maxImages : 1
+      const files: File[] = Array.isArray(value) ? value : value instanceof File ? [value] : []
+      const remaining = maxImages - files.length
+      const isFull = remaining <= 0
+
+      const handleAddFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files) return
+        const picked = Array.from(e.target.files).slice(0, remaining)
+        if (maxImages === 1) {
+          onChange(picked[0] ?? null)
+        } else {
+          onChange([...files, ...picked])
+        }
+        // reset input so the same file can be re-selected after removal
+        e.target.value = ''
+      }
+
+      const handleRemove = (idx: number) => {
+        if (maxImages === 1) {
+          onChange(null)
+        } else {
+          const next = files.filter((_, i) => i !== idx)
+          onChange(next.length > 0 ? next : null)
+        }
+      }
+
       return (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block text-sm font-medium text-gray-700">{label}</label>
+            {maxImages > 1 && (
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                isFull ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+              }`}>
+                {files.length}/{maxImages} fotos
+              </span>
+            )}
+          </div>
+
           {field.imageInstructions && (
             <p className="text-xs text-gray-500 mb-2">{field.imageInstructions}</p>
           )}
-          <label className="block border-2 border-dashed border-gray-200 hover:border-rose-300 rounded-xl p-5 text-center cursor-pointer transition-colors">
-            <input type="file" accept="image/*,image/heic,image/heif" className="hidden"
-              onChange={e => {
-                const file = e.target.files?.[0]
-                if (file) onChange(file)
-              }} />
-            {value ? (
-              <div className="space-y-2">
-                <img
-                  src={URL.createObjectURL(value)}
-                  alt="preview"
-                  className="max-h-40 mx-auto rounded-lg object-contain"
-                />
-                <p className="text-xs text-green-600 font-medium">✓ {value.name}</p>
-                <p className="text-xs text-gray-400">Clique para trocar</p>
-              </div>
-            ) : (
+
+          {/* Preview grid */}
+          {files.length > 0 && (
+            <div className={`grid gap-2 mb-3 ${maxImages === 1 ? 'grid-cols-1' : 'grid-cols-3'}`}>
+              {files.map((file, idx) => (
+                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group">
+                  <img
+                    src={URL.createObjectURL(file)}
+                    alt={file.name}
+                    className="w-full h-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(idx)}
+                    className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 hover:bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                  >
+                    <X className="h-3.5 w-3.5 text-white" />
+                  </button>
+                  {maxImages === 1 && (
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent px-2 py-1.5">
+                      <p className="text-white text-xs truncate">✓ {file.name}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Upload area — hidden when full */}
+          {!isFull && (
+            <label className="block border-2 border-dashed border-gray-200 hover:border-rose-300 rounded-xl p-5 text-center cursor-pointer transition-colors">
+              <input
+                type="file"
+                accept="image/*,image/heic,image/heif"
+                multiple={maxImages > 1}
+                className="hidden"
+                onChange={handleAddFiles}
+              />
               <div className="space-y-1">
                 <div className="text-2xl">🖼️</div>
-                <p className="text-sm text-gray-500">Clique para selecionar uma imagem</p>
+                {files.length === 0 ? (
+                  <p className="text-sm text-gray-500">
+                    {maxImages > 1
+                      ? `Selecionar até ${maxImages} fotos`
+                      : 'Clique para selecionar uma imagem'}
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-500">
+                    Adicionar mais {remaining} foto{remaining !== 1 ? 's' : ''}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400">JPG, PNG, HEIC</p>
               </div>
-            )}
-          </label>
+            </label>
+          )}
+
+          {isFull && (
+            <p className="text-xs text-green-600 text-center mt-1">
+              ✓ Limite de {maxImages} foto{maxImages !== 1 ? 's' : ''} atingido. Passe o mouse sobre uma foto para remover.
+            </p>
+          )}
         </div>
       )
+    }
 
     default: return null
   }
@@ -437,7 +530,7 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
           await clientService.uploadPhoto(token, data.client.id, file, cat.id)
         }
       }
-      await clientService.finalizePhotos(token, data.plan?.deadline_days || 5)
+      await clientService.finalizePhotos(token)
       onDone()
     } catch (e: any) { alert(`Erro ao enviar fotos: ${e.message}`) }
     finally { setFinalizing(false) }
@@ -542,23 +635,126 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
   )
 }
 
-// ── In Analysis ──────────────────────────────────────────────
+// ── In Review (photos_submitted) ─────────────────────────────
 
-function AnalysisScreen({ data }: { data: ClientPortalData }) {
-  const deadline = data.deadline
-  const deadlineDate = deadline ? new Date(deadline.deadline_date) : null
-  const daysLeft = deadlineDate ? businessDaysUntil(deadlineDate) : null
+function ReviewScreen() {
+  // Checklist compartilhado: step 1 ativo (revisão)
+  const steps = [
+    {
+      label: 'Revisão detalhada dos dados',
+      description: 'Se necessário, entraremos em contato para ajustes ou complementos em até 1 dia útil.',
+      state: 'current' as const,
+    },
+    {
+      label: 'Análise em andamento',
+      description: 'Aqui começa a contagem do prazo.',
+      state: 'pending' as const,
+    },
+    {
+      label: 'Resultado liberado',
+      description: 'Seu resultado completo está pronto. Acesso liberado.',
+      state: 'pending' as const,
+    },
+  ]
 
   return (
     <div className="space-y-4">
+      {/* Hero */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
+        <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-4">
+          <Clock className="h-8 w-8 text-amber-500" />
+        </div>
+        <h2 className="text-xl font-bold text-gray-900 mb-2">Fotos em análise</h2>
+        <p className="text-gray-500 text-sm leading-relaxed">
+          Suas fotos e informações foram recebidas pela consultora e estão em análise.
+          Se necessário, entraremos em contato para ajustes ou complementos em até 1 dia útil.
+        </p>
+      </div>
+
+      {/* Checklist */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+        <h3 className="font-semibold text-gray-900 mb-5">Seu progresso</h3>
+        <div className="space-y-0">
+          {steps.map((step, i) => {
+            const isLast = i === steps.length - 1
+            const iconEl =
+              step.state === 'done' ? (
+                <CheckCircle className="h-5 w-5 text-green-500" />
+              ) : step.state === 'current' ? (
+                <div className="w-5 h-5 rounded-full border-2 border-rose-400 flex items-center justify-center">
+                  <div className="w-2 h-2 rounded-full bg-rose-400" />
+                </div>
+              ) : (
+                <div className="w-5 h-5 rounded-full border-2 border-gray-200" />
+              )
+
+            return (
+              <div key={step.label} className="flex gap-4">
+                {/* Icon + connector */}
+                <div className="flex flex-col items-center">
+                  <div className="mt-0.5">{iconEl}</div>
+                  {!isLast && <div className="w-px flex-1 bg-gray-100 my-2" />}
+                </div>
+                {/* Content */}
+                <div className={`pb-${isLast ? '0' : '5'} flex-1 min-w-0`}>
+                  <p className={`text-sm font-medium ${step.state === 'current' ? 'text-rose-600' : step.state === 'done' ? 'text-gray-900' : 'text-gray-400'}`}>
+                    {step.label}
+                    {step.state === 'current' && (
+                      <span className="ml-2 text-xs bg-amber-50 text-amber-600 border border-amber-200 px-2 py-0.5 rounded-full font-medium">Em andamento</span>
+                    )}
+                  </p>
+                  <p className={`text-xs mt-0.5 leading-relaxed ${step.state === 'pending' ? 'text-gray-300' : 'text-gray-400'}`}>
+                    {step.description}
+                  </p>
+                  {!isLast && <div className="mt-4" />}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── In Analysis (in_analysis) ────────────────────────────────
+
+function AnalysisScreen({ data }: { data: ClientPortalData }) {
+  const deadline = data.deadline
+  const deadlineDate = deadline?.deadline_date ?? null   // string "YYYY-MM-DD" direto
+  const daysLeft = deadlineDate ? businessDaysUntil(deadlineDate) : null
+
+  // Checklist: step 2 ativo (análise em andamento)
+  const steps = [
+    {
+      label: 'Revisão detalhada dos dados',
+      description: 'Revisão concluída.',
+      state: 'done' as const,
+    },
+    {
+      label: 'Análise em andamento',
+      description: 'Estamos trabalhando na sua análise pessoal de coloração.',
+      state: 'current' as const,
+    },
+    {
+      label: 'Resultado liberado',
+      description: 'Seu resultado completo está pronto. Acesso liberado.',
+      state: 'pending' as const,
+    },
+  ]
+
+  return (
+    <div className="space-y-4">
+      {/* Hero */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
         <div className="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
           <Clock className="h-8 w-8 text-orange-500" />
         </div>
         <h2 className="text-xl font-bold text-gray-900 mb-2">Análise em andamento</h2>
-        <p className="text-gray-500 text-sm">Suas informações e fotos foram recebidas. Estamos trabalhando na sua análise!</p>
+        <p className="text-gray-500 text-sm">Suas fotos foram aprovadas e estamos trabalhando na sua análise!</p>
       </div>
 
+      {/* Prazo */}
       {deadlineDate && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -575,24 +771,44 @@ function AnalysisScreen({ data }: { data: ClientPortalData }) {
         </div>
       )}
 
+      {/* Checklist */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-        <h3 className="font-semibold text-gray-900 mb-3">O que acontece agora?</h3>
-        <div className="space-y-3">
-          {[
-            { icon: CheckCircle, text: 'Suas fotos e informações foram recebidas pela consultora', done: true, note: undefined },
-            { icon: Clock, text: 'Revisão detalhada dos dados. Se necessário, entraremos em contato para ajustes ou complementos em até 1 dia útil', done: false, note: undefined },
-            { icon: Clock, text: 'Análise em andamento', done: false, note: 'aqui começa a contagem do prazo' },
-            { icon: Clock, text: 'Análise concluída, preparando materiais', done: false, note: undefined },
-            { icon: Lock, text: 'Seu resultado completo está pronto. Acesso liberado', done: false, note: undefined },
-          ].map(({ icon: Icon, text, done, note }) => (
-            <div key={text} className="flex items-start gap-3">
-              <Icon className={`h-5 w-5 flex-shrink-0 mt-0.5 ${done ? 'text-green-500' : 'text-gray-300'}`} />
-              <div className="flex flex-col">
-                <span className={`text-sm ${done ? 'text-gray-800' : 'text-gray-400'}`}>{text}</span>
-                {note && <span className="text-xs italic text-gray-400 mt-0.5">{note}</span>}
+        <h3 className="font-semibold text-gray-900 mb-5">Seu progresso</h3>
+        <div className="space-y-0">
+          {steps.map((step, i) => {
+            const isLast = i === steps.length - 1
+            const iconEl =
+              step.state === 'done' ? (
+                <CheckCircle className="h-5 w-5 text-green-500" />
+              ) : step.state === 'current' ? (
+                <div className="w-5 h-5 rounded-full border-2 border-rose-400 flex items-center justify-center">
+                  <div className="w-2 h-2 rounded-full bg-rose-400" />
+                </div>
+              ) : (
+                <div className="w-5 h-5 rounded-full border-2 border-gray-200" />
+              )
+
+            return (
+              <div key={step.label} className="flex gap-4">
+                <div className="flex flex-col items-center">
+                  <div className="mt-0.5">{iconEl}</div>
+                  {!isLast && <div className="w-px flex-1 bg-gray-100 my-2" />}
+                </div>
+                <div className={`pb-${isLast ? '0' : '5'} flex-1 min-w-0`}>
+                  <p className={`text-sm font-medium ${step.state === 'current' ? 'text-rose-600' : step.state === 'done' ? 'text-gray-900' : 'text-gray-400'}`}>
+                    {step.label}
+                    {step.state === 'current' && (
+                      <span className="ml-2 text-xs bg-orange-50 text-orange-600 border border-orange-200 px-2 py-0.5 rounded-full font-medium">Em andamento</span>
+                    )}
+                  </p>
+                  <p className={`text-xs mt-0.5 leading-relaxed ${step.state === 'pending' ? 'text-gray-300' : 'text-gray-400'}`}>
+                    {step.description}
+                  </p>
+                  {!isLast && <div className="mt-4" />}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

@@ -4,9 +4,6 @@
 // FERIADOS NACIONAIS BRASILEIROS
 // ============================================================
 
-/**
- * Calcula a data da Páscoa para um ano (algoritmo de Meeus/Jones/Butcher)
- */
 function getEasterDate(year: number): Date {
   const a = year % 19
   const b = Math.floor(year / 100)
@@ -25,41 +22,35 @@ function getEasterDate(year: number): Date {
   return new Date(year, month - 1, day)
 }
 
-/**
- * Retorna todos os feriados nacionais brasileiros de um ano
- */
 function getBrazilianHolidays(year: number): Date[] {
   const easter = getEasterDate(year)
-
   const addDays = (date: Date, days: number): Date => {
     const d = new Date(date)
     d.setDate(d.getDate() + days)
     return d
   }
-
   return [
-    // Feriados fixos
-    new Date(year, 0, 1),    // Confraternização Universal
-    new Date(year, 3, 21),   // Tiradentes
-    new Date(year, 4, 1),    // Dia do Trabalho
-    new Date(year, 8, 7),    // Independência
-    new Date(year, 9, 12),   // Nossa Senhora Aparecida
-    new Date(year, 10, 2),   // Finados
-    new Date(year, 10, 15),  // Proclamação da República
-    new Date(year, 10, 20),  // Dia da Consciência Negra
-    new Date(year, 11, 25),  // Natal
-
-    // Feriados móveis (baseados na Páscoa)
-    addDays(easter, -48),    // Segunda de Carnaval
-    addDays(easter, -47),    // Terça de Carnaval
-    addDays(easter, -2),     // Sexta-feira Santa
-    easter,                  // Páscoa
-    addDays(easter, 60),     // Corpus Christi
+    new Date(year, 0, 1),
+    new Date(year, 3, 21),
+    new Date(year, 4, 1),
+    new Date(year, 8, 7),
+    new Date(year, 9, 12),
+    new Date(year, 10, 2),
+    new Date(year, 10, 15),
+    new Date(year, 10, 20),
+    new Date(year, 11, 25),
+    addDays(easter, -48),
+    addDays(easter, -47),
+    addDays(easter, -2),
+    easter,
+    addDays(easter, 60),
   ]
 }
 
 /**
- * Normaliza uma data para meia-noite (ignora horário)
+ * Normaliza uma data para meia-noite LOCAL (ignora horário).
+ * IMPORTANTE: nunca use `new Date("YYYY-MM-DD")` diretamente — isso é UTC.
+ * Use `parseLocalDate` para strings.
  */
 function normalize(date: Date): Date {
   const d = new Date(date)
@@ -68,21 +59,39 @@ function normalize(date: Date): Date {
 }
 
 /**
- * Verifica se uma data é feriado nacional
+ * Converte uma string "YYYY-MM-DD" em Date no horário LOCAL (meio-dia),
+ * evitando o bug de timezone onde `new Date("YYYY-MM-DD")` vira o dia anterior
+ * em fusos negativos como BRT (UTC-3).
  */
+export function parseLocalDate(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  // Usamos meio-dia (12:00) para garantir que setHours(0,0,0,0) caia no dia certo
+  const d = new Date(year, month - 1, day, 12, 0, 0, 0)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
 function isHoliday(date: Date): boolean {
   const d = normalize(date)
   const holidays = getBrazilianHolidays(d.getFullYear())
   return holidays.some(h => normalize(h).getTime() === d.getTime())
 }
 
-/**
- * Verifica se uma data é dia útil (segunda a sexta, não feriado)
- */
 function isBusinessDay(date: Date): boolean {
   const day = date.getDay()
-  if (day === 0 || day === 6) return false // Domingo ou Sábado
+  if (day === 0 || day === 6) return false
   return !isHoliday(date)
+}
+
+/**
+ * Avança para o próximo dia útil (se o dia atual não for útil).
+ */
+function nextBusinessDay(date: Date): Date {
+  const d = normalize(date)
+  while (!isBusinessDay(d)) {
+    d.setDate(d.getDate() + 1)
+  }
+  return d
 }
 
 // ============================================================
@@ -90,31 +99,34 @@ function isBusinessDay(date: Date): boolean {
 // ============================================================
 
 /**
- * Calcula a data de entrega com base nas regras:
- * - Se finalizado após 12h (meio-dia), começa a contar a partir do próximo dia útil
- * - Se finalizado antes/até 12h, começa a contar a partir do próprio dia (se útil)
- * - Conta apenas dias úteis (seg-sex, sem feriados nacionais)
+ * Calcula a data de entrega.
  *
- * @param sentAt - Data/hora em que as fotos foram finalizadas
+ * Regras:
+ * - Enviado ANTES das 12h → começa a contar a partir do próprio dia (se útil)
+ * - Enviado A PARTIR das 12h → começa a contar a partir do próximo dia útil
+ * - Conta apenas dias úteis (seg-sex, sem feriados nacionais)
+ * - A data de entrega NUNCA cai em feriado, sábado ou domingo
+ *
+ * @param sentAt - Momento em que as fotos foram aprovadas
  * @param businessDays - Quantidade de dias úteis do plano
- * @returns Data de entrega
  */
 export function calculateDeadline(sentAt: Date, businessDays: number): Date {
   const d = new Date(sentAt)
 
-  // Regra: se depois das 12h, pula para o próximo dia
+  // Se enviado a partir das 12h, pula para o dia seguinte
   if (d.getHours() >= 12) {
     d.setDate(d.getDate() + 1)
   }
 
-  // Garantir que estamos em um dia útil para começar a contagem
+  // Garante que começamos em um dia útil
   d.setHours(0, 0, 0, 0)
   while (!isBusinessDay(d)) {
     d.setDate(d.getDate() + 1)
   }
 
-  // Contar os dias úteis
-  let counted = 0
+  // O dia inicial (amanhã se >= 12h, hoje se < 12h) conta como dia 1.
+  // Então contamos até businessDays a partir dele.
+  let counted = 1
   while (counted < businessDays) {
     d.setDate(d.getDate() + 1)
     if (isBusinessDay(d)) {
@@ -122,7 +134,24 @@ export function calculateDeadline(sentAt: Date, businessDays: number): Date {
     }
   }
 
+  // Garantia extra: entrega nunca cai em não-útil
+  // (já deve ser dia útil pelo loop acima, mas por segurança)
+  while (!isBusinessDay(d)) {
+    d.setDate(d.getDate() + 1)
+  }
+
   return d
+}
+
+/**
+ * Formata a data do prazo para armazenamento no banco como "YYYY-MM-DD"
+ * usando a data LOCAL (evita bug de UTC).
+ */
+export function formatDateForDB(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
 // ============================================================
@@ -130,12 +159,31 @@ export function calculateDeadline(sentAt: Date, businessDays: number): Date {
 // ============================================================
 
 /**
- * Calcula quantos dias úteis faltam até uma data
+ * Quantos dias CORRIDOS faltam até uma data.
+ * Aceita Date ou string "YYYY-MM-DD".
+ * Retorna 0 se a data já passou.
  */
-export function businessDaysUntil(targetDate: Date): number {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const target = normalize(targetDate)
+export function calendarDaysUntil(targetDateOrStr: Date | string): number {
+  const today = normalize(new Date())
+  const target = typeof targetDateOrStr === 'string'
+    ? parseLocalDate(targetDateOrStr)
+    : normalize(targetDateOrStr)
+
+  if (target.getTime() <= today.getTime()) return 0
+
+  return Math.round((target.getTime() - today.getTime()) / 86400000)
+}
+
+/**
+ * Quantos dias ÚTEIS faltam até uma data.
+ * Aceita Date ou string "YYYY-MM-DD".
+ * Retorna 0 se a data já passou.
+ */
+export function businessDaysUntil(targetDateOrStr: Date | string): number {
+  const today = normalize(new Date())
+  const target = typeof targetDateOrStr === 'string'
+    ? parseLocalDate(targetDateOrStr)
+    : normalize(targetDateOrStr)
 
   if (target.getTime() <= today.getTime()) return 0
 
@@ -145,29 +193,35 @@ export function businessDaysUntil(targetDate: Date): number {
     d.setDate(d.getDate() + 1)
     if (isBusinessDay(d)) count++
   }
-
   return count
 }
 
 /**
- * Formata a data do prazo de forma legível
+ * Formata a data do prazo de forma legível.
+ * Aceita Date ou string "YYYY-MM-DD".
  * Ex: "Segunda-feira, 21 de abril de 2026"
  */
-export function formatDeadlineDate(date: Date): string {
+export function formatDeadlineDate(dateOrStr: Date | string): string {
   const weekdays = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado']
   const months = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro']
 
-  const d = normalize(date)
+  const d = typeof dateOrStr === 'string'
+    ? parseLocalDate(dateOrStr)
+    : normalize(dateOrStr)
+
   return `${weekdays[d.getDay()]}, ${d.getDate()} de ${months[d.getMonth()]} de ${d.getFullYear()}`
 }
 
 /**
- * Verifica se o prazo está atrasado
+ * Verifica se o prazo está atrasado.
+ * Aceita Date ou string "YYYY-MM-DD".
  */
-export function isDeadlineOverdue(deadlineDate: Date): boolean {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return normalize(deadlineDate).getTime() < today.getTime()
+export function isDeadlineOverdue(dateOrStr: Date | string): boolean {
+  const today = normalize(new Date())
+  const target = typeof dateOrStr === 'string'
+    ? parseLocalDate(dateOrStr)
+    : normalize(dateOrStr)
+  return target.getTime() < today.getTime()
 }
 
 /**
@@ -176,7 +230,6 @@ export function isDeadlineOverdue(deadlineDate: Date): boolean {
 export function getHolidaysForYear(year: number): Array<{ date: Date; name: string }> {
   const easter = getEasterDate(year)
   const addDays = (d: Date, n: number) => { const r = new Date(d); r.setDate(r.getDate() + n); return r }
-
   return [
     { date: new Date(year, 0, 1), name: 'Confraternização Universal' },
     { date: addDays(easter, -48), name: 'Segunda de Carnaval' },

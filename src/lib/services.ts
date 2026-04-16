@@ -1,6 +1,6 @@
 // src/lib/services.ts
 import { supabase } from './supabase'
-import { calculateDeadline } from './deadlineCalculator'
+import { calculateDeadline, formatDateForDB } from './deadlineCalculator'
 
 // ============================================================
 // TYPES
@@ -10,6 +10,7 @@ export type ClientStatus =
   | 'awaiting_contract'
   | 'awaiting_form'
   | 'awaiting_photos'
+  | 'photos_submitted'   // ← NOVO: fotos enviadas, aguardando revisão da admin
   | 'in_analysis'
   | 'completed'
 
@@ -350,6 +351,68 @@ export const adminService = {
     if (error) throw error
   },
 
+  // ---- Approve photos (admin) ----
+  /**
+   * Aprovação das fotos pela admin.
+   * - Calcula o prazo a partir de AGORA (momento da aprovação)
+   * - Cria/atualiza o registro em client_deadlines
+   * - Muda o status para 'in_analysis'
+   * - Envia e-mail de notificação para a cliente
+   */
+  async approvePhotos(clientId: string, deadlineDays: number): Promise<void> {
+    const approvedAt = new Date()
+    const deadline = calculateDeadline(approvedAt, deadlineDays)
+    const deadlineDateStr = formatDateForDB(deadline)
+
+    // Upsert no prazo (fotos foram enviadas antes, prazo calculado agora)
+    const { error: dlError } = await supabase
+      .from('client_deadlines')
+      .upsert(
+        {
+          client_id: clientId,
+          photos_sent_at: approvedAt.toISOString(),
+          deadline_date: deadlineDateStr,
+          updated_at: approvedAt.toISOString(),
+        },
+        { onConflict: 'client_id' }
+      )
+    if (dlError) throw dlError
+
+    // Muda status para in_analysis
+    const { error: stError } = await supabase
+      .from('clients')
+      .update({ status: 'in_analysis', updated_at: approvedAt.toISOString() })
+      .eq('id', clientId)
+    if (stError) throw stError
+
+    // Envia e-mail de notificação
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('id', clientId)
+        .single()
+
+      if (client) {
+        const portalUrl = `${window.location.origin}/c/${client.token}`
+        const planName = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'photos_approved',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            portalUrl,
+            deadlineDate: deadlineDateStr,
+          }
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar e-mail de aprovação de fotos:', e)
+    }
+  },
+
   // ---- Results ----
   async getClientPhotosWithUrls(clientId: string) {
     const { data: photos } = await supabase
@@ -392,24 +455,23 @@ export const adminService = {
         { onConflict: 'client_id' }
       )
     if (error) throw error
- 
+
     await supabase
       .from('clients')
       .update({ status: 'completed' })
       .eq('id', clientId)
- 
-    // ── Enviar e-mail de resultado liberado ──
+
     try {
       const { data: client } = await supabase
         .from('clients')
         .select('full_name, email, token, plan:plans(name)')
         .eq('id', clientId)
         .single()
- 
+
       if (client) {
         const portalUrl = `${window.location.origin}/c/${client.token}`
         const planName = (client as any).plan?.name || ''
- 
+
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'result_released',
@@ -491,44 +553,62 @@ export const clientService = {
     if (data?.error) throw new Error(data.error)
   },
 
-  async finalizePhotos(token: string, deadlineDays: number): Promise<void> {
+  /**
+   * Cliente finaliza o envio das fotos.
+   *
+   * FLUXO CORRETO:
+   *   Cliente envia fotos → status: 'photos_submitted' (em revisão)
+   *   Admin aprova fotos → status: 'in_analysis' + prazo calculado
+   *
+   * O prazo NÃO é calculado aqui — só é definido quando a admin aprovar.
+   *
+   * ATENÇÃO: O RPC `finalize_client_photos` no Supabase precisa estar
+   * configurado para setar status = 'photos_submitted' (não 'in_analysis').
+   * Passe p_deadline_date como null — o prazo será definido pela admin.
+   */
+  async finalizePhotos(token: string): Promise<void> {
     const sentAt = new Date()
-    const deadline = calculateDeadline(sentAt, deadlineDays)
-    const deadlineDateStr = deadline.toISOString().split('T')[0]
- 
+
     const { data, error } = await supabase.rpc('finalize_client_photos', {
       p_token: token,
-      p_deadline_date: deadlineDateStr,
+      p_deadline_date: null,          // prazo calculado apenas na aprovação da admin
       p_photos_sent_at: sentAt.toISOString(),
     })
     if (error) throw error
     if (data?.error) throw new Error(data.error)
- 
-    // ── Enviar e-mail de fotos finalizadas ──
+
+    // Safety net: garante que o status é 'photos_submitted' mesmo se o RPC
+    // estiver com versão antiga que ainda seta 'in_analysis' diretamente.
+    await supabase
+      .from('clients')
+      .update({ status: 'photos_submitted', updated_at: sentAt.toISOString() })
+      .eq('token', token)
+      .in('status', ['awaiting_photos', 'photos_submitted', 'in_analysis'])
+
+    // Notificação interna para a admin (opcional)
     try {
       const { data: client } = await supabase
         .from('clients')
         .select('full_name, email, token, plan:plans(name)')
         .eq('token', token)
         .single()
- 
+
       if (client) {
         const portalUrl = `${window.location.origin}/c/${client.token}`
         const planName = (client as any).plan?.name || ''
- 
+
         await supabase.functions.invoke('send-contract-email', {
           body: {
-            type: 'photos_finalized',
+            type: 'photos_submitted',   // admin recebe alerta de revisão pendente
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
             portalUrl,
-            deadlineDate: deadlineDateStr,
           }
         })
       }
     } catch (e) {
-      console.warn('Erro ao enviar e-mail de fotos finalizadas:', e)
+      console.warn('Erro ao enviar notificação de fotos enviadas:', e)
     }
   },
 }

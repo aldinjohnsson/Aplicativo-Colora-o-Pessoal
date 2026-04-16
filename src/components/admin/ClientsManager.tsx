@@ -17,10 +17,10 @@ import {
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
-import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
+import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib/deadlineCalculator'
 import { AIPromptConfig } from './AIPromptConfig'
 
-// ─── Theme System (from KanbanBoard) ──────────────────────────────────────
+// ─── Theme System ─────────────────────────────────────────────────────────
 const THEMES = {
   rose: {
     name: 'Rosa', icon: '🌸',
@@ -95,8 +95,14 @@ const STATUSES: Record<string, {
     color: '#a855f7', bg: '#f3e8ff', textColor: '#6b21a8',
     tailwindColor: 'bg-purple-100 text-purple-700', tailwindBg: 'bg-purple-50',
   },
+  // fotos recebidas, aguardando aprovação da admin (fotos + formulário)
+  photos_submitted: {
+    label: 'Fotos Enviadas', short: 'Fotos Enviadas',
+    color: '#ec4899', bg: '#fce7f3', textColor: '#9d174d',
+    tailwindColor: 'bg-pink-100 text-pink-700', tailwindBg: 'bg-pink-50',
+  },
   in_analysis: {
-    label: 'Em Análise', short: 'Análise',
+    label: 'Análise em Andamento', short: 'Análise',
     color: '#f97316', bg: '#ffedd5', textColor: '#9a3412',
     tailwindColor: 'bg-orange-100 text-orange-700', tailwindBg: 'bg-orange-50',
   },
@@ -106,7 +112,8 @@ const STATUSES: Record<string, {
     tailwindColor: 'bg-green-100 text-green-700', tailwindBg: 'bg-green-50',
   },
 }
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'in_analysis', 'completed']
+// photos_submitted is between awaiting_photos and in_analysis
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'completed']
 
 // ─── Avatar Helpers ───────────────────────────────────────────────────────
 const AVATAR_COLORS: [string, string][] = [
@@ -131,10 +138,13 @@ interface DeadlineInfo {
   color: string
 }
 function getDeadlineInfo(client: Client, deadline?: DeadlineData | null): DeadlineInfo | null {
-  if (!deadline?.deadline_date || client.status === 'completed') return null
+  if (!deadline?.deadline_date || client.status === 'completed' || client.status === 'photos_submitted') return null
+ 
   const today = new Date(); today.setHours(0, 0, 0, 0)
-  const dl = new Date(deadline.deadline_date); dl.setHours(0, 0, 0, 0)
-  const days = Math.ceil((dl.getTime() - today.getTime()) / 86400000)
+  // CORRIGIDO: parseLocalDate evita bug de timezone (new Date("YYYY-MM-DD") = UTC = dia errado no Brasil)
+  const dl = parseLocalDate(deadline.deadline_date)
+  const days = Math.round((dl.getTime() - today.getTime()) / 86400000)
+ 
   if (days < 0) return { label: `${Math.abs(days)}d atrasado`, urgency: 'danger', color: '#ef4444' }
   if (days === 0) return { label: 'Vence hoje', urgency: 'danger', color: '#ef4444' }
   if (days <= 2) return { label: `${days}d restante`, urgency: 'warning', color: '#f59e0b' }
@@ -149,6 +159,7 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
     ghost: 'text-gray-600 hover:bg-gray-100',
     green: 'bg-green-500 text-white hover:bg-green-600',
     danger: 'bg-red-50 text-red-600 hover:bg-red-100',
+    pink: 'bg-pink-500 text-white hover:bg-pink-600',
   }
   const s: any = { sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm' }
   return (
@@ -160,7 +171,7 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
   )
 }
 
-// ─── Kanban Card (enhanced from KanbanBoard) ──────────────────────────────
+// ─── Kanban Card ──────────────────────────────────────────────────────────
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
 }: {
@@ -172,6 +183,7 @@ function KanbanCard({
   const menuRef = useRef<HTMLDivElement>(null)
   const dl = getDeadlineInfo(client, deadline)
   const [bgColor, fgColor] = getAvatarColor(client.full_name)
+  const needsReview = client.status === 'photos_submitted'
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -185,7 +197,7 @@ function KanbanCard({
     <div
       style={{
         background: t.cardBg,
-        border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : dl?.urgency === 'warning' ? '#fcd34d' : t.cardBorder}`,
+        border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : dl?.urgency === 'warning' ? '#fcd34d' : needsReview ? '#fbcfe8' : t.cardBorder}`,
         borderRadius: 10, padding: compact ? '9px 12px' : '12px 14px',
         marginBottom: 8, cursor: 'pointer', position: 'relative',
         transition: 'box-shadow 0.15s', boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
@@ -194,7 +206,6 @@ function KanbanCard({
       onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.06)' }}
       onClick={onView}
     >
-      {/* Top row: avatar + name + menu */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
         <div style={{
           width: compact ? 28 : 34, height: compact ? 28 : 34, borderRadius: '50%',
@@ -215,23 +226,15 @@ function KanbanCard({
             {starred && <span style={{ fontSize: 10, color: '#f59e0b', flexShrink: 0 }}>★</span>}
           </div>
           {!compact && client.plan && (
-            <p style={{
-              margin: '2px 0 0', fontSize: 11, color: t.text2,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: t.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {(client as any).plan.name}
             </p>
           )}
         </div>
 
-        {/* 3-dot menu */}
         <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-          <button
-            onClick={() => setMenuOpen(v => !v)}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
-              color: t.text3, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: 0.5,
-            }}
+          <button onClick={() => setMenuOpen(v => !v)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', color: t.text3, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: 0.5 }}
             onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
             onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.5'; (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
           >
@@ -249,13 +252,8 @@ function KanbanCard({
                 { icon: Archive, label: 'Arquivar', action: onArchive, color: '#6b7280' },
                 { icon: Trash2, label: 'Excluir', action: onDelete, color: '#ef4444' },
               ].map(({ icon: Icon, label, action, color }) => (
-                <button key={label}
-                  onClick={() => { action(); setMenuOpen(false) }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                    padding: '9px 14px', background: 'none', border: 'none',
-                    cursor: 'pointer', fontSize: 13, color, textAlign: 'left',
-                  }}
+                <button key={label} onClick={() => { action(); setMenuOpen(false) }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color, textAlign: 'left' }}
                   onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
                   onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
                 >
@@ -267,19 +265,23 @@ function KanbanCard({
         </div>
       </div>
 
-      {/* Email + deadline (non-compact) */}
       {!compact && (
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
             <Mail size={11} color={t.text3} />
-            <span style={{ fontSize: 11, color: t.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {client.email}
-            </span>
+            <span style={{ fontSize: 11, color: t.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{client.email}</span>
           </div>
           {client.phone && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <Phone size={11} color={t.text3} />
               <span style={{ fontSize: 11, color: t.text2 }}>{client.phone}</span>
+            </div>
+          )}
+          {needsReview && (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 700, background: '#fce7f3', color: '#9d174d' }}>
+                📸 Aguardando aprovação
+              </span>
             </div>
           )}
           {dl && (
@@ -299,7 +301,7 @@ function KanbanCard({
   )
 }
 
-// ─── Kanban Column (enhanced from KanbanBoard) ────────────────────────────
+// ─── Kanban Column ────────────────────────────────────────────────────────
 function KanbanColumn({
   statusKey, clients, deadlines, starredIds, theme: t,
   onView, onArchive, onDelete, onStar, collapsed, onToggleCollapse,
@@ -312,13 +314,12 @@ function KanbanColumn({
 }) {
   const cfg = STATUSES[statusKey]
   const dangerCount = clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length
+  const reviewCount = statusKey === 'photos_submitted' ? clients.length : 0
   const [compact, setCompact] = useState(false)
 
   if (collapsed) {
     return (
-      <div
-        onClick={onToggleCollapse}
-        title={`Expandir: ${cfg.label}`}
+      <div onClick={onToggleCollapse} title={`Expandir: ${cfg.label}`}
         style={{
           flexShrink: 0, width: 44, background: t.colBg, borderRadius: 12,
           border: `1px solid ${t.border}`, cursor: 'pointer',
@@ -327,20 +328,14 @@ function KanbanColumn({
         }}
       >
         <div style={{ width: 10, height: 10, borderRadius: '50%', background: cfg.color }} />
-        <span style={{
-          fontSize: 11, fontWeight: 700, color: t.text2,
-          writingMode: 'vertical-rl', textOrientation: 'mixed',
-          letterSpacing: 1, transform: 'rotate(180deg)', userSelect: 'none',
-        }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: t.text2, writingMode: 'vertical-rl', textOrientation: 'mixed', letterSpacing: 1, transform: 'rotate(180deg)', userSelect: 'none' }}>
           {cfg.short}
         </span>
-        <span style={{
-          fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight,
-          borderRadius: 20, padding: '2px 6px', minWidth: 22, textAlign: 'center',
-        }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight, borderRadius: 20, padding: '2px 6px', minWidth: 22, textAlign: 'center' }}>
           {clients.length}
         </span>
         {dangerCount > 0 && <span style={{ fontSize: 10, color: '#ef4444' }}>⚠{dangerCount}</span>}
+        {reviewCount > 0 && <span style={{ fontSize: 10, color: '#ec4899' }}>📸{reviewCount}</span>}
         <ChevronRight size={13} color={t.text3} />
       </div>
     )
@@ -352,45 +347,32 @@ function KanbanColumn({
       border: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column',
       maxHeight: '100%', overflow: 'hidden',
     }}>
-      {/* Column header */}
-      <div style={{
-        padding: '10px 12px 8px', borderBottom: `1px solid ${t.border}`,
-        background: t.colBg, position: 'sticky', top: 0, zIndex: 2,
-      }}>
+      <div style={{ padding: '10px 12px 8px', borderBottom: `1px solid ${t.border}`, background: t.colBg, position: 'sticky', top: 0, zIndex: 2 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
-          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 0.2 }}>
-            {cfg.short}
-          </span>
-          <span style={{
-            fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight,
-            borderRadius: 20, padding: '1px 7px', minWidth: 22, textAlign: 'center',
-          }}>
+          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 0.2 }}>{cfg.short}</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight, borderRadius: 20, padding: '1px 7px', minWidth: 22, textAlign: 'center' }}>
             {clients.length}
           </span>
           {dangerCount > 0 && (
-            <span style={{ fontSize: 10, fontWeight: 700, color: '#ef4444', background: '#fee2e2', borderRadius: 20, padding: '1px 6px' }}>
-              ⚠{dangerCount}
-            </span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#ef4444', background: '#fee2e2', borderRadius: 20, padding: '1px 6px' }}>⚠{dangerCount}</span>
+          )}
+          {reviewCount > 0 && (
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#9d174d', background: '#fce7f3', borderRadius: 20, padding: '1px 6px' }}>📸 revisar</span>
           )}
           <button onClick={() => setCompact(v => !v)} title={compact ? 'Modo normal' : 'Modo compacto'}
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: t.text3, opacity: 0.7, borderRadius: 4, display: 'flex' }}
             onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.opacity = '1'}
             onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'}
-          >
-            <Layers size={13} />
-          </button>
+          ><Layers size={13} /></button>
           <button onClick={onToggleCollapse} title="Recolher coluna"
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: t.text3, opacity: 0.7, borderRadius: 4, display: 'flex' }}
             onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.opacity = '1'}
             onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'}
-          >
-            <ChevronLeft size={14} />
-          </button>
+          ><ChevronLeft size={14} /></button>
         </div>
       </div>
 
-      {/* Cards list (scrollable) */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6 }}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
@@ -399,16 +381,10 @@ function KanbanColumn({
         ) : (
           clients.map(client => (
             <KanbanCard
-              key={client.id}
-              client={client}
-              deadline={deadlines[client.id] || null}
-              theme={t}
-              compact={compact}
-              starred={starredIds.has(client.id)}
-              onView={() => onView(client.id)}
-              onArchive={() => onArchive(client.id)}
-              onDelete={() => onDelete(client.id)}
-              onStar={() => onStar(client.id)}
+              key={client.id} client={client} deadline={deadlines[client.id] || null}
+              theme={t} compact={compact} starred={starredIds.has(client.id)}
+              onView={() => onView(client.id)} onArchive={() => onArchive(client.id)}
+              onDelete={() => onDelete(client.id)} onStar={() => onStar(client.id)}
             />
           ))
         )}
@@ -457,90 +433,74 @@ function KanbanSidebar({
 
   return (
     <>
-      {/* Mobile overlay backdrop */}
       {sidebarOpen && (
-        <div
-          style={{ position: 'fixed', inset: 0, zIndex: 29, background: 'rgba(0,0,0,0.4)' }}
-          className="sm:hidden"
-          onClick={onToggle}
-        />
+        <div style={{ position: 'fixed', inset: 0, zIndex: 29, background: 'rgba(0,0,0,0.4)' }}
+          className="sm:hidden" onClick={onToggle} />
       )}
       <div style={{
         width: sidebarOpen ? 220 : 0, flexShrink: 0, background: t.sidebar,
         borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none', overflow: 'hidden',
         transition: 'width 0.25s cubic-bezier(0.4,0,0.2,1)',
-        display: 'flex', flexDirection: 'column',
-        position: 'relative', zIndex: 30,
+        display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 30,
       }}>
-      <div style={{ width: 220, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {/* Search */}
-        <div style={{ padding: '12px 12px 8px' }}>
-          <div style={{ position: 'relative' }}>
-            <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: t.text3 }} />
-            <input
-              value={search}
-              onChange={e => onSearch(e.target.value)}
-              placeholder="Buscar cliente..."
-              style={{
-                width: '100%', padding: '7px 10px 7px 30px', borderRadius: 8,
-                border: `1px solid ${t.border}`, background: t.surface2,
-                fontSize: 12, color: t.text, outline: 'none', boxSizing: 'border-box' as const,
-              }}
-            />
+        <div style={{ width: 220, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ padding: '12px 12px 8px' }}>
+            <div style={{ position: 'relative' }}>
+              <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: t.text3 }} />
+              <input value={search} onChange={e => onSearch(e.target.value)} placeholder="Buscar cliente..."
+                style={{ width: '100%', padding: '7px 10px 7px 30px', borderRadius: 8, border: `1px solid ${t.border}`, background: t.surface2, fontSize: 12, color: t.text, outline: 'none', boxSizing: 'border-box' as const }} />
+            </div>
+          </div>
+
+          <div style={{ padding: '4px 8px', flex: 1, overflowY: 'auto' }}>
+            {navBtn('all', 'Todas as clientes', total)}
+            {navBtn('danger', 'Prazo crítico', dangerCount, '#ef4444', <AlertTriangle size={14} />)}
+            {navBtn('photos_submitted', 'Aguardando revisão', counts['photos_submitted'] || 0, '#9d174d', <Camera size={14} />)}
+
+            <div style={{ borderTop: `1px solid ${t.border}`, margin: '8px 0', padding: '8px 0 4px' }}>
+              <p style={{ margin: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: t.text3, textTransform: 'uppercase' as const, letterSpacing: 1 }}>Por status</p>
+              {COL_ORDER.map(key => {
+                const cfg = STATUSES[key]
+                return (
+                  <button key={key} onClick={() => onFilter(key)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '7px 10px',
+                      borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12, textAlign: 'left',
+                      background: filter === key ? t.accentLight : 'none',
+                      color: filter === key ? t.accent : t.text2,
+                      fontWeight: filter === key ? 600 : 400,
+                    }}
+                    onMouseEnter={e => { if (filter !== key) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
+                    onMouseLeave={e => { if (filter !== key) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+                  >
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
+                    <span style={{ flex: 1 }}>{cfg.short}</span>
+                    <span style={{ fontSize: 11, color: t.text3 }}>{counts[key]}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div style={{ borderTop: `1px solid ${t.border}`, margin: '4px 0', paddingTop: 8 }}>
+              <button onClick={() => onFilter('archived')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px',
+                  borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, textAlign: 'left',
+                  background: filter === 'archived' ? t.accentLight : 'none',
+                  color: filter === 'archived' ? t.accent : t.text2,
+                  fontWeight: filter === 'archived' ? 600 : 400,
+                }}
+                onMouseEnter={e => { if (filter !== 'archived') (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
+                onMouseLeave={e => { if (filter !== 'archived') (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+              >
+                <Archive size={15} style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>Arquivadas</span>
+                <span style={{ fontSize: 11, color: t.text3 }}>{archivedCount}</span>
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* Navigation */}
-        <div style={{ padding: '4px 8px', flex: 1, overflowY: 'auto' }}>
-          {navBtn('all', 'Todas as clientes', total)}
-          {navBtn('danger', 'Prazo crítico', dangerCount, '#ef4444', <AlertTriangle size={14} />)}
-
-          <div style={{ borderTop: `1px solid ${t.border}`, margin: '8px 0', padding: '8px 0 4px' }}>
-            <p style={{ margin: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: t.text3, textTransform: 'uppercase' as const, letterSpacing: 1 }}>
-              Por status
-            </p>
-            {COL_ORDER.map(key => {
-              const cfg = STATUSES[key]
-              return (
-                <button key={key} onClick={() => onFilter(key)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '7px 10px',
-                    borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12, textAlign: 'left',
-                    background: filter === key ? t.accentLight : 'none',
-                    color: filter === key ? t.accent : t.text2,
-                    fontWeight: filter === key ? 600 : 400,
-                  }}
-                  onMouseEnter={e => { if (filter !== key) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
-                  onMouseLeave={e => { if (filter !== key) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
-                >
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
-                  <span style={{ flex: 1 }}>{cfg.short}</span>
-                  <span style={{ fontSize: 11, color: t.text3 }}>{counts[key]}</span>
-                </button>
-              )
-            })}
-          </div>
-
-          <div style={{ borderTop: `1px solid ${t.border}`, margin: '4px 0', paddingTop: 8 }}>
-            <button onClick={() => onFilter('archived')}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px',
-                borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, textAlign: 'left',
-                background: filter === 'archived' ? t.accentLight : 'none',
-                color: filter === 'archived' ? t.accent : t.text2,
-                fontWeight: filter === 'archived' ? 600 : 400,
-              }}
-              onMouseEnter={e => { if (filter !== 'archived') (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
-              onMouseLeave={e => { if (filter !== 'archived') (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
-            >
-              <Archive size={15} style={{ flexShrink: 0 }} />
-              <span style={{ flex: 1 }}>Arquivadas</span>
-              <span style={{ fontSize: 11, color: t.text3 }}>{archivedCount}</span>
-            </button>
-          </div>
       </div>
-    </div>
-    </div>
     </>
   )
 }
@@ -561,19 +521,14 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
         <Archive size={18} color={t.text2} />
         <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: t.text }}>Clientes Arquivadas</h2>
-        <span style={{ fontSize: 12, color: t.text3, background: t.surface2, padding: '2px 8px', borderRadius: 20 }}>
-          {clients.length}
-        </span>
+        <span style={{ fontSize: 12, color: t.text3, background: t.surface2, padding: '2px 8px', borderRadius: 20 }}>{clients.length}</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 12 }}>
         {clients.map(client => {
           const [bg, fg] = getAvatarColor(client.full_name)
           const cfg = STATUSES[client.status]
           return (
-            <div key={client.id} style={{
-              background: t.cardBg, border: `1px solid ${t.border}`,
-              borderRadius: 12, padding: '14px 16px', opacity: 0.8,
-            }}>
+            <div key={client.id} style={{ background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: 12, padding: '14px 16px', opacity: 0.8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: '50%', background: bg, color: fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700 }}>
                   {getInitials(client.full_name)}
@@ -582,25 +537,19 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: t.text }}>{client.full_name}</p>
                   <p style={{ margin: 0, fontSize: 11, color: t.text2 }}>{(client as any).plan?.name}</p>
                 </div>
-                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 20, background: cfg.bg, color: cfg.textColor, fontWeight: 600 }}>
-                  {cfg.short}
-                </span>
+                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 20, background: cfg?.bg, color: cfg?.textColor, fontWeight: 600 }}>{cfg?.short}</span>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => onRestore(client.id)}
                   style={{ flex: 1, padding: 6, borderRadius: 8, border: `1px solid ${t.border}`, background: 'none', cursor: 'pointer', fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
                   onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
                   onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
-                >
-                  <ArchiveRestore size={13} /> Restaurar
-                </button>
+                ><ArchiveRestore size={13} /> Restaurar</button>
                 <button onClick={() => onDelete(client.id)}
                   style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #fca5a5', background: 'none', cursor: 'pointer', fontSize: 12, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 6 }}
                   onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = '#fee2e2'}
                   onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
-                >
-                  <Trash2 size={13} />
-                </button>
+                ><Trash2 size={13} /></button>
               </div>
             </div>
           )
@@ -610,15 +559,12 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
   )
 }
 
-// ─── Clients List (Board + List) ──────────────────────────────────────────
+// ─── Clients List ─────────────────────────────────────────────────────────
 function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
-  // Real data
   const [clients, setClients] = useState<Client[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [deadlines, setDeadlines] = useState<Record<string, DeadlineData>>({})
   const [loading, setLoading] = useState(true)
-
-  // KanbanBoard UI state
   const [themeName, setThemeName] = useState<ThemeName>('rose')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [search, setSearch] = useState('')
@@ -627,24 +573,16 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board')
-
-  // Create form
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ full_name: '', email: '', phone: '', birth_date: '', plan_id: '', notes: '' })
-
-  // Theme picker dropdown
   const [themeOpen, setThemeOpen] = useState(false)
   const themeRef = useRef<HTMLDivElement>(null)
-
   const t = THEMES[themeName]
   const navigate = useNavigate()
 
   useEffect(() => { load() }, [])
-
   useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false)
-    }
+    const h = (e: MouseEvent) => { if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false) }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [])
@@ -675,32 +613,17 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     } catch (e: any) { alert(e.message) }
   }
 
-  // Archive / star / delete handlers
-  const handleArchive = useCallback((id: string) =>
-    setArchivedIds(prev => new Set([...prev, id])), [])
-
-  const handleRestore = useCallback((id: string) =>
-    setArchivedIds(prev => { const s = new Set(prev); s.delete(id); return s }), [])
-
-  const handleStar = useCallback((id: string) =>
-    setStarredIds(prev => {
-      const s = new Set(prev)
-      if (s.has(id)) s.delete(id); else s.add(id)
-      return s
-    }), [])
-
+  const handleArchive = useCallback((id: string) => setArchivedIds(prev => new Set([...prev, id])), [])
+  const handleRestore = useCallback((id: string) => setArchivedIds(prev => { const s = new Set(prev); s.delete(id); return s }), [])
+  const handleStar = useCallback((id: string) => setStarredIds(prev => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s }), [])
   const handleDelete = async (id: string) => {
     const client = clients.find(c => c.id === id)
     if (!client) return
     if (!confirm(`Excluir "${client.full_name}"? Todos os dados e arquivos serão removidos.`)) return
-    await adminService.deleteClient(id)
-    load()
+    await adminService.deleteClient(id); load()
   }
+  const toggleCollapse = useCallback((key: string) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] })), [])
 
-  const toggleCollapse = useCallback((key: string) =>
-    setCollapsed(prev => ({ ...prev, [key]: !prev[key] })), [])
-
-  // Derived lists
   const activeClients = useMemo(() => clients.filter(c => !archivedIds.has(c.id)), [clients, archivedIds])
   const archivedClients = useMemo(() => clients.filter(c => archivedIds.has(c.id)), [clients, archivedIds])
 
@@ -708,11 +631,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     let list = activeClients
     if (search.trim()) {
       const q = search.toLowerCase()
-      list = list.filter(c =>
-        c.full_name.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        (c.phone && c.phone.toLowerCase().includes(q))
-      )
+      list = list.filter(c => c.full_name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q) || (c.phone && c.phone.toLowerCase().includes(q)))
     }
     if (filter === 'danger') list = list.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger')
     else if (COL_ORDER.includes(filter)) list = list.filter(c => c.status === filter)
@@ -734,13 +653,10 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   }, [filteredActive, deadlines])
 
   const isArchiveView = filter === 'archived'
-
   const btnStyle = (active: boolean) => ({
-    background: active ? t.surface : 'none',
-    border: 'none', cursor: 'pointer', padding: '5px 8px', borderRadius: 6,
+    background: active ? t.surface : 'none', border: 'none', cursor: 'pointer', padding: '5px 8px', borderRadius: 6,
     color: active ? t.text : t.text2, display: 'flex', alignItems: 'center', gap: 5,
-    fontSize: 13, fontWeight: active ? 600 : 400,
-    boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+    fontSize: 13, fontWeight: active ? 600 : 400, boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
   })
 
   if (loading) return (
@@ -750,29 +666,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   )
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column',
-      height: '100%', width: '100%',
-      background: t.bg,
-      fontFamily: 'system-ui,-apple-system,sans-serif',
-      overflow: 'hidden',
-    }}>
-      {/* ── Toolbar ──────────────────────────────────────────── */}
-      <div style={{
-        background: t.surface, borderBottom: `2px solid ${t.border}`,
-        padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8,
-        flexShrink: 0, height: 52,
-      }}>
-        {/* ── Hamburger nav button (left) ── */}
-        <button
-          onClick={onOpenNav}
-          title="Menu de navegação"
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: '6px 8px', borderRadius: 8, color: t.text2,
-            display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0,
-            transition: 'background 0.15s',
-          }}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: t.bg, fontFamily: 'system-ui,-apple-system,sans-serif', overflow: 'hidden' }}>
+      {/* Toolbar */}
+      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
+        <button onClick={onOpenNav} title="Menu de navegação"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, transition: 'background 0.15s' }}
           onMouseEnter={e => (e.currentTarget.style.background = t.surface2)}
           onMouseLeave={e => (e.currentTarget.style.background = 'none')}
         >
@@ -781,20 +679,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
         </button>
 
-        {/* Logo mark */}
-        <div style={{
-          width: 28, height: 28, borderRadius: 8, flexShrink: 0,
-          background: 'linear-gradient(135deg, #e91e63, #ff6090)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 2px 8px rgba(233,30,99,0.3)',
-        }}>
+        <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(135deg, #e91e63, #ff6090)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(233,30,99,0.3)' }}>
           <Palette size={14} color="white" />
         </div>
-
-        {/* Divider */}
         <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />
 
-        {/* Title + count */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3 }}>Clientes</span>
           <span style={{ fontSize: 12, color: t.text3, marginLeft: 8, fontWeight: 500 }}>
@@ -805,10 +694,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           </span>
         </div>
 
-        {/* Status mini-stats (board view only, hidden on mobile) */}
         {!isArchiveView && viewMode === 'board' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}
-            className="hidden sm:flex">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }} className="hidden sm:flex">
             {COL_ORDER.map(key => {
               const cfg = STATUSES[key]
               const count = groupedByStatus[key]?.length || 0
@@ -822,103 +709,55 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           </div>
         )}
 
-        {/* Theme picker */}
         <div ref={themeRef} style={{ position: 'relative', flexShrink: 0 }}>
-          <button
-            onClick={() => setThemeOpen(v => !v)}
-            title="Tema"
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5, padding: '5px 9px',
-              borderRadius: 8, border: `1px solid ${t.border}`, background: t.surface2,
-              cursor: 'pointer', fontSize: 13, color: t.text2,
-              transition: 'background 0.15s',
-            }}
+          <button onClick={() => setThemeOpen(v => !v)} title="Tema"
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 9px', borderRadius: 8, border: `1px solid ${t.border}`, background: t.surface2, cursor: 'pointer', fontSize: 13, color: t.text2, transition: 'background 0.15s' }}
             onMouseEnter={e => (e.currentTarget.style.background = t.surface)}
             onMouseLeave={e => (e.currentTarget.style.background = t.surface2)}
           >
-            <span style={{ fontSize: 15 }}>{THEMES[themeName].icon}</span>
-            <ChevronDown size={11} />
+            <span style={{ fontSize: 15 }}>{THEMES[themeName].icon}</span><ChevronDown size={11} />
           </button>
           {themeOpen && (
-            <div style={{
-              position: 'absolute', right: 0, top: 38, background: t.surface,
-              border: `1px solid ${t.border}`, borderRadius: 10,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 200, overflow: 'hidden', minWidth: 140,
-            }}>
+            <div style={{ position: 'absolute', right: 0, top: 38, background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 200, overflow: 'hidden', minWidth: 140 }}>
               <div style={{ padding: '8px 12px 4px' }}>
                 <p style={{ margin: 0, fontSize: 10, fontWeight: 700, color: t.text3, textTransform: 'uppercase' as const, letterSpacing: 1 }}>Tema</p>
               </div>
               {(Object.entries(THEMES) as [ThemeName, Theme][]).map(([key, th]) => (
                 <button key={key} onClick={() => { setThemeName(key); setThemeOpen(false) }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 9, width: '100%',
-                    padding: '9px 14px', background: themeName === key ? t.accentLight : 'none',
-                    border: 'none', cursor: 'pointer', fontSize: 13,
-                    color: themeName === key ? t.accent : t.text, textAlign: 'left',
-                    fontWeight: themeName === key ? 700 : 400,
-                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '9px 14px', background: themeName === key ? t.accentLight : 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: themeName === key ? t.accent : t.text, textAlign: 'left', fontWeight: themeName === key ? 700 : 400 }}
                   onMouseEnter={e => { if (themeName !== key) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
                   onMouseLeave={e => { if (themeName !== key) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
-                >
-                  <span style={{ fontSize: 15 }}>{th.icon}</span> {th.name}
-                </button>
+                ><span style={{ fontSize: 15 }}>{th.icon}</span> {th.name}</button>
               ))}
             </div>
           )}
         </div>
 
-        {/* View toggle */}
         <div style={{ display: 'flex', background: t.surface2, borderRadius: 8, padding: 2, flexShrink: 0 }}>
-          <button onClick={() => setViewMode('board')} title="Kanban" style={btnStyle(viewMode === 'board')}>
-            <LayoutGrid size={15} />
-          </button>
-          <button onClick={() => setViewMode('list')} title="Lista" style={btnStyle(viewMode === 'list')}>
-            <List size={15} />
-          </button>
+          <button onClick={() => setViewMode('board')} title="Kanban" style={btnStyle(viewMode === 'board')}><LayoutGrid size={15} /></button>
+          <button onClick={() => setViewMode('list')} title="Lista" style={btnStyle(viewMode === 'list')}><List size={15} /></button>
         </div>
 
-        {/* ── Kanban controls button (right) ── */}
-        <button
-          onClick={() => setSidebarOpen(v => !v)}
-          title={sidebarOpen ? 'Fechar painel' : 'Abrir painel de filtros'}
-          style={{
-            background: sidebarOpen ? t.accentLight : 'none',
-            border: `1px solid ${sidebarOpen ? t.accent + '40' : t.border}`,
-            cursor: 'pointer', padding: '6px 8px', borderRadius: 8,
-            color: sidebarOpen ? t.accent : t.text2, display: 'flex', flexShrink: 0,
-            transition: 'all 0.15s',
-          }}
+        <button onClick={() => setSidebarOpen(v => !v)} title={sidebarOpen ? 'Fechar painel' : 'Abrir painel de filtros'}
+          style={{ background: sidebarOpen ? t.accentLight : 'none', border: `1px solid ${sidebarOpen ? t.accent + '40' : t.border}`, cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: sidebarOpen ? t.accent : t.text2, display: 'flex', flexShrink: 0, transition: 'all 0.15s' }}
           onMouseEnter={e => (e.currentTarget.style.background = sidebarOpen ? t.accentLight : t.surface2)}
           onMouseLeave={e => (e.currentTarget.style.background = sidebarOpen ? t.accentLight : 'none')}
-        >
-          <SlidersHorizontal size={16} />
-        </button>
+        ><SlidersHorizontal size={16} /></button>
       </div>
 
-      {/* ── Body: Sidebar + Main ──────────────────────────── */}
+      {/* Body */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <KanbanSidebar
-          theme={t} clients={activeClients} search={search} onSearch={setSearch}
-          filter={filter} onFilter={setFilter} sidebarOpen={sidebarOpen}
-          onToggle={() => setSidebarOpen(v => !v)}
-          total={activeClients.length} archivedCount={archivedClients.length}
-          deadlines={deadlines}
-        />
+        <KanbanSidebar theme={t} clients={activeClients} search={search} onSearch={setSearch}
+          filter={filter} onFilter={setFilter} sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(v => !v)}
+          total={activeClients.length} archivedCount={archivedClients.length} deadlines={deadlines} />
 
-        {/* Main area */}
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-
-          {/* ── Archive view ─────────────────────────────── */}
           {isArchiveView && (
             <div style={{ flex: 1, overflowY: 'auto' }}>
-              <ArchiveView
-                clients={archivedClients} theme={t}
-                onRestore={handleRestore} onDelete={handleDelete}
-              />
+              <ArchiveView clients={archivedClients} theme={t} onRestore={handleRestore} onDelete={handleDelete} />
             </div>
           )}
 
-          {/* ── Board view ────────────────────────────────── */}
           {!isArchiveView && viewMode === 'board' && (
             <>
               {filteredActive.length === 0 && !search && filter === 'all' ? (
@@ -928,40 +767,23 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                   <p style={{ fontSize: 12, margin: '4px 0 0', color: t.text3 }}>As clientes aparecerão aqui após o cadastro</p>
                 </div>
               ) : (
-                <div style={{
-                  flex: 1, overflowX: 'auto', overflowY: 'hidden',
-                  padding: '16px 20px 20px', display: 'flex', gap: 14, alignItems: 'flex-start',
-                }}>
+                <div style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden', padding: '16px 20px 20px', display: 'flex', gap: 14, alignItems: 'flex-start' }}>
                   {COL_ORDER.map(key => (
-                    <KanbanColumn
-                      key={key}
-                      statusKey={key}
-                      clients={groupedByStatus[key] || []}
-                      deadlines={deadlines}
-                      starredIds={starredIds}
-                      theme={t}
-                      collapsed={!!collapsed[key]}
-                      onToggleCollapse={() => toggleCollapse(key)}
-                      onView={id => navigate(`/admin/clients/${id}`)}
-                      onArchive={handleArchive}
-                      onDelete={handleDelete}
-                      onStar={handleStar}
-                    />
+                    <KanbanColumn key={key} statusKey={key} clients={groupedByStatus[key] || []} deadlines={deadlines} starredIds={starredIds} theme={t}
+                      collapsed={!!collapsed[key]} onToggleCollapse={() => toggleCollapse(key)}
+                      onView={id => navigate(`/admin/clients/${id}`)} onArchive={handleArchive} onDelete={handleDelete} onStar={handleStar} />
                   ))}
                 </div>
               )}
             </>
           )}
 
-          {/* ── List view ─────────────────────────────────── */}
           {!isArchiveView && viewMode === 'list' && (
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
               {filteredActive.length === 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 200, color: t.text3 }}>
                   <User size={36} style={{ marginBottom: 10, opacity: 0.4 }} />
-                  <p style={{ fontSize: 14, margin: 0, color: t.text2 }}>
-                    {search || filter !== 'all' ? 'Nenhuma cliente encontrada' : 'Nenhuma cliente cadastrada'}
-                  </p>
+                  <p style={{ fontSize: 14, margin: 0, color: t.text2 }}>{search || filter !== 'all' ? 'Nenhuma cliente encontrada' : 'Nenhuma cliente cadastrada'}</p>
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -974,94 +796,36 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                     const dl = getDeadlineInfo(client, deadlines[client.id])
                     return (
                       <div key={client.id}
-                        style={{
-                          background: t.cardBg, border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : t.cardBorder}`,
-                          borderRadius: 12, padding: '12px 16px', display: 'flex',
-                          alignItems: 'center', justifyContent: 'space-between', gap: 12,
-                          cursor: 'pointer',
-                        }}
+                        style={{ background: t.cardBg, border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : client.status === 'photos_submitted' ? '#fbcfe8' : t.cardBorder}`, borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, cursor: 'pointer' }}
                         onClick={() => navigate(`/admin/clients/${client.id}`)}
                         onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = t.accent + '60'}
-                        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = dl?.urgency === 'danger' ? '#fca5a5' : t.cardBorder}
+                        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = dl?.urgency === 'danger' ? '#fca5a5' : client.status === 'photos_submitted' ? '#fbcfe8' : t.cardBorder}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                          {/* Avatar */}
-                          <div style={{
-                            width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-                            background: getAvatarColor(client.full_name)[0],
-                            color: getAvatarColor(client.full_name)[1],
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: 13, fontWeight: 700,
-                          }}>
+                          <div style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, background: getAvatarColor(client.full_name)[0], color: getAvatarColor(client.full_name)[1], display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700 }}>
                             {getInitials(client.full_name)}
                           </div>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const }}>
                               <span style={{ fontSize: 14, fontWeight: 600, color: t.text }}>{client.full_name}</span>
-                              <span style={{
-                                fontSize: 10, padding: '2px 8px', borderRadius: 20,
-                                background: cfg.bg, color: cfg.textColor, fontWeight: 600,
-                              }}>
-                                {cfg.label}
-                              </span>
+                              <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: cfg?.bg, color: cfg?.textColor, fontWeight: 600 }}>{cfg?.label}</span>
                               {starredIds.has(client.id) && <span style={{ fontSize: 11, color: '#f59e0b' }}>★</span>}
-                              {dl && (
-                                <span style={{
-                                  fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
-                                  background: dl.urgency === 'danger' ? '#fee2e2' : '#fef3c7',
-                                  color: dl.urgency === 'danger' ? '#991b1b' : '#92400e',
-                                }}>
-                                  📅 {dl.label}
-                                </span>
-                              )}
+                              {dl && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: dl.urgency === 'danger' ? '#fee2e2' : '#fef3c7', color: dl.urgency === 'danger' ? '#991b1b' : '#92400e' }}>📅 {dl.label}</span>}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 3 }}>
-                              <span style={{ fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <Mail size={11} color={t.text3} /> {client.email}
-                              </span>
-                              {client.phone && (
-                                <span style={{ fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                  <Phone size={11} color={t.text3} /> {client.phone}
-                                </span>
-                              )}
+                              <span style={{ fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', gap: 4 }}><Mail size={11} color={t.text3} /> {client.email}</span>
+                              {client.phone && <span style={{ fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', gap: 4 }}><Phone size={11} color={t.text3} /> {client.phone}</span>}
                             </div>
                           </div>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
-                          onClick={e => e.stopPropagation()}>
-                          <button
-                            onClick={() => handleStar(client.id)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: starredIds.has(client.id) ? '#f59e0b' : t.text3 }}
-                            title={starredIds.has(client.id) ? 'Remover estrela' : 'Destacar'}
-                          >
-                            <Star size={15} />
-                          </button>
-                          <button
-                            onClick={() => navigate(`/admin/clients/${client.id}`)}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px',
-                              borderRadius: 8, border: `1px solid ${t.border}`, background: 'none',
-                              cursor: 'pointer', fontSize: 12, color: t.text2,
-                            }}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                          <button onClick={() => handleStar(client.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: starredIds.has(client.id) ? '#f59e0b' : t.text3 }} title={starredIds.has(client.id) ? 'Remover estrela' : 'Destacar'}><Star size={15} /></button>
+                          <button onClick={() => navigate(`/admin/clients/${client.id}`)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, border: `1px solid ${t.border}`, background: 'none', cursor: 'pointer', fontSize: 12, color: t.text2 }}
                             onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
                             onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
-                          >
-                            <Eye size={13} /> Ver
-                          </button>
-                          <button
-                            onClick={() => handleArchive(client.id)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: t.text3 }}
-                            title="Arquivar"
-                          >
-                            <Archive size={14} />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(client.id)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: '#ef4444' }}
-                            title="Excluir"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          ><Eye size={13} /> Ver</button>
+                          <button onClick={() => handleArchive(client.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: t.text3 }} title="Arquivar"><Archive size={14} /></button>
+                          <button onClick={() => handleDelete(client.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: '#ef4444' }} title="Excluir"><Trash2 size={14} /></button>
                         </div>
                       </div>
                     )
@@ -1081,113 +845,251 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
   formSubmission: any; planForm: any; onClose: () => void
 }) {
   const formData = formSubmission?.form_data || {}
-  const fields: any[] = planForm?.fields || []
+  const fields: any[] = (planForm?.fields || []).sort((a: any, b: any) => a.order - b.order)
   const fieldMap = Object.fromEntries(fields.map((f: any) => [f.id, f]))
-  const getLabel = (key: string) => fieldMap[key]?.label || key
-  const getValue = (value: any) => {
+  const [generatingPDF, setGeneratingPDF] = useState(false)
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+
+  const isImageUrl = (val: any): boolean =>
+    typeof val === 'string' && (val.startsWith('http') || val.startsWith('blob:') || val.startsWith('data:image'))
+
+  const getImageUrls = (value: any): string[] => {
+    if (!value) return []
+    if (typeof value === 'string' && isImageUrl(value)) return [value]
+    if (Array.isArray(value)) return value.filter(isImageUrl)
+    return []
+  }
+
+  const getTextValue = (value: any): string => {
     if (value === null || value === undefined || value === '') return '—'
     if (Array.isArray(value)) return value.join(', ')
     if (typeof value === 'object') return JSON.stringify(value)
     return String(value)
   }
 
-  const handleDownloadPDF = () => {
-    const win = window.open('', '_blank')
-    if (!win) return
-    const rows = Object.entries(formData).map(([key, value]) => `
-      <tr>
-        <td style="padding:8px 12px;font-weight:600;color:#555;background:#f9f9f9;border:1px solid #eee;width:35%">${getLabel(key)}</td>
-        <td style="padding:8px 12px;border:1px solid #eee">${getValue(value)}</td>
-      </tr>
-    `).join('')
-    win.document.write(`
-      <html><head><title>Formulário</title>
-      <style>body{font-family:Arial,sans-serif;padding:32px}h1{font-size:18px;margin-bottom:4px}p{color:#888;font-size:13px;margin-bottom:20px}table{width:100%;border-collapse:collapse}</style>
-      </head><body>
-      <h1>Respostas do Formulário</h1>
-      <p>Enviado em: ${formSubmission?.submitted_at ? new Date(formSubmission.submitted_at).toLocaleString('pt-BR') : '—'}</p>
-      <table>${rows}</table>
-      </body></html>
-    `)
-    win.document.close()
-    win.print()
+  const fetchBase64 = async (url: string): Promise<string | null> => {
+    try {
+      const resp = await fetch(url)
+      const blob = await resp.blob()
+      return await new Promise((res, rej) => {
+        const reader = new FileReader()
+        reader.onload = () => res(reader.result as string)
+        reader.onerror = rej
+        reader.readAsDataURL(blob)
+      })
+    } catch { return null }
   }
 
+  const handleDownloadPDF = async () => {
+    setGeneratingPDF(true)
+    try {
+      const { default: jsPDF } = await import('jspdf')
+      const pdf = new jsPDF()
+      const pageW = pdf.internal.pageSize.width
+      const pageH = pdf.internal.pageSize.height
+      const margin = 20
+      const maxW = pageW - margin * 2
+      let y = 20
+
+      const checkPage = (space = 20) => {
+        if (y + space > pageH - margin) { pdf.addPage(); y = margin }
+      }
+      const hline = () => {
+        pdf.setDrawColor(220, 220, 220)
+        pdf.line(margin, y, pageW - margin, y)
+        y += 6
+      }
+
+      // Cabeçalho
+      pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(130, 130, 130)
+      const dateStr = formSubmission?.submitted_at
+        ? new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+        : ''
+      pdf.text(dateStr, pageW - margin - pdf.getTextWidth(dateStr), y); y += 10
+
+      pdf.setFontSize(18); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(0, 0, 0)
+      pdf.text('Coloração Pessoal Online', margin, y); y += 8
+      pdf.setFontSize(12); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(80, 80, 80)
+      pdf.text('Formulário', margin, y); y += 10
+      hline()
+
+      // Campos ordenados
+      const ordered: [string, any][] = [
+        ...fields.filter((f: any) => formData[f.id] !== undefined).map((f: any) => [f.id, formData[f.id]] as [string, any]),
+        ...Object.keys(formData).filter(k => !fieldMap[k]).map(k => [k, formData[k]] as [string, any]),
+      ]
+
+      for (let i = 0; i < ordered.length; i++) {
+        const [key, value] = ordered[i]
+        const field = fieldMap[key]
+        const label = field?.label || key
+        const imgUrls = getImageUrls(value)
+        const isImg = field?.type === 'image' || imgUrls.length > 0
+
+        checkPage(30)
+
+        // Pergunta em bold azul-escuro
+        pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(30, 40, 80)
+        const qLines = pdf.splitTextToSize(`${i + 1}. ${label}`, maxW)
+        qLines.forEach((line: string) => { checkPage(); pdf.text(line, margin, y); y += 6 })
+        y += 2
+
+        if (isImg) {
+          if (imgUrls.length === 0) {
+            pdf.setFontSize(10); pdf.setFont('helvetica', 'italic'); pdf.setTextColor(160, 160, 160)
+            pdf.text('(Nenhuma imagem)', margin + 5, y); y += 8
+          } else {
+            for (const url of imgUrls) {
+              const b64 = await fetchBase64(url)
+              if (!b64) continue
+              try {
+                const props = pdf.getImageProperties(b64)
+                const ratio = props.width / props.height
+                const drawW = maxW
+                const drawH = drawW / ratio
+                checkPage(drawH + 10)
+                pdf.addImage(b64, 'JPEG', margin, y, drawW, drawH)
+                y += drawH + 8
+              } catch { /* imagem inválida */ }
+            }
+          }
+        } else {
+          pdf.setFontSize(10); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(60, 60, 60)
+          const lines = pdf.splitTextToSize(getTextValue(value), maxW - 10)
+          lines.forEach((line: string) => { checkPage(); pdf.text(line, margin + 5, y); y += 6 })
+          y += 4
+        }
+
+        if (i < ordered.length - 1) {
+          pdf.setDrawColor(235, 235, 235)
+          pdf.line(margin, y, pageW - margin, y)
+          y += 8
+        }
+      }
+
+      // Rodapé
+      const total = (pdf as any).internal.pages.length - 1
+      for (let p = 1; p <= total; p++) {
+        pdf.setPage(p)
+        pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(160, 160, 160)
+        const pg = `Página ${p} de ${total}`
+        pdf.text(pg, pageW - margin - pdf.getTextWidth(pg), pageH - 10)
+      }
+
+      pdf.save('Formulario.pdf')
+    } catch (err) {
+      console.error('Erro ao gerar PDF:', err)
+      alert('Erro ao gerar PDF. Tente novamente.')
+    } finally {
+      setGeneratingPDF(false)
+    }
+  }
+
+  const orderedEntries: [string, any][] = [
+    ...fields.filter((f: any) => formData[f.id] !== undefined).map((f: any) => [f.id, formData[f.id]] as [string, any]),
+    ...Object.keys(formData).filter(k => !fieldMap[k]).map(k => [k, formData[k]] as [string, any]),
+  ]
+
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-blue-50 rounded-lg flex items-center justify-center">
-              <ClipboardList className="h-5 w-5 text-blue-500" />
-            </div>
-            <div>
-              <h2 className="font-semibold text-gray-900">Respostas do Formulário</h2>
-              {formSubmission?.submitted_at && (
-                <p className="text-xs text-gray-400">Enviado em {new Date(formSubmission.submitted_at).toLocaleString('pt-BR')}</p>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Btn variant="outline" size="sm" onClick={handleDownloadPDF}>
-              <Download className="h-3.5 w-3.5" /> Baixar PDF
-            </Btn>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 ml-1"><X className="h-5 w-5" /></button>
-          </div>
+    <>
+      {lightboxUrl && (
+        <div className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4" onClick={() => setLightboxUrl(null)}>
+          <button className="absolute top-4 right-4 text-white/70 hover:text-white" onClick={() => setLightboxUrl(null)}><X className="h-7 w-7" /></button>
+          <img src={lightboxUrl} alt="Imagem ampliada" className="max-w-full max-h-full object-contain rounded-lg" onClick={e => e.stopPropagation()} />
         </div>
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          {Object.entries(formData).length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-8">Sem respostas</p>
-          ) : (
-            Object.entries(formData).map(([key, value]: any) => {
-              const field = fieldMap[key]
-              const isImage = field?.type === 'image'
-              return (
-                <div key={key} className="border-b border-gray-50 pb-4 last:border-0">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">{getLabel(key)}</p>
-                  {isImage && typeof value === 'string' && value.startsWith('http') ? (
-                    <a href={value} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700">
-                      <Image className="h-4 w-4" /> Ver imagem anexada
-                    </a>
-                  ) : (
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{getValue(value)}</p>
-                  )}
-                </div>
-              )
-            })
-          )}
+      )}
+
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-blue-50 rounded-lg flex items-center justify-center"><ClipboardList className="h-5 w-5 text-blue-500" /></div>
+              <div>
+                <h2 className="font-semibold text-gray-900">Respostas do Formulário</h2>
+                {formSubmission?.submitted_at && <p className="text-xs text-gray-400">Enviado em {new Date(formSubmission.submitted_at).toLocaleString('pt-BR')}</p>}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Btn variant="outline" size="sm" onClick={handleDownloadPDF} disabled={generatingPDF}>
+                {generatingPDF
+                  ? <><div className="animate-spin h-3.5 w-3.5 border-2 border-gray-400 border-t-transparent rounded-full" /> Gerando...</>
+                  : <><Download className="h-3.5 w-3.5" /> Baixar PDF</>}
+              </Btn>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 ml-1"><X className="h-5 w-5" /></button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+            {orderedEntries.length === 0
+              ? <p className="text-sm text-gray-400 text-center py-8">Sem respostas</p>
+              : orderedEntries.map(([key, value], idx) => {
+                const field = fieldMap[key]
+                const label = field?.label || key
+                const imgUrls = getImageUrls(value)
+                const isImg = field?.type === 'image' || imgUrls.length > 0
+
+                return (
+                  <div key={key} className="border-b border-gray-100 pb-5 last:border-0 last:pb-0">
+                    <p className="text-sm font-bold text-blue-900 mb-3">
+                      {idx + 1}. {label}
+                    </p>
+
+                    {isImg ? (
+                      imgUrls.length === 0
+                        ? <p className="text-sm text-gray-400 italic">Nenhuma imagem enviada</p>
+                        : (
+                          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+                            {imgUrls.map((url, i) => (
+                              <div key={i} className="relative group cursor-pointer rounded-xl overflow-hidden border border-gray-200 bg-gray-50"
+                                onClick={() => setLightboxUrl(url)}>
+                                <img
+                                  src={url}
+                                  alt={`Imagem ${i + 1}`}
+                                  className="w-full object-cover"
+                                  style={{ maxHeight: 220, objectFit: 'cover' }}
+                                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                />
+                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center">
+                                  <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                                <a href={url} target="_blank" rel="noopener noreferrer"
+                                  className="absolute bottom-2 right-2 bg-white/80 hover:bg-white rounded-lg p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={e => e.stopPropagation()} title="Abrir original">
+                                  <ExternalLink className="h-3.5 w-3.5 text-gray-600" />
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                    ) : (
+                      <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{getTextValue(value)}</p>
+                    )}
+                  </div>
+                )
+              })
+            }
+          </div>
         </div>
       </div>
-    </div>
+    </>
   )
 }
 
 // ─── Photo Lightbox ───────────────────────────────────────────────────────
-function PhotoLightbox({ photos, initialIndex, onClose }: {
-  photos: any[]; initialIndex: number; onClose: () => void
-}) {
+function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initialIndex: number; onClose: () => void }) {
   const [index, setIndex] = useState(initialIndex)
   const [zoom, setZoom] = useState(1)
   const prev = useCallback(() => { setIndex(i => (i - 1 + photos.length) % photos.length); setZoom(1) }, [photos.length])
   const next = useCallback(() => { setIndex(i => (i + 1) % photos.length); setZoom(1) }, [photos.length])
-
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-      if (e.key === 'ArrowLeft') prev()
-      if (e.key === 'ArrowRight') next()
-      if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z + 0.5, 4))
-      if (e.key === '-') setZoom(z => Math.max(z - 0.5, 0.5))
+      if (e.key === 'Escape') onClose(); if (e.key === 'ArrowLeft') prev(); if (e.key === 'ArrowRight') next()
+      if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z + 0.5, 4)); if (e.key === '-') setZoom(z => Math.max(z - 0.5, 0.5))
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
   }, [prev, next, onClose])
-
   const photo = photos[index]
-  const handleDownload = () => {
-    const a = document.createElement('a'); a.href = photo.url; a.download = photo.photo_name; a.target = '_blank'; a.click()
-  }
-
+  const handleDownload = () => { const a = document.createElement('a'); a.href = photo.url; a.download = photo.photo_name; a.target = '_blank'; a.click() }
   return (
     <div className="fixed inset-0 bg-black/95 z-50 flex flex-col" onClick={onClose}>
       <div className="flex items-center justify-between px-4 py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
@@ -1202,21 +1104,15 @@ function PhotoLightbox({ photos, initialIndex, onClose }: {
         </div>
       </div>
       <div className="flex-1 flex items-center justify-center overflow-hidden relative" onClick={e => e.stopPropagation()}>
-        {photos.length > 1 && (
-          <button onClick={prev} className="absolute left-4 z-10 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white"><ChevronLeft className="h-6 w-6" /></button>
-        )}
-        <img src={photo.url} alt={photo.photo_name} className="max-w-full max-h-full object-contain select-none transition-transform duration-200"
-          style={{ transform: `scale(${zoom})`, cursor: zoom > 1 ? 'move' : 'default' }} draggable={false} />
-        {photos.length > 1 && (
-          <button onClick={next} className="absolute right-4 z-10 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white"><ChevronRight className="h-6 w-6" /></button>
-        )}
+        {photos.length > 1 && <button onClick={prev} className="absolute left-4 z-10 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white"><ChevronLeft className="h-6 w-6" /></button>}
+        <img src={photo.url} alt={photo.photo_name} className="max-w-full max-h-full object-contain select-none transition-transform duration-200" style={{ transform: `scale(${zoom})`, cursor: zoom > 1 ? 'move' : 'default' }} draggable={false} />
+        {photos.length > 1 && <button onClick={next} className="absolute right-4 z-10 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white"><ChevronRight className="h-6 w-6" /></button>}
       </div>
       {photos.length > 1 && (
         <div className="flex-shrink-0 bg-black/60 py-3 px-4" onClick={e => e.stopPropagation()}>
           <div className="flex gap-2 justify-center overflow-x-auto pb-1">
             {photos.map((p, i) => (
-              <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }}
-                className={`flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden transition-all ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
+              <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }} className={`flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden transition-all ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
                 <img src={p.url} alt={p.photo_name} className="w-full h-full object-cover" />
               </button>
             ))}
@@ -1228,71 +1124,43 @@ function PhotoLightbox({ photos, initialIndex, onClose }: {
 }
 
 // ─── Photos View ──────────────────────────────────────────────────────────
-function PhotosView({ clientId, photos, photoCategories }: {
-  clientId: string; photos: any[]; photoCategories: any[]
-}) {
+function PhotosView({ clientId, photos, photoCategories }: { clientId: string; photos: any[]; photoCategories: any[] }) {
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
-
-  useEffect(() => {
-    adminService.getClientPhotosWithUrls(clientId).then(p => { setPhotosWithUrls(p); setLoading(false) })
-  }, [clientId])
-
+  useEffect(() => { adminService.getClientPhotosWithUrls(clientId).then(p => { setPhotosWithUrls(p); setLoading(false) }) }, [clientId])
   if (loading) return <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
   if (photosWithUrls.length === 0) return (
     <div className="bg-white border border-dashed border-gray-300 rounded-xl p-12 text-center">
-      <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-      <p className="text-gray-500">Nenhuma foto enviada ainda</p>
+      <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" /><p className="text-gray-500">Nenhuma foto enviada ainda</p>
     </div>
   )
-
   const photosByCat: Record<string, any[]> = {}
   const uncategorized: any[] = []
-  photosWithUrls.forEach(p => {
-    if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) }
-    else uncategorized.push(p)
-  })
-
-  const downloadAll = (catPhotos: any[]) => {
-    catPhotos.forEach((p, i) => {
-      setTimeout(() => {
-        const a = document.createElement('a'); a.href = p.url; a.download = p.photo_name; a.target = '_blank'
-        document.body.appendChild(a); a.click(); document.body.removeChild(a)
-      }, i * 300)
-    })
-  }
-
+  photosWithUrls.forEach(p => { if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) } else uncategorized.push(p) })
+  const downloadAll = (catPhotos: any[]) => { catPhotos.forEach((p, i) => { setTimeout(() => { const a = document.createElement('a'); a.href = p.url; a.download = p.photo_name; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a) }, i * 300) }) }
   const renderGrid = (catPhotos: any[]) => (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
       {catPhotos.map((photo, idx) => (
-        <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all"
-          onClick={() => setLightbox({ photos: catPhotos, index: idx })}>
+        <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all" onClick={() => setLightbox({ photos: catPhotos, index: idx })}>
           <img src={photo.url} alt={photo.photo_name} className="w-full h-full object-cover" loading="lazy" />
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
-            <Maximize2 className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-          </div>
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center"><Maximize2 className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" /></div>
         </div>
       ))}
     </div>
   )
-
   return (
     <>
       <div className="space-y-5">
-        {photoCategories.map(cat => {
-          const catPhotos = photosByCat[cat.id] || []
-          if (catPhotos.length === 0) return null
-          return (
-            <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-                <div><h3 className="font-semibold text-gray-900">{cat.title}</h3><p className="text-xs text-gray-400 mt-0.5">{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p></div>
-                <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos)}><Download className="h-3.5 w-3.5" /> Baixar todas</Btn>
-              </div>
-              <div className="p-5">{renderGrid(catPhotos)}</div>
+        {photoCategories.map(cat => { const catPhotos = photosByCat[cat.id] || []; if (catPhotos.length === 0) return null; return (
+          <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div><h3 className="font-semibold text-gray-900">{cat.title}</h3><p className="text-xs text-gray-400 mt-0.5">{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p></div>
+              <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos)}><Download className="h-3.5 w-3.5" /> Baixar todas</Btn>
             </div>
-          )
-        })}
+            <div className="p-5">{renderGrid(catPhotos)}</div>
+          </div>
+        )})}
         {uncategorized.length > 0 && (
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
@@ -1309,7 +1177,6 @@ function PhotosView({ clientId, photos, photoCategories }: {
 }
 
 // ─── Client Detail ────────────────────────────────────────────────────────
-// (Mantido exatamente como estava — toda a lógica de tabs, resultado, IA, etc.)
 function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const { clientId } = useParams<{ clientId: string }>()
   const navigate = useNavigate()
@@ -1318,13 +1185,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'ai'>('overview')
   const [showFormModal, setShowFormModal] = useState(false)
-
   const [resultForm, setResultForm] = useState({ observations: '' })
   const [savingResult, setSavingResult] = useState(false)
   const [releasingResult, setReleasingResult] = useState(false)
   const [uploadingFile, setUploadingFile] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
   const [aiFolders, setAiFolders] = useState<any[]>([])
   const [tagTemplates, setTagTemplates] = useState<any[]>([])
   const [clientTags, setClientTags] = useState<{ templateId: string; name: string; value: string }[]>([])
@@ -1332,11 +1197,10 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [linkedFolderConfig, setLinkedFolderConfig] = useState<any>(null)
   const [savingAI, setSavingAI] = useState(false)
   const [aiSaveStatus, setAiSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
-
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
-
+  const [approvingPhotos, setApprovingPhotos] = useState(false)   // NEW
   const [editingDeadline, setEditingDeadline] = useState(false)
   const [deadlineInput, setDeadlineInput] = useState('')
   const [savingDeadline, setSavingDeadline] = useState(false)
@@ -1346,36 +1210,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const buildSystemPrompt = (name: string, folderConfig: any, tags: { name: string; value: string }[]): string => {
     const filled = tags.filter(t => t.value.trim())
     let tagSection = ''
-    if (filled.length > 0) {
-      tagSection = `\n═══ INFORMAÇÕES DA ANÁLISE DESTA CLIENTE ═══\n${filled.map(t => `${t.name}: ${t.value}`).join('\n')}\n\nUse ESTAS informações como base para TODAS as respostas.`
-    }
+    if (filled.length > 0) tagSection = `\n═══ INFORMAÇÕES DA ANÁLISE DESTA CLIENTE ═══\n${filled.map(t => `${t.name}: ${t.value}`).join('\n')}\n\nUse ESTAS informações como base para TODAS as respostas.`
     if (!folderConfig && !filled.length) return ''
     let categoriesSection = ''
     if (folderConfig) {
-      const catLines = (folderConfig.categories || []).map((cat: any) => {
-        const prompts = (cat.prompts || []).map((p: any) => {
-          let d = '  - ' + p.name
-          if (p.options?.length) d += ' [' + p.options.join(', ') + ']'
-          if (p.instructions) d += ' → ' + p.instructions
-          return d
-        }).join('\n')
-        return '📌 ' + cat.name + ':\n' + (prompts || '  (vazio)')
-      }).join('\n\n')
+      const catLines = (folderConfig.categories || []).map((cat: any) => { const prompts = (cat.prompts || []).map((p: any) => { let d = '  - ' + p.name; if (p.options?.length) d += ' [' + p.options.join(', ') + ']'; if (p.instructions) d += ' → ' + p.instructions; return d }).join('\n'); return '📌 ' + cat.name + ':\n' + (prompts || '  (vazio)') }).join('\n\n')
       categoriesSection = '\n═══ CATEGORIAS ═══\n' + catLines
     }
-    const parts: string[] = [
-      'Você é a "MS Color IA", assistente virtual de coloração pessoal.',
-      'Atende a cliente ' + name + '.', '',
-      '═══ REGRAS ABSOLUTAS ═══',
-      '1. FOTO: Já está anexada. NUNCA peça foto.',
-      '2. ROSTO: Mantenha feições idênticas ao gerar imagens.',
-      '3. RESPOSTAS: Baseie-se EXCLUSIVAMENTE nas informações abaixo.',
-      '4. ESCOPO: Só coloração pessoal, moda, estilo, cabelo, maquiagem, acessórios.',
-      '5. TOM: Entusiasmada, positiva. Português brasileiro.',
-      tagSection, categoriesSection,
-      '═══ GERAÇÃO ═══', '- Use a foto da categoria correta (cabelo/roupa/geral) como base.',
-    ]
-    return parts.join('\n')
+    return ['Você é a "MS Color IA", assistente virtual de coloração pessoal.', 'Atende a cliente ' + name + '.', '', '═══ REGRAS ABSOLUTAS ═══', '1. FOTO: Já está anexada. NUNCA peça foto.', '2. ROSTO: Mantenha feições idênticas ao gerar imagens.', '3. RESPOSTAS: Baseie-se EXCLUSIVAMENTE nas informações abaixo.', '4. ESCOPO: Só coloração pessoal, moda, estilo, cabelo, maquiagem, acessórios.', '5. TOM: Entusiasmada, positiva. Português brasileiro.', tagSection, categoriesSection, '═══ GERAÇÃO ═══', '- Use a foto da categoria correta (cabelo/roupa/geral) como base.'].join('\n')
   }
 
   const load = async () => {
@@ -1395,15 +1237,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setTagTemplates(tpls)
     const folderId = detail.client.ai_folder_id || null
     setLinkedFolderId(folderId)
-    if (folderId) {
-      const fc = folders.find((f: any) => f.id === folderId)
-      setLinkedFolderConfig(fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null)
-    }
+    if (folderId) { const fc = folders.find((f: any) => f.id === folderId); setLinkedFolderConfig(fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null) }
     const savedTags: any[] = detail.client.ai_info_tags || []
-    setClientTags(tpls.map((t: any) => {
-      const saved = savedTags.find((s: any) => s.templateId === t.id)
-      return { templateId: t.id, name: t.name, value: saved?.value || '' }
-    }))
+    setClientTags(tpls.map((t: any) => { const saved = savedTags.find((s: any) => s.templateId === t.id); return { templateId: t.id, name: t.name, value: saved?.value || '' } }))
     setLoading(false)
   }
 
@@ -1413,35 +1249,47 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     catch (e: any) { alert(e.message) } finally { setSavingNotes(false) }
   }
 
+  // Approva fotos + formulário e inicia análise
+  const handleApprovePhotos = async () => {
+    const clientName = data?.client?.full_name ?? 'esta cliente'
+    const hasForm = !!formSubmission
+    const photosCount = photos.length
+
+    if (photosCount === 0) {
+      alert('Nenhuma foto enviada ainda.')
+      return
+    }
+
+    const formWarning = hasForm
+      ? ''
+      : '\n\n⚠️ O formulário ainda não foi enviado pela cliente. Deseja aprovar mesmo assim?'
+
+    if (!confirm(
+      `Aprovar fotos e formulário de ${clientName}?${formWarning}\n\nIsso irá:\n• Mover para "Análise em Andamento"\n• Definir o prazo de entrega\n• Enviar e-mail de confirmação para a cliente`
+    )) return
+
+    setApprovingPhotos(true)
+    try {
+      const deadlineDays = (data?.client as any)?.plan?.deadline_days ?? 5
+      await adminService.approvePhotos(clientId!, deadlineDays)
+      load()
+    } catch (e: any) { alert(e.message) } finally { setApprovingPhotos(false) }
+  }
+
   const handleSaveDeadline = async () => {
     if (!deadlineInput) return
     setSavingDeadline(true)
-    try {
-      await supabase.from('client_deadlines').update({ deadline_date: deadlineInput }).eq('client_id', clientId!)
-      setEditingDeadline(false); load()
-    } catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
+    try { await supabase.from('client_deadlines').update({ deadline_date: deadlineInput }).eq('client_id', clientId!); setEditingDeadline(false); load() }
+    catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
   }
 
-  const copyLink = () => {
-    const link = `${window.location.origin}/c/${data.client.token}`
-    navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000)
-  }
-
-  const handleSaveResult = async () => {
-    setSavingResult(true)
-    try { await adminService.saveResult(clientId!, resultForm); load() }
-    catch (e: any) { alert(e.message) } finally { setSavingResult(false) }
-  }
-
+  const copyLink = () => { const link = `${window.location.origin}/c/${data.client.token}`; navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+  const handleSaveResult = async () => { setSavingResult(true); try { await adminService.saveResult(clientId!, resultForm); load() } catch (e: any) { alert(e.message) } finally { setSavingResult(false) } }
   const handleReleaseResult = async () => {
     const hasContent = resultForm.observations.trim() || resultFiles?.length > 0 || linkedFolderId
-    if (!hasContent) { if (!confirm('⚠️ Nenhum conteúdo adicionado.\n\nDeseja liberar mesmo assim?')) return }
-    else { if (!confirm('Liberar o resultado para a cliente?')) return }
-    setReleasingResult(true)
-    try { await adminService.releaseResult(clientId!); load() }
-    catch (e: any) { alert(e.message) } finally { setReleasingResult(false) }
+    if (!hasContent) { if (!confirm('⚠️ Nenhum conteúdo adicionado.\n\nDeseja liberar mesmo assim?')) return } else { if (!confirm('Liberar o resultado para a cliente?')) return }
+    setReleasingResult(true); try { await adminService.releaseResult(clientId!); load() } catch (e: any) { alert(e.message) } finally { setReleasingResult(false) }
   }
-
   const handleSaveAIConfig = async () => {
     setSavingAI(true); setAiSaveStatus('idle')
     try {
@@ -1452,27 +1300,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       setAiSaveStatus('saved'); setTimeout(() => setAiSaveStatus('idle'), 3000)
     } catch { setAiSaveStatus('error') } finally { setSavingAI(false) }
   }
-
-  const handleLinkFolder = async (folderId: string | null) => {
-    setLinkedFolderId(folderId)
-    if (folderId) {
-      const fc = aiFolders.find((f: any) => f.id === folderId)
-      const config = fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null
-      setLinkedFolderConfig(config)
-    } else { setLinkedFolderConfig(null) }
-  }
-
-  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return
-    setUploadingFile(true)
-    try { await adminService.uploadResultFile(clientId!, file); load() }
-    catch (e: any) { alert(e.message) } finally { setUploadingFile(false); if (fileInputRef.current) fileInputRef.current.value = '' }
-  }
-
-  const handleDeleteFile = async (fileId: string, storagePath: string) => {
-    if (!confirm('Remover este arquivo?')) return
-    await adminService.deleteResultFile(fileId, storagePath); load()
-  }
+  const handleLinkFolder = async (folderId: string | null) => { setLinkedFolderId(folderId); if (folderId) { const fc = aiFolders.find((f: any) => f.id === folderId); const config = fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null; setLinkedFolderConfig(config) } else { setLinkedFolderConfig(null) } }
+  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (!file) return; setUploadingFile(true); try { await adminService.uploadResultFile(clientId!, file); load() } catch (e: any) { alert(e.message) } finally { setUploadingFile(false); if (fileInputRef.current) fileInputRef.current.value = '' } }
+  const handleDeleteFile = async (fileId: string, storagePath: string) => { if (!confirm('Remover este arquivo?')) return; await adminService.deleteResultFile(fileId, storagePath); load() }
 
   if (loading) return <div className="flex justify-center py-20"><div className="animate-spin h-8 w-8 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
   if (!data) return <div className="text-center py-20 text-gray-500">Cliente não encontrado</div>
@@ -1483,321 +1313,299 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
   return (
     <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f4f5f7' }}>
-      {/* ── Topbar ── */}
-      <div style={{
-        background: '#ffffff', borderBottom: '2px solid #dfe1e6',
-        padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8,
-        flexShrink: 0, height: 52,
-      }}>
-        <button onClick={onOpenNav} title="Menu" style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          padding: '6px 8px', borderRadius: 8, color: '#5e6c84',
-          display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0,
-        }}>
+      {/* Topbar */}
+      <div style={{ background: '#ffffff', borderBottom: '2px solid #dfe1e6', padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
+        <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: '#5e6c84', display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
           <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
           <span style={{ display: 'block', width: 14, height: 2, background: 'currentColor', borderRadius: 2 }} />
           <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
         </button>
-        <div style={{
-          width: 28, height: 28, borderRadius: 8, flexShrink: 0,
-          background: 'linear-gradient(135deg, #e91e63, #ff6090)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 2px 8px rgba(233,30,99,0.3)',
-        }}>
+        <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(135deg, #e91e63, #ff6090)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(233,30,99,0.3)' }}>
           <Palette size={14} color="white" />
         </div>
         <div style={{ width: 1, height: 22, background: '#dfe1e6', flexShrink: 0, margin: '0 2px' }} />
-        <button onClick={() => navigate('/admin/clients')} style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 5,
-          padding: '4px 6px', borderRadius: 6, color: '#5e6c84',
-        }}>
-          <ArrowLeft size={14} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: '#5e6c84' }}>Clientes</span>
+        <button onClick={() => navigate('/admin/clients')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '4px 6px', borderRadius: 6, color: '#5e6c84' }}>
+          <ArrowLeft size={14} /><span style={{ fontSize: 14, fontWeight: 600, color: '#5e6c84' }}>Clientes</span>
         </button>
         <span style={{ fontSize: 14, color: '#97a0af' }}>/</span>
         <span style={{ fontSize: 14, fontWeight: 700, color: '#172b4d', marginRight: 4 }}>{client.full_name}</span>
-        <span style={{
-          fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
-          background: status?.bg, color: status?.textColor,
-        }}>{status?.label}</span>
+        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: status?.bg, color: status?.textColor }}>{status?.label}</span>
+
+        {/* Quick approve in topbar */}
+        {client.status === 'photos_submitted' && (
+          <div style={{ marginLeft: 'auto' }}>
+            <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos}>
+              <CheckCircle className="h-3.5 w-3.5" /> Aprovar e Iniciar Análise
+            </Btn>
+          </div>
+        )}
       </div>
 
-      {/* ── Scrollable body ── */}
+      {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
-      <div className="space-y-6 p-6 max-w-6xl mx-auto w-full">
-      {/* Header */}
-      <div className="flex items-start justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3">
-          <button onClick={() => navigate('/admin/clients')} className="text-gray-400 hover:text-gray-600">
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <div className="w-12 h-12 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center">
-            <span className="text-rose-600 font-bold text-lg">{client.full_name[0].toUpperCase()}</span>
-          </div>
-          <div>
+        <div className="space-y-6 p-6 max-w-6xl mx-auto w-full">
+
+          {/* Header */}
+          <div className="flex items-start justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center">
+                <span className="text-rose-600 font-bold text-lg">{client.full_name[0].toUpperCase()}</span>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-xl font-bold text-gray-900">{client.full_name}</h1>
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm text-gray-500 mt-0.5">
+                  <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" />{client.email}</span>
+                  {client.phone && <span className="flex items-center gap-1"><Phone className="h-3.5 w-3.5" />{client.phone}</span>}
+                </div>
+              </div>
+            </div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-gray-900">{client.full_name}</h1>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium`}
-                style={{ background: status?.bg, color: status?.textColor }}>
-                {status?.label}
-              </span>
-            </div>
-            <div className="flex items-center gap-3 text-sm text-gray-500 mt-0.5">
-              <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" />{client.email}</span>
-              {client.phone && <span className="flex items-center gap-1"><Phone className="h-3.5 w-3.5" />{client.phone}</span>}
+              <Btn variant="outline" size="sm" onClick={copyLink}>{copied ? <><Check className="h-3.5 w-3.5" /> Copiado!</> : <><FileText className="h-3.5 w-3.5" /> Copiar Link</>}</Btn>
+              <a href={portalLink} target="_blank" rel="noopener noreferrer"><Btn variant="ghost" size="sm"><ExternalLink className="h-3.5 w-3.5" /> Abrir Portal</Btn></a>
             </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Btn variant="outline" size="sm" onClick={copyLink}>
-            {copied ? <><Check className="h-3.5 w-3.5" /> Copiado!</> : <><FileText className="h-3.5 w-3.5" /> Copiar Link</>}
-          </Btn>
-          <a href={portalLink} target="_blank" rel="noopener noreferrer">
-            <Btn variant="ghost" size="sm"><ExternalLink className="h-3.5 w-3.5" /> Abrir Portal</Btn>
-          </a>
-        </div>
-      </div>
 
-      {/* Portal link */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="text-xs text-gray-500 mb-0.5">Link de acesso do cliente</p>
-          <p className="text-sm font-mono text-gray-700 truncate">{portalLink}</p>
-        </div>
-        <Btn variant="outline" size="sm" onClick={copyLink}><Copy className="h-3.5 w-3.5" /></Btn>
-      </div>
+          {/* Portal link */}
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-gray-500 mb-0.5">Link de acesso do cliente</p>
+              <p className="text-sm font-mono text-gray-700 truncate">{portalLink}</p>
+            </div>
+            <Btn variant="outline" size="sm" onClick={copyLink}><Copy className="h-3.5 w-3.5" /></Btn>
+          </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
-        {[
-          { id: 'overview', label: 'Visão Geral' },
-          { id: 'photos', label: `Fotos (${photos.length})` },
-          { id: 'result', label: 'Resultado' },
-          { id: 'ai', label: '✨ IA' },
-        ].map(({ id, label }) => (
-          <button key={id} onClick={() => setTab(id as any)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-            {label}
-          </button>
-        ))}
-      </div>
+          {/* Tabs */}
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
+            {[{ id: 'overview', label: 'Visão Geral' }, { id: 'photos', label: `Fotos (${photos.length})` }, { id: 'result', label: 'Resultado' }, { id: 'ai', label: '✨ IA' }].map(({ id, label }) => (
+              <button key={id} onClick={() => setTab(id as any)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
+            ))}
+          </div>
 
-      {/* Overview Tab */}
-      {tab === 'overview' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-white border border-gray-200 rounded-xl p-5">
-            <h3 className="font-semibold text-gray-900 mb-4">Progresso</h3>
-            <div className="space-y-3">
-              {[
-                { label: 'Contrato assinado', done: !!contract, date: contract?.signed_at },
-                { label: 'Formulário enviado', done: !!formSubmission, date: formSubmission?.submitted_at },
-                { label: `Fotos enviadas (${photos.length})`, done: photos.length > 0 && client.status !== 'awaiting_photos' },
-                { label: 'Em análise', done: ['in_analysis', 'completed'].includes(client.status) },
-                { label: 'Resultado liberado', done: result?.is_released },
-              ].map(({ label, done, date }: any) => (
-                <div key={label} className="flex items-center gap-3">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-green-100' : 'bg-gray-100'}`}>
-                    {done ? <Check className="h-3.5 w-3.5 text-green-600" /> : <div className="w-2 h-2 rounded-full bg-gray-300" />}
+          {/* Overview Tab */}
+          {tab === 'overview' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              {/* Approve banner */}
+              {client.status === 'photos_submitted' && (
+                <div className="md:col-span-2 bg-gradient-to-r from-pink-50 to-rose-50 border border-rose-200 rounded-xl p-5 flex items-center justify-between gap-4 flex-wrap">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-pink-100 rounded-full flex items-center justify-center flex-shrink-0">
+                      <Camera className="h-5 w-5 text-pink-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-rose-900">Fotos recebidas — aguardando sua revisão</p>
+                      <p className="text-xs text-rose-600 mt-0.5">Revise as fotos na aba <strong>Fotos</strong> e, quando estiver pronto, aprove para iniciar a análise e notificar a cliente.</p>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <span className={`text-sm ${done ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>{label}</span>
-                    {date && <span className="text-xs text-gray-400 ml-2">{new Date(date).toLocaleDateString('pt-BR')}</span>}
-                  </div>
+                  <Btn variant="pink" size="md" onClick={handleApprovePhotos} loading={approvingPhotos} className="flex-shrink-0">
+                    <CheckCircle className="h-4 w-4" /> Aprovar Fotos
+                  </Btn>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-xl p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-gray-900">Prazo</h3>
-              {deadline && !editingDeadline && (
-                <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline.deadline_date); setEditingDeadline(true) }}>
-                  <Calendar className="h-3.5 w-3.5" /> Editar
-                </Btn>
               )}
-            </div>
-            {deadline ? (
-              <div className="space-y-3">
-                <div>
-                  <p className="text-xs text-gray-500 mb-0.5">Fotos enviadas em</p>
-                  <p className="text-sm font-medium text-gray-800">{new Date(deadline.photos_sent_at).toLocaleString('pt-BR')}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 mb-0.5">Prazo de entrega</p>
-                  {editingDeadline ? (
-                    <div className="space-y-2">
-                      <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
-                      <div className="flex gap-2">
-                        <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
-                        <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
+
+              {/* Progresso */}
+              <div className="bg-white border border-gray-200 rounded-xl p-5">
+                <h3 className="font-semibold text-gray-900 mb-4">Progresso</h3>
+                <div className="space-y-3">
+                  {[
+                    { label: 'Contrato assinado', done: !!contract, date: contract?.signed_at },
+                    { label: 'Formulário enviado', done: !!formSubmission, date: formSubmission?.submitted_at },
+                    { label: `Fotos enviadas (${photos.length})`, done: photos.length > 0 && !['awaiting_contract', 'awaiting_form', 'awaiting_photos'].includes(client.status) },
+                    {
+                      label: 'Fotos aprovadas (revisão concluída)',
+                      done: ['in_analysis', 'completed'].includes(client.status),
+                      badge: client.status === 'photos_submitted' ? { text: 'Aguardando aprovação', color: 'text-pink-700 bg-pink-50 border border-pink-200' } : undefined,
+                    },
+                    { label: 'Análise em andamento', done: ['in_analysis', 'completed'].includes(client.status) },
+                    { label: 'Resultado liberado', done: result?.is_released },
+                  ].map(({ label, done, date, badge }: any) => (
+                    <div key={label} className="flex items-center gap-3">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-green-100' : 'bg-gray-100'}`}>
+                        {done ? <Check className="h-3.5 w-3.5 text-green-600" /> : <div className="w-2 h-2 rounded-full bg-gray-300" />}
+                      </div>
+                      <div className="flex-1 flex items-center gap-2 flex-wrap">
+                        <span className={`text-sm ${done ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>{label}</span>
+                        {date && <span className="text-xs text-gray-400">{new Date(date).toLocaleDateString('pt-BR')}</span>}
+                        {badge && !done && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`}>{badge.text}</span>}
                       </div>
                     </div>
-                  ) : (
-                    <>
-                      <p className="text-sm font-medium text-gray-800">{formatDeadlineDate(new Date(deadline.deadline_date))}</p>
-                      {client.status !== 'completed' && (
-                        <p className="text-xs text-orange-600 mt-0.5">{businessDaysUntil(new Date(deadline.deadline_date))} dias úteis restantes</p>
-                      )}
-                    </>
+                  ))}
+                </div>
+              </div>
+
+              {/* Prazo */}
+              <div className="bg-white border border-gray-200 rounded-xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-gray-900">Prazo</h3>
+                  {deadline?.deadline_date && !editingDeadline && client.status !== 'photos_submitted' && (
+                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline.deadline_date); setEditingDeadline(true) }}><Calendar className="h-3.5 w-3.5" /> Editar</Btn>
                   )}
                 </div>
-              </div>
-            ) : <p className="text-sm text-gray-400">Prazo calculado após envio das fotos</p>}
-          </div>
-
-          {client.plan && (
-            <div className="bg-white border border-gray-200 rounded-xl p-5">
-              <h3 className="font-semibold text-gray-900 mb-2">Plano</h3>
-              <p className="text-sm text-gray-700">{(client as any).plan.name}</p>
-              <p className="text-xs text-gray-500 mt-0.5">{(client as any).plan.deadline_days} dias úteis</p>
-            </div>
-          )}
-
-          <div className="bg-white border border-gray-200 rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <MessageSquare className="h-4 w-4 text-gray-400" /> Observações Internas
-              </h3>
-              <Btn variant={notesSaved ? 'green' : 'outline'} size="sm" onClick={handleSaveNotes}
-                loading={savingNotes} disabled={notes === (client.notes || '')}>
-                {notesSaved ? <><Check className="h-3.5 w-3.5" /> Salvo</> : <><Save className="h-3.5 w-3.5" /> Salvar</>}
-              </Btn>
-            </div>
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
-              placeholder="Anotações internas (não visível para a cliente)..."
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none bg-gray-50 focus:bg-white transition-colors" />
-            {notes !== (client.notes || '') && (
-              <p className="text-xs text-amber-500 mt-1.5 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> Alterações não salvas</p>
-            )}
-          </div>
-
-          <div className={`border rounded-xl p-5 md:col-span-2 ${formSubmission ? 'bg-white border-gray-200' : 'bg-gray-50 border-dashed border-gray-300'}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${formSubmission ? 'bg-blue-50' : 'bg-gray-100'}`}>
-                  <ClipboardList className={`h-5 w-5 ${formSubmission ? 'text-blue-500' : 'text-gray-400'}`} />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-gray-900">Formulário</h3>
-                  {formSubmission
-                    ? <p className="text-xs text-gray-400">Enviado em {new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR')}</p>
-                    : <p className="text-xs text-gray-400">Aguardando envio do cliente</p>}
-                </div>
-              </div>
-              {formSubmission && (
-                <Btn variant="outline" size="sm" onClick={() => setShowFormModal(true)}>
-                  <Eye className="h-3.5 w-3.5" /> Ver Respostas
-                </Btn>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {tab === 'photos' && <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} />}
-
-      {tab === 'result' && (
-        <div className="space-y-5 max-w-3xl">
-          {result?.is_released ? (
-            <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
-              <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-green-800">Resultado liberado</p>
-                <p className="text-xs text-green-600">A cliente pode visualizar desde {new Date(result.released_at).toLocaleString('pt-BR')}</p>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
-              <Lock className="h-5 w-5 text-amber-500 flex-shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-amber-800">Resultado ainda não liberado</p>
-                <p className="text-xs text-amber-600">Preencha abaixo e libere pela aba ✨ IA quando estiver pronto</p>
-              </div>
-            </div>
-          )}
-
-          <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-            <h3 className="font-semibold text-gray-900 flex items-center gap-2"><FolderOpen className="h-4 w-4 text-violet-500" /> Pasta vinculada</h3>
-            <p className="text-xs text-gray-500 -mt-2">Selecione a pasta criada em Pastas IA</p>
-            <div className="space-y-2">
-              <button onClick={() => handleLinkFolder(null)}
-                className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${linkedFolderId === null ? 'bg-gray-100 border-gray-300' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
-                <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0"><FolderOpen className="h-4 w-4 text-gray-400" /></div>
-                <span className="text-sm text-gray-500">Nenhuma pasta vinculada</span>
-                {linkedFolderId === null && <CheckCircle className="h-4 w-4 text-gray-400 ml-auto" />}
-              </button>
-              {aiFolders.map((f: any) => {
-                const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
-                const isLinked = linkedFolderId === f.id
-                return (
-                  <button key={f.id} onClick={() => handleLinkFolder(f.id)}
-                    className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${isLinked ? 'bg-violet-50 border-violet-300' : 'bg-white border-gray-200 hover:border-violet-200'}`}>
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isLinked ? 'bg-violet-100' : 'bg-gray-50'}`}>
-                      <FolderOpen className={`h-4 w-4 ${isLinked ? 'text-violet-600' : 'text-gray-400'}`} />
+                {client.status === 'photos_submitted' ? (
+                  <div className="flex items-start gap-2 bg-pink-50 rounded-lg p-3 border border-pink-100">
+                    <Clock className="h-4 w-4 text-pink-400 mt-0.5 flex-shrink-0" />
+                    <p className="text-sm text-pink-700">O prazo começa a contar após a aprovação das fotos.</p>
+                  </div>
+                ) : deadline?.deadline_date ? (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-xs text-gray-500 mb-0.5">Fotos enviadas em</p>
+                      <p className="text-sm font-medium text-gray-800">{new Date(deadline.photos_sent_at).toLocaleString('pt-BR')}</p>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-medium ${isLinked ? 'text-violet-800' : 'text-gray-800'}`}>{f.name}</p>
-                      <div className="flex items-center gap-3 mt-0.5">
-                        <span className="text-xs text-gray-400">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</span>
-                        {cfg?.driveLink && (
-                          <a href={cfg.driveLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-violet-500 flex items-center gap-1 hover:underline">
-                            <Link2 className="h-3 w-3" /> Drive
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                    {isLinked && <CheckCircle className="h-4 w-4 text-violet-600 flex-shrink-0" />}
-                  </button>
-                )
-              })}
-              {aiFolders.length === 0 && <p className="text-xs text-gray-400 text-center py-3">Crie pastas em <strong>Pastas IA</strong> para vincular aqui</p>}
-            </div>
-            {linkedFolderConfig?.driveLink && (
-              <div className="flex items-center gap-2 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
-                <Link2 className="h-4 w-4 text-violet-500 flex-shrink-0" />
-                <span className="text-xs text-violet-700 font-medium truncate flex-1">{linkedFolderConfig.driveLink}</span>
-                <a href={linkedFolderConfig.driveLink} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg whitespace-nowrap">Abrir Drive</a>
-              </div>
-            )}
-          </div>
-
-          {tagTemplates.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Tag className="h-4 w-4 text-emerald-500" /> Informações da análise</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {clientTags.map(tag => {
-                  const template = tagTemplates.find(t => t.id === tag.templateId)
-                  const options = template?.options || []
-                  return (
-                    <div key={tag.templateId}>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">{tag.name}</label>
-                      {options.length > 0 ? (
-                        <select value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))}
-                          className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${tag.value ? 'text-gray-800' : 'text-gray-400'}`}>
-                          <option value="">— Selecione —</option>
-                          {options.map((opt: string, i: number) => <option key={i} value={opt}>{opt}</option>)}
-                        </select>
+                    <div>
+                      <p className="text-xs text-gray-500 mb-0.5">Prazo de entrega</p>
+                      {editingDeadline ? (
+                        <div className="space-y-2">
+                          <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
+                          <div className="flex gap-2">
+                            <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
+                            <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
+                          </div>
+                        </div>
                       ) : (
-                        <input value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))}
-                          placeholder="Digite o valor..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+                        <>
+                          <p className="text-sm font-medium text-gray-800">{formatDeadlineDate(deadline.deadline_date)}</p>
+                          {client.status !== 'completed' && (() => {
+                          const dias = calendarDaysUntil(deadline.deadline_date)
+                          return (
+                            <p className="text-xs text-orange-600 mt-0.5">
+                              {dias === 0 ? 'Vence hoje' : `${dias} dia${dias !== 1 ? 's' : ''} restante${dias !== 1 ? 's' : ''}`}
+                            </p>
+                          )
+                        })()}
+                        </>
                       )}
                     </div>
-                  )
-                })}
+                  </div>
+                ) : <p className="text-sm text-gray-400">Prazo calculado após aprovação das fotos</p>}
+              </div>
+
+              {/* Plano */}
+              {client.plan && (
+                <div className="bg-white border border-gray-200 rounded-xl p-5">
+                  <h3 className="font-semibold text-gray-900 mb-2">Plano</h3>
+                  <p className="text-sm text-gray-700">{(client as any).plan.name}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{(client as any).plan.deadline_days} dias úteis</p>
+                </div>
+              )}
+
+              {/* Observações internas */}
+              <div className="bg-white border border-gray-200 rounded-xl p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-900 flex items-center gap-2"><MessageSquare className="h-4 w-4 text-gray-400" /> Observações Internas</h3>
+                  <Btn variant={notesSaved ? 'green' : 'outline'} size="sm" onClick={handleSaveNotes} loading={savingNotes} disabled={notes === (client.notes || '')}>
+                    {notesSaved ? <><Check className="h-3.5 w-3.5" /> Salvo</> : <><Save className="h-3.5 w-3.5" /> Salvar</>}
+                  </Btn>
+                </div>
+                <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Anotações internas (não visível para a cliente)..."
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none bg-gray-50 focus:bg-white transition-colors" />
+                {notes !== (client.notes || '') && <p className="text-xs text-amber-500 mt-1.5 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> Alterações não salvas</p>}
+              </div>
+
+              {/* Formulário */}
+              <div className={`border rounded-xl p-5 md:col-span-2 ${formSubmission ? 'bg-white border-gray-200' : 'bg-gray-50 border-dashed border-gray-300'}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${formSubmission ? 'bg-blue-50' : 'bg-gray-100'}`}>
+                      <ClipboardList className={`h-5 w-5 ${formSubmission ? 'text-blue-500' : 'text-gray-400'}`} />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Formulário</h3>
+                      {formSubmission ? <p className="text-xs text-gray-400">Enviado em {new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR')}</p> : <p className="text-xs text-gray-400">Aguardando envio do cliente</p>}
+                    </div>
+                  </div>
+                  {formSubmission && <Btn variant="outline" size="sm" onClick={() => setShowFormModal(true)}><Eye className="h-3.5 w-3.5" /> Ver Respostas</Btn>}
+                </div>
               </div>
             </div>
           )}
 
-          <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-            <h3 className="font-semibold text-gray-900">Observações e arquivos</h3>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Observações</label>
-              <textarea value={resultForm.observations} onChange={e => setResultForm({ ...resultForm, observations: e.target.value })}
-                rows={4} placeholder="Comentários, recomendações, paleta de cores..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" />
+          {tab === 'photos' && <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} />}
+
+          {tab === 'result' && (
+            <div className="space-y-5 max-w-3xl">
+              {result?.is_released ? (
+                <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
+                  <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0" />
+                  <div><p className="text-sm font-medium text-green-800">Resultado liberado</p><p className="text-xs text-green-600">A cliente pode visualizar desde {new Date(result.released_at).toLocaleString('pt-BR')}</p></div>
+                </div>
+              ) : (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+                  <Lock className="h-5 w-5 text-amber-500 flex-shrink-0" />
+                  <div><p className="text-sm font-medium text-amber-800">Resultado ainda não liberado</p><p className="text-xs text-amber-600">Preencha abaixo e libere pela aba ✨ IA quando estiver pronto</p></div>
+                </div>
+              )}
+
+              <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><FolderOpen className="h-4 w-4 text-violet-500" /> Pasta vinculada</h3>
+                <p className="text-xs text-gray-500 -mt-2">Selecione a pasta criada em Pastas IA</p>
+                <div className="space-y-2">
+                  <button onClick={() => handleLinkFolder(null)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${linkedFolderId === null ? 'bg-gray-100 border-gray-300' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                    <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0"><FolderOpen className="h-4 w-4 text-gray-400" /></div>
+                    <span className="text-sm text-gray-500">Nenhuma pasta vinculada</span>
+                    {linkedFolderId === null && <CheckCircle className="h-4 w-4 text-gray-400 ml-auto" />}
+                  </button>
+                  {aiFolders.map((f: any) => {
+                    const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
+                    const isLinked = linkedFolderId === f.id
+                    return (
+                      <button key={f.id} onClick={() => handleLinkFolder(f.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${isLinked ? 'bg-violet-50 border-violet-300' : 'bg-white border-gray-200 hover:border-violet-200'}`}>
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isLinked ? 'bg-violet-100' : 'bg-gray-50'}`}><FolderOpen className={`h-4 w-4 ${isLinked ? 'text-violet-600' : 'text-gray-400'}`} /></div>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm font-medium ${isLinked ? 'text-violet-800' : 'text-gray-800'}`}>{f.name}</p>
+                          <div className="flex items-center gap-3 mt-0.5">
+                            <span className="text-xs text-gray-400">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</span>
+                            {cfg?.driveLink && <a href={cfg.driveLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-violet-500 flex items-center gap-1 hover:underline"><Link2 className="h-3 w-3" /> Drive</a>}
+                          </div>
+                        </div>
+                        {isLinked && <CheckCircle className="h-4 w-4 text-violet-600 flex-shrink-0" />}
+                      </button>
+                    )
+                  })}
+                  {aiFolders.length === 0 && <p className="text-xs text-gray-400 text-center py-3">Crie pastas em <strong>Pastas IA</strong> para vincular aqui</p>}
+                </div>
+                {linkedFolderConfig?.driveLink && (
+                  <div className="flex items-center gap-2 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
+                    <Link2 className="h-4 w-4 text-violet-500 flex-shrink-0" />
+                    <span className="text-xs text-violet-700 font-medium truncate flex-1">{linkedFolderConfig.driveLink}</span>
+                    <a href={linkedFolderConfig.driveLink} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg whitespace-nowrap">Abrir Drive</a>
+                  </div>
+                )}
+              </div>
+
+              {tagTemplates.length > 0 && (
+                <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+                  <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Tag className="h-4 w-4 text-emerald-500" /> Informações da análise</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {clientTags.map(tag => {
+                      const template = tagTemplates.find(t => t.id === tag.templateId)
+                      const options = template?.options || []
+                      return (
+                        <div key={tag.templateId}>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">{tag.name}</label>
+                          {options.length > 0 ? (
+                            <select value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${tag.value ? 'text-gray-800' : 'text-gray-400'}`}>
+                              <option value="">— Selecione —</option>
+                              {options.map((opt: string, i: number) => <option key={i} value={opt}>{opt}</option>)}
+                            </select>
+                          ) : (
+                            <input value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} placeholder="Digite o valor..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+                <h3 className="font-semibold text-gray-900">Observações e arquivos</h3>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Observações</label>
+                  <textarea value={resultForm.observations} onChange={e => setResultForm({ ...resultForm, observations: e.target.value })} rows={4} placeholder="Comentários, recomendações, paleta de cores..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" />
             </div>
             <div>
               <div className="flex items-center justify-between mb-3">

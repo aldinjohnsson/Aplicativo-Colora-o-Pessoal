@@ -915,3 +915,48 @@ create policy "Allow delete ai_sub_options"
 on ai_sub_options
 for delete
 using (true);
+
+-- Remove as duas versões conflitantes
+DROP FUNCTION IF EXISTS public.finalize_client_photos(text, date, timestamptz);
+DROP FUNCTION IF EXISTS public.finalize_client_photos(text, text, timestamptz);
+
+-- Recria apenas uma versão (com TEXT, que é o que o app envia)
+CREATE OR REPLACE FUNCTION finalize_client_photos(
+  p_token TEXT,
+  p_deadline_date TEXT,
+  p_photos_sent_at TIMESTAMPTZ
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_client_id UUID;
+  v_current_status TEXT;
+BEGIN
+  SELECT id, status INTO v_client_id, v_current_status
+  FROM clients
+  WHERE token = p_token;
+
+  IF v_client_id IS NULL THEN
+    RETURN json_build_object('error', 'Cliente não encontrado');
+  END IF;
+
+  IF v_current_status NOT IN ('awaiting_photos', 'photos_submitted') THEN
+    RETURN json_build_object('error', 'Fotos não podem ser finalizadas neste momento');
+  END IF;
+
+  UPDATE clients
+  SET status = 'photos_submitted',
+      updated_at = NOW()
+  WHERE id = v_client_id;
+
+  INSERT INTO client_deadlines (client_id, photos_sent_at, updated_at)
+  VALUES (v_client_id, p_photos_sent_at, NOW())
+  ON CONFLICT (client_id) DO UPDATE
+  SET photos_sent_at = p_photos_sent_at,
+      updated_at = NOW();
+
+  RETURN json_build_object('success', true);
+END;
+$$;
