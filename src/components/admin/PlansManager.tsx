@@ -4,7 +4,7 @@ import { Routes, Route, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Pencil, Trash2, ChevronRight, FileText, ClipboardList,
   Camera, Save, ArrowLeft, GripVertical, X, Check, Image, User, Mail, Phone,
-  Share2, Copy, CheckCircle
+  Share2, Copy, CheckCircle, ChevronUp, ChevronDown
 } from 'lucide-react'
 import { adminService, Plan, PlanContract, PlanForm, PhotoCategory } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -427,6 +427,16 @@ function FormTab({ planId }: { planId: string }) {
     setData(d => ({ ...d, fields: d.fields.filter(f => f.id !== id) }))
   }
 
+  const moveField = (index: number, direction: 'up' | 'down') => {
+    const target = direction === 'up' ? index - 1 : index + 1
+    setData(d => {
+      const sorted = [...d.fields].sort((a, b) => a.order - b.order)
+      if (target < 0 || target >= sorted.length) return d
+      ;[sorted[index], sorted[target]] = [sorted[target], sorted[index]]
+      return { ...d, fields: sorted.map((f, i) => ({ ...f, order: i + 1 })) }
+    })
+  }
+
   const save = async () => {
     setSaving(true)
     try {
@@ -483,8 +493,11 @@ function FormTab({ planId }: { planId: string }) {
               key={field.id}
               field={field}
               index={idx + 1}
+              total={data.fields.length}
               onUpdate={updates => updateField(field.id, updates)}
               onRemove={() => removeField(field.id)}
+              onMoveUp={() => moveField(idx, 'up')}
+              onMoveDown={() => moveField(idx, 'down')}
             />
           ))}
 
@@ -501,7 +514,11 @@ function FormTab({ planId }: { planId: string }) {
   )
 }
 
-function FieldEditor({ field, index, onUpdate, onRemove }: { field: any; index: number; onUpdate: (u: any) => void; onRemove: () => void }) {
+function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMoveDown }: {
+  field: any; index: number; total: number
+  onUpdate: (u: any) => void; onRemove: () => void
+  onMoveUp: () => void; onMoveDown: () => void
+}) {
   const isFixed = FIXED_TYPES.includes(field.type)
   const hasOptions = OPTION_TYPES.includes(field.type)
   const isImage = field.type === 'image'
@@ -515,6 +532,27 @@ function FieldEditor({ field, index, onUpdate, onRemove }: { field: any; index: 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-gray-400 w-5">#{index}</span>
+          {/* Setas de reordenação */}
+          <div className="flex flex-col">
+            <button
+              type="button"
+              onClick={onMoveUp}
+              disabled={index === 1}
+              title="Mover para cima"
+              className="p-0.5 rounded hover:bg-gray-200 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronUp className="h-3.5 w-3.5 text-gray-500" />
+            </button>
+            <button
+              type="button"
+              onClick={onMoveDown}
+              disabled={index === total}
+              title="Mover para baixo"
+              className="p-0.5 rounded hover:bg-gray-200 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronDown className="h-3.5 w-3.5 text-gray-500" />
+            </button>
+          </div>
           <span className="text-xs px-2 py-0.5 bg-rose-100 text-rose-700 rounded-full font-medium">{typeLabel}</span>
           {isFixed && <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">campo padrão</span>}
         </div>
