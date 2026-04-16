@@ -587,18 +587,39 @@ function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMove
         </div>
       )}
 
-      {/* Instruções adicionais para imagem */}
+      {/* Quantidade máxima de fotos + instruções (só para imagem) */}
       {isImage && (
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Instruções adicionais (opcional)</label>
-          <textarea
-            value={field.imageInstructions || ''}
-            onChange={e => onUpdate({ imageInstructions: e.target.value })}
-            rows={2}
-            placeholder="Ex: A foto deve estar em boa iluminação, sem filtros..."
-            className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none"
-          />
-        </div>
+        <>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Quantidade máxima de fotos</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={field.maxImages ?? 1}
+                onChange={e => {
+                  const val = parseInt(e.target.value)
+                  onUpdate({ maxImages: isNaN(val) || val < 1 ? 1 : val })
+                }}
+                className="w-20 px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-center font-semibold focus:outline-none focus:ring-2 focus:ring-rose-400"
+              />
+              <span className="text-sm text-gray-500">
+                {(field.maxImages ?? 1) === 1 ? 'foto por resposta' : 'fotos por resposta'}
+              </span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Instruções adicionais (opcional)</label>
+            <textarea
+              value={field.imageInstructions || ''}
+              onChange={e => onUpdate({ imageInstructions: e.target.value })}
+              rows={2}
+              placeholder="Ex: A foto deve estar em boa iluminação, sem filtros..."
+              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none"
+            />
+          </div>
+        </>
       )}
 
       {/* Opções (radio / checkbox / select) */}

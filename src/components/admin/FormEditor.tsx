@@ -276,7 +276,12 @@ export function FormEditor() {
                 {field.type === 'image' && (
                   <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
                     <Image className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                    <p className="text-sm text-gray-600">{field.imageInstructions || `Upload de até ${field.maxImages} imagem(ns)`}</p>
+                    <p className="text-sm font-medium text-gray-700">
+                      Até {field.maxImages || 1} foto{(field.maxImages || 1) !== 1 ? 's' : ''}
+                    </p>
+                    {field.imageInstructions && (
+                      <p className="text-xs text-gray-500 mt-1">{field.imageInstructions}</p>
+                    )}
                   </div>
                 )}
               </div>
@@ -432,6 +437,45 @@ export function FormEditor() {
                         placeholder="Texto de ajuda (placeholder)" label="Placeholder" />
                     )}
 
+                    {field.type === 'image' && (
+                      <div className="space-y-3">
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-gray-700">
+                            Quantidade máxima de fotos
+                          </label>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="number"
+                              value={field.maxImages || 1}
+                              min={1}
+                              max={20}
+                              onChange={(e: any) => {
+                                const val = parseInt(e.target.value)
+                                updateField(field.id, { maxImages: isNaN(val) || val < 1 ? 1 : val })
+                              }}
+                              className="w-24 px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-center font-semibold text-gray-800"
+                            />
+                            <span className="text-sm text-gray-500">
+                              {(field.maxImages || 1) === 1 ? 'foto por resposta' : 'fotos por resposta'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">
+                            O cliente poderá enviar até {field.maxImages || 1} foto{(field.maxImages || 1) !== 1 ? 's' : ''} neste campo.
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-gray-700">Instruções adicionais (opcional)</label>
+                          <textarea
+                            value={field.imageInstructions || ''}
+                            onChange={e => updateField(field.id, { imageInstructions: e.target.value })}
+                            placeholder="Ex: A foto deve estar em boa iluminação, sem filtros..."
+                            rows={2}
+                            className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     {(field.type === 'select' || field.type === 'radio' || field.type === 'checkbox') && (
                       <div className="space-y-2">
                         <div className="flex justify-between items-center">
@@ -455,21 +499,7 @@ export function FormEditor() {
                       </div>
                     )}
 
-                    {field.type === 'image' && (
-                      <div className="space-y-3">
-                        <Input type="number" value={field.maxImages || 1}
-                          onChange={(e: any) => updateField(field.id, { maxImages: parseInt(e.target.value) || 1 })}
-                          label="Número máximo de imagens" min="1" max="10" />
-                        <div className="space-y-1">
-                          <label className="block text-sm font-medium text-gray-700">Instruções adicionais (opcional)</label>
-                          <textarea value={field.imageInstructions || ''}
-                            onChange={e => updateField(field.id, { imageInstructions: e.target.value })}
-                            placeholder="Ex: A foto deve estar em boa iluminação, sem filtros..."
-                            rows={2}
-                            className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
-                        </div>
-                      </div>
-                    )}
+
                   </div>
 
                   {/* Botão excluir */}
