@@ -2,7 +2,7 @@
 // KanbanBoard integrado com dados reais do Supabase
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Routes, Route, useNavigate, useParams, NavLink } from 'react-router-dom'
+import { Routes, Route, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Search, Eye, Trash2, ArrowLeft, Copy, CheckCircle,
   Clock, FileText, Camera, Upload, X, ExternalLink,
@@ -13,7 +13,7 @@ import {
   AlertTriangle, Save, MessageSquare, Link2, Tag,
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
-  SlidersHorizontal, ChevronDown,
+  SlidersHorizontal, ChevronDown, Palette,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -348,7 +348,7 @@ function KanbanColumn({
 
   return (
     <div style={{
-      flexShrink: 0, width: 'clamp(280px, 22vw, 380px)', background: t.colBg, borderRadius: 12,
+      flexShrink: 0, width: 'clamp(240px, 80vw, 380px)', background: t.colBg, borderRadius: 12,
       border: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column',
       maxHeight: '100%', overflow: 'hidden',
     }}>
@@ -456,13 +456,22 @@ function KanbanSidebar({
   )
 
   return (
-    <div style={{
-      position: 'relative',
-      width: sidebarOpen ? 220 : 0, flexShrink: 0, background: t.sidebar,
-      borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none', overflow: 'hidden',
-      transition: 'width 0.25s cubic-bezier(0.4,0,0.2,1)',
-      display: 'flex', flexDirection: 'column',
-    }}>
+    <>
+      {/* Mobile overlay backdrop */}
+      {sidebarOpen && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 29, background: 'rgba(0,0,0,0.4)' }}
+          className="sm:hidden"
+          onClick={onToggle}
+        />
+      )}
+      <div style={{
+        width: sidebarOpen ? 220 : 0, flexShrink: 0, background: t.sidebar,
+        borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none', overflow: 'hidden',
+        transition: 'width 0.25s cubic-bezier(0.4,0,0.2,1)',
+        display: 'flex', flexDirection: 'column',
+        position: 'relative', zIndex: 30,
+      }}>
       <div style={{ width: 220, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {/* Search */}
         <div style={{ padding: '12px 12px 8px' }}>
@@ -532,6 +541,7 @@ function KanbanSidebar({
       </div>
     </div>
     </div>
+    </>
   )
 }
 
@@ -601,7 +611,7 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
 }
 
 // ─── Clients List (Board + List) ──────────────────────────────────────────
-function ClientsList() {
+function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   // Real data
   const [clients, setClients] = useState<Client[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
@@ -741,61 +751,53 @@ function ClientsList() {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, zIndex: 50,
       display: 'flex', flexDirection: 'column',
-      height: '100vh', width: '100vw',
+      height: '100%', width: '100%',
       background: t.bg,
       fontFamily: 'system-ui,-apple-system,sans-serif',
       overflow: 'hidden',
     }}>
       {/* ── Toolbar ──────────────────────────────────────────── */}
       <div style={{
-        background: t.surface, borderBottom: `1px solid ${t.border}`,
-        padding: '0 16px', display: 'flex', alignItems: 'center', gap: 6,
-        flexShrink: 0, height: 48,
+        background: t.surface, borderBottom: `2px solid ${t.border}`,
+        padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8,
+        flexShrink: 0, height: 52,
       }}>
-        {/* App nav links */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8, flexShrink: 0 }}>
-          {[
-            { to: '/admin/clients', label: 'Clientes' },
-            { to: '/admin/plans', label: 'Planos' },
-            { to: '/admin/folders', label: 'Pastas IA' },
-            { to: '/admin/settings', label: 'Config.' },
-          ].map(({ to, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              style={({ isActive }) => ({
-                padding: '5px 10px', borderRadius: 6, fontSize: 12, fontWeight: isActive ? 700 : 500,
-                color: isActive ? t.accent : t.text2,
-                background: isActive ? t.accentLight : 'none',
-                textDecoration: 'none', whiteSpace: 'nowrap' as const,
-                transition: 'background 0.15s, color 0.15s',
-              })}
-            >
-              {label}
-            </NavLink>
-          ))}
+        {/* ── Hamburger nav button (left) ── */}
+        <button
+          onClick={onOpenNav}
+          title="Menu de navegação"
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '6px 8px', borderRadius: 8, color: t.text2,
+            display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0,
+            transition: 'background 0.15s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = t.surface2)}
+          onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+        >
+          <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
+          <span style={{ display: 'block', width: 14, height: 2, background: 'currentColor', borderRadius: 2 }} />
+          <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
+        </button>
+
+        {/* Logo mark */}
+        <div style={{
+          width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+          background: 'linear-gradient(135deg, #e91e63, #ff6090)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 2px 8px rgba(233,30,99,0.3)',
+        }}>
+          <Palette size={14} color="white" />
         </div>
 
         {/* Divider */}
-        <div style={{ width: 1, height: 20, background: t.border, flexShrink: 0, marginRight: 6 }} />
+        <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />
 
-        {/* Sidebar toggle */}
-        <button
-          onClick={() => setSidebarOpen(v => !v)}
-          title={sidebarOpen ? 'Fechar menu' : 'Abrir menu'}
-          style={{ background: sidebarOpen ? t.surface2 : 'none', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 6, color: sidebarOpen ? t.accent : t.text2, display: 'flex', flexShrink: 0 }}
-          onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
-          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = sidebarOpen ? t.surface2 : 'none'}
-        >
-          <SlidersHorizontal size={16} />
-        </button>
-
-        {/* Title */}
+        {/* Title + count */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 15, fontWeight: 700, color: t.text }}>Clientes</span>
-          <span style={{ fontSize: 12, color: t.text3, marginLeft: 8 }}>
+          <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3 }}>Clientes</span>
+          <span style={{ fontSize: 12, color: t.text3, marginLeft: 8, fontWeight: 500 }}>
             {activeClients.length} ativa{activeClients.length !== 1 ? 's' : ''}
             {filteredActive.length !== activeClients.length && !isArchiveView &&
               <span style={{ color: t.accent, marginLeft: 4 }}>· {filteredActive.length} filtrada{filteredActive.length !== 1 ? 's' : ''}</span>
@@ -803,16 +805,17 @@ function ClientsList() {
           </span>
         </div>
 
-        {/* Status mini-stats (board view only) */}
+        {/* Status mini-stats (board view only, hidden on mobile) */}
         {!isArchiveView && viewMode === 'board' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}
+            className="hidden sm:flex">
             {COL_ORDER.map(key => {
               const cfg = STATUSES[key]
               const count = groupedByStatus[key]?.length || 0
               return (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: t.text2 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: cfg.color }} />
-                  <span style={{ fontWeight: count > 0 ? 600 : 400, color: count > 0 ? t.text : t.text3 }}>{count}</span>
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: cfg.color }} />
+                  <span style={{ fontSize: 12, fontWeight: count > 0 ? 700 : 400, color: count > 0 ? t.text : t.text3 }}>{count}</span>
                 </div>
               )
             })}
@@ -823,20 +826,22 @@ function ClientsList() {
         <div ref={themeRef} style={{ position: 'relative', flexShrink: 0 }}>
           <button
             onClick={() => setThemeOpen(v => !v)}
+            title="Tema"
             style={{
-              display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px',
+              display: 'flex', alignItems: 'center', gap: 5, padding: '5px 9px',
               borderRadius: 8, border: `1px solid ${t.border}`, background: t.surface2,
-              cursor: 'pointer', fontSize: 12, color: t.text2,
+              cursor: 'pointer', fontSize: 13, color: t.text2,
+              transition: 'background 0.15s',
             }}
-            onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface}
-            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
+            onMouseEnter={e => (e.currentTarget.style.background = t.surface)}
+            onMouseLeave={e => (e.currentTarget.style.background = t.surface2)}
           >
-            <span style={{ fontSize: 14 }}>{THEMES[themeName].icon}</span>
-            <ChevronDown size={12} />
+            <span style={{ fontSize: 15 }}>{THEMES[themeName].icon}</span>
+            <ChevronDown size={11} />
           </button>
           {themeOpen && (
             <div style={{
-              position: 'absolute', right: 0, top: 36, background: t.surface,
+              position: 'absolute', right: 0, top: 38, background: t.surface,
               border: `1px solid ${t.border}`, borderRadius: 10,
               boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 200, overflow: 'hidden', minWidth: 140,
             }}>
@@ -850,7 +855,7 @@ function ClientsList() {
                     padding: '9px 14px', background: themeName === key ? t.accentLight : 'none',
                     border: 'none', cursor: 'pointer', fontSize: 13,
                     color: themeName === key ? t.accent : t.text, textAlign: 'left',
-                    fontWeight: themeName === key ? 600 : 400,
+                    fontWeight: themeName === key ? 700 : 400,
                   }}
                   onMouseEnter={e => { if (themeName !== key) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
                   onMouseLeave={e => { if (themeName !== key) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
@@ -871,6 +876,23 @@ function ClientsList() {
             <List size={15} />
           </button>
         </div>
+
+        {/* ── Kanban controls button (right) ── */}
+        <button
+          onClick={() => setSidebarOpen(v => !v)}
+          title={sidebarOpen ? 'Fechar painel' : 'Abrir painel de filtros'}
+          style={{
+            background: sidebarOpen ? t.accentLight : 'none',
+            border: `1px solid ${sidebarOpen ? t.accent + '40' : t.border}`,
+            cursor: 'pointer', padding: '6px 8px', borderRadius: 8,
+            color: sidebarOpen ? t.accent : t.text2, display: 'flex', flexShrink: 0,
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = sidebarOpen ? t.accentLight : t.surface2)}
+          onMouseLeave={e => (e.currentTarget.style.background = sidebarOpen ? t.accentLight : 'none')}
+        >
+          <SlidersHorizontal size={16} />
+        </button>
       </div>
 
       {/* ── Body: Sidebar + Main ──────────────────────────── */}
@@ -1288,7 +1310,7 @@ function PhotosView({ clientId, photos, photoCategories }: {
 
 // ─── Client Detail ────────────────────────────────────────────────────────
 // (Mantido exatamente como estava — toda a lógica de tabs, resultado, IA, etc.)
-function ClientDetail() {
+function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const { clientId } = useParams<{ clientId: string }>()
   const navigate = useNavigate()
   const [data, setData] = useState<any>(null)
@@ -1460,7 +1482,50 @@ function ClientDetail() {
   const portalLink = `${window.location.origin}/c/${client.token}`
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f4f5f7' }}>
+      {/* ── Topbar ── */}
+      <div style={{
+        background: '#ffffff', borderBottom: '2px solid #dfe1e6',
+        padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8,
+        flexShrink: 0, height: 52,
+      }}>
+        <button onClick={onOpenNav} title="Menu" style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: '6px 8px', borderRadius: 8, color: '#5e6c84',
+          display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0,
+        }}>
+          <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
+          <span style={{ display: 'block', width: 14, height: 2, background: 'currentColor', borderRadius: 2 }} />
+          <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
+        </button>
+        <div style={{
+          width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+          background: 'linear-gradient(135deg, #e91e63, #ff6090)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 2px 8px rgba(233,30,99,0.3)',
+        }}>
+          <Palette size={14} color="white" />
+        </div>
+        <div style={{ width: 1, height: 22, background: '#dfe1e6', flexShrink: 0, margin: '0 2px' }} />
+        <button onClick={() => navigate('/admin/clients')} style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 5,
+          padding: '4px 6px', borderRadius: 6, color: '#5e6c84',
+        }}>
+          <ArrowLeft size={14} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#5e6c84' }}>Clientes</span>
+        </button>
+        <span style={{ fontSize: 14, color: '#97a0af' }}>/</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: '#172b4d', marginRight: 4 }}>{client.full_name}</span>
+        <span style={{
+          fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
+          background: status?.bg, color: status?.textColor,
+        }}>{status?.label}</span>
+      </div>
+
+      {/* ── Scrollable body ── */}
+      <div className="flex-1 overflow-y-auto">
+      <div className="space-y-6 p-6 max-w-6xl mx-auto w-full">
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div className="flex items-center gap-3">
@@ -1794,16 +1859,18 @@ function ClientDetail() {
       {showFormModal && formSubmission && (
         <FormResponseModal formSubmission={formSubmission} planForm={planForm} onClose={() => setShowFormModal(false)} />
       )}
+      </div>{/* end inner space-y-6 */}
+      </div>{/* end overflow-y-auto */}
     </div>
   )
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────
-export function ClientsManager() {
+export function ClientsManager({ onOpenNav }: { onOpenNav?: () => void }) {
   return (
     <Routes>
-      <Route index element={<ClientsList />} />
-      <Route path=":clientId" element={<ClientDetail />} />
+      <Route index element={<ClientsList onOpenNav={onOpenNav} />} />
+      <Route path=":clientId" element={<ClientDetail onOpenNav={onOpenNav} />} />
     </Routes>
   )
 }
