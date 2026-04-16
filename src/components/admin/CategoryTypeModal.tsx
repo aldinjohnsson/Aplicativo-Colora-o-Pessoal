@@ -139,10 +139,9 @@ export function CategoryTypeModal({
                       {type.icon}
                     </div>
 
-                    {/* Nome + ID */}
+                    {/* Nome */}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-800">{type.name}</p>
-                      <p className="text-xs text-gray-400 font-mono">id: {type.id}</p>
                     </div>
 
                     {/* Check */}
@@ -162,7 +161,7 @@ export function CategoryTypeModal({
                 <p className="text-sm text-gray-400 text-center py-4">
                   Nenhum tipo configurado.{' '}
                   <span className="text-violet-500">
-                    Acesse Configurações → Types de Foto.
+                    Acesse Configurações → Tipos de Foto.
                   </span>
                 </p>
               )}

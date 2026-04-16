@@ -156,7 +156,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
           <Wand2 className="h-5 w-5 text-violet-500" /> Configuração IA — {clientName}
         </h3>
         <p className="text-sm text-gray-500 mt-0.5">
-          Fotos de referência por type · créditos · liberação
+          Fotos de referência por tipo · créditos · liberação
         </p>
       </div>
 
@@ -168,17 +168,17 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
               <Camera className="h-4 w-4" /> Fotos de referência
             </p>
             <p className="text-xs text-violet-700 mt-0.5">
-              Uma foto por type — usada pela IA e no PDF de cada categoria
+              Uma foto por tipo — usada pela IA e no PDF de cada categoria
             </p>
           </div>
-          <button onClick={loadData} className="p-1.5 text-violet-400 hover:text-violet-700 hover:bg-violet-100 rounded-lg" title="Recarregar types">
+          <button onClick={loadData} className="p-1.5 text-violet-400 hover:text-violet-700 hover:bg-violet-100 rounded-lg" title="Recarregar tipos">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
 
         {photoTypes.length === 0 && (
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-            ⚠️ Nenhum type configurado. Acesse <strong>Configurações → Types de Foto</strong>.
+            ⚠️ Nenhum tipo configurado. Acesse <strong>Configurações → Tipos de Foto</strong>.
           </p>
         )}
 
@@ -201,7 +201,6 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
                   {/* Info */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-800">{type.name}</p>
-                    <p className="text-xs text-gray-400 font-mono">type: {type.id}</p>
                   </div>
 
                   {/* Foto */}
