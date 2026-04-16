@@ -100,9 +100,10 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
   contents.push({ role: 'user', parts: userParts })
 
   const sys = systemPrompt?.trim() ? { parts: [{ text: systemPrompt }] } : undefined
+  // AFTER
   const imgSys = {
     parts: [{
-      text: `REGRA CRÍTICA DE GERAÇÃO DE IMAGEM: Use a foto da cliente como base obrigatória. Preserve a identidade facial da pessoa — mantenha o rosto real, feições, tom de pele, olhos e expressão. Aplique SOMENTE o que for descrito no prompt (cabelo, roupa, acessório, etc.). Nunca substitua ou idealize o rosto da cliente — use sempre a foto real fornecida como base.\n\nREGRA DE COMPOSIÇÃO OBRIGATÓRIA: Mantenha EXATAMENTE o mesmo enquadramento, recorte, zoom e composição da foto original da cliente. NÃO altere a posição da cliente na imagem. NÃO aproxime o zoom. NÃO recorte o corpo ou busto. A imagem gerada deve ter a mesma composição da foto de entrada — apenas aplique o acessório/alteração solicitada.\n\n${systemPrompt || ''}`
+      text: `REGRA CRÍTICA DE GERAÇÃO DE IMAGEM: Use a foto da cliente como base obrigatória. Preserve a identidade facial da pessoa — mantenha o rosto real, feições, tom de pele, olhos e expressão. Aplique SOMENTE o que for descrito no prompt (cabelo, roupa, acessório, etc.). Nunca substitua ou idealize o rosto da cliente — use sempre a foto real fornecida como base.\n\nREGRA DE COMPOSIÇÃO OBRIGATÓRIA: Mantenha EXATAMENTE o mesmo enquadramento, recorte, zoom e composição da foto original da cliente. NÃO altere a posição da cliente na imagem. NÃO aproxime o zoom. NÃO recorte o corpo ou busto. A imagem gerada deve ter a mesma composição da foto de entrada — apenas aplique o acessório/alteração solicitada.\n\nREGRA DE FORMATAÇÃO CRÍTICA: Quando a resposta incluir conteúdo de documentos como dossiês, referências de tinta, fichas técnicas ou listas — reproduza a estrutura e formatação EXATAMENTE como está no documento original. Preserve emojis, quebras de linha, marcadores (•, ✔, 🎯, 📌 etc.), hierarquia e espaçamentos. NÃO reformule em parágrafos corridos. NÃO parafraseie. Copie a estrutura fiel.\n\n${systemPrompt || ''}`
     }]
   }
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -132,7 +133,8 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
       if (!p.text) return p
       let t = p.text.replace(/\[INSTRUÇÃO[^\]]*\]/g, '').trim()
       if (imgFailed) t += '\n\n[SISTEMA: Imagem indisponível. Responda com texto. Avise: "⚠️ Geração de imagem indisponível."]'
-      if (!wantsImage) t += '\n\n[SISTEMA: Responda EXCLUSIVAMENTE com base nos materiais da consultoria, cartela de cores, documentos e observações da cliente. NÃO use conhecimento externo. Se a informação não estiver nos materiais, diga que precisa consultar a consultora Marília.]'
+      if (!wantsImage) t += `\n\n[SISTEMA: Responda EXCLUSIVAMENTE com base nos materiais da consultoria, cartela de cores, documentos e observações da cliente. NÃO use conhecimento externo. Se a informação não estiver nos materiais, diga que precisa consultar a consultora Marília.
+      REGRA DE FORMATAÇÃO CRÍTICA: Quando apresentar conteúdo de documentos como dossiês, referências de tinta, fichas técnicas ou listas — reproduza a estrutura e formatação EXATAMENTE como está no documento original. Preserve emojis, quebras de linha, marcadores (•, ✔, 🎯, 📌 etc.), hierarquia e espaçamentos. NÃO reformule em parágrafos corridos. NÃO parafraseie. Copie a estrutura fiel.]`
       return { ...p, text: t }
     })}
   })

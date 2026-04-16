@@ -15,7 +15,9 @@ interface AppSettings {
   saveFormAsPdf: boolean
   googleDriveAttachmentsFolder: string
   geminiApiKey: string
-  pdfTemplateUrl: string   // URL do PDF modelo
+  pdfTemplateUrl: string      // mantido por compat (não usado na geração)
+  pdfTemplateBase64?: string  // conteúdo binário do PDF modelo (base64)
+  pdfTemplateFileName?: string // nome original do arquivo
   // ── E-mail ──
   adminEmail: string      // e-mail da consultora para receber notificações
   resendApiKey: string    // chave da API Resend para envio de e-mails
@@ -70,6 +72,8 @@ const settingsStorageService = {
       googleDriveAttachmentsFolder: '',
       geminiApiKey: '',
       pdfTemplateUrl: '',
+      pdfTemplateBase64: '',
+      pdfTemplateFileName: '',
       adminEmail: '',
       resendApiKey: '',
       fromEmail: '',
@@ -174,33 +178,45 @@ const Checkbox = ({ id, checked, onChange, label, description }: any) => (
 )
 
 // ── PDF Template Section ────────────────────────────────────────────────────
+//
+// Lê o PDF localmente (FileReader → base64) e salva direto no banco via settings.
+// Sem fetch de URL — elimina o problema de SPA devolvendo index.html com status 200.
 
-function PdfTemplateSection({ currentUrl, onSave }: { currentUrl: string; onSave: (url: string) => void }) {
-  const [uploading, setUploading] = useState(false)
+function PdfTemplateSection({
+  currentFileName,
+  onSave,
+}: {
+  currentFileName: string
+  onSave: (base64: string, fileName: string) => void
+}) {
+  const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || file.type !== 'application/pdf') return
     e.target.value = ''
-    setUploading(true)
+    setSaving(true)
     try {
-      const path = `pdf-templates/modelo_${Date.now()}.pdf`
-      const { error } = await supabase.storage.from('client-photos').upload(path, file, { contentType: 'application/pdf', upsert: true })
-      if (error) throw error
-      const url = supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl
-      onSave(url)
+      // Lê o arquivo como base64 — nenhum upload de rede necessário
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      onSave(base64, file.name)
       setStatus('saved')
       setTimeout(() => setStatus('idle'), 3000)
     } catch (err: any) {
-      alert('Erro ao enviar: ' + err.message)
+      alert('Erro ao processar PDF: ' + err.message)
       setStatus('error')
-    } finally { setUploading(false) }
+    } finally { setSaving(false) }
   }
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!confirm('Remover o PDF modelo?')) return
-    onSave('')
+    onSave('', '')
   }
 
   return (
@@ -212,34 +228,30 @@ function PdfTemplateSection({ currentUrl, onSave }: { currentUrl: string; onSave
           </div>
           <div>
             <h2 className="text-base font-semibold text-gray-900">PDF Modelo de Estilo</h2>
-            <p className="text-sm text-gray-500">Faça upload de um PDF de referência para o layout desejado</p>
+            <p className="text-sm text-gray-500">Template salvo no banco — sem dependência de URL externa</p>
           </div>
         </div>
       </div>
 
       <div className="px-6 py-5 space-y-4">
         <p className="text-sm text-gray-600">
-          Envie um PDF de exemplo com o layout que você quer que o PDF gerado siga. Ele ficará disponível como referência visual para você e sua equipe.
+          Envie o Modelo.pdf com o layout de capa, página interna e contra-capa. O arquivo é armazenado como base64 direto no banco de dados, sem depender de URLs que podem falhar em SPA.
         </p>
 
-        {currentUrl ? (
+        {currentFileName ? (
           <div className="flex items-center gap-3 bg-fuchsia-50 border border-fuchsia-200 rounded-xl p-4">
             <div className="w-10 h-10 bg-fuchsia-100 rounded-lg flex items-center justify-center flex-shrink-0">
               <FileText className="h-5 w-5 text-fuchsia-600" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-gray-800">PDF modelo carregado</p>
-              <p className="text-xs text-gray-500 truncate">{currentUrl}</p>
+              <p className="text-xs text-gray-500 truncate">{currentFileName}</p>
             </div>
             <div className="flex gap-2 flex-shrink-0">
-              <a href={currentUrl} target="_blank" rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-fuchsia-600 text-white rounded-lg text-xs font-medium hover:bg-fuchsia-700">
-                <Eye className="h-3.5 w-3.5" /> Ver PDF
-              </a>
               <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 cursor-pointer">
                 <Upload className="h-3.5 w-3.5" />
-                {uploading ? 'Enviando...' : 'Trocar'}
-                <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={uploading} />
+                {saving ? 'Salvando...' : 'Trocar'}
+                <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
               </label>
               <button onClick={handleDelete}
                 className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-100">
@@ -248,29 +260,29 @@ function PdfTemplateSection({ currentUrl, onSave }: { currentUrl: string; onSave
             </div>
           </div>
         ) : (
-          <label className={`flex flex-col items-center gap-3 border-2 border-dashed border-fuchsia-200 rounded-xl p-8 cursor-pointer hover:bg-fuchsia-50 transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`}>
+          <label className={`flex flex-col items-center gap-3 border-2 border-dashed border-fuchsia-200 rounded-xl p-8 cursor-pointer hover:bg-fuchsia-50 transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`}>
             <div className="w-12 h-12 bg-fuchsia-100 rounded-xl flex items-center justify-center">
-              {uploading
+              {saving
                 ? <div className="animate-spin h-6 w-6 border-2 border-fuchsia-500 border-t-transparent rounded-full" />
                 : <Upload className="h-6 w-6 text-fuchsia-500" />}
             </div>
             <div className="text-center">
-              <p className="text-sm font-medium text-gray-700">{uploading ? 'Enviando PDF...' : 'Clique para enviar o PDF modelo'}</p>
+              <p className="text-sm font-medium text-gray-700">{saving ? 'Salvando PDF no banco...' : 'Clique para enviar o PDF modelo'}</p>
               <p className="text-xs text-gray-400 mt-1">Somente arquivos .pdf</p>
             </div>
-            <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={uploading} />
+            <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
           </label>
         )}
 
         {status === 'saved' && (
           <div className="flex items-center gap-2 text-sm text-green-600">
-            <CheckCircle className="h-4 w-4" /> PDF modelo salvo com sucesso!
+            <CheckCircle className="h-4 w-4" /> PDF modelo salvo no banco com sucesso!
           </div>
         )}
 
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
           <p className="text-xs text-blue-800">
-            💡 O PDF modelo é uma referência visual. O gerador de PDF da IA segue automaticamente o layout em 2 colunas com seções por categoria (Cabelo, Maquiagem, Roupas, Acessórios).
+            💡 O PDF é lido localmente e salvo como base64 no banco (admin_content). Nenhuma URL externa é usada — funciona sempre, mesmo em ambiente SPA.
           </p>
         </div>
       </div>
@@ -782,9 +794,9 @@ export default function SettingsEditor() {
 
       {/* ── PDF Modelo ─────────────────────────────────────────── */}
       <PdfTemplateSection
-        currentUrl={settings.pdfTemplateUrl}
-        onSave={(url) => {
-          const updated = { ...settings, pdfTemplateUrl: url }
+        currentFileName={settings.pdfTemplateFileName || ''}
+        onSave={(base64, fileName) => {
+          const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
           setSettings(updated)
           settingsStorageService.saveSettings(updated)
         }}

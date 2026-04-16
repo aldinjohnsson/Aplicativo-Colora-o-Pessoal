@@ -880,3 +880,38 @@ SELECT conname, pg_get_constraintdef(oid) AS consrc
 FROM pg_constraint
 WHERE conname = 'admin_content_type_check';
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_reference_photos jsonb DEFAULT '[]';
+
+
+create table ai_sub_options (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (kind in ('length', 'texture')),
+  name text not null default '',
+  instruction text default '',
+  thumbnail jsonb,
+  images jsonb default '[]',
+  created_at timestamptz default now()
+);
+
+-- liberar insert
+create policy "Allow insert ai_sub_options"
+on ai_sub_options
+for insert
+with check (true);
+
+-- liberar select (pra aparecer na biblioteca)
+create policy "Allow select ai_sub_options"
+on ai_sub_options
+for select
+using (true);
+
+-- liberar update (edição)
+create policy "Allow update ai_sub_options"
+on ai_sub_options
+for update
+using (true);
+
+-- liberar delete
+create policy "Allow delete ai_sub_options"
+on ai_sub_options
+for delete
+using (true);

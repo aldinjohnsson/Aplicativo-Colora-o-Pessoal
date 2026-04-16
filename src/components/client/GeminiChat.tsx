@@ -1,7 +1,7 @@
 // src/components/client/GeminiChat.tsx
 import React, { useState, useRef, useEffect } from 'react'
 import {
-  Send, ImagePlus, X, Loader2, AlertCircle, Bot, User, Download,
+  Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
   FileText, CheckSquare, Square
 } from 'lucide-react'
@@ -151,7 +151,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [pdfSelected, setPdfSelected] = useState<Set<string>>(new Set())
   const [pdfGenerating, setPdfGenerating] = useState(false)
 
-  const lastCtx = useRef<{ text: string; isImage: boolean; refPhotoOverride?: { base64: string; mime: string }; displayText?: string; mats?: MaterialData[]; isAccessory?: boolean; pdfMeta?: PdfMeta } | null>(null)
+  const lastCtx = useRef<{ text: string; isImage: boolean; refPhotoOverride?: { base64: string; mime: string }; displayText?: string; mats?: MaterialData[]; isAccessory?: boolean; pdfMeta?: PdfMeta; afterImageText?: string } | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -349,10 +349,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const mats = await loadPromptMaterials(prompt)
     setPromptMaterials(mats)
     const refOverride = getRefPhotoForCategory(cat)
-    const suffix = prompt.reference ? `\n\nApós gerar, informe: "📌 Referência: ${prompt.reference}"` : ''
+    const afterImageText = (prompt.tintReference || prompt.reference)?.trim() || undefined
     const catIsAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
     const meta: PdfMeta = { section: getCategorySection(cat), label: prompt.name, caption: prompt.tintReference || prompt.reference || prompt.name }
-    handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, suffix), true, prompt, mats, refOverride, `✨ ${prompt.name}`, catIsAccessory, meta)
+    handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, ''), true, prompt, mats, refOverride, `✨ ${prompt.name}`, catIsAccessory, meta, afterImageText)
   }
 
   // ── Length selected ──────────────────────────────────────────
@@ -390,9 +390,9 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
     const refOverride = getRefPhotoForCategory(selectedCat)
 
-    const suffix = selectedPrompt.tintReference
-      ? `\n\nApós gerar, informe: "🎨 Tinta recomendada: ${selectedPrompt.tintReference}"`
-      : ''
+    // tintReference is shown as a formatted caption message AFTER the image (not sent to the AI)
+    const afterImageText = selectedPrompt.tintReference?.trim() || undefined
+    const suffix = ''
 
     // Combine base instructions + length + texture
     const lengthPart = length?.instruction
@@ -421,7 +421,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       refOverride,
       `✨ ${displayLabel}`,
       false,
-      meta
+      meta,
+      afterImageText
     )
   }
 
@@ -433,10 +434,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const mats = await loadPromptMaterials(selectedPrompt)
     setPromptMaterials(mats)
     const refOverride = getRefPhotoForCategory(selectedCat)
-    const suffix = selectedPrompt.tintReference ? `\n\nApós gerar, informe: "🎨 Tinta recomendada: ${selectedPrompt.tintReference}"` : ''
+    const afterImageText = selectedPrompt.tintReference?.trim() || undefined
     const catIsAccessory = selectedCat.icon === 'gem' || selectedCat.name.toLowerCase().includes('acess')
     const meta: PdfMeta = { section: getCategorySection(selectedCat), label: `${selectedPrompt.name} — ${option}`, caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name }
-    handleSend(buildPromptInstruction(selectedCat, `${selectedPrompt.instructions || selectedPrompt.name} - comprimento ${option}`, suffix), true, selectedPrompt, mats, refOverride, `✨ ${selectedPrompt.name} — ${option}`, catIsAccessory, meta)
+    handleSend(buildPromptInstruction(selectedCat, `${selectedPrompt.instructions || selectedPrompt.name} - comprimento ${option}`, ''), true, selectedPrompt, mats, refOverride, `✨ ${selectedPrompt.name} — ${option}`, catIsAccessory, meta, afterImageText)
   }
 
   const goBack = () => {
@@ -455,7 +456,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   // ── Send ───────────────────────────────────────────────────
 
-  const handleSend = async (overrideText?: string, isImage: boolean = false, contextPrompt?: Prompt, mats?: MaterialData[], refPhotoOverride?: { base64: string; mime: string }, displayText?: string, isAccessory: boolean = false, pdfMeta?: PdfMeta) => {
+  const handleSend = async (overrideText?: string, isImage: boolean = false, contextPrompt?: Prompt, mats?: MaterialData[], refPhotoOverride?: { base64: string; mime: string }, displayText?: string, isAccessory: boolean = false, pdfMeta?: PdfMeta, afterImageText?: string) => {
     const text = (overrideText || input).trim()
     if (!text && !pendingImage) return
     if (loading) return
@@ -479,7 +480,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const lid = uid()
     setMessages(prev => [...prev, userMsg, { id: lid, role: 'assistant', text: '', loading: true, timestamp: new Date(), pdfMeta }])
     setInput(''); setLoading(true)
-    lastCtx.current = { text, isImage, refPhotoOverride, displayText, mats, isAccessory, pdfMeta }
+    lastCtx.current = { text, isImage, refPhotoOverride, displayText, mats, isAccessory, pdfMeta, afterImageText }
 
     try {
       const history: GeminiMessage[] = messages.filter(m => !m.loading && m.id !== messages[0]?.id).map(m => ({ role: m.role === 'user' ? 'user' : 'model', text: m.text || ' ' } as GeminiMessage))
@@ -505,6 +506,18 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
       const mainText = response.parts.filter(p => p.type === 'text' && p.text?.trim()).map(p => p.text).join('\n').trim()
       setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: mainText || '✨', responseParts: response.parts, imageGenerationFailed: response.imageGenerationFailed } : m))
+
+      // Caption message: display tintReference/reference formatted after image
+      const hasImage = response.parts.some(p => p.type === 'image' && p.imageBase64)
+      if (hasImage && !response.imageGenerationFailed && afterImageText?.trim()) {
+        const captionId = uid()
+        setMessages(prev => [...prev, {
+          id: captionId, role: 'assistant',
+          text: afterImageText.trim(),
+          responseParts: [{ type: 'text', text: afterImageText.trim() }],
+          timestamp: new Date(),
+        }])
+      }
 
       if (clientId) {
         const imageParts = response.parts.filter(p => p.type === 'image' && p.imageBase64)
@@ -538,7 +551,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const handleRetry = () => {
     if (!lastCtx.current || loading) return
     setMessages(prev => { const idx = prev.findLastIndex(m => m.role === 'assistant' && (m.error || m.imageGenerationFailed)); return idx === -1 ? prev : prev.filter((_, i) => i !== idx && i !== idx - 1) })
-    handleSend(lastCtx.current.text, lastCtx.current.isImage, undefined, lastCtx.current.mats, lastCtx.current.refPhotoOverride, lastCtx.current.displayText, lastCtx.current.isAccessory, lastCtx.current.pdfMeta)
+    handleSend(lastCtx.current.text, lastCtx.current.isImage, undefined, lastCtx.current.mats, lastCtx.current.refPhotoOverride, lastCtx.current.displayText, lastCtx.current.isAccessory, lastCtx.current.pdfMeta, lastCtx.current.afterImageText)
   }
 
   // ── PDF Export ────────────────────────────────────────────────
@@ -928,8 +941,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
       <div className="px-4 pb-4 pt-2 bg-white border-t border-gray-100">
         <div className="flex items-end gap-2">
-          <button onClick={() => fileRef.current?.click()} disabled={loading} className="flex-shrink-0 w-10 h-10 rounded-xl bg-gray-100 hover:bg-violet-100 text-gray-500 hover:text-violet-600 flex items-center justify-center"><ImagePlus className="h-5 w-5" /></button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f?.type.startsWith('image/')) setPendingImage({ file: f, preview: URL.createObjectURL(f) }); if (e.target) e.target.value = '' }} />
           <textarea value={input} onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(undefined, false) } }}
             placeholder="Pergunte sobre suas cores, combinações..."
@@ -937,7 +948,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-violet-400 disabled:opacity-50 max-h-32"
             style={{ minHeight: '42px' }}
             onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 128) + 'px' }} />
-          <button onClick={() => handleSend(undefined, false)} disabled={loading || (!input.trim() && !pendingImage)}
+          <button onClick={() => handleSend(undefined, false)} disabled={loading || !input.trim()}
             className="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center disabled:opacity-40 shadow-sm">
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
@@ -949,10 +960,31 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 }
 
 function MdText({ text }: { text: string }) {
-  return <span>{text.split(/(\*\*[^*]+\*\*|\n|• .+)/).map((p, i) => {
-    if (p === '\n') return <br key={i} />
+  // Split on newlines first, then handle inline bold and bullets per line
+  const lines = text.split('\n')
+  return (
+    <div>  {/* ← era <span>; div inválido dentro de span quebra o layout */}
+      {lines.map((line, li) => {
+        if (line === '') return <br key={li} />
+        // bullet line
+        if (line.startsWith('• ') || line.startsWith('- ')) {
+          const content = line.slice(2)
+          return (
+            <div key={li} className="flex gap-2 mt-0.5">
+              <span className="flex-shrink-0">•</span>
+              <span>{renderInline(content)}</span>
+            </div>
+          )
+        }
+        return <div key={li}>{renderInline(line)}</div>
+      })}
+    </div>
+  )
+}
+
+function renderInline(text: string) {
+  return text.split(/(\*\*[^*]+\*\*)/).map((p, i) => {
     if (p.startsWith('**') && p.endsWith('**')) return <strong key={i}>{p.slice(2, -2)}</strong>
-    if (p.startsWith('• ')) return <div key={i} className="flex gap-2 mt-1"><span>•</span><span>{p.slice(2)}</span></div>
     return <span key={i}>{p}</span>
-  })}</span>
+  })
 }

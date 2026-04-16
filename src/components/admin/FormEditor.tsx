@@ -183,7 +183,11 @@ export function FormEditor() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
-  const [draggedItem, setDraggedItem] = useState<string | null>(null)
+  
+  // 🎯 Estados para Drag & Drop
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  
   const [showAddField, setShowAddField] = useState(false)
 
   useEffect(() => {
@@ -205,17 +209,40 @@ export function FormEditor() {
     }
   }
 
+  const saveForm = async () => {
+    setSaving(true)
+    setMessage(null)
+    try {
+      // Reordenar campos antes de salvar
+      const reorderedFields = fields.map((field, index) => ({
+        ...field,
+        order: index + 1
+      }))
+      
+      await formStorageService.saveForm({
+        title: formTitle,
+        description: formDescription,
+        fields: reorderedFields
+      })
+      
+      setMessage({ type: 'success', text: 'Formulário salvo com sucesso!' })
+      setTimeout(() => setMessage(null), 3000)
+    } catch (error) {
+      setMessage({ type: 'error', text: 'Erro ao salvar formulário' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const addField = (type: string) => {
     const newField: FormField = {
       id: Date.now().toString(),
       type: type as any,
-      label: 'Nova Pergunta',
-      placeholder: type === 'text' || type === 'textarea' ? 'Digite aqui...' : undefined,
-      options: type === 'select' || type === 'radio' || type === 'checkbox' ? ['Opção 1', 'Opção 2'] : undefined,
+      label: '',
       required: false,
       order: fields.length + 1,
-      maxImages: type === 'image' ? 1 : undefined,
-      imageInstructions: type === 'image' ? 'Instruções para upload da imagem' : undefined
+      ...(type === 'select' || type === 'radio' || type === 'checkbox' ? { options: ['Opção 1'] } : {}),
+      ...(type === 'image' ? { maxImages: 1, imageInstructions: '' } : {})
     }
     setFields([...fields, newField])
     setShowAddField(false)
@@ -228,197 +255,190 @@ export function FormEditor() {
   }
 
   const deleteField = (id: string) => {
-    setFields(fields.filter(field => field.id !== id))
+    if (confirm('Tem certeza que deseja remover este campo?')) {
+      setFields(fields.filter(field => field.id !== id))
+    }
   }
 
   const addOption = (fieldId: string) => {
-    const field = fields.find(f => f.id === fieldId)
-    if (field && field.options) {
-      updateField(fieldId, {
-        options: [...field.options, `Opção ${field.options.length + 1}`]
-      })
-    }
+    setFields(fields.map(field => {
+      if (field.id === fieldId && field.options) {
+        return {
+          ...field,
+          options: [...field.options, `Opção ${field.options.length + 1}`]
+        }
+      }
+      return field
+    }))
   }
 
   const updateOption = (fieldId: string, optionIndex: number, value: string) => {
-    const field = fields.find(f => f.id === fieldId)
-    if (field && field.options) {
-      const newOptions = [...field.options]
-      newOptions[optionIndex] = value
-      updateField(fieldId, { options: newOptions })
-    }
+    setFields(fields.map(field => {
+      if (field.id === fieldId && field.options) {
+        const newOptions = [...field.options]
+        newOptions[optionIndex] = value
+        return { ...field, options: newOptions }
+      }
+      return field
+    }))
   }
 
   const deleteOption = (fieldId: string, optionIndex: number) => {
-    const field = fields.find(f => f.id === fieldId)
-    if (field && field.options && field.options.length > 1) {
-      updateField(fieldId, {
-        options: field.options.filter((_, i) => i !== optionIndex)
-      })
-    }
+    setFields(fields.map(field => {
+      if (field.id === fieldId && field.options) {
+        return {
+          ...field,
+          options: field.options.filter((_, idx) => idx !== optionIndex)
+        }
+      }
+      return field
+    }))
   }
 
-  const handleDragStart = (id: string) => {
-    setDraggedItem(id)
+  // 🎯 FUNÇÕES DE DRAG & DROP APRIMORADAS
+  
+  const handleDragStart = (index: number) => {
+    setDraggedIndex(index)
   }
 
-  const handleDragOver = (e: React.DragEvent, id: string) => {
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault() // Necessário para permitir o drop
+    
+    if (draggedIndex === null || draggedIndex === index) return
+    
+    setDragOverIndex(index)
+  }
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null)
+  }
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault()
-    if (draggedItem && draggedItem !== id) {
-      const draggedIndex = fields.findIndex(f => f.id === draggedItem)
-      const targetIndex = fields.findIndex(f => f.id === id)
-      
-      const newFields = [...fields]
-      const [removed] = newFields.splice(draggedIndex, 1)
-      newFields.splice(targetIndex, 0, removed)
-      
-      setFields(newFields.map((f, i) => ({ ...f, order: i + 1 })))
-    }
-  }
-
-  const handleDragEnd = () => {
-    setDraggedItem(null)
-  }
-
-  const saveForm = async () => {
-    if (!formTitle.trim()) {
-      setMessage({ type: 'error', text: 'O título não pode estar vazio' })
+    
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null)
+      setDragOverIndex(null)
       return
     }
 
-    setSaving(true)
-    setMessage(null)
+    // Reordenar os campos
+    const newFields = [...fields]
+    const draggedField = newFields[draggedIndex]
     
-    try {
-      await formStorageService.saveForm({
-        title: formTitle,
-        description: formDescription,
-        fields: fields
-      })
-      
-      setMessage({ type: 'success', text: 'Formulário salvo com sucesso!' })
-      setTimeout(() => setMessage(null), 5000)
-    } catch (error) {
-      console.error('Erro ao salvar:', error)
-      setMessage({ type: 'error', text: 'Erro ao salvar formulário' })
-    } finally {
-      setSaving(false)
-    }
+    // Remove o campo da posição original
+    newFields.splice(draggedIndex, 1)
+    
+    // Insere na nova posição
+    newFields.splice(dropIndex, 0, draggedField)
+    
+    // Atualiza a ordem
+    const reorderedFields = newFields.map((field, index) => ({
+      ...field,
+      order: index + 1
+    }))
+    
+    setFields(reorderedFields)
+    setDraggedIndex(null)
+    setDragOverIndex(null)
   }
 
-  const renderFieldPreview = (field: FormField) => {
-    switch (field.type) {
-      case 'text':
-        return (
-          <Input
-            label={field.label + (field.required ? ' *' : '')}
-            placeholder={field.placeholder}
-            disabled
-          />
-        )
-      case 'textarea':
-        return (
-          <div className="space-y-1">
-            <label className="block text-sm font-medium text-gray-700">
-              {field.label + (field.required ? ' *' : '')}
-            </label>
-            <textarea
-              placeholder={field.placeholder}
-              disabled
-              rows={4}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
-            />
-          </div>
-        )
-      case 'select':
-        return (
-          <div className="space-y-1">
-            <label className="block text-sm font-medium text-gray-700">
-              {field.label + (field.required ? ' *' : '')}
-            </label>
-            <select disabled className="block w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50">
-              <option>Selecione uma opção</option>
-              {field.options?.map((opt, i) => (
-                <option key={i}>{opt}</option>
-              ))}
-            </select>
-          </div>
-        )
-      case 'radio':
-      case 'checkbox':
-        return (
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-700">
-              {field.label + (field.required ? ' *' : '')}
-            </label>
-            <div className="space-y-2">
-              {field.options?.map((opt, i) => (
-                <label key={i} className="flex items-center">
-                  <input type={field.type} disabled className="mr-2" />
-                  <span className="text-sm text-gray-700">{opt}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-        )
-      case 'image':
-        return (
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-700">
-              {field.label + (field.required ? ' *' : '')}
-            </label>
-            {field.imageInstructions && (
-              <p className="text-sm text-gray-600">{field.imageInstructions}</p>
-            )}
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center bg-gray-50">
-              <Image className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-              <span className="text-sm text-gray-600">
-                Máximo: {field.maxImages} {field.maxImages === 1 ? 'imagem' : 'imagens'}
-              </span>
-            </div>
-          </div>
-        )
-      default:
-        return null
-    }
+  const handleDragEnd = () => {
+    setDraggedIndex(null)
+    setDragOverIndex(null)
   }
 
   if (loading) {
     return (
-      <Card>
-        <CardContent>
-          <div className="text-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">Carregando formulário...</p>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
     )
   }
 
   if (previewMode) {
     return (
-      <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <h2 className="text-xl font-semibold text-gray-900">Visualização do Formulário</h2>
-          <Button variant="outline" onClick={() => setPreviewMode(false)}>
+      <div className="max-w-2xl mx-auto py-8 space-y-6">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">Pré-visualização</h2>
+          <Button onClick={() => setPreviewMode(false)} variant="outline">
+            <Eye className="h-4 w-4 mr-2" />
             Voltar à Edição
           </Button>
         </div>
 
         <Card>
           <CardHeader>
-            <h2 className="text-xl font-semibold text-gray-900">{formTitle}</h2>
-            <p className="text-gray-600">{formDescription}</p>
+            <h2 className="text-2xl font-bold text-gray-900">{formTitle}</h2>
+            <p className="text-gray-600 mt-2">{formDescription}</p>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-6">
-              {fields.sort((a, b) => a.order - b.order).map(field => (
-                <div key={field.id}>
-                  {renderFieldPreview(field)}
-                </div>
-              ))}
-            </div>
+          <CardContent className="space-y-6">
+            {fields.sort((a, b) => a.order - b.order).map((field) => (
+              <div key={field.id} className="space-y-2">
+                <label className="block text-sm font-medium text-gray-900">
+                  {field.label}
+                  {field.required && <span className="text-red-500 ml-1">*</span>}
+                </label>
+
+                {field.type === 'text' && (
+                  <input
+                    type="text"
+                    placeholder={field.placeholder}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled
+                  />
+                )}
+
+                {field.type === 'textarea' && (
+                  <textarea
+                    placeholder={field.placeholder}
+                    rows={4}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled
+                  />
+                )}
+
+                {field.type === 'select' && (
+                  <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500" disabled>
+                    <option value="">Selecione uma opção</option>
+                    {field.options?.map((option, idx) => (
+                      <option key={idx} value={option}>{option}</option>
+                    ))}
+                  </select>
+                )}
+
+                {field.type === 'radio' && (
+                  <div className="space-y-2">
+                    {field.options?.map((option, idx) => (
+                      <label key={idx} className="flex items-center space-x-2">
+                        <input type="radio" name={field.id} disabled className="h-4 w-4" />
+                        <span className="text-sm text-gray-700">{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {field.type === 'checkbox' && (
+                  <div className="space-y-2">
+                    {field.options?.map((option, idx) => (
+                      <label key={idx} className="flex items-center space-x-2">
+                        <input type="checkbox" disabled className="h-4 w-4 rounded" />
+                        <span className="text-sm text-gray-700">{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {field.type === 'image' && (
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                    <Image className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                    <p className="text-sm text-gray-600">
+                      {field.imageInstructions || `Upload de até ${field.maxImages} imagem(ns)`}
+                    </p>
+                  </div>
+                )}
+              </div>
+            ))}
           </CardContent>
         </Card>
       </div>
@@ -426,66 +446,60 @@ export function FormEditor() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Cabeçalho */}
+    <div className="max-w-4xl mx-auto py-8 space-y-6">
+      {/* Mensagem de Status */}
+      {message && (
+        <div className={`rounded-lg p-4 flex items-center space-x-2 ${
+          message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'
+        }`}>
+          {message.type === 'success' ? (
+            <CheckCircle className="h-5 w-5" />
+          ) : (
+            <AlertCircle className="h-5 w-5" />
+          )}
+          <span className="font-medium">{message.text}</span>
+        </div>
+      )}
+
+      {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">Editor de Formulário</h2>
-          <p className="text-gray-600">Configure os campos do formulário que os clientes preencherão</p>
+          <h1 className="text-3xl font-bold text-gray-900">Editor de Formulário</h1>
+          <p className="text-gray-600 mt-1">Crie e personalize o formulário que seus clientes preencherão</p>
         </div>
-        <div className="flex space-x-2">
-          <Button variant="outline" onClick={() => setPreviewMode(true)}>
+        <div className="flex space-x-3">
+          <Button onClick={() => setPreviewMode(true)} variant="outline">
             <Eye className="h-4 w-4 mr-2" />
             Visualizar
           </Button>
           <Button onClick={saveForm} loading={saving}>
             <Save className="h-4 w-4 mr-2" />
-            Salvar Alterações
+            Salvar Formulário
           </Button>
         </div>
       </div>
 
-      {/* Mensagens */}
-      {message && (
-        <div className={`rounded-lg p-4 ${
-          message.type === 'success' ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
-        }`}>
-          <div className="flex items-center">
-            {message.type === 'success' ? (
-              <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
-            ) : (
-              <AlertCircle className="h-5 w-5 text-red-600 mr-2" />
-            )}
-            <p className={`text-sm ${message.type === 'success' ? 'text-green-800' : 'text-red-800'}`}>
-              {message.text}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Configurações Gerais */}
+      {/* Informações Básicas */}
       <Card>
         <CardHeader>
-          <h3 className="text-lg font-medium text-gray-900">Configurações Gerais</h3>
+          <h3 className="text-lg font-medium text-gray-900">Informações Básicas</h3>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <Input
-              label="Título do Formulário"
-              value={formTitle}
-              onChange={(e: any) => setFormTitle(e.target.value)}
-              placeholder="Digite o título do formulário"
+        <CardContent className="space-y-4">
+          <Input
+            value={formTitle}
+            onChange={(e: any) => setFormTitle(e.target.value)}
+            placeholder="Digite o título do formulário"
+            label="Título do Formulário"
+          />
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700">Descrição</label>
+            <textarea
+              value={formDescription}
+              onChange={(e) => setFormDescription(e.target.value)}
+              placeholder="Descrição do formulário"
+              rows={2}
+              className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
-            <div className="space-y-1">
-              <label className="block text-sm font-medium text-gray-700">Descrição</label>
-              <textarea
-                value={formDescription}
-                onChange={(e) => setFormDescription(e.target.value)}
-                placeholder="Descrição do formulário"
-                rows={2}
-                className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
           </div>
         </CardContent>
       </Card>
@@ -524,42 +538,57 @@ export function FormEditor() {
             </div>
           )}
 
-          <div className="space-y-4">
-            {fields.sort((a, b) => a.order - b.order).map((field) => (
+          {/* 🎯 LISTA DE CAMPOS COM DRAG & DROP */}
+          <div className="space-y-3">
+            {fields.sort((a, b) => a.order - b.order).map((field, index) => (
               <div
                 key={field.id}
                 draggable
-                onDragStart={() => handleDragStart(field.id)}
-                onDragOver={(e) => handleDragOver(e, field.id)}
+                onDragStart={() => handleDragStart(index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, index)}
                 onDragEnd={handleDragEnd}
-                className={`bg-gray-50 rounded-lg p-4 border-2 ${
-                  draggedItem === field.id ? 'border-blue-400 opacity-50' : 'border-gray-200'
-                } transition-all cursor-move`}
+                className={`
+                  bg-white rounded-lg p-4 border-2 transition-all
+                  ${draggedIndex === index 
+                    ? 'opacity-40 border-blue-400 shadow-lg' 
+                    : dragOverIndex === index
+                    ? 'border-blue-500 border-dashed bg-blue-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                  }
+                `}
               >
                 <div className="flex items-start space-x-3">
-                  <div className="mt-2">
+                  {/* 🎯 Handle de Arrastar */}
+                  <div 
+                    className="mt-2 cursor-move hover:bg-gray-100 rounded p-1 transition-colors"
+                    title="Arraste para reordenar"
+                  >
                     <GripVertical className="h-5 w-5 text-gray-400" />
                   </div>
                   
                   <div className="flex-1 space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="block text-xs font-medium text-gray-700">Tipo</label>
-                        <span className="inline-flex items-center px-2.5 py-1.5 rounded-md text-xs font-medium bg-blue-100 text-blue-800">
-                          {FIELD_TYPES.find(t => t.value === field.type)?.label}
-                        </span>
-                      </div>
-                      <div className="flex items-center">
-                        <label className="flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={field.required}
-                            onChange={(e) => updateField(field.id, { required: e.target.checked })}
-                            className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                          />
-                          <span className="text-sm text-gray-700">Campo obrigatório</span>
-                        </label>
-                      </div>
+                    {/* Badge de ordem */}
+                    <div className="flex items-center justify-between">
+                      <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-700">
+                        #{index + 1}
+                      </span>
+                      <span className="inline-flex items-center px-2.5 py-1.5 rounded-md text-xs font-medium bg-blue-100 text-blue-800">
+                        {FIELD_TYPES.find(t => t.value === field.type)?.label}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center">
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={field.required}
+                          onChange={(e) => updateField(field.id, { required: e.target.checked })}
+                          className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-700">Campo obrigatório</span>
+                      </label>
                     </div>
 
                     <Input
@@ -640,6 +669,7 @@ export function FormEditor() {
                   <button
                     onClick={() => deleteField(field.id)}
                     className="text-red-500 hover:text-red-700 mt-2"
+                    title="Remover campo"
                   >
                     <Trash2 className="h-5 w-5" />
                   </button>
@@ -648,8 +678,8 @@ export function FormEditor() {
             ))}
 
             {fields.length === 0 && (
-              <div className="text-center py-12 text-gray-500">
-                <p>Nenhum campo adicionado ainda.</p>
+              <div className="text-center py-12 text-gray-500 border-2 border-dashed border-gray-300 rounded-lg">
+                <p className="font-medium">Nenhum campo adicionado ainda.</p>
                 <p className="text-sm mt-2">Clique em "Adicionar Campo" para começar.</p>
               </div>
             )}
@@ -660,14 +690,15 @@ export function FormEditor() {
       {/* Dicas */}
       <Card>
         <CardContent className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <p className="text-sm text-blue-800">
-            <strong>Dicas:</strong>
+          <p className="text-sm font-medium text-blue-900 mb-2">
+            💡 Dicas de Uso:
           </p>
-          <ul className="text-sm text-blue-700 mt-2 space-y-1 list-disc list-inside">
-            <li>Arraste os campos para reordená-los</li>
-            <li>Marque campos importantes como obrigatórios</li>
-            <li>Use campos de imagem para coletar fotos específicas</li>
-            <li>Visualize antes de salvar para conferir o resultado</li>
+          <ul className="text-sm text-blue-700 space-y-1 list-disc list-inside">
+            <li><strong>Arrastar e Soltar:</strong> Clique e segure no ícone ⋮⋮ para reordenar os campos</li>
+            <li><strong>Campos Obrigatórios:</strong> Marque a caixa para tornar o campo obrigatório</li>
+            <li><strong>Upload de Imagens:</strong> Use campos de imagem para coletar fotos específicas</li>
+            <li><strong>Pré-visualização:</strong> Clique em "Visualizar" para ver como ficará para o cliente</li>
+            <li><strong>Salvar:</strong> Não esqueça de salvar após fazer alterações!</li>
           </ul>
         </CardContent>
       </Card>

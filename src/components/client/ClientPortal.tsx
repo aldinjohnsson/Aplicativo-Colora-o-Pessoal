@@ -666,10 +666,15 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
   return (
     <div className="space-y-4">
       {/* Banner de conclusão */}
-      <div className="bg-gradient-to-br from-rose-500 to-pink-500 rounded-2xl p-6 text-white text-center">
-        <CheckCircle className="h-12 w-12 mx-auto mb-3 opacity-90" />
-        <h2 className="text-xl font-bold">Sua análise está pronta!</h2>
-        <p className="text-rose-100 text-sm mt-1">Confira todos os materiais abaixo</p>
+      <div className="bg-gradient-to-br from-rose-500 via-pink-500 to-rose-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
+        <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }} />
+        <div className="relative">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
+            <CheckCircle className="h-9 w-9 text-white" />
+          </div>
+          <h2 className="text-2xl font-bold tracking-tight">Sua análise está pronta!</h2>
+          <p className="text-rose-100 text-sm mt-1.5">Confira todos os materiais abaixo</p>
+        </div>
       </div>
 
       {/* Aviso quando resultado foi liberado mas sem conteúdo ainda */}
@@ -690,13 +695,16 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
             <ExternalLink className="h-5 w-5 text-rose-400" /> Pasta com Materiais
           </h3>
           <a href={result.folder_url} target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-3 p-4 bg-rose-50 rounded-xl border border-rose-100 hover:bg-rose-100 transition-colors group">
-            <div className="w-10 h-10 bg-rose-100 rounded-xl flex items-center justify-center">
-              <ExternalLink className="h-5 w-5 text-rose-500" />
+            className="flex items-center gap-3 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100 hover:from-rose-100 hover:to-pink-100 transition-all group">
+            <div className="w-11 h-11 bg-gradient-to-br from-rose-400 to-pink-500 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0">
+              <ExternalLink className="h-5 w-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-rose-700">Acessar pasta completa</p>
-              <p className="text-xs text-rose-400 truncate">{result.folder_url}</p>
+              <p className="text-sm font-semibold text-rose-700">Acessar pasta completa</p>
+              <p className="text-xs text-rose-400 mt-0.5">Clique para abrir seus materiais</p>
+            </div>
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
+              <ExternalLink className="h-3.5 w-3.5 text-rose-500" />
             </div>
           </a>
         </div>
@@ -710,15 +718,15 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
           <div className="space-y-2">
             {files.map(file => (
               <a key={file.id} href={clientService.getResultFileUrl(file.storage_path)} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
-                <div className="w-9 h-9 bg-red-100 rounded-lg flex items-center justify-center">
-                  <FileText className="h-4 w-4 text-red-500" />
+                className="flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-100 transition-all group">
+                <div className="w-10 h-10 bg-gradient-to-br from-red-400 to-rose-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+                  <FileText className="h-4.5 w-4.5 text-white" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-800 truncate">{file.file_name}</p>
-                  <p className="text-xs text-gray-400">{(file.file_size / 1024).toFixed(0)} KB</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{(file.file_size / 1024).toFixed(0)} KB</p>
                 </div>
-                <Download className="h-4 w-4 text-gray-400" />
+                <Download className="h-4 w-4 text-gray-300 group-hover:text-rose-400 transition-colors flex-shrink-0" />
               </a>
             ))}
           </div>
@@ -727,15 +735,17 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
 
       {result.observations && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-          <h3 className="font-semibold text-gray-900 mb-3">Observações da Consultora</h3>
-          <div className="bg-rose-50 rounded-xl p-4">
+          <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+            <span className="text-rose-400">✦</span> Observações da Consultora
+          </h3>
+          <div className="bg-gradient-to-br from-rose-50 to-pink-50 rounded-xl p-4 border border-rose-100">
             <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{result.observations}</p>
           </div>
         </div>
       )}
 
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 text-center">
-        <p className="text-sm text-gray-500">Liberado em {new Date(result.released_at).toLocaleDateString('pt-BR')}</p>
+      <div className="rounded-2xl px-5 py-3 text-center">
+        <p className="text-xs text-gray-400">Liberado em {new Date(result.released_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
       </div>
 
       {/* Chat com IA — aparece somente se o prompt foi configurado para esta cliente */}

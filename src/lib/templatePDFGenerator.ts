@@ -10,6 +10,7 @@ import {
   pushGraphicsState, popGraphicsState,
   rectangle, clip, endPath,
 } from 'pdf-lib'
+import { supabase } from './supabase'
 
 // ─── Tipos ──────────────────────────────────────────────────
 
@@ -468,23 +469,56 @@ function truncate(text: string, maxLen: number): string {
 }
 
 
+// ─── Carrega o template do banco (admin_content → settings.pdfTemplateBase64) ──
+//
+// Elimina o fetch de URL que falha silenciosamente em SPAs (servidor devolve
+// index.html com status 200, passando pelo if (!res.ok) sem detectar o erro).
+
+async function loadTemplateFromSettings(): Promise<ArrayBuffer> {
+  const { data, error } = await supabase
+    .from('admin_content')
+    .select('content')
+    .eq('type', 'settings')
+    .maybeSingle()
+
+  if (error) throw new Error('Erro ao carregar configurações: ' + error.message)
+
+  const settings = data?.content as Record<string, any> | null
+  const base64: string | undefined = settings?.pdfTemplateBase64
+
+  if (!base64) {
+    throw new Error(
+      'PDF modelo não configurado.\n' +
+      'Acesse Configurações → PDF Modelo de Estilo e faça o upload do Modelo.pdf.'
+    )
+  }
+
+  // data:application/pdf;base64,<dados>  →  apenas os dados
+  const raw = base64.includes(',') ? base64.split(',')[1] : base64
+  const binaryStr = atob(raw)
+  const bytes = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+  return bytes.buffer
+}
+
+
 // ─── Função de download ─────────────────────────────────────
 
 /**
  * Gera e inicia o download do PDF de estilo personalizado.
+ * O template é carregado direto do banco (campo pdfTemplateBase64 em admin_content).
  *
- * @param templateUrl  URL do Modelo.pdf (ex: '/Modelo.pdf')
  * @param clientName   Nome da cliente
  * @param items        Lista de imagens com metadados
  */
-export async function downloadStylePDF(
-  templateUrl: string,
-  clientName: string,
-  items: PdfImageItem[],
-): Promise<void> {
-  const res = await fetch(templateUrl)
-  if (!res.ok) throw new Error(`Erro ao carregar template: ${res.status}`)
-  const templateBytes = await res.arrayBuffer()
+export async function downloadStylePDF({
+  clientName,
+  items,
+}: {
+  clientName: string
+  items: PdfImageItem[]
+}): Promise<void> {
+  const templateBytes = await loadTemplateFromSettings()
 
   const pdfBytes = await generateStylePDF(templateBytes, clientName, items)
 

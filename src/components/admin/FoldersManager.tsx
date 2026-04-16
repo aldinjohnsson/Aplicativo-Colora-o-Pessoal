@@ -16,6 +16,7 @@ interface PromptImage { storagePath: string; url: string; label: string }
 /** Sub-option for comprimento or textura inside a cabelo prompt */
 interface SubOption {
   id: string
+  dbId?: string               // uuid from ai_sub_options (set after first save)
   name: string                // shown to client in chat
   thumbnail: PromptImage | null  // cover image shown in chat
   instruction: string         // AI instruction appended to base prompt
@@ -96,6 +97,17 @@ export function FoldersManager() {
   const [openTextureId, setOpenTextureId] = useState<string | null>(null)
   const [uploadingSubThumb, setUploadingSubThumb] = useState(false)
   const [uploadingSubImg, setUploadingSubImg] = useState(false)
+  const [savingSubId, setSavingSubId] = useState<string | null>(null)
+  const [savedSubIds, setSavedSubIds] = useState<Set<string>>(new Set())
+
+  // Global sub-option picker (comprimentos / texturas compartilhados)
+  interface GlobalSubOpt extends SubOption { kind: 'length' | 'texture' }
+  const [globalSubOpts, setGlobalSubOpts] = useState<GlobalSubOpt[]>([])
+  const [loadingGlobal, setLoadingGlobal] = useState(false)
+  const [subPicker, setSubPicker] = useState<{ catId: string; pId: string; field: 'lengths' | 'textures' } | null>(null)
+  const [pickerSelected, setPickerSelected] = useState<Set<string>>(new Set())
+  // ids of linked items where user acknowledged the "affects all" warning
+  const [linkedEditOk, setLinkedEditOk] = useState<Set<string>>(new Set())
 
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isFirstRender = useRef(true)
@@ -169,12 +181,14 @@ export function FoldersManager() {
           options: p.options || [],
           lengths: (p.lengths || []).map((l: any) => ({
             ...l,
+            dbId: l.dbId || undefined,
             thumbnail: l.thumbnail || null,
             instruction: l.instruction || '',
             images: l.images || [],
           })),
           textures: (p.textures || []).map((t: any) => ({
             ...t,
+            dbId: t.dbId || undefined,
             thumbnail: t.thumbnail || null,
             instruction: t.instruction || '',
             images: t.images || [],
@@ -310,6 +324,63 @@ export function FoldersManager() {
     if (field === 'textures' && openTextureId === subId) setOpenTextureId(null)
   }
 
+  // ── Global sub-option helpers ──────────────────────────────
+
+  const loadGlobalSubOpts = async () => {
+    setLoadingGlobal(true)
+    const { data } = await supabase.from('ai_sub_options').select('*').order('name')
+    if (data) {
+      setGlobalSubOpts(data.map((d: any) => ({
+        id: uid(), dbId: d.id, kind: d.kind,
+        name: d.name, instruction: d.instruction || '',
+        thumbnail: d.thumbnail || null, images: d.images || [],
+      })))
+    }
+    setLoadingGlobal(false)
+  }
+
+  const openSubPicker = (catId: string, pId: string, field: 'lengths' | 'textures') => {
+    loadGlobalSubOpts()
+    setPickerSelected(new Set())
+    setSubPicker({ catId, pId, field })
+  }
+
+  const linkSubOption = (catId: string, pId: string, field: 'lengths' | 'textures', global: any) => {
+    const cat = config.categories.find(c => c.id === catId)
+    const prompt = cat?.prompts.find(p => p.id === pId)
+    if (!prompt) return
+    const sub: SubOption = { id: uid(), dbId: global.dbId, name: global.name, instruction: global.instruction, thumbnail: global.thumbnail, images: global.images }
+    updatePrompt(catId, pId, { [field]: [...(prompt[field] || []), sub] })
+    // não abre automaticamente — o item entra colapsado
+    setSubPicker(null)
+  }
+
+  const linkMultipleSubOptions = (catId: string, pId: string, field: 'lengths' | 'textures', globals: any[]) => {
+    const cat = config.categories.find(c => c.id === catId)
+    const prompt = cat?.prompts.find(p => p.id === pId)
+    if (!prompt || globals.length === 0) return
+    const newSubs: SubOption[] = globals.map(g => ({
+      id: uid(), dbId: g.dbId, name: g.name,
+      instruction: g.instruction, thumbnail: g.thumbnail, images: g.images,
+    }))
+    updatePrompt(catId, pId, { [field]: [...(prompt[field] || []), ...newSubs] })
+    // nenhum item é aberto — todos entram colapsados
+    setSubPicker(null)
+  }
+
+  const duplicateSubOption = (catId: string, pId: string, field: 'lengths' | 'textures', subId: string) => {
+    const cat = config.categories.find(c => c.id === catId)
+    const prompt = cat?.prompts.find(p => p.id === pId)
+    const sub = (prompt?.[field] || []).find((s: SubOption) => s.id === subId)
+    if (!sub) return
+    const copy: SubOption = { ...sub, id: uid(), dbId: undefined }
+    updatePrompt(catId, pId, { [field]: [...(prompt![field] || []), copy] })
+    if (field === 'lengths') setOpenLengthId(copy.id)
+    else setOpenTextureId(copy.id)
+    // remove from "edit ok" so the copy starts fresh (not locked)
+    setLinkedEditOk(prev => { const n = new Set(prev); n.delete(subId); return n })
+  }
+
   const updateSubOption = (catId: string, pId: string, field: 'lengths' | 'textures', subId: string, u: Partial<SubOption>) => {
     const cat = config.categories.find(c => c.id === catId)
     const prompt = cat?.prompts.find(p => p.id === pId)
@@ -350,6 +421,52 @@ export function FoldersManager() {
     if (!sub) return
     try { await supabase.storage.from('client-photos').remove([sub.images[idx].storagePath]) } catch {}
     updateSubOption(catId, pId, field, subId, { images: sub.images.filter((_: any, i: number) => i !== idx) })
+  }
+
+  const saveSubOptionToBank = async (
+    catId: string, pId: string,
+    field: 'lengths' | 'textures',
+    sub: SubOption,
+  ) => {
+    setSavingSubId(sub.id)
+    try {
+      const kind = field === 'lengths' ? 'length' : 'texture'
+      const payload = {
+        kind,
+        name: sub.name,
+        instruction: sub.instruction,
+        thumbnail: sub.thumbnail,
+        images: sub.images,
+      }
+
+      let dbId = sub.dbId
+      if (dbId) {
+        // update existing row
+        const { error } = await supabase
+          .from('ai_sub_options')
+          .update(payload)
+          .eq('id', dbId)
+        if (error) throw error
+      } else {
+        // insert new row and store returned id
+        const { data, error } = await supabase
+          .from('ai_sub_options')
+          .insert(payload)
+          .select('id')
+          .single()
+        if (error) throw error
+        dbId = data.id
+        // persist dbId back into config so next save does update, not insert
+        updateSubOption(catId, pId, field, sub.id, { dbId })
+      }
+
+      setSavedSubIds(prev => new Set(prev).add(sub.id))
+      setTimeout(() => setSavedSubIds(prev => { const n = new Set(prev); n.delete(sub.id); return n }), 3000)
+    } catch (e: any) {
+      alert('Erro ao salvar: ' + e.message)
+    } finally {
+      setSavingSubId(null)
+    }
   }
 
   // ── Uploads ────────────────────────────────────────────────
@@ -438,7 +555,7 @@ export function FoldersManager() {
         <div className="flex items-center justify-between">
           <label className="text-xs font-semibold text-gray-700">{icon} {label}</label>
           <button
-            onClick={() => addSubOption(cat.id, prompt.id, field)}
+            onClick={() => openSubPicker(cat.id, prompt.id, field)}
             className={`text-xs px-2.5 py-1 ${colorClass.bg} ${colorClass.text} rounded-lg flex items-center gap-1`}
           >
             <Plus className="h-3 w-3" /> Adicionar
@@ -466,6 +583,11 @@ export function FoldersManager() {
                 </div>
               )}
               <span className="text-xs text-gray-800 font-medium flex-1">{sub.name || '(sem nome)'}</span>
+              {sub.dbId && (
+                <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded-full flex items-center gap-0.5 flex-shrink-0">
+                  <Link2 className="h-2.5 w-2.5" /> Global
+                </span>
+              )}
               <button
                 onClick={e => { e.stopPropagation(); removeSubOption(cat.id, prompt.id, field, sub.id) }}
                 className="text-gray-300 hover:text-red-500"
@@ -476,74 +598,118 @@ export function FoldersManager() {
             {/* Expanded details */}
             {openId === sub.id && (
               <div className="px-3 py-3 border-t border-gray-100 space-y-3 bg-gray-50/50">
-                {/* Name */}
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Nome (aparece para a cliente)</label>
-                  <input
-                    value={sub.name}
-                    onChange={e => updateSubOption(cat.id, prompt.id, field, sub.id, { name: e.target.value })}
-                    placeholder={field === 'lengths' ? 'Ex: Longo' : 'Ex: Cacheado'}
-                    className={`${inp} text-xs`}
-                  />
-                </div>
 
-                {/* Cover image */}
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">📸 Imagem de capa (aparece no chat)</label>
-                  {sub.thumbnail ? (
-                    <div className="flex items-center gap-3">
-                      <img src={sub.thumbnail.url} alt="" className="w-14 h-14 rounded-lg object-cover border" />
-                      <div className="flex gap-2">
-                        <label className={`text-xs px-2.5 py-1.5 ${colorClass.bg} ${colorClass.text} rounded-lg cursor-pointer`}>
-                          <input type="file" accept="image/*" className="hidden" onChange={e => handleSubThumbUpload(cat.id, prompt.id, field, sub.id, e)} />
-                          {uploadingSubThumb ? 'Enviando...' : 'Trocar'}
-                        </label>
-                        <button
-                          onClick={() => updateSubOption(cat.id, prompt.id, field, sub.id, { thumbnail: null })}
-                          className="text-xs px-2.5 py-1.5 bg-red-100 text-red-600 rounded-lg"
-                        >Remover</button>
-                      </div>
+                {/* Global item warning */}
+                {sub.dbId && !linkedEditOk.has(sub.id) && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                    <p className="text-xs text-amber-800 font-medium">🔗 Este item é compartilhado globalmente</p>
+                    <p className="text-xs text-amber-700">Editar aqui irá alterar em <strong>TODOS</strong> os prompts que usam este {field === 'lengths' ? 'comprimento' : 'textura'}.</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => duplicateSubOption(cat.id, prompt.id, field, sub.id)}
+                        className="flex-1 text-xs px-2.5 py-1.5 bg-white border border-amber-300 text-amber-700 rounded-lg flex items-center justify-center gap-1"
+                      ><Copy className="h-3 w-3" /> Duplicar só aqui</button>
+                      <button
+                        onClick={() => setLinkedEditOk(prev => new Set(prev).add(sub.id))}
+                        className="flex-1 text-xs px-2.5 py-1.5 bg-amber-600 text-white rounded-lg"
+                      >Editar para todos</button>
                     </div>
-                  ) : (
-                    <label className={`block border border-dashed ${colorClass.dashed} rounded-lg py-2.5 text-center cursor-pointer hover:bg-gray-50 text-xs ${colorClass.text}`}>
-                      <input type="file" accept="image/*" className="hidden" onChange={e => handleSubThumbUpload(cat.id, prompt.id, field, sub.id, e)} />
-                      {uploadingSubThumb ? 'Enviando...' : '+ Imagem de capa'}
-                    </label>
-                  )}
-                </div>
+                  </div>
+                )}
 
-                {/* AI instruction */}
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Instruções para a IA</label>
-                  <textarea
-                    value={sub.instruction}
-                    onChange={e => updateSubOption(cat.id, prompt.id, field, sub.id, { instruction: e.target.value })}
-                    rows={2}
-                    placeholder={field === 'lengths' ? 'Ex: Cabelo longo até o ombro' : 'Ex: Cacheado crespo volumoso'}
-                    className={`${inp} text-xs resize-y`}
-                  />
-                </div>
+                {/* Fields — locked until user acknowledges */}
+                <fieldset disabled={!!(sub.dbId && !linkedEditOk.has(sub.id))} className="space-y-3 disabled:opacity-40 disabled:pointer-events-none">
+                  {/* Name */}
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">Nome (aparece para a cliente)</label>
+                    <input
+                      value={sub.name}
+                      onChange={e => updateSubOption(cat.id, prompt.id, field, sub.id, { name: e.target.value })}
+                      placeholder={field === 'lengths' ? 'Ex: Longo' : 'Ex: Cacheado'}
+                      className={`${inp} text-xs`}
+                    />
+                  </div>
 
-                {/* Reference images */}
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Imagens de referência (enviadas à IA)</label>
-                  {sub.images.length > 0 && (
-                    <div className="grid grid-cols-4 gap-1.5 mb-2">
-                      {sub.images.map((img, idx) => (
-                        <div key={idx} className="relative group">
-                          <img src={img.url} alt="" className="w-full aspect-square object-cover rounded-lg border" />
+                  {/* Cover image */}
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">📸 Imagem de capa (aparece no chat)</label>
+                    {sub.thumbnail ? (
+                      <div className="flex items-center gap-3">
+                        <img src={sub.thumbnail.url} alt="" className="w-14 h-14 rounded-lg object-cover border" />
+                        <div className="flex gap-2">
+                          <label className={`text-xs px-2.5 py-1.5 ${colorClass.bg} ${colorClass.text} rounded-lg cursor-pointer`}>
+                            <input type="file" accept="image/*" className="hidden" onChange={e => handleSubThumbUpload(cat.id, prompt.id, field, sub.id, e)} />
+                            {uploadingSubThumb ? 'Enviando...' : 'Trocar'}
+                          </label>
                           <button
-                            onClick={() => removeSubImg(cat.id, prompt.id, field, sub.id, idx)}
-                            className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100"
-                          ><X className="h-2.5 w-2.5" /></button>
+                            onClick={() => updateSubOption(cat.id, prompt.id, field, sub.id, { thumbnail: null })}
+                            className="text-xs px-2.5 py-1.5 bg-red-100 text-red-600 rounded-lg"
+                          >Remover</button>
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    ) : (
+                      <label className={`block border border-dashed ${colorClass.dashed} rounded-lg py-2.5 text-center cursor-pointer hover:bg-gray-50 text-xs ${colorClass.text}`}>
+                        <input type="file" accept="image/*" className="hidden" onChange={e => handleSubThumbUpload(cat.id, prompt.id, field, sub.id, e)} />
+                        {uploadingSubThumb ? 'Enviando...' : '+ Imagem de capa'}
+                      </label>
+                    )}
+                  </div>
+
+                  {/* AI instruction */}
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">Instruções para a IA</label>
+                    <textarea
+                      value={sub.instruction}
+                      onChange={e => updateSubOption(cat.id, prompt.id, field, sub.id, { instruction: e.target.value })}
+                      rows={2}
+                      placeholder={field === 'lengths' ? 'Ex: Cabelo longo até o ombro' : 'Ex: Cacheado crespo volumoso'}
+                      className={`${inp} text-xs resize-y`}
+                    />
+                  </div>
+
+                  {/* Reference images */}
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">Imagens de referência (enviadas à IA)</label>
+                    {sub.images.length > 0 && (
+                      <div className="grid grid-cols-4 gap-1.5 mb-2">
+                        {sub.images.map((img, idx) => (
+                          <div key={idx} className="relative group">
+                            <img src={img.url} alt="" className="w-full aspect-square object-cover rounded-lg border" />
+                            <button
+                              onClick={() => removeSubImg(cat.id, prompt.id, field, sub.id, idx)}
+                              className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100"
+                            ><X className="h-2.5 w-2.5" /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <label className="block border border-dashed border-gray-300 rounded-lg py-2 text-center cursor-pointer hover:bg-gray-50 text-xs text-gray-400">
+                      <input type="file" accept="image/*" className="hidden" onChange={e => handleSubImgUpload(cat.id, prompt.id, field, sub.id, e)} />
+                      {uploadingSubImg ? 'Enviando...' : '+ Imagem de referência'}
+                    </label>
+                  </div>
+                </fieldset>
+
+                {/* Save to ai_sub_options */}
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  {savedSubIds.has(sub.id) && (
+                    <span className="text-xs text-green-600 flex items-center gap-1">
+                      <CheckCircle className="h-3 w-3" /> Salvo
+                    </span>
                   )}
-                  <label className="block border border-dashed border-gray-300 rounded-lg py-2 text-center cursor-pointer hover:bg-gray-50 text-xs text-gray-400">
-                    <input type="file" accept="image/*" className="hidden" onChange={e => handleSubImgUpload(cat.id, prompt.id, field, sub.id, e)} />
-                    {uploadingSubImg ? 'Enviando...' : '+ Imagem de referência'}
-                  </label>
+                  <button
+                    onClick={() => saveSubOptionToBank(cat.id, prompt.id, field, sub)}
+                    disabled={savingSubId === sub.id || !!(sub.dbId && !linkedEditOk.has(sub.id))}
+                    className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium disabled:opacity-50
+                      ${colorClass.bg} ${colorClass.text}`}
+                  >
+                    {savingSubId === sub.id
+                      ? <><div className="h-3 w-3 border border-current border-t-transparent rounded-full animate-spin" /> Salvando...</>
+                      : sub.dbId
+                        ? <><Save className="h-3 w-3" /> Salvar (afeta todos)</>
+                        : <><Save className="h-3 w-3" /> Salvar {field === 'lengths' ? 'comprimento' : 'textura'}</>
+                    }
+                  </button>
                 </div>
               </div>
             )}
@@ -847,8 +1013,10 @@ export function FoldersManager() {
                               {/* Tint reference */}
                               <div>
                                 <label className="text-xs font-medium text-gray-600">🎨 Referência de tinta</label>
-                                <input value={prompt.tintReference} onChange={e => updatePrompt(cat.id, prompt.id, { tintReference: e.target.value })}
-                                  placeholder="Ex: Wella Koleston 9/1, Igora Royal 8-0" className={inp} />
+                                <p className="text-[10px] text-gray-400 mb-1">Use emojis, parágrafos e quebras de linha para estruturar a mensagem que aparecerá no chat após gerar a imagem.</p>
+                                <textarea value={prompt.tintReference} onChange={e => updatePrompt(cat.id, prompt.id, { tintReference: e.target.value })}
+                                  rows={5} placeholder={"Ex:\n🎨 TINTA RECOMENDADA\n\nWella Koleston 9/1 + 10/1\nProporção: 2:1 com OX 30vol\n\n✨ Para as mechas:\nWella Blondor 40g"}
+                                  className={`${inp} resize-y text-xs font-mono`} />
                               </div>
                             </div>
                           )}
@@ -918,6 +1086,130 @@ export function FoldersManager() {
         onSelect={handleTypeSelected}
         onCancel={handleTypeModalCancel}
       />
+
+      {/* ── Global Sub-Option Picker Modal ── */}
+      {subPicker && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <p className="font-semibold text-gray-900">
+                  {subPicker.field === 'lengths' ? '✂️ Comprimentos' : '🌀 Texturas'}
+                </p>
+                <p className="text-xs text-gray-400 mt-0.5">Selecione um ou mais para vincular, ou crie novo</p>
+              </div>
+              <button onClick={() => setSubPicker(null)} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+              {/* Create new */}
+              <button
+                onClick={() => { addSubOption(subPicker.catId, subPicker.pId, subPicker.field); setSubPicker(null) }}
+                className="w-full flex items-center gap-3 p-3 border-2 border-dashed border-violet-300 rounded-xl text-violet-600 hover:bg-violet-50 transition-colors"
+              >
+                <div className="w-9 h-9 rounded-xl bg-violet-100 flex items-center justify-center flex-shrink-0">
+                  <Plus className="h-5 w-5" />
+                </div>
+                <div className="text-left">
+                  <p className="text-sm font-medium">Criar novo</p>
+                  <p className="text-xs text-violet-400">Disponível para vincular em outros prompts</p>
+                </div>
+              </button>
+
+              {/* Divider + select-all */}
+              {(() => {
+                const filtered = globalSubOpts.filter(o => o.kind === (subPicker.field === 'lengths' ? 'length' : 'texture'))
+                if (!loadingGlobal && filtered.length === 0) return (
+                  <p className="text-xs text-gray-400 text-center py-4">
+                    Nenhum {subPicker.field === 'lengths' ? 'comprimento' : 'textura'} cadastrado ainda
+                  </p>
+                )
+                if (loadingGlobal) return (
+                  <div className="py-6 flex items-center justify-center gap-2 text-gray-400">
+                    <div className="h-4 w-4 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-sm">Carregando...</span>
+                  </div>
+                )
+                const allIds = filtered.map(o => o.dbId!)
+                const allSelected = allIds.every(id => pickerSelected.has(id))
+                return (
+                  <>
+                    <div className="flex items-center justify-between py-1">
+                      <div className="flex-1 h-px bg-gray-200 mr-2" />
+                      <span className="text-xs text-gray-400 whitespace-nowrap">existentes</span>
+                      <div className="flex-1 h-px bg-gray-200 mx-2" />
+                      <button
+                        onClick={() => setPickerSelected(allSelected ? new Set() : new Set(allIds))}
+                        className="text-xs text-violet-600 whitespace-nowrap hover:underline"
+                      >
+                        {allSelected ? 'Desmarcar todos' : 'Selecionar todos'}
+                      </button>
+                    </div>
+
+                    {filtered.map(o => {
+                      const sel = pickerSelected.has(o.dbId!)
+                      return (
+                        <button
+                          key={o.dbId}
+                          onClick={() => setPickerSelected(prev => {
+                            const n = new Set(prev)
+                            sel ? n.delete(o.dbId!) : n.add(o.dbId!)
+                            return n
+                          })}
+                          className={`w-full flex items-center gap-3 p-3 border-2 rounded-xl transition-all text-left
+                            ${sel ? 'border-violet-500 bg-violet-50' : 'border-gray-200 hover:border-violet-300 hover:bg-violet-50/50'}`}
+                        >
+                          {o.thumbnail ? (
+                            <img src={o.thumbnail.url} alt="" className="w-10 h-10 rounded-lg object-cover border flex-shrink-0" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                              <Image className="h-4 w-4 text-gray-300" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-800">{o.name}</p>
+                            {o.instruction && <p className="text-xs text-gray-400 line-clamp-1 mt-0.5">{o.instruction}</p>}
+                          </div>
+                          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors
+                            ${sel ? 'border-violet-500 bg-violet-500' : 'border-gray-300'}`}>
+                            {sel && <span className="text-white text-[10px] font-bold">✓</span>}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </>
+                )
+              })()}
+            </div>
+
+            {/* Footer actions */}
+            {pickerSelected.size > 0 && (
+              <div className="px-4 py-3 border-t border-gray-100 flex gap-2">
+                <button
+                  onClick={() => setPickerSelected(new Set())}
+                  className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-500 hover:bg-gray-50"
+                >
+                  Limpar
+                </button>
+                <button
+                  onClick={() => {
+                    const selected = globalSubOpts.filter(o => pickerSelected.has(o.dbId!))
+                    linkMultipleSubOptions(subPicker.catId, subPicker.pId, subPicker.field, selected)
+                  }}
+                  className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  Adicionar {pickerSelected.size} {pickerSelected.size === 1
+                    ? (subPicker.field === 'lengths' ? 'comprimento' : 'textura')
+                    : (subPicker.field === 'lengths' ? 'comprimentos' : 'texturas')}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
