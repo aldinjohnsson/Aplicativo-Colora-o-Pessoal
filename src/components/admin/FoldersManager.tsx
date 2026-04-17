@@ -3,10 +3,11 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   FolderOpen, Plus, Trash2, Save, CheckCircle, AlertCircle,
   ChevronDown, ChevronUp, X, Scissors, Palette, Shirt, Gem,
-  Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera
+  Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera, Layout
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { CategoryTypeModal, usePhotoTypes } from './CategoryTypeModal'
+import { PDFLayoutEditor, ItemLayout } from '../PDFLayoutEditor'
 
 
 // ─── Types ───────────────────────────────────────────────────
@@ -33,6 +34,7 @@ interface Prompt {
   order: number
   lengths: SubOption[]        // cabelo: comprimento options
   textures: SubOption[]       // cabelo: textura options
+  pdfLayout?: ItemLayout      // layout padrão do PDF para este prompt
 }
 
 interface Category {
@@ -69,7 +71,7 @@ const newSubOption = (): SubOption => ({
 const newPrompt = (order: number): Prompt => ({
   id: uid(), name: '', instructions: '', images: [],
   thumbnail: null, options: [], tintReference: '', reference: '', order,
-  lengths: [], textures: [],
+  lengths: [], textures: [], pdfLayout: undefined,
 })
 
 const emptyConfig = (): FolderConfig => ({
@@ -108,6 +110,10 @@ export function FoldersManager() {
   const [pickerSelected, setPickerSelected] = useState<Set<string>>(new Set())
   // ids of linked items where user acknowledged the "affects all" warning
   const [linkedEditOk, setLinkedEditOk] = useState<Set<string>>(new Set())
+  const [layoutCtx, setLayoutCtx] = useState<{ catId: string; pId: string } | null>(null)
+  const [copyFormatSrc, setCopyFormatSrc] = useState<{ catId: string; pId: string } | null>(null)
+  // Set of prompt IDs currently showing the block editor for tintReference
+  const [blockEditorIds, setBlockEditorIds] = useState<Set<string>>(new Set())
 
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isFirstRender = useRef(true)
@@ -302,6 +308,141 @@ export function FoldersManager() {
     if (!cat) return
     updateCat(catId, { prompts: cat.prompts.map(p => p.id === pId ? { ...p, ...u } : p) })
   }
+
+  // ── Layout Format Copy ─────────────────────────────────────
+
+  /** Extracts only the styling info from a layout (no text) */
+  function extractLayoutFormat(layout: ItemLayout) {
+    return {
+      style: layout.style,
+      layoutMode: layout.layoutMode ?? 'flow',
+      photo: layout.photo,
+      pageMarginH: layout.pageMarginH,
+      labelConfig: layout.labelConfig,
+      blockStyles: layout.blocks.map(b => ({
+        marginBelow: b.marginBelow,
+        fontFamily: b.fontFamily,
+        headerSize: b.headerSize,
+        bodySize: b.bodySize,
+        headerColor: b.headerColor,
+        bodyColor: b.bodyColor,
+        blockVariant: b.blockVariant,
+        blockBgColor: b.blockBgColor,
+        titleAlign: b.titleAlign,
+        textAlign: b.textAlign,
+        isSection: b.isSection,
+        // Dimensões e posição do bloco (freeform)
+        w: b.w,
+        h: b.h,
+        x: b.x,
+        y: b.y,
+      })),
+    }
+  }
+
+  /** Applies a format template to a target prompt — keeps rawLines, replaces styles */
+  function applyLayoutFormat(
+    template: ReturnType<typeof extractLayoutFormat>,
+    targetPrompt: Prompt,
+    catType: string,
+  ): ItemLayout {
+    const captionText = catType === 'cabelo'
+      ? (targetPrompt.tintReference || '')
+      : (targetPrompt.reference || '')
+
+    // Use existing blocks if available, else parse from caption text
+    const existingBlocks = targetPrompt.pdfLayout?.blocks
+    const baseBlocks: Array<{ rawLines: string[]; isSection: boolean; id: string }> = existingBlocks?.length
+      ? existingBlocks
+      : parseRefToBlocks(captionText)
+
+    const fallbackStyle = template.blockStyles[template.blockStyles.length - 1] ?? {}
+    const styledBlocks: EditorBlock[] = baseBlocks.map((b, i) => {
+      const s = template.blockStyles[i] ?? fallbackStyle
+      return {
+        ...b,
+        marginBelow: s.marginBelow ?? 8,
+        fontFamily: s.fontFamily,
+        headerSize: s.headerSize,
+        bodySize: s.bodySize,
+        headerColor: s.headerColor,
+        bodyColor: s.bodyColor,
+        blockVariant: s.blockVariant,
+        blockBgColor: s.blockBgColor,
+        titleAlign: s.titleAlign,
+        textAlign: s.textAlign,
+        isSection: s.isSection ?? b.isSection,
+        // Copia dimensões e posição (freeform)
+        w: s.w,
+        h: s.h,
+        x: s.x,
+        y: s.y,
+      }
+    })
+
+    return {
+      blocks: styledBlocks,
+      style: template.style,
+      layoutMode: template.layoutMode,
+      photo: template.photo,
+      pageMarginH: template.pageMarginH,
+      labelConfig: template.labelConfig,
+    }
+  }
+
+  const applyFormatToPrompts = (
+    srcCatId: string, srcPId: string,
+    targets: Array<{ catId: string; pId: string }>,
+  ) => {
+    const srcCat = config.categories.find(c => c.id === srcCatId)
+    const srcPrompt = srcCat?.prompts.find(p => p.id === srcPId)
+    if (!srcPrompt?.pdfLayout) return
+
+    const template = extractLayoutFormat(srcPrompt.pdfLayout)
+
+    setConfig(prev => ({
+      ...prev,
+      categories: prev.categories.map(cat => ({
+        ...cat,
+        prompts: cat.prompts.map(p => {
+          const isTarget = targets.some(t => t.catId === cat.id && t.pId === p.id)
+          if (!isTarget) return p
+          return { ...p, pdfLayout: applyLayoutFormat(template, p, cat.type) }
+        }),
+      })),
+    }))
+  }
+
+  // ── Block editor helpers (tintReference / reference) ───────
+
+  const BLOCK_EMOJI_RE_TEST = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}]/u
+
+  function parseRefToBlocks(text: string): Array<{ id: string; rawLines: string[]; isSection: boolean }> {
+    if (!text.trim()) return [{ id: `b-${Date.now()}`, rawLines: [''], isSection: false }]
+    const paragraphs = text.split(/\n[ \t]*\n/)
+    return paragraphs.map((raw, i) => {
+      const lines = raw.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0)
+      if (!lines.length) return null
+      const first = lines[0]
+      const isSection = BLOCK_EMOJI_RE_TEST.test(first)
+        || (first === first.toUpperCase() && first.replace(/[^A-Za-z]/g, '').length >= 4)
+      return { id: `b-${i}-${Date.now()}`, rawLines: lines, isSection }
+    }).filter(Boolean) as any[]
+  }
+
+  function blockLinesToText(blocks: Array<{ rawLines: string[] }>): string {
+    return blocks.map(b => b.rawLines.join('\n')).join('\n\n')
+  }
+
+  const toggleBlockEditor = (pId: string) => {
+    setBlockEditorIds(prev => {
+      const n = new Set(prev)
+      n.has(pId) ? n.delete(pId) : n.add(pId)
+      return n
+    })
+  }
+
+
 
   // ── Sub-option CRUD (lengths / textures) ───────────────────
 
@@ -1011,22 +1152,127 @@ export function FoldersManager() {
                               </div>
 
                               {/* Tint reference */}
-                              <div>
+                             <div>
+                              <div className="flex items-center justify-between mb-1">
                                 <label className="text-xs font-medium text-gray-600">🎨 Referência de tinta</label>
-                                <p className="text-[10px] text-gray-400 mb-1">Use emojis, parágrafos e quebras de linha para estruturar a mensagem que aparecerá no chat após gerar a imagem.</p>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => toggleBlockEditor(prompt.id)}
+                                    className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors ${
+                                      blockEditorIds.has(prompt.id)
+                                        ? 'bg-amber-100 text-amber-700 border border-amber-300'
+                                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                                    }`}
+                                    title="Alternar modo blocos"
+                                  >
+                                    🧱 Blocos
+                                  </button>
+                                  <button
+                                    onClick={() => setLayoutCtx({ catId: cat.id, pId: prompt.id })}
+                                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
+                                  >
+                                    <Layout className="h-3 w-3" />
+                                    {prompt.pdfLayout ? 'Editar Layout PDF' : 'Criar Layout PDF'}
+                                  </button>
+                                </div>
+                              </div>
+                              {prompt.pdfLayout && (
+                                <div className="mb-2 px-2.5 py-1.5 bg-violet-50 border border-violet-200 rounded-lg flex items-center gap-2">
+                                  <Layout className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />
+                                  <span className="text-xs text-violet-700 flex-1">
+                                    Layout salvo · {prompt.pdfLayout.layoutMode === 'freeform' ? '🆓 Modo livre' : '🔀 Modo fluxo'} · {prompt.pdfLayout.blocks?.length ?? 0} blocos
+                                  </span>
+                                  <button
+                                    onClick={() => setCopyFormatSrc({ catId: cat.id, pId: prompt.id })}
+                                    className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-violet-100 text-violet-600 rounded-md hover:bg-violet-200 transition-colors"
+                                    title="Copiar este formato para outros prompts"
+                                  >
+                                    <Copy className="h-3 w-3" /> Copiar formato
+                                  </button>
+                                  <button
+                                    onClick={() => updatePrompt(cat.id, prompt.id, { pdfLayout: undefined })}
+                                    className="text-violet-400 hover:text-red-500"
+                                    title="Remover layout"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              )}
+                              <p className="text-[10px] text-gray-400 mb-1">Use emojis, parágrafos e quebras de linha. O layout do PDF é configurado pelo botão acima.</p>
+                              {blockEditorIds.has(prompt.id) ? (
+                                <TintBlockEditor
+                                  value={prompt.tintReference}
+                                  onChange={v => updatePrompt(cat.id, prompt.id, { tintReference: v })}
+                                  parseRefToBlocks={parseRefToBlocks}
+                                  blockLinesToText={blockLinesToText}
+                                />
+                              ) : (
                                 <textarea value={prompt.tintReference} onChange={e => updatePrompt(cat.id, prompt.id, { tintReference: e.target.value })}
                                   rows={5} placeholder={"Ex:\n🎨 TINTA RECOMENDADA\n\nWella Koleston 9/1 + 10/1\nProporção: 2:1 com OX 30vol\n\n✨ Para as mechas:\nWella Blondor 40g"}
                                   className={`${inp} resize-y text-xs font-mono`} />
-                              </div>
+                              )}
+                            </div>
                             </div>
                           )}
 
                           {/* Referência geral (para todos os outros tipos) */}
                           {cat.type !== 'cabelo' && (
                             <div>
-                              <label className="text-xs font-medium text-gray-600">📌 Referência (opcional)</label>
-                              <input value={prompt.reference} onChange={e => updatePrompt(cat.id, prompt.id, { reference: e.target.value })}
-                                placeholder="Ex: Marca, produto, código de cor..." className={inp} />
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="text-xs font-medium text-gray-600">📌 Referência (opcional)</label>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => toggleBlockEditor(prompt.id)}
+                                    className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors ${
+                                      blockEditorIds.has(prompt.id)
+                                        ? 'bg-amber-100 text-amber-700 border border-amber-300'
+                                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                                    }`}
+                                    title="Alternar modo blocos"
+                                  >
+                                    🧱 Blocos
+                                  </button>
+                                  <button
+                                    onClick={() => setLayoutCtx({ catId: cat.id, pId: prompt.id })}
+                                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
+                                  >
+                                    <Layout className="h-3 w-3" />
+                                    {prompt.pdfLayout ? 'Editar Layout PDF' : 'Criar Layout PDF'}
+                                  </button>
+                                </div>
+                              </div>
+                              {prompt.pdfLayout && (
+                                <div className="mb-2 px-2.5 py-1.5 bg-violet-50 border border-violet-200 rounded-lg flex items-center gap-2">
+                                  <Layout className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />
+                                  <span className="text-xs text-violet-700 flex-1">
+                                    Layout salvo · {prompt.pdfLayout.layoutMode === 'freeform' ? '🆓 Modo livre' : '🔀 Modo fluxo'} · {prompt.pdfLayout.blocks?.length ?? 0} blocos
+                                  </span>
+                                  <button
+                                    onClick={() => setCopyFormatSrc({ catId: cat.id, pId: prompt.id })}
+                                    className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-violet-100 text-violet-600 rounded-md hover:bg-violet-200 transition-colors"
+                                    title="Copiar este formato para outros prompts"
+                                  >
+                                    <Copy className="h-3 w-3" /> Copiar formato
+                                  </button>
+                                  <button
+                                    onClick={() => updatePrompt(cat.id, prompt.id, { pdfLayout: undefined })}
+                                    className="text-violet-400 hover:text-red-500"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              )}
+                              {blockEditorIds.has(prompt.id) ? (
+                                <TintBlockEditor
+                                  value={prompt.reference}
+                                  onChange={v => updatePrompt(cat.id, prompt.id, { reference: v })}
+                                  parseRefToBlocks={parseRefToBlocks}
+                                  blockLinesToText={blockLinesToText}
+                                />
+                              ) : (
+                                <input value={prompt.reference} onChange={e => updatePrompt(cat.id, prompt.id, { reference: e.target.value })}
+                                  placeholder="Ex: Marca, produto, código de cor..." className={inp} />
+                              )}
                             </div>
                           )}
                         </div>
@@ -1081,6 +1327,30 @@ export function FoldersManager() {
           <span className="text-xs text-gray-400">Auto-save ativo</span>
         )}
       </div>
+      {layoutCtx && (() => {
+  const cat = config.categories.find(c => c.id === layoutCtx.catId)
+  const prompt = cat?.prompts.find(p => p.id === layoutCtx.pId)
+  if (!cat || !prompt) return null
+
+  const caption = cat.type === 'cabelo'
+    ? (prompt.tintReference || '')
+    : (prompt.reference || '')
+
+  return (
+    <PDFLayoutEditor
+      caption={caption}
+      clientName="Pré-visualização"
+      sectionTitle={cat.name}
+      initialStyle={{}}
+      initialLayout={prompt.pdfLayout}
+      onSave={layout => {
+        updatePrompt(layoutCtx.catId, layoutCtx.pId, { pdfLayout: layout })
+        setLayoutCtx(null)
+      }}
+      onClose={() => setLayoutCtx(null)}
+    />
+  )
+})()}
       <CategoryTypeModal
         open={typeModalOpen}
         onSelect={handleTypeSelected}
@@ -1210,6 +1480,259 @@ export function FoldersManager() {
           </div>
         </div>
       )}
+      {/* ── Copy Format Modal ── */}
+      {copyFormatSrc && (() => {
+        const srcCat = config.categories.find(c => c.id === copyFormatSrc.catId)
+        const srcPrompt = srcCat?.prompts.find(p => p.id === copyFormatSrc.pId)
+        if (!srcCat || !srcPrompt?.pdfLayout) return null
+        const allTargets = config.categories.flatMap(cat =>
+          cat.prompts
+            .filter(p => !(cat.id === copyFormatSrc.catId && p.id === copyFormatSrc.pId))
+            .map(p => ({ catId: cat.id, pId: p.id, catName: cat.name, promptName: p.name, hasLayout: !!p.pdfLayout }))
+        )
+        return (
+          <CopyFormatModal
+            srcPrompt={srcPrompt}
+            allTargets={allTargets}
+            onApply={targets => {
+              applyFormatToPrompts(copyFormatSrc.catId, copyFormatSrc.pId, targets)
+              setCopyFormatSrc(null)
+            }}
+            onClose={() => setCopyFormatSrc(null)}
+          />
+        )
+      })()}
+    </div>
+  )
+}
+// ─── TintBlockEditor ─────────────────────────────────────────────────────────
+// Inline block editor for the tintReference / reference text field.
+// Parses the text into visual blocks (same structure as PDFLayoutEditor) and
+// lets the user edit each block individually, then syncs back to plain text.
+
+interface TintBlock {
+  id: string
+  lines: string[]
+  isSection: boolean
+}
+
+interface TintBlockEditorProps {
+  value: string
+  onChange: (v: string) => void
+  parseRefToBlocks: (text: string) => Array<{ id: string; rawLines: string[]; isSection: boolean }>
+  blockLinesToText: (blocks: Array<{ rawLines: string[] }>) => string
+}
+
+function TintBlockEditor({ value, onChange, parseRefToBlocks, blockLinesToText }: TintBlockEditorProps) {
+  const [blocks, setBlocks] = React.useState<TintBlock[]>(() =>
+    parseRefToBlocks(value).map(b => ({ id: b.id, lines: b.rawLines, isSection: b.isSection }))
+  )
+
+  // Keep text in sync whenever blocks change
+  const updateBlocks = (next: TintBlock[]) => {
+    setBlocks(next)
+    onChange(blockLinesToText(next.map(b => ({ rawLines: b.lines }))))
+  }
+
+  const updateBlockText = (id: string, text: string) => {
+    const lines = text.split('\n')
+    updateBlocks(blocks.map(b => {
+      if (b.id !== id) return b
+      const first = lines[0] ?? ''
+      const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}]/u
+      const isSection = EMOJI_RE.test(first) || (first === first.toUpperCase() && first.replace(/[^A-Za-z]/g, '').length >= 4)
+      return { ...b, lines, isSection }
+    }))
+  }
+
+  const addBlock = (afterId?: string) => {
+    const newBlock: TintBlock = { id: `b-${Date.now()}`, lines: [''], isSection: false }
+    if (!afterId) {
+      updateBlocks([...blocks, newBlock])
+    } else {
+      const i = blocks.findIndex(b => b.id === afterId)
+      const next = [...blocks]
+      next.splice(i + 1, 0, newBlock)
+      updateBlocks(next)
+    }
+  }
+
+  const removeBlock = (id: string) => {
+    if (blocks.length <= 1) { updateBlocks([{ id: blocks[0].id, lines: [''], isSection: false }]); return }
+    updateBlocks(blocks.filter(b => b.id !== id))
+  }
+
+  const moveBlock = (id: string, dir: -1 | 1) => {
+    const i = blocks.findIndex(b => b.id === id)
+    const j = i + dir
+    if (j < 0 || j >= blocks.length) return
+    const next = [...blocks]; [next[i], next[j]] = [next[j], next[i]]
+    updateBlocks(next)
+  }
+
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, i) => (
+        <div
+          key={block.id}
+          className={`border rounded-lg overflow-hidden ${block.isSection ? 'border-violet-300 bg-violet-50/40' : 'border-gray-200 bg-white'}`}
+        >
+          {/* Block header */}
+          <div className="flex items-center gap-1 px-2 py-1 border-b border-gray-100 bg-gray-50/60">
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+              block.isSection ? 'bg-violet-100 text-violet-600' : 'bg-gray-100 text-gray-400'
+            }`}>
+              {block.isSection ? '📌 Título' : `📄 Corpo ${i + 1}`}
+            </span>
+            <div className="flex-1" />
+            <button onClick={() => moveBlock(block.id, -1)} disabled={i === 0}
+              className="text-gray-300 hover:text-gray-500 disabled:opacity-20 p-0.5">▲</button>
+            <button onClick={() => moveBlock(block.id, 1)} disabled={i === blocks.length - 1}
+              className="text-gray-300 hover:text-gray-500 disabled:opacity-20 p-0.5">▼</button>
+            <button onClick={() => addBlock(block.id)}
+              className="text-violet-400 hover:text-violet-600 p-0.5 text-xs font-bold" title="Adicionar bloco abaixo">+</button>
+            <button onClick={() => removeBlock(block.id)}
+              className="text-gray-300 hover:text-red-400 p-0.5">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          <textarea
+            value={block.lines.join('\n')}
+            onChange={e => updateBlockText(block.id, e.target.value)}
+            rows={Math.max(2, block.lines.length)}
+            className="w-full px-3 py-2 text-xs font-mono bg-transparent border-0 outline-none resize-none text-gray-700 placeholder-gray-300"
+            placeholder={block.isSection ? 'Ex: 🎨 TINTA RECOMENDADA' : 'Ex: Wella 9/1 + OX 30vol'}
+          />
+        </div>
+      ))}
+      <button
+        onClick={() => addBlock()}
+        className="w-full py-2 border border-dashed border-amber-300 rounded-lg text-xs text-amber-600 hover:bg-amber-50 flex items-center justify-center gap-1"
+      >
+        <Plus className="h-3 w-3" /> Adicionar bloco
+      </button>
+      <p className="text-[10px] text-gray-400">Cada caixa = um bloco no PDF. Linha em branco separa blocos no texto plano.</p>
+    </div>
+  )
+}
+
+// ─── CopyFormatModal ──────────────────────────────────────────────────────────
+// Extracted as a proper component so useState is called at the top level,
+// respecting the Rules of Hooks (never inside an IIFE or nested function).
+
+interface CopyFormatTarget {
+  catId: string; pId: string; catName: string; promptName: string; hasLayout: boolean
+}
+
+interface CopyFormatModalProps {
+  srcPrompt: Prompt
+  allTargets: CopyFormatTarget[]
+  onApply: (targets: Array<{ catId: string; pId: string }>) => void
+  onClose: () => void
+}
+
+function CopyFormatModal({ srcPrompt, allTargets, onApply, onClose }: CopyFormatModalProps) {
+  const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set())
+  const fmt = srcPrompt.pdfLayout!
+
+  const key = (catId: string, pId: string) => `${catId}::${pId}`
+
+  const toggle = (catId: string, pId: string) => setSelectedTargets(prev => {
+    const n = new Set(prev); const k = key(catId, pId)
+    n.has(k) ? n.delete(k) : n.add(k); return n
+  })
+
+  const handleApply = () => {
+    const targets = allTargets
+      .filter(t => selectedTargets.has(key(t.catId, t.pId)))
+      .map(t => ({ catId: t.catId, pId: t.pId }))
+    onApply(targets)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <p className="font-semibold text-gray-900">📋 Copiar formato</p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              De: <span className="font-medium text-gray-600">{srcPrompt.name || '(sem nome)'}</span>
+              {' · '}{fmt.layoutMode === 'freeform' ? '🆓 Livre' : '🔀 Fluxo'}{' · '}{fmt.blocks?.length ?? 0} blocos
+            </p>
+            <p className="text-[10px] text-amber-600 mt-1 bg-amber-50 px-2 py-0.5 rounded-full inline-block">
+              Copia estilo, cores e variantes — não copia o texto
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 ml-3">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+          {allTargets.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-6">Nenhum outro prompt disponível</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-xs text-gray-400">Selecione os prompts que receberão este formato:</span>
+                <button
+                  onClick={() => setSelectedTargets(
+                    selectedTargets.size === allTargets.length
+                      ? new Set()
+                      : new Set(allTargets.map(t => key(t.catId, t.pId)))
+                  )}
+                  className="text-xs text-violet-600 hover:underline whitespace-nowrap ml-2"
+                >
+                  {selectedTargets.size === allTargets.length ? 'Desmarcar todos' : 'Selecionar todos'}
+                </button>
+              </div>
+              {allTargets.map(t => {
+                const sel = selectedTargets.has(key(t.catId, t.pId))
+                return (
+                  <button
+                    key={key(t.catId, t.pId)}
+                    onClick={() => toggle(t.catId, t.pId)}
+                    className={`w-full flex items-center gap-3 p-3 border-2 rounded-xl transition-all text-left
+                      ${sel ? 'border-violet-500 bg-violet-50' : 'border-gray-200 hover:border-violet-300 hover:bg-violet-50/50'}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-800 truncate">{t.promptName || '(sem nome)'}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-gray-400">{t.catName}</span>
+                        {t.hasLayout && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-violet-100 text-violet-600 rounded-full">tem layout</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors
+                      ${sel ? 'border-violet-500 bg-violet-500' : 'border-gray-300'}`}>
+                      {sel && <span className="text-white text-[10px] font-bold">✓</span>}
+                    </div>
+                  </button>
+                )
+              })}
+            </>
+          )}
+        </div>
+
+        {selectedTargets.size > 0 && (
+          <div className="px-4 py-3 border-t border-gray-100 flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-500 hover:bg-gray-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleApply}
+              className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+            >
+              <Copy className="h-4 w-4" />
+              Aplicar em {selectedTargets.size} {selectedTargets.size === 1 ? 'prompt' : 'prompts'}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

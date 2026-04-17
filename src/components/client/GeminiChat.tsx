@@ -10,7 +10,7 @@ import {
   GeminiMessage, GeminiResponsePart, MaterialData,
 } from '../../lib/geminiService'
 import { supabase } from '../../lib/supabase'
-import { downloadStylePDF } from '../../lib/templatePDFGenerator'
+import { downloadStylePDF, ItemLayout } from '../../lib/templatePDFGenerator'
 
 interface ChatMsg {
   id: string; role: 'user' | 'assistant'; text: string
@@ -22,7 +22,7 @@ interface ChatMsg {
 }
 
 type PdfSection = string
-interface PdfMeta { section: PdfSection; label: string; caption: string }
+interface PdfMeta { section: PdfSection; label: string; caption: string; promptId?: string }
 
 interface PromptImage { url: string; storagePath: string; label: string }
 
@@ -49,6 +49,7 @@ interface Prompt {
   reference: string
   lengths: SubOption[]      // cabelo: comprimento choices
   textures: SubOption[]     // cabelo: textura choices
+  pdfLayout?: ItemLayout    // layout salvo pelo admin (PDFLayoutEditor) — aplicado na geração do PDF
 }
 
 interface Category { id: string; name: string; icon: string; type: 'cabelos' | 'geral' | string; refPhotoType?: string; prompts: Prompt[] }
@@ -165,6 +166,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       options: p.options || [],
       lengths: (p.lengths || []).map((l: any) => ({ ...l, thumbnail: l.thumbnail || null, images: l.images || [] })),
       textures: (p.textures || []).map((t: any) => ({ ...t, thumbnail: t.thumbnail || null, images: t.images || [] })),
+      pdfLayout: (p as any).pdfLayout || undefined,
     }))
   }))
 
@@ -351,7 +353,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const refOverride = getRefPhotoForCategory(cat)
     const afterImageText = (prompt.tintReference || prompt.reference)?.trim() || undefined
     const catIsAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
-    const meta: PdfMeta = { section: getCategorySection(cat), label: prompt.name, caption: prompt.tintReference || prompt.reference || prompt.name }
+    const meta: PdfMeta = { section: getCategorySection(cat), label: prompt.name, caption: prompt.tintReference || prompt.reference || prompt.name, promptId: prompt.id }
     handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, ''), true, prompt, mats, refOverride, `✨ ${prompt.name}`, catIsAccessory, meta, afterImageText)
   }
 
@@ -409,8 +411,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
     const meta: PdfMeta = {
       section: getCategorySection(selectedCat),
-      label: displayLabel,
+      // Label no PDF (abaixo da foto) mostra APENAS o nome do prompt.
+      // O comprimento e a textura aparecem no chat (displayLabel) mas não devem
+      // ser concatenados no nome entregue para a cliente.
+      label: selectedPrompt.name,
       caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name,
+      promptId: selectedPrompt.id,
     }
 
     handleSend(
@@ -436,7 +442,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const refOverride = getRefPhotoForCategory(selectedCat)
     const afterImageText = selectedPrompt.tintReference?.trim() || undefined
     const catIsAccessory = selectedCat.icon === 'gem' || selectedCat.name.toLowerCase().includes('acess')
-    const meta: PdfMeta = { section: getCategorySection(selectedCat), label: `${selectedPrompt.name} — ${option}`, caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name }
+    const meta: PdfMeta = { section: getCategorySection(selectedCat), label: selectedPrompt.name, caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name, promptId: selectedPrompt.id }
     handleSend(buildPromptInstruction(selectedCat, `${selectedPrompt.instructions || selectedPrompt.name} - comprimento ${option}`, ''), true, selectedPrompt, mats, refOverride, `✨ ${selectedPrompt.name} — ${option}`, catIsAccessory, meta, afterImageText)
   }
 
@@ -567,11 +573,49 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     } catch { return null }
   }
 
+  // Busca o pdfLayout salvo no prompt originador da imagem.
+  // Se o admin alterar o layout, imagens antigas usarão o layout atualizado.
+  const findPromptLayout = (promptId?: string): ItemLayout | undefined => {
+    if (!promptId) return undefined
+    for (const cat of categories) {
+      const p = cat.prompts.find(pp => pp.id === promptId)
+      if (p?.pdfLayout) return p.pdfLayout
+    }
+    return undefined
+  }
+
   const generatePDF = async () => {
     const selected = imageMsgs.filter(m => pdfSelected.has(m.id))
     if (!selected.length) return
     setPdfGenerating(true)
     try {
+      // Busca o config mais recente direto do Supabase para garantir que o pdfLayout
+      // salvo pelo admin (freeform ou flow) seja sempre utilizado, mesmo que o
+      // folderConfig prop seja antigo (carregado antes da última edição do layout).
+      const freshLayoutMap = new Map<string, ItemLayout>()
+      try {
+        if (folderConfig?.folderName) {
+          const { data: rows } = await supabase
+            .from('ai_folders')
+            .select('config')
+            .eq('name', folderConfig.folderName)
+            .limit(1)
+          const raw = rows?.[0]?.config
+          const cfg = typeof raw === 'string' ? JSON.parse(raw) : raw
+          for (const cat of cfg?.categories ?? []) {
+            for (const p of cat?.prompts ?? []) {
+              if (p?.id && p?.pdfLayout) freshLayoutMap.set(p.id, p.pdfLayout)
+            }
+          }
+        }
+      } catch {
+        // fallback silencioso — usa findPromptLayout abaixo
+      }
+
+      // Prefere o layout recém-buscado; cai no cache local se não encontrar
+      const getLayout = (promptId?: string): ItemLayout | undefined =>
+        (promptId ? freshLayoutMap.get(promptId) : undefined) ?? findPromptLayout(promptId)
+
       const items = await Promise.all(
         selected.map(async (msg) => {
           const dataUrl = await getImgDataUrl(msg)
@@ -581,6 +625,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             label: msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada',
             caption: msg.pdfMeta?.caption,
             section: msg.pdfMeta?.section,
+            layout: getLayout(msg.pdfMeta?.promptId),
           }
         })
       )
@@ -640,9 +685,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                           {sel ? <CheckSquare className="h-5 w-5 bg-white rounded" /> : <Square className="h-5 w-5 bg-white/80 rounded" />}
                         </div>
                         <div className="px-2 py-1.5 bg-white/95">
-                          <p className="text-xs font-medium text-gray-700 truncate">{msg.pdfMeta?.label || msg.text?.slice(0, 40) || '✨ Imagem gerada'}</p>
-                          {msg.pdfMeta?.caption && msg.pdfMeta.caption !== msg.pdfMeta.label &&
-                            <p className="text-[10px] text-violet-600 truncate">{msg.pdfMeta.caption}</p>}
+                          <p className="text-xs font-medium text-gray-700 leading-tight line-clamp-2">{msg.pdfMeta?.label || '✨ Imagem gerada'}</p>
                         </div>
                       </button>
                     )

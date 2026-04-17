@@ -1,5 +1,10 @@
 // src/lib/geminiService.ts
-// GEMINI ONLY
+// GEMINI ONLY — refatorado com:
+//   • Fila global para requisições de imagem (evita picos simultâneos)
+//   • Retry com backoff exponencial + jitter + respeito ao Retry-After
+//   • Parsing do motivo REAL do 429 (quotaMetric) para log e decisão
+//   • Fallback automático para modelo de imagem alternativo quando o principal falha
+//   • Cache de API key com TTL de 5min
 
 import { supabase } from './supabase'
 
@@ -7,60 +12,47 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 
 export const GEMINI_MODELS = {
   IMAGE_GEN: 'gemini-2.5-flash-image',
+  IMAGE_GEN_FALLBACK: 'gemini-3.1-flash-image-preview', // cota separada — salva quando o principal bugar
   TEXT_ONLY: 'gemini-2.5-flash',
 } as const
 
+// Flag para ligar/desligar logs detalhados em produção
+const DEBUG = false
+
 export interface GeminiMessage { role: 'user' | 'model'; text: string }
 export interface GeminiResponsePart { type: 'text' | 'image'; text?: string; imageBase64?: string; imageMimeType?: string }
-export interface GeminiResponse { parts: GeminiResponsePart[]; raw: any; imageGenerationFailed: boolean }
+export interface GeminiResponse { parts: GeminiResponsePart[]; raw: any; imageGenerationFailed: boolean; modelUsed?: string }
 export interface MaterialData { base64: string; mimeType: string }
 
-// Cache em memória para evitar múltiplas chamadas ao Supabase por sessão
+// ──────────────────────────────────────────────────────────────
+// 1. CACHE DA API KEY (inalterado)
+// ──────────────────────────────────────────────────────────────
+
 let _cachedApiKey: string | null = null
 let _cacheTime = 0
-const CACHE_TTL = 5 * 60 * 1000 // 5 minutos
+const CACHE_TTL = 5 * 60 * 1000
 
 export async function getGeminiApiKey(): Promise<string> {
-  // Retorna do cache se ainda válido
-  if (_cachedApiKey !== null && Date.now() - _cacheTime < CACHE_TTL) {
-    return _cachedApiKey
-  }
+  if (_cachedApiKey !== null && Date.now() - _cacheTime < CACHE_TTL) return _cachedApiKey
 
   try {
-    // 1. Buscar do Supabase (fonte de verdade)
-    const { data } = await supabase
-      .from('admin_content')
-      .select('content')
-      .eq('type', 'settings')
-      .maybeSingle()
-
+    const { data } = await supabase.from('admin_content').select('content').eq('type', 'settings').maybeSingle()
     const key = (data?.content as any)?.geminiApiKey || ''
+    if (key) { _cachedApiKey = key; _cacheTime = Date.now(); return key }
+  } catch {}
 
-    if (key) {
-      _cachedApiKey = key
-      _cacheTime = Date.now()
-      return key
-    }
-  } catch {
-    // Supabase falhou — cai no fallback
-  }
-
-  // 2. Fallback: localStorage (compatibilidade com dev local)
   try {
     const key = JSON.parse(localStorage.getItem('app-settings') || '{}')?.geminiApiKey || ''
-    _cachedApiKey = key
-    _cacheTime = Date.now()
+    _cachedApiKey = key; _cacheTime = Date.now()
     return key
-  } catch {
-    return ''
-  }
+  } catch { return '' }
 }
 
-/** Invalida o cache (chamar após salvar novas configurações) */
-export function invalidateGeminiKeyCache() {
-  _cachedApiKey = null
-  _cacheTime = 0
-}
+export function invalidateGeminiKeyCache() { _cachedApiKey = null; _cacheTime = 0 }
+
+// ──────────────────────────────────────────────────────────────
+// 2. HELPERS DE ARQUIVO (inalterados)
+// ──────────────────────────────────────────────────────────────
 
 export async function fileToBase64(file: File): Promise<{ base64: string; mimeType: string }> {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res({ base64: (r.result as string).split(',')[1], mimeType: file.type || 'image/jpeg' }); r.onerror = rej; r.readAsDataURL(file) })
@@ -70,13 +62,165 @@ export async function urlToBase64(url: string): Promise<{ base64: string; mimeTy
   try { const blob = await (await fetch(url)).blob(); return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res({ base64: (r.result as string).split(',')[1], mimeType: blob.type || 'image/jpeg' }); r.onerror = rej; r.readAsDataURL(blob) }) } catch { return null }
 }
 
-export async function chatWithGemini({ apiKey, systemPrompt, history, userText, userImageBase64, userImageMimeType = 'image/jpeg', referencePhotoBase64, referencePhotoMimeType = 'image/jpeg', materials = [], forceImage = false, clientFirst = false }: {
-  apiKey: string; systemPrompt?: string; history: GeminiMessage[]; userText: string; userImageBase64?: string; userImageMimeType?: string; referencePhotoBase64?: string; referencePhotoMimeType?: string; materials?: MaterialData[]; forceImage?: boolean; clientFirst?: boolean
+// ──────────────────────────────────────────────────────────────
+// 3. FILA GLOBAL DE IMAGEM
+// Serializa requisições de geração de imagem para evitar picos
+// que disparam o bug esporádico de 429 no Paid Tier 1.
+// ──────────────────────────────────────────────────────────────
+
+let _imgQueue: Promise<any> = Promise.resolve()
+const IMG_MIN_GAP_MS = 4000 // ~15 imgs/min — bem abaixo do limite de Tier 1
+
+function queueImageRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const run = _imgQueue.then(async () => {
+    const start = Date.now()
+    try { return await fn() }
+    finally {
+      const elapsed = Date.now() - start
+      if (elapsed < IMG_MIN_GAP_MS) await new Promise(r => setTimeout(r, IMG_MIN_GAP_MS - elapsed))
+    }
+  })
+  _imgQueue = run.catch(() => {}) // fila não quebra em erro
+  return run
+}
+
+// ──────────────────────────────────────────────────────────────
+// 4. PARSING INTELIGENTE DE ERRO
+// Extrai o motivo real do 429/5xx para decidir se vale retry
+// ──────────────────────────────────────────────────────────────
+
+interface ParsedError {
+  status: number
+  message: string
+  quotaMetric?: string    // ex: "generativelanguage.googleapis.com/generate_requests_per_model_per_day"
+  retryAfterSec?: number  // segundos sugeridos pelo servidor
+  finishReason?: string   // IMAGE_SAFETY, SAFETY, etc.
+  isDailyQuota: boolean   // true se estourou RPD (não adianta retry)
+  isSafetyBlock: boolean  // true se foi bloqueio de segurança
+  isFreeTierBug: boolean  // true se Tier 1 foi roteado como free_tier (bug conhecido)
+}
+
+async function parseError(res: Response): Promise<ParsedError> {
+  const status = res.status
+  const retryAfterHeader = res.headers.get('Retry-After')
+  const retryAfterSec = retryAfterHeader ? (parseInt(retryAfterHeader, 10) || undefined) : undefined
+
+  let body: any = {}
+  try { body = await res.clone().json() } catch {}
+
+  const message = body?.error?.message || `HTTP ${status}`
+  const details: any[] = body?.error?.details || []
+  const quotaFailure = details.find(d => d['@type']?.includes('QuotaFailure'))
+  const quotaMetric = quotaFailure?.violations?.[0]?.quotaMetric as string | undefined
+
+  const isDailyQuota = !!quotaMetric?.includes('per_day') || !!quotaMetric?.includes('per_day_per_model')
+  const isFreeTierBug = !!quotaMetric?.includes('free_tier') // bug conhecido de Paid Tier 1
+  const isSafetyBlock = /safety|blocked|recitation/i.test(message)
+
+  if (DEBUG && status >= 400) {
+    console.error('[Gemini error]', { status, quotaMetric, retryAfterSec, message })
+  }
+
+  return { status, message, quotaMetric, retryAfterSec, isDailyQuota, isSafetyBlock, isFreeTierBug }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 5. CHAMADA ÚNICA DE GERAÇÃO DE IMAGEM (com retry)
+// ──────────────────────────────────────────────────────────────
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+const jitter = () => Math.random() * 1500
+
+const NO_RETRY_FINISH_REASONS = new Set(['IMAGE_SAFETY', 'SAFETY', 'RECITATION', 'OTHER'])
+
+async function callImageModel(
+  model: string,
+  apiKey: string,
+  body: any,
+  maxAttempts = 6,
+): Promise<{ parts: GeminiResponsePart[]; raw: any } | null> {
+  const BASE_DELAY = 2000
+
+  for (let a = 0; a < maxAttempts; a++) {
+    if (a > 0) {
+      const delay = Math.min(BASE_DELAY * Math.pow(2, a - 1), 30000) + jitter()
+      await sleep(delay)
+    }
+
+    try {
+      const res = await fetch(
+        `${GEMINI_BASE}/models/${model}:generateContent?key=${apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      )
+
+      if (res.ok) {
+        const data = await res.json()
+        const finishReason = data?.candidates?.[0]?.finishReason as string | undefined
+
+        // Bloqueio definitivo (safety, etc) — não adianta tentar de novo
+        if (finishReason && NO_RETRY_FINISH_REASONS.has(finishReason)) return null
+
+        const parts = parseResp(data)
+        if (parts.some(p => p.type === 'image' && p.imageBase64)) {
+          return { parts, raw: data }
+        }
+        // 200 OK mas sem imagem — tenta de novo
+        continue
+      }
+
+      const err = await parseError(res)
+
+      // Quota diária estourada — retry não resolve
+      if (err.isDailyQuota) {
+        if (DEBUG) console.warn(`[${model}] quota diária estourada — abortando retry`)
+        return null
+      }
+
+      // Bug de free_tier em Paid Tier 1 — vale tentar mais uma vez,
+      // mas se persistir em várias chamadas, o fallback vai assumir
+      if (err.isFreeTierBug && DEBUG) {
+        console.warn(`[${model}] free_tier_requests bug detectado — aguardando backoff`)
+      }
+
+      // 429: respeita Retry-After se veio no header
+      if (res.status === 429 && err.retryAfterSec) {
+        await sleep(err.retryAfterSec * 1000 + jitter())
+        continue
+      }
+
+      // 429 ou 503 sem header — continua com o backoff exponencial do topo do loop
+      if (res.status === 429 || res.status === 503) continue
+
+      // Outros 4xx são fatais
+      return null
+    } catch {
+      // Erro de rede — continua tentando
+    }
+  }
+
+  return null
+}
+
+// ──────────────────────────────────────────────────────────────
+// 6. FUNÇÃO PRINCIPAL (mesma assinatura de antes)
+// ──────────────────────────────────────────────────────────────
+
+export async function chatWithGemini({
+  apiKey, systemPrompt, history, userText,
+  userImageBase64, userImageMimeType = 'image/jpeg',
+  referencePhotoBase64, referencePhotoMimeType = 'image/jpeg',
+  materials = [], forceImage = false, clientFirst = false,
+}: {
+  apiKey: string; systemPrompt?: string; history: GeminiMessage[]; userText: string
+  userImageBase64?: string; userImageMimeType?: string
+  referencePhotoBase64?: string; referencePhotoMimeType?: string
+  materials?: MaterialData[]; forceImage?: boolean; clientFirst?: boolean
 }): Promise<GeminiResponse> {
   if (!apiKey) throw new Error('Chave da API Gemini não configurada.')
 
   const wantsImage = forceImage
 
+  // Montagem do payload (mesma lógica do código original)
   const contents: any[] = history.map(m => ({ role: m.role, parts: [{ text: m.text || ' ' }] }))
   const userParts: any[] = []
 
@@ -85,9 +229,7 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
     for (const mat of materials) userParts.push({ inline_data: { mime_type: mat.mimeType, data: mat.base64 } })
     if (userImageBase64) userParts.push({ inline_data: { mime_type: userImageMimeType, data: userImageBase64 } })
   } else {
-    if (materials.length > 0) {
-      for (const mat of materials) userParts.push({ inline_data: { mime_type: mat.mimeType, data: mat.base64 } })
-    }
+    for (const mat of materials) userParts.push({ inline_data: { mime_type: mat.mimeType, data: mat.base64 } })
     if (wantsImage && referencePhotoBase64) userParts.push({ inline_data: { mime_type: referencePhotoMimeType, data: referencePhotoBase64 } })
     if (userImageBase64) userParts.push({ inline_data: { mime_type: userImageMimeType, data: userImageBase64 } })
   }
@@ -106,122 +248,92 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
     }]
   }
 
-  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-  const isOvl = (s: number) => s === 429 || s === 503
-
-  // Jitter aleatório para evitar múltiplas requisições simultâneas batendo juntas
-  const jitter = () => Math.random() * 1500
-
   let imgFailed = false
+  let modelUsed: string | undefined
 
-  // ── GERAR IMAGEM (só se forceImage) ────────────────────────
+  // ── GERAR IMAGEM (dentro da fila) ─────────────────────────
   if (wantsImage) {
-    const body: any = {
+    const imgBody: any = {
       contents,
+      system_instruction: imgSys,
       generation_config: { response_modalities: ['IMAGE', 'TEXT'], temperature: 0.1, max_output_tokens: 8192 },
     }
-    if (imgSys) body.system_instruction = imgSys
 
-    // Retry aprimorado:
-    //   - 6 tentativas (era 4)
-    //   - Backoff exponencial começando em 3s (era 2s a partir da 2ª)
-    //   - Jitter aleatório para evitar colisões
-    //   - Respeita o header Retry-After do 429
-    //   - Aguarda 2s mesmo quando res.ok mas sem imagem (modelo ficou em branco)
-    const MAX_IMG_RETRIES = 4
-    const IMG_BASE_DELAY = 2000
+    const imgResult = await queueImageRequest(async () => {
+      // 1ª tentativa: modelo principal
+      const primary = await callImageModel(GEMINI_MODELS.IMAGE_GEN, apiKey, imgBody, 6)
+      if (primary) return { ...primary, model: GEMINI_MODELS.IMAGE_GEN as string }
 
-    // Razões que indicam que retry não vai ajudar (safety, quota, etc.)
-    const NO_RETRY_REASONS = new Set(['IMAGE_SAFETY', 'SAFETY', 'RECITATION', 'OTHER'])
+      // Fallback: modelo alternativo (cota separada)
+      if (DEBUG) console.warn(`[Gemini] modelo principal falhou, tentando fallback ${GEMINI_MODELS.IMAGE_GEN_FALLBACK}`)
+      const fallback = await callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, apiKey, imgBody, 3)
+      if (fallback) return { ...fallback, model: GEMINI_MODELS.IMAGE_GEN_FALLBACK as string }
 
-    for (let a = 0; a < MAX_IMG_RETRIES; a++) {
-      if (a > 0) {
-        const delay = Math.min(IMG_BASE_DELAY * Math.pow(2, a - 1), 20000) + jitter()
-        // delays aproximados: 4s, 8s, 16s
-        await sleep(delay)
-      }
+      return null
+    })
 
-      try {
-        const res = await fetch(
-          `${GEMINI_BASE}/models/${GEMINI_MODELS.IMAGE_GEN}:generateContent?key=${apiKey}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-        )
-
-        if (res.ok) {
-          const data = await res.json()
-
-          // Verifica se o modelo bloqueou por safety ou outro motivo definitivo
-          const finishReason = data?.candidates?.[0]?.finishReason as string | undefined
-          if (finishReason && NO_RETRY_REASONS.has(finishReason)) {
-            // Bloqueio definitivo — não adianta tentar de novo
-            break
-          }
-
-          const parts = parseResp(data)
-          if (parts.some(p => p.type === 'image' && p.imageBase64)) {
-            return { parts, raw: data, imageGenerationFailed: false }
-          }
-
-          // 200 OK mas sem imagem — continua, o delay do topo do loop já cuida do intervalo
-          continue
-        }
-
-        if (res.status === 429) {
-          const retryAfter = res.headers.get('Retry-After')
-          if (retryAfter) {
-            const waitMs = (parseInt(retryAfter, 10) || 10) * 1000
-            await sleep(waitMs + jitter())
-          }
-          continue
-        }
-
-        if (res.status === 503) continue
-
-        // Qualquer outro erro (4xx que não seja 429) — não adianta tentar de novo
-        break
-      } catch {
-        // Erro de rede — continua tentando
-      }
+    if (imgResult) {
+      return { parts: imgResult.parts, raw: imgResult.raw, imageGenerationFailed: false, modelUsed: imgResult.model }
     }
 
     imgFailed = true
   }
 
-  // ── TEXTO PURO ─────────────────────────────────────────────
+  // ── TEXTO PURO (fluxo original com pequenas melhorias) ────
   const tc = contents.map((c, i) => {
     if (i < contents.length - 1) return c
-    return { ...c, parts: c.parts.map((p: any) => {
-      if (!p.text) return p
-      let t = p.text.replace(/\[INSTRUÇÃO[^\]]*\]/g, '').trim()
-      if (imgFailed) t += '\n\n[SISTEMA: Imagem indisponível. Responda com texto. Avise: "⚠️ Geração de imagem indisponível."]'
-      if (!wantsImage) t += `\n\n[SISTEMA: Responda EXCLUSIVAMENTE com base nos materiais da consultoria, cartela de cores, documentos e observações da cliente. NÃO use conhecimento externo. Se a informação não estiver nos materiais, diga que precisa consultar a consultora Marília.
+    return {
+      ...c,
+      parts: c.parts.map((p: any) => {
+        if (!p.text) return p
+        let t = p.text.replace(/\[INSTRUÇÃO[^\]]*\]/g, '').trim()
+        if (imgFailed) t += '\n\n[SISTEMA: Imagem indisponível. Responda com texto. Avise: "⚠️ Geração de imagem indisponível."]'
+        if (!wantsImage) t += `\n\n[SISTEMA: Responda EXCLUSIVAMENTE com base nos materiais da consultoria, cartela de cores, documentos e observações da cliente. NÃO use conhecimento externo. Se a informação não estiver nos materiais, diga que precisa consultar a consultora Marília.
       REGRA DE FORMATAÇÃO CRÍTICA: Quando apresentar conteúdo de documentos como dossiês, referências de tinta, fichas técnicas ou listas — reproduza a estrutura e formatação EXATAMENTE como está no documento original. Preserve emojis, quebras de linha, marcadores (•, ✔, 🎯, 📌 etc.), hierarquia e espaçamentos. NÃO reformule em parágrafos corridos. NÃO parafraseie. Copie a estrutura fiel.]`
-      return { ...p, text: t }
-    })}
+        return { ...p, text: t }
+      }),
+    }
   })
 
   const tb: any = { contents: tc, generation_config: { temperature: 0.5, max_output_tokens: 8192 } }
   if (sys) tb.system_instruction = sys
 
   let res: Response | null = null
-  for (let a = 0; a < 3; a++) {
-    if (a > 0) await sleep(a * 3000)
+  for (let a = 0; a < 4; a++) {
+    if (a > 0) await sleep(Math.min(2000 * Math.pow(2, a - 1), 15000) + jitter())
     try {
-      res = await fetch(`${GEMINI_BASE}/models/${GEMINI_MODELS.TEXT_ONLY}:generateContent?key=${apiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tb) })
-      if (res.ok || !isOvl(res.status)) break
-    } catch { if (a === 2) throw new Error('Erro de conexão.') }
+      res = await fetch(
+        `${GEMINI_BASE}/models/${GEMINI_MODELS.TEXT_ONLY}:generateContent?key=${apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tb) }
+      )
+      if (res.ok) break
+      if (res.status !== 429 && res.status !== 503) break
+    } catch {
+      if (a === 3) throw new Error('Erro de conexão.')
+    }
   }
 
   if (!res || !res.ok) {
-    let e: any = {}; try { if (res) e = await res.json() } catch {}
-    if (res && isOvl(res.status)) throw new Error('IA sobrecarregada.')
-    throw new Error(e?.error?.message || `Erro ${res?.status}`)
+    const err = res ? await parseError(res) : null
+    if (err?.isDailyQuota) throw new Error('Cota diária da IA atingida. Tente amanhã.')
+    if (err && (err.status === 429 || err.status === 503)) throw new Error('IA sobrecarregada. Aguarde um momento.')
+    throw new Error(err?.message || 'Erro ao contatar a IA.')
   }
 
   const data = await res.json()
+  modelUsed = GEMINI_MODELS.TEXT_ONLY
   const parts = parseResp(data)
-  return { parts: imgFailed ? addNotice(parts) : parts, raw: data, imageGenerationFailed: imgFailed }
+  return {
+    parts: imgFailed ? addNotice(parts) : parts,
+    raw: data,
+    imageGenerationFailed: imgFailed,
+    modelUsed,
+  }
 }
+
+// ──────────────────────────────────────────────────────────────
+// 7. HELPERS DE PARSING DE RESPOSTA (inalterados)
+// ──────────────────────────────────────────────────────────────
 
 function parseResp(data: any): GeminiResponsePart[] {
   const parts: GeminiResponsePart[] = []
@@ -236,13 +348,17 @@ function parseResp(data: any): GeminiResponsePart[] {
 
 function addNotice(parts: GeminiResponsePart[]): GeminiResponsePart[] {
   if (parts.some(p => p.type === 'image')) return parts
-  const cleaned = parts.map(p => {
-    if (p.type !== 'text' || !p.text) return p
-    let t = p.text
-    for (const r of [/aqui est[áa] a (visualiza[çc][ãa]o|imagem|foto)[^.]*[.:!]?\s*/gi, /preparei uma imagem[^.]*[.!]?\s*/gi])
-      t = t.replace(r, '')
-    return { ...p, text: t.trim() }
-  }).filter(p => p.type !== 'text' || p.text?.trim())
-  if (!cleaned.some(p => p.text?.includes('⚠️'))) cleaned.push({ type: 'text', text: '\n\n⚠️ Geração de imagem indisponível. Tente novamente.' })
+  const cleaned = parts
+    .map(p => {
+      if (p.type !== 'text' || !p.text) return p
+      let t = p.text
+      for (const r of [/aqui est[áa] a (visualiza[çc][ãa]o|imagem|foto)[^.]*[.:!]?\s*/gi, /preparei uma imagem[^.]*[.!]?\s*/gi])
+        t = t.replace(r, '')
+      return { ...p, text: t.trim() }
+    })
+    .filter(p => p.type !== 'text' || p.text?.trim())
+  if (!cleaned.some(p => p.text?.includes('⚠️'))) {
+    cleaned.push({ type: 'text', text: '\n\n⚠️ Geração de imagem indisponível. Tente novamente.' })
+  }
   return cleaned
 }

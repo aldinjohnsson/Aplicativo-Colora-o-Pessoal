@@ -4,6 +4,34 @@ import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { supabase } from '../../lib/supabase'
 
+// ── Tipo de estilo do PDF ───────────────────────────────────────────────────
+
+type PdfFontFamily = 'Helvetica' | 'Times' | 'Courier'
+
+interface PdfStyleConfig {
+  headerFont?: PdfFontFamily
+  headerSize?: number
+  headerColor?: string
+
+  bodyFont?: PdfFontFamily
+  bodySize?: number
+  bodyColor?: string
+
+  accentColor?: string
+}
+
+const PDF_STYLE_DEFAULTS: Required<PdfStyleConfig> = {
+  headerFont:  'Helvetica',
+  headerSize:  8.5,
+  headerColor: '#77304F',
+
+  bodyFont:    'Helvetica',
+  bodySize:    7.5,
+  bodyColor:   '#645859',
+
+  accentColor: '#87485E',
+}
+
 interface AppSettings {
   whatsappNumber: string
   googleDriveFolderId: string
@@ -18,6 +46,7 @@ interface AppSettings {
   pdfTemplateUrl: string
   pdfTemplateBase64?: string
   pdfTemplateFileName?: string
+  pdfStyle?: PdfStyleConfig
   adminEmail: string
   resendApiKey: string
   fromEmail: string
@@ -26,35 +55,73 @@ interface AppSettings {
 // Serviço de storage — salva no localStorage E no Supabase
 const settingsStorageService = {
   async saveSettings(data: AppSettings) {
+    // ── 1. localStorage: salvar sem o base64 do template (pode ser vários MB)
     try {
-      const jsonData = JSON.stringify(data)
-      localStorage.setItem('app-settings', jsonData)
+      const { pdfTemplateBase64: _omit, ...rest } = data
+      localStorage.setItem('app-settings', JSON.stringify(rest))
+    } catch {
+      // QuotaExceededError — ignora; Supabase é a fonte de verdade
+    }
 
-      const { data: existing } = await supabase
+    // ── 2. Supabase: separar o template em linha própria p/ não estourar payload
+    const { pdfTemplateBase64, ...settingsWithoutTemplate } = data
+
+    // 2a. Salvar configurações (sem base64)
+    const { data: existing, error: selError } = await supabase
+      .from('admin_content')
+      .select('id')
+      .eq('type', 'settings')
+      .maybeSingle()
+
+    if (selError) throw new Error(selError.message)
+
+    if (existing?.id) {
+      const { error } = await supabase
+        .from('admin_content')
+        .update({ content: settingsWithoutTemplate as any })
+        .eq('id', existing.id)
+      if (error) throw new Error(error.message)
+    } else {
+      const { error } = await supabase
+        .from('admin_content')
+        .upsert(
+          { type: 'settings', content: settingsWithoutTemplate as any },
+          { onConflict: 'type' }
+        )
+      if (error) throw new Error(error.message)
+    }
+
+    // 2b. Salvar template PDF em linha separada (só quando há base64)
+    if (pdfTemplateBase64) {
+      const { data: existingTpl } = await supabase
         .from('admin_content')
         .select('id')
-        .eq('type', 'settings')
+        .eq('type', 'pdf_template')
         .maybeSingle()
 
-      if (existing?.id) {
-        await supabase
-          .from('admin_content')
-          .update({ content: data as any })
-          .eq('id', existing.id)
-      } else {
-        await supabase
-          .from('admin_content')
-          .upsert(
-            { type: 'settings', content: data as any },
-            { onConflict: 'type' }
-          )
+      const tplPayload = {
+        pdfTemplateBase64,
+        pdfTemplateFileName: data.pdfTemplateFileName ?? '',
       }
 
-      return { success: true }
-    } catch (error) {
-      console.error('Erro ao salvar configurações:', error)
-      throw error
+      if (existingTpl?.id) {
+        const { error } = await supabase
+          .from('admin_content')
+          .update({ content: tplPayload as any })
+          .eq('id', existingTpl.id)
+        if (error) throw new Error(error.message)
+      } else {
+        const { error } = await supabase
+          .from('admin_content')
+          .upsert(
+            { type: 'pdf_template', content: tplPayload as any },
+            { onConflict: 'type' }
+          )
+        if (error) throw new Error(error.message)
+      }
     }
+
+    return { success: true }
   },
 
   async getSettings(): Promise<AppSettings> {
@@ -72,32 +139,44 @@ const settingsStorageService = {
       pdfTemplateUrl: '',
       pdfTemplateBase64: '',
       pdfTemplateFileName: '',
+      pdfStyle: PDF_STYLE_DEFAULTS,
       adminEmail: '',
       resendApiKey: '',
       fromEmail: '',
     }
 
     try {
-      const { data } = await supabase
+      // Carregar configurações principais
+      const { data: settingsRow } = await supabase
         .from('admin_content')
         .select('content')
         .eq('type', 'settings')
         .maybeSingle()
 
-      if (data?.content) {
-        return { ...defaults, ...(data.content as AppSettings) }
+      // Carregar template PDF (linha separada)
+      const { data: tplRow } = await supabase
+        .from('admin_content')
+        .select('content')
+        .eq('type', 'pdf_template')
+        .maybeSingle()
+
+      const tplContent = tplRow?.content as { pdfTemplateBase64?: string; pdfTemplateFileName?: string } | null
+
+      const merged: AppSettings = {
+        ...defaults,
+        ...(settingsRow?.content as AppSettings ?? {}),
+        // Template vem da linha dedicada se existir, senão do campo legado na settings
+        pdfTemplateBase64:  tplContent?.pdfTemplateBase64  ?? (settingsRow?.content as any)?.pdfTemplateBase64  ?? '',
+        pdfTemplateFileName: tplContent?.pdfTemplateFileName ?? (settingsRow?.content as any)?.pdfTemplateFileName ?? '',
       }
 
-      const local = localStorage.getItem('app-settings')
-      if (local) return { ...defaults, ...JSON.parse(local) }
-
-      return defaults
+      return merged
     } catch (error) {
       console.error('Erro ao carregar configurações:', error)
-      const local = localStorage.getItem('app-settings')
-      if (local) {
-        try { return { ...defaults, ...JSON.parse(local) } } catch {}
-      }
+      try {
+        const local = localStorage.getItem('app-settings')
+        if (local) return { ...defaults, ...JSON.parse(local) }
+      } catch {}
       return defaults
     }
   }
@@ -212,6 +291,8 @@ function PdfTemplateSection({
   )
 }
 
+
+
 // ── Settings Editor ─────────────────────────────────────────────────────────
 
 export default function SettingsEditor() {
@@ -227,6 +308,7 @@ export default function SettingsEditor() {
     googleDriveAttachmentsFolder: '',
     geminiApiKey: '',
     pdfTemplateUrl: '',
+    pdfStyle: PDF_STYLE_DEFAULTS,
     adminEmail: '',
     resendApiKey: '',
     fromEmail: '',
