@@ -100,29 +100,90 @@ export async function chatWithGemini({ apiKey, systemPrompt, history, userText, 
   contents.push({ role: 'user', parts: userParts })
 
   const sys = systemPrompt?.trim() ? { parts: [{ text: systemPrompt }] } : undefined
-  // AFTER
   const imgSys = {
     parts: [{
       text: `REGRA CRÍTICA DE GERAÇÃO DE IMAGEM: Use a foto da cliente como base obrigatória. Preserve a identidade facial da pessoa — mantenha o rosto real, feições, tom de pele, olhos e expressão. Aplique SOMENTE o que for descrito no prompt (cabelo, roupa, acessório, etc.). Nunca substitua ou idealize o rosto da cliente — use sempre a foto real fornecida como base.\n\nREGRA DE COMPOSIÇÃO OBRIGATÓRIA: Mantenha EXATAMENTE o mesmo enquadramento, recorte, zoom e composição da foto original da cliente. NÃO altere a posição da cliente na imagem. NÃO aproxime o zoom. NÃO recorte o corpo ou busto. A imagem gerada deve ter a mesma composição da foto de entrada — apenas aplique o acessório/alteração solicitada.\n\nREGRA DE FORMATAÇÃO CRÍTICA: Quando a resposta incluir conteúdo de documentos como dossiês, referências de tinta, fichas técnicas ou listas — reproduza a estrutura e formatação EXATAMENTE como está no documento original. Preserve emojis, quebras de linha, marcadores (•, ✔, 🎯, 📌 etc.), hierarquia e espaçamentos. NÃO reformule em parágrafos corridos. NÃO parafraseie. Copie a estrutura fiel.\n\n${systemPrompt || ''}`
     }]
   }
+
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
   const isOvl = (s: number) => s === 429 || s === 503
+
+  // Jitter aleatório para evitar múltiplas requisições simultâneas batendo juntas
+  const jitter = () => Math.random() * 1500
+
   let imgFailed = false
 
   // ── GERAR IMAGEM (só se forceImage) ────────────────────────
   if (wantsImage) {
-    const body: any = { contents, generation_config: { response_modalities: ['IMAGE', 'TEXT'], temperature: 0.1, max_output_tokens: 8192 } }
+    const body: any = {
+      contents,
+      generation_config: { response_modalities: ['IMAGE', 'TEXT'], temperature: 0.1, max_output_tokens: 8192 },
+    }
     if (imgSys) body.system_instruction = imgSys
 
-    for (let a = 0; a < 4; a++) {
-      if (a > 0) await sleep(Math.min(2000 * Math.pow(2, a), 12000))
+    // Retry aprimorado:
+    //   - 6 tentativas (era 4)
+    //   - Backoff exponencial começando em 3s (era 2s a partir da 2ª)
+    //   - Jitter aleatório para evitar colisões
+    //   - Respeita o header Retry-After do 429
+    //   - Aguarda 2s mesmo quando res.ok mas sem imagem (modelo ficou em branco)
+    const MAX_IMG_RETRIES = 4
+    const IMG_BASE_DELAY = 2000
+
+    // Razões que indicam que retry não vai ajudar (safety, quota, etc.)
+    const NO_RETRY_REASONS = new Set(['IMAGE_SAFETY', 'SAFETY', 'RECITATION', 'OTHER'])
+
+    for (let a = 0; a < MAX_IMG_RETRIES; a++) {
+      if (a > 0) {
+        const delay = Math.min(IMG_BASE_DELAY * Math.pow(2, a - 1), 20000) + jitter()
+        // delays aproximados: 4s, 8s, 16s
+        await sleep(delay)
+      }
+
       try {
-        const res = await fetch(`${GEMINI_BASE}/models/${GEMINI_MODELS.IMAGE_GEN}:generateContent?key=${apiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        if (res.ok) { const data = await res.json(); const parts = parseResp(data); if (parts.some(p => p.type === 'image' && p.imageBase64)) return { parts, raw: data, imageGenerationFailed: false }; continue }
-        if (isOvl(res.status)) continue; break
-      } catch {}
+        const res = await fetch(
+          `${GEMINI_BASE}/models/${GEMINI_MODELS.IMAGE_GEN}:generateContent?key=${apiKey}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+        )
+
+        if (res.ok) {
+          const data = await res.json()
+
+          // Verifica se o modelo bloqueou por safety ou outro motivo definitivo
+          const finishReason = data?.candidates?.[0]?.finishReason as string | undefined
+          if (finishReason && NO_RETRY_REASONS.has(finishReason)) {
+            // Bloqueio definitivo — não adianta tentar de novo
+            break
+          }
+
+          const parts = parseResp(data)
+          if (parts.some(p => p.type === 'image' && p.imageBase64)) {
+            return { parts, raw: data, imageGenerationFailed: false }
+          }
+
+          // 200 OK mas sem imagem — continua, o delay do topo do loop já cuida do intervalo
+          continue
+        }
+
+        if (res.status === 429) {
+          const retryAfter = res.headers.get('Retry-After')
+          if (retryAfter) {
+            const waitMs = (parseInt(retryAfter, 10) || 10) * 1000
+            await sleep(waitMs + jitter())
+          }
+          continue
+        }
+
+        if (res.status === 503) continue
+
+        // Qualquer outro erro (4xx que não seja 429) — não adianta tentar de novo
+        break
+      } catch {
+        // Erro de rede — continua tentando
+      }
     }
+
     imgFailed = true
   }
 
