@@ -1,17 +1,27 @@
 import React, { useState, useEffect } from 'react'
-import { Save, Eye, Plus, Trash2, GripVertical, Camera, AlertCircle, CheckCircle, Video } from 'lucide-react'
+import { Save, Eye, Plus, Trash2, GripVertical, Camera, AlertCircle, CheckCircle } from 'lucide-react'
+import { PhotoCategoryInstructionsEditor, migrateToInstructionItems } from './PhotoCategoryInstructionsEditor'
+import { supabase } from '@/lib/supabase' // ajuste o path para o seu cliente Supabase
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface InstructionItem {
+  id: string
+  type: 'text' | 'video' | 'image'
+  content: string
+}
 
 interface PhotoCategory {
   id: string
   title: string
   description: string
-  instructions: string[]
-  videoUrl?: string
+  instruction_items: InstructionItem[]
   maxPhotos: number
   order: number
 }
 
-// Serviço de storage
+// ─── Storage service ──────────────────────────────────────────────────────────
+
 const photoStorageService = {
   async savePhotoConfig(data: { categories: PhotoCategory[] }) {
     try {
@@ -19,9 +29,9 @@ const photoStorageService = {
         categories: data.categories,
         lastUpdated: new Date().toISOString()
       }
-      
+
       const jsonData = JSON.stringify(photoData)
-      
+
       if (typeof window !== 'undefined' && (window as any).storage) {
         try {
           await (window as any).storage.set('admin-photo-config', jsonData, true)
@@ -31,7 +41,7 @@ const photoStorageService = {
       } else {
         localStorage.setItem('admin-photo-config', jsonData)
       }
-      
+
       return { success: true }
     } catch (error) {
       console.error('Erro ao salvar configuração de fotos:', error)
@@ -42,7 +52,7 @@ const photoStorageService = {
   async getPhotoConfig() {
     try {
       let jsonData: string | null = null
-      
+
       if (typeof window !== 'undefined' && (window as any).storage) {
         try {
           const result = await (window as any).storage.get('admin-photo-config', true)
@@ -55,26 +65,35 @@ const photoStorageService = {
       } else {
         jsonData = localStorage.getItem('admin-photo-config')
       }
-      
+
       if (jsonData) {
-        return JSON.parse(jsonData)
+        const parsed = JSON.parse(jsonData)
+        // Migrate any saved categories still using the legacy format (videoUrl + instructions[])
+        parsed.categories = parsed.categories.map((cat: any) => ({
+          ...cat,
+          instruction_items: migrateToInstructionItems(
+            cat.videoUrl,
+            cat.instructions,
+            cat.instruction_items
+          )
+        }))
+        return parsed
       }
-      
-      // Configuração padrão
+
+      // Default config
       return {
         categories: [
           {
             id: '1',
             title: 'Foto sem Maquiagem',
             description: 'Foto natural com cabelo solto de frente para janela',
-            instructions: [
-              'Retire toda maquiagem do rosto',
-              'Solte o cabelo naturalmente',
-              'Posicione-se de frente para uma janela com luz natural',
-              'Olhe diretamente para a câmera',
-              'Mantenha expressão neutra'
+            instruction_items: [
+              { id: '1-1', type: 'text', content: 'Retire toda maquiagem do rosto' },
+              { id: '1-2', type: 'text', content: 'Solte o cabelo naturalmente' },
+              { id: '1-3', type: 'text', content: 'Posicione-se de frente para uma janela com luz natural' },
+              { id: '1-4', type: 'text', content: 'Olhe diretamente para a câmera' },
+              { id: '1-5', type: 'text', content: 'Mantenha expressão neutra' }
             ],
-            videoUrl: '',
             maxPhotos: 3,
             order: 1
           },
@@ -82,12 +101,11 @@ const photoStorageService = {
             id: '2',
             title: 'Foto da Íris',
             description: 'Close-up dos olhos para análise da cor',
-            instructions: [
-              'Use boa iluminação natural',
-              'Foto bem próxima dos olhos',
-              'Certifique-se que a íris está bem visível'
+            instruction_items: [
+              { id: '2-1', type: 'text', content: 'Use boa iluminação natural' },
+              { id: '2-2', type: 'text', content: 'Foto bem próxima dos olhos' },
+              { id: '2-3', type: 'text', content: 'Certifique-se que a íris está bem visível' }
             ],
-            videoUrl: '',
             maxPhotos: 2,
             order: 2
           }
@@ -95,26 +113,25 @@ const photoStorageService = {
       }
     } catch (error) {
       console.error('Erro ao carregar configuração de fotos:', error)
-      return {
-        categories: []
-      }
+      return { categories: [] }
     }
   }
 }
 
-// Componentes UI
+// ─── UI primitives ────────────────────────────────────────────────────────────
+
 const Button = ({ children, onClick, loading, disabled, variant = 'primary', size = 'md', className = '' }: any) => {
   const baseStyles = "inline-flex items-center justify-center rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2"
-  const variants = {
+  const variants: any = {
     primary: "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed",
     outline: "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:ring-blue-500",
     ghost: "text-gray-700 hover:bg-gray-100"
   }
-  const sizes = {
+  const sizes: any = {
     sm: "px-3 py-1.5 text-sm",
     md: "px-4 py-2 text-sm"
   }
-  
+
   return (
     <button
       onClick={onClick}
@@ -128,21 +145,15 @@ const Button = ({ children, onClick, loading, disabled, variant = 'primary', siz
 }
 
 const Card = ({ children }: any) => (
-  <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-    {children}
-  </div>
+  <div className="bg-white rounded-lg shadow-sm border border-gray-200">{children}</div>
 )
 
 const CardHeader = ({ children }: any) => (
-  <div className="px-6 py-4 border-b border-gray-200">
-    {children}
-  </div>
+  <div className="px-6 py-4 border-b border-gray-200">{children}</div>
 )
 
 const CardContent = ({ children, className = '' }: any) => (
-  <div className={`px-6 py-4 ${className}`}>
-    {children}
-  </div>
+  <div className={`px-6 py-4 ${className}`}>{children}</div>
 )
 
 const Input = ({ value, onChange, placeholder, label, type = 'text', min, max }: any) => (
@@ -160,12 +171,14 @@ const Input = ({ value, onChange, placeholder, label, type = 'text', min, max }:
   </div>
 )
 
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export function PhotoEditor() {
   const [categories, setCategories] = useState<PhotoCategory[]>([])
   const [previewMode, setPreviewMode] = useState(false)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [draggedItem, setDraggedItem] = useState<string | null>(null)
 
   useEffect(() => {
@@ -190,8 +203,10 @@ export function PhotoEditor() {
       id: Date.now().toString(),
       title: 'Nova Categoria',
       description: 'Descrição da categoria',
-      instructions: ['Instrução 1', 'Instrução 2'],
-      videoUrl: '',
+      instruction_items: [
+        { id: `${Date.now()}-1`, type: 'text', content: 'Instrução 1' },
+        { id: `${Date.now()}-2`, type: 'text', content: 'Instrução 2' }
+      ],
       maxPhotos: 3,
       order: categories.length + 1
     }
@@ -199,40 +214,11 @@ export function PhotoEditor() {
   }
 
   const updateCategory = (id: string, updates: Partial<PhotoCategory>) => {
-    setCategories(categories.map(cat => 
-      cat.id === id ? { ...cat, ...updates } : cat
-    ))
+    setCategories(categories.map(cat => (cat.id === id ? { ...cat, ...updates } : cat)))
   }
 
   const deleteCategory = (id: string) => {
     setCategories(categories.filter(cat => cat.id !== id))
-  }
-
-  const addInstruction = (categoryId: string) => {
-    const category = categories.find(c => c.id === categoryId)
-    if (category) {
-      updateCategory(categoryId, {
-        instructions: [...category.instructions, 'Nova instrução']
-      })
-    }
-  }
-
-  const updateInstruction = (categoryId: string, index: number, value: string) => {
-    const category = categories.find(c => c.id === categoryId)
-    if (category) {
-      const newInstructions = [...category.instructions]
-      newInstructions[index] = value
-      updateCategory(categoryId, { instructions: newInstructions })
-    }
-  }
-
-  const deleteInstruction = (categoryId: string, index: number) => {
-    const category = categories.find(c => c.id === categoryId)
-    if (category && category.instructions.length > 1) {
-      updateCategory(categoryId, {
-        instructions: category.instructions.filter((_, i) => i !== index)
-      })
-    }
   }
 
   const handleDragStart = (id: string) => {
@@ -244,17 +230,39 @@ export function PhotoEditor() {
     if (draggedItem && draggedItem !== id) {
       const draggedIndex = categories.findIndex(c => c.id === draggedItem)
       const targetIndex = categories.findIndex(c => c.id === id)
-      
       const newCategories = [...categories]
       const [removed] = newCategories.splice(draggedIndex, 1)
       newCategories.splice(targetIndex, 0, removed)
-      
       setCategories(newCategories.map((c, i) => ({ ...c, order: i + 1 })))
     }
   }
 
   const handleDragEnd = () => {
     setDraggedItem(null)
+  }
+
+  // ── Image upload → Supabase Storage ──────────────────────────────────────────
+  // Faz upload para o bucket "category-instructions" e retorna { storagePath, url }.
+  // O bucket precisa existir e ter política pública de leitura (ou usar signed URLs).
+  //
+  // Se ainda não tiver a coluna instruction_items no banco, rode:
+  //   ALTER TABLE photo_categories
+  //     ADD COLUMN IF NOT EXISTS instruction_items jsonb NOT NULL DEFAULT '[]'::jsonb;
+  const uploadFile = async (file: File): Promise<{ storagePath: string; url: string }> => {
+    const ext = file.name.split('.').pop() ?? 'jpg'
+    const storagePath = `instructions/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`
+
+    const { error: uploadError } = await supabase.storage
+      .from('category-instructions')   // ← nome do bucket; mude se necessário
+      .upload(storagePath, file, { upsert: false, contentType: file.type })
+
+    if (uploadError) throw uploadError
+
+    const { data } = supabase.storage
+      .from('category-instructions')
+      .getPublicUrl(storagePath)
+
+    return { storagePath, url: data.publicUrl }
   }
 
   const savePhotoConfig = async () => {
@@ -265,12 +273,9 @@ export function PhotoEditor() {
 
     setSaving(true)
     setMessage(null)
-    
+
     try {
-      await photoStorageService.savePhotoConfig({
-        categories: categories
-      })
-      
+      await photoStorageService.savePhotoConfig({ categories })
       setMessage({ type: 'success', text: 'Configuração de fotos salva com sucesso!' })
       setTimeout(() => setMessage(null), 5000)
     } catch (error) {
@@ -281,9 +286,11 @@ export function PhotoEditor() {
     }
   }
 
+  // ─── Preview ──────────────────────────────────────────────────────────────
+
   const renderPreview = () => (
     <div className="space-y-6">
-      {categories.sort((a, b) => a.order - b.order).map((category) => (
+      {categories.sort((a, b) => a.order - b.order).map(category => (
         <Card key={category.id}>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -297,30 +304,33 @@ export function PhotoEditor() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {category.videoUrl && (
-                <div>
-                  <h4 className="text-sm font-medium text-gray-900 mb-2 flex items-center">
-                    <Video className="h-4 w-4 mr-2" />
-                    Vídeo Tutorial
-                  </h4>
-                  <div className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
-                    <p className="text-sm text-gray-500">{category.videoUrl}</p>
-                  </div>
-                </div>
-              )}
-              
-              <div>
-                <h4 className="text-sm font-medium text-gray-900 mb-2">Instruções:</h4>
-                <ul className="space-y-1">
-                  {category.instructions.map((instruction, index) => (
-                    <li key={index} className="text-sm text-gray-600 flex items-start">
-                      <span className="inline-block w-1.5 h-1.5 bg-gray-400 rounded-full mt-2 mr-2 flex-shrink-0" />
-                      {instruction}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+            <div className="space-y-3">
+              {category.instruction_items.map(item => {
+                if (item.type === 'video') {
+                  return (
+                    <div key={item.id} className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
+                      <p className="text-sm text-gray-500 break-all px-4">{item.content}</p>
+                    </div>
+                  )
+                }
+                if (item.type === 'image') {
+                  return (
+                    <img
+                      key={item.id}
+                      src={item.content}
+                      alt="Instrução"
+                      className="rounded-lg max-h-48 object-contain border border-gray-200"
+                    />
+                  )
+                }
+                // type === 'text'
+                return (
+                  <li key={item.id} className="text-sm text-gray-600 flex items-start list-none">
+                    <span className="inline-block w-1.5 h-1.5 bg-gray-400 rounded-full mt-2 mr-2 flex-shrink-0" />
+                    {item.content}
+                  </li>
+                )
+              })}
             </div>
           </CardContent>
         </Card>
@@ -328,12 +338,14 @@ export function PhotoEditor() {
     </div>
   )
 
+  // ─── Loading / preview guards ─────────────────────────────────────────────
+
   if (loading) {
     return (
       <Card>
         <CardContent>
           <div className="text-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
             <p className="text-gray-600">Carregando configuração...</p>
           </div>
         </CardContent>
@@ -345,7 +357,7 @@ export function PhotoEditor() {
     return (
       <div className="space-y-6">
         <div className="flex justify-between items-center">
-          <h2 className="text-xl font-semibold text-gray-900">Visualização - Etapa de Fotos</h2>
+          <h2 className="text-xl font-semibold text-gray-900">Visualização – Etapa de Fotos</h2>
           <Button variant="outline" onClick={() => setPreviewMode(false)}>
             Voltar à Edição
           </Button>
@@ -355,9 +367,11 @@ export function PhotoEditor() {
     )
   }
 
+  // ─── Editor ───────────────────────────────────────────────────────────────
+
   return (
     <div className="space-y-6">
-      {/* Cabeçalho */}
+      {/* Header */}
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">Editor de Etapa de Fotos</h2>
@@ -375,25 +389,33 @@ export function PhotoEditor() {
         </div>
       </div>
 
-      {/* Mensagens */}
+      {/* Messages */}
       {message && (
-        <div className={`rounded-lg p-4 ${
-          message.type === 'success' ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
-        }`}>
+        <div
+          className={`rounded-lg p-4 ${
+            message.type === 'success'
+              ? 'bg-green-50 border border-green-200'
+              : 'bg-red-50 border border-red-200'
+          }`}
+        >
           <div className="flex items-center">
             {message.type === 'success' ? (
               <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
             ) : (
               <AlertCircle className="h-5 w-5 text-red-600 mr-2" />
             )}
-            <p className={`text-sm ${message.type === 'success' ? 'text-green-800' : 'text-red-800'}`}>
+            <p
+              className={`text-sm ${
+                message.type === 'success' ? 'text-green-800' : 'text-red-800'
+              }`}
+            >
               {message.text}
             </p>
           </div>
         </div>
       )}
 
-      {/* Categorias */}
+      {/* Categories */}
       <Card>
         <CardHeader>
           <div className="flex justify-between items-center">
@@ -406,12 +428,12 @@ export function PhotoEditor() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {categories.sort((a, b) => a.order - b.order).map((category) => (
+            {categories.sort((a, b) => a.order - b.order).map(category => (
               <div
                 key={category.id}
                 draggable
                 onDragStart={() => handleDragStart(category.id)}
-                onDragOver={(e) => handleDragOver(e, category.id)}
+                onDragOver={e => handleDragOver(e, category.id)}
                 onDragEnd={handleDragEnd}
                 className={`bg-gray-50 rounded-lg p-4 border-2 ${
                   draggedItem === category.id ? 'border-blue-400 opacity-50' : 'border-gray-200'
@@ -421,9 +443,9 @@ export function PhotoEditor() {
                   <div className="mt-2">
                     <GripVertical className="h-5 w-5 text-gray-400" />
                   </div>
-                  
+
                   <div className="flex-1 space-y-4">
-                    {/* Título e Descrição */}
+                    {/* Title + max photos */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <Input
                         value={category.title}
@@ -434,7 +456,9 @@ export function PhotoEditor() {
                       <Input
                         type="number"
                         value={category.maxPhotos}
-                        onChange={(e: any) => updateCategory(category.id, { maxPhotos: parseInt(e.target.value) || 1 })}
+                        onChange={(e: any) =>
+                          updateCategory(category.id, { maxPhotos: parseInt(e.target.value) || 1 })
+                        }
                         label="Número máximo de fotos"
                         min="1"
                         max="999"
@@ -443,58 +467,19 @@ export function PhotoEditor() {
 
                     <Input
                       value={category.description}
-                      onChange={(e: any) => updateCategory(category.id, { description: e.target.value })}
+                      onChange={(e: any) =>
+                        updateCategory(category.id, { description: e.target.value })
+                      }
                       placeholder="Descrição da categoria"
                       label="Descrição"
                     />
 
-                    {/* URL do Vídeo do YouTube */}
-                    <div className="space-y-1">
-                      <label className="block text-sm font-medium text-gray-700 flex items-center">
-                        <Video className="h-4 w-4 mr-1" />
-                        URL do Vídeo do YouTube (opcional)
-                      </label>
-                      <Input
-                        value={category.videoUrl || ''}
-                        onChange={(e: any) => updateCategory(category.id, { videoUrl: e.target.value })}
-                        placeholder="https://www.youtube.com/watch?v=..."
-                      />
-                      <p className="text-xs text-gray-500">Cole o link completo do vídeo do YouTube</p>
-                    </div>
-
-                    {/* Instruções */}
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <label className="block text-sm font-medium text-gray-700">Instruções</label>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => addInstruction(category.id)}
-                        >
-                          <Plus className="h-3 w-3 mr-1" />
-                          Adicionar
-                        </Button>
-                      </div>
-                      <div className="space-y-2">
-                        {category.instructions.map((instruction, idx) => (
-                          <div key={idx} className="flex items-center space-x-2">
-                            <Input
-                              value={instruction}
-                              onChange={(e: any) => updateInstruction(category.id, idx, e.target.value)}
-                              placeholder={`Instrução ${idx + 1}`}
-                            />
-                            {category.instructions.length > 1 && (
-                              <button
-                                onClick={() => deleteInstruction(category.id, idx)}
-                                className="text-red-500 hover:text-red-700"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    {/* ── Unified instructions editor ── */}
+                    <PhotoCategoryInstructionsEditor
+                      items={category.instruction_items}
+                      onChange={items => updateCategory(category.id, { instruction_items: items })}
+                      onUpload={uploadFile}
+                    />
                   </div>
 
                   <button
@@ -518,7 +503,7 @@ export function PhotoEditor() {
         </CardContent>
       </Card>
 
-      {/* Dicas */}
+      {/* Tips */}
       <Card>
         <CardContent className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <p className="text-sm text-blue-800">
@@ -527,8 +512,8 @@ export function PhotoEditor() {
           <ul className="text-sm text-blue-700 mt-2 space-y-1 list-disc list-inside">
             <li>Arraste as categorias para reordená-las</li>
             <li>Defina 999 como máximo de fotos para uploads ilimitados</li>
-            <li>Cole links do YouTube para adicionar vídeos tutoriais</li>
-            <li>Adicione instruções claras para ajudar os clientes</li>
+            <li>Adicione itens do tipo <strong>vídeo</strong>, <strong>imagem</strong> ou <strong>texto</strong> nas instruções</li>
+            <li>Instruções legadas (texto + YouTube) são migradas automaticamente ao carregar</li>
           </ul>
         </CardContent>
       </Card>

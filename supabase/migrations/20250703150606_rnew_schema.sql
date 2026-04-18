@@ -960,3 +960,51 @@ BEGIN
   RETURN json_build_object('success', true);
 END;
 $$;
+
+-- Cria a tabela de categorias de fotos
+CREATE TABLE photo_categories (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title         text NOT NULL DEFAULT '',
+  description   text NOT NULL DEFAULT '',
+  instruction_items jsonb NOT NULL DEFAULT '[]'::jsonb,
+  max_photos    integer NOT NULL DEFAULT 3,
+  "order"       integer NOT NULL DEFAULT 0,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- Atualiza updated_at automaticamente em cada UPDATE
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER photo_categories_updated_at
+  BEFORE UPDATE ON photo_categories
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- RLS (habilita mas permite tudo por enquanto — ajuste conforme sua auth)
+ALTER TABLE photo_categories ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Admin full access"
+  ON photo_categories FOR ALL
+  USING (true) WITH CHECK (true);
+
+-- Bucket para as imagens de instrução
+INSERT INTO storage.buckets (id, name, public)
+  VALUES ('category-instructions', 'category-instructions', true)
+  ON CONFLICT (id) DO NOTHING;
+
+CREATE POLICY "Public read instructions"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'category-instructions');
+
+CREATE POLICY "Authenticated upload instructions"
+  ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'category-instructions');
+
+  ALTER TABLE plan_photo_categories
+  ADD COLUMN IF NOT EXISTS instruction_items jsonb NOT NULL DEFAULT '[]'::jsonb;

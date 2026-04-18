@@ -7,6 +7,7 @@ import { ClientPortal } from './components/client/ClientPortal'
 import { ClientLogin } from './components/client/ClientLogin'
 import { adminService } from './lib/services'
 import { ClientSignup } from './components/client/ClientSignup'
+import { LandingPage } from './components/LandingPage'
 
 function App() {
   const [adminUser, setAdminUser] = useState<any>(null)
@@ -30,14 +31,19 @@ function App() {
   return (
     <Router>
       <Routes>
-        
+
+        {/* ── Landing page de entrada ── */}
+        <Route path="/" element={<LandingPage />} />
+
         {/* Portal do cliente via token (link direto) */}
         <Route path="/c/:token" element={<ClientPortal />} />
 
         {/* Login do cliente (email + data de nascimento) */}
         <Route path="/acesso" element={<ClientLogin />} />
 
+        {/* Cadastro via link compartilhado */}
         <Route path="/p/:shareToken" element={<ClientSignup />} />
+
         {/* Admin */}
         <Route
           path="/admin/login"
@@ -55,9 +61,6 @@ function App() {
               : <Navigate to="/admin/login" replace />
           }
         />
-
-        {/* Raiz → login do cliente */}
-        <Route path="/" element={<Navigate to="/acesso" replace />} />
 
         <Route path="*" element={
           <div className="min-h-screen bg-gray-50 flex items-center justify-center">

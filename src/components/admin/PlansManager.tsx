@@ -7,6 +7,7 @@ import {
   Share2, Copy, CheckCircle, ChevronUp, ChevronDown
 } from 'lucide-react'
 import { adminService, Plan, PlanContract, PlanForm, PhotoCategory } from '../../lib/services'
+import { PhotoCategoryInstructionsEditor, migrateToInstructionItems, InstructionItem } from './PhotoCategoryInstructionsEditor'
 import { supabase } from '../../lib/supabase'
 
 // ── Shared tiny UI ──────────────────────────────────────────
@@ -671,7 +672,7 @@ function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMove
 
 // ── Photos Tab ───────────────────────────────────────────────
 
-const EMPTY_CAT = { title: '', description: '', video_url: '', max_photos: 10, instructions: [''] }
+const EMPTY_CAT = { title: '', description: '', max_photos: 10, instruction_items: [] as InstructionItem[] }
 
 function PhotosTab({ planId }: { planId: string }) {
   const [categories, setCategories] = useState<PhotoCategory[]>([])
@@ -695,8 +696,7 @@ function PhotosTab({ planId }: { planId: string }) {
       plan_id: planId,
       title: newCat.title,
       description: newCat.description || null,
-      instructions: newCat.instructions.filter(i => i.trim()),
-      video_url: newCat.video_url || null,
+      instruction_items: newCat.instruction_items,
       max_photos: newCat.max_photos,
       order_index: categories.length
     })
@@ -710,9 +710,12 @@ function PhotosTab({ planId }: { planId: string }) {
     setEditCat({
       title: cat.title,
       description: cat.description || '',
-      video_url: cat.video_url || '',
       max_photos: cat.max_photos,
-      instructions: cat.instructions.length > 0 ? cat.instructions : ['']
+      instruction_items: migrateToInstructionItems(
+        (cat as any).video_url,
+        (cat as any).instructions,
+        (cat as any).instruction_items
+      )
     })
   }
 
@@ -721,8 +724,7 @@ function PhotosTab({ planId }: { planId: string }) {
     await adminService.updatePhotoCategory(editingId, {
       title: editCat.title,
       description: editCat.description || null,
-      instructions: editCat.instructions.filter((i: string) => i.trim()),
-      video_url: editCat.video_url || null,
+      instruction_items: editCat.instruction_items,
       max_photos: editCat.max_photos,
     })
     setEditingId(null)
@@ -775,21 +777,37 @@ function PhotosTab({ planId }: { planId: string }) {
                 <div className="flex-1">
                   <h4 className="font-semibold text-gray-900">{cat.title}</h4>
                   {cat.description && <p className="text-sm text-gray-500 mt-0.5">{cat.description}</p>}
-                  <div className="flex flex-wrap gap-3 mt-2">
-                    <span className="text-xs text-gray-400">📸 Máx. {cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}</span>
-                    {cat.video_url && <span className="text-xs text-blue-500">▶ Vídeo configurado</span>}
-                    {cat.instructions.length > 0 && <span className="text-xs text-gray-400">📋 {cat.instructions.length} instrução{cat.instructions.length !== 1 ? 'ões' : ''}</span>}
-                  </div>
-                  {cat.instructions.length > 0 && (
-                    <ul className="mt-2 space-y-0.5">
-                      {cat.instructions.map((inst, i) => (
-                        <li key={i} className="text-sm text-gray-600 flex items-start gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 mt-1.5 flex-shrink-0" />
-                          {inst}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  {(() => {
+                    const items = migrateToInstructionItems(
+                      (cat as any).video_url,
+                      (cat as any).instructions,
+                      (cat as any).instruction_items
+                    )
+                    const texts = items.filter(it => it.type === 'text')
+                    const videos = items.filter(it => it.type === 'video')
+                    const images = items.filter(it => it.type === 'image')
+                    return (
+                      <>
+                        <div className="flex flex-wrap gap-3 mt-2">
+                          <span className="text-xs text-gray-400">📸 Máx. {cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}</span>
+                          {videos.length > 0 && <span className="text-xs text-blue-500">▶ {videos.length} vídeo{videos.length !== 1 ? 's' : ''}</span>}
+                          {images.length > 0 && <span className="text-xs text-purple-500">🖼 {images.length} imagem{images.length !== 1 ? 'ns' : ''}</span>}
+                          {texts.length > 0 && <span className="text-xs text-gray-400">📋 {texts.length} instrução{texts.length !== 1 ? 'ões' : ''}</span>}
+                        </div>
+                        {texts.length > 0 && (
+                          <ul className="mt-2 space-y-0.5">
+                            {texts.slice(0, 3).map(it => (
+                              <li key={it.id} className="text-sm text-gray-600 flex items-start gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-gray-400 mt-1.5 flex-shrink-0" />
+                                {it.content}
+                              </li>
+                            ))}
+                            {texts.length > 3 && <li className="text-xs text-gray-400">+{texts.length - 3} mais...</li>}
+                          </ul>
+                        )}
+                      </>
+                    )
+                  })()}
                 </div>
                 <div className="flex items-center gap-2 ml-4">
                   <Btn variant="outline" size="sm" onClick={() => handleEdit(cat)}>
@@ -819,6 +837,19 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
   onSave: () => void
   onCancel: () => void
 }) {
+  const uploadFile = async (file: File): Promise<{ storagePath: string; url: string }> => {
+    const ext = file.name.split('.').pop() ?? 'jpg'
+    const storagePath = `instructions/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`
+    const { error } = await supabase.storage
+      .from('category-instructions')
+      .upload(storagePath, file, { upsert: false, contentType: file.type })
+    if (error) throw error
+    const { data: urlData } = supabase.storage
+      .from('category-instructions')
+      .getPublicUrl(storagePath)
+    return { storagePath, url: urlData.publicUrl }
+  }
+
   return (
     <div className="bg-white border border-rose-200 rounded-xl p-6 space-y-4">
       <h3 className="font-semibold text-gray-900 text-sm">{title}</h3>
@@ -842,33 +873,14 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
           placeholder="Breve descrição desta categoria"
           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
       </div>
-      <div>
-        <label className="block text-xs font-medium text-gray-600 mb-1">Link do Vídeo YouTube (opcional)</label>
-        <input value={data.video_url} onChange={e => onChange({ ...data, video_url: e.target.value })}
-          placeholder="https://youtube.com/watch?v=..."
-          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
-        {data.video_url && (
-          <p className="text-xs text-green-600 mt-1">✓ Vídeo será exibido para o cliente nesta categoria</p>
-        )}
-      </div>
-      <div className="space-y-2">
-        <label className="block text-xs font-medium text-gray-600">Instruções para o cliente</label>
-        {data.instructions.map((inst: string, i: number) => (
-          <div key={i} className="flex gap-2">
-            <input value={inst} onChange={e => {
-              const arr = [...data.instructions]; arr[i] = e.target.value
-              onChange({ ...data, instructions: arr })
-            }} placeholder={`Instrução ${i + 1}`}
-              className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-rose-400" />
-            {data.instructions.length > 1 && (
-              <button onClick={() => onChange({ ...data, instructions: data.instructions.filter((_: any, j: number) => j !== i) })}
-                className="text-red-400 hover:text-red-600"><X className="h-4 w-4" /></button>
-            )}
-          </div>
-        ))}
-        <button onClick={() => onChange({ ...data, instructions: [...data.instructions, ''] })}
-          className="text-xs text-rose-500 hover:text-rose-600 font-medium">+ Adicionar instrução</button>
-      </div>
+
+      {/* ── Editor unificado: texto + vídeo YouTube + imagem ── */}
+      <PhotoCategoryInstructionsEditor
+        items={data.instruction_items ?? []}
+        onChange={items => onChange({ ...data, instruction_items: items })}
+        onUpload={uploadFile}
+      />
+
       <div className="flex gap-2">
         <Btn onClick={onSave}>Salvar</Btn>
         <Btn variant="outline" onClick={onCancel}>Cancelar</Btn>
