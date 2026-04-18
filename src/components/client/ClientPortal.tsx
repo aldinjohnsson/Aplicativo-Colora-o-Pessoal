@@ -125,7 +125,7 @@ export function ClientPortal() {
 
 function StepHeader({ current, total, label }: { current: number; total: number; label: string }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm px-6 py-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm px-4 sm:px-6 py-4">
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm font-medium text-gray-900">{label}</span>
         <span className="text-xs text-gray-400">Etapa {current} de {total}</span>
@@ -167,13 +167,13 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
       <StepHeader current={1} total={3} label="Contrato" />
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-5 border-b border-gray-100">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
           <h2 className="font-semibold text-gray-900">Leia o contrato</h2>
           <p className="text-sm text-gray-500 mt-0.5">Role até o final antes de assinar</p>
         </div>
 
         <div
-          className="px-6 py-5 max-h-72 overflow-y-auto text-sm text-gray-700 space-y-4 leading-relaxed"
+          className="px-4 sm:px-6 py-4 sm:py-5 max-h-72 overflow-y-auto text-sm text-gray-700 space-y-4 leading-relaxed"
           onScroll={e => {
             const el = e.currentTarget
             if (el.scrollHeight - el.scrollTop - el.clientHeight < 50) setRead(true)
@@ -185,7 +185,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
               {contract.sections.sort((a: any, b: any) => a.order - b.order).map((s: any) => (
                 <div key={s.id}>
                   <h4 className="font-semibold text-gray-800 mb-1">{s.title}</h4>
-                  <p className="whitespace-pre-wrap">{s.content}</p>
+                  <p className="whitespace-pre-wrap leading-relaxed">{s.content}</p>
                 </div>
               ))}
             </>
@@ -195,7 +195,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
           <div className="h-4" />
         </div>
 
-        <div className="px-6 py-5 border-t border-gray-100 space-y-4">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-4">
           <label className="flex items-start gap-3 cursor-pointer">
             <input
               type="checkbox"
@@ -284,12 +284,12 @@ function FormStep({ token, data, onDone }: { token: string; data: ClientPortalDa
       <StepHeader current={2} total={3} label="Formulário" />
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-5 border-b border-gray-100">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
           <h2 className="font-semibold text-gray-900">{form?.title || 'Formulário'}</h2>
-          {form?.description && <p className="text-sm text-gray-500 mt-0.5">{form.description}</p>}
+          {form?.description && <p className="text-sm text-gray-500 mt-0.5 whitespace-pre-wrap">{form.description}</p>}
         </div>
 
-        <div className="px-6 py-5 space-y-5">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-5">
           {form?.fields.sort((a: any, b: any) => a.order - b.order).map((field: any) => (
             <FormField key={field.id} field={field} value={values[field.id]} onChange={v => setValue(field.id, v)} />
           ))}
@@ -298,7 +298,7 @@ function FormStep({ token, data, onDone }: { token: string; data: ClientPortalDa
           )}
         </div>
 
-        <div className="px-6 py-5 border-t border-gray-100">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100">
           <Btn
             onClick={handleSubmit}
             loading={submitting}
@@ -628,7 +628,7 @@ function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionIt
                   <span className="flex-shrink-0 w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-[10px] font-bold mt-0.5">
                     {i + 1}
                   </span>
-                  <p className="text-sm text-gray-700 leading-relaxed">{item.content}</p>
+                  <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{item.content}</p>
                 </li>
               ))}
             </ol>
@@ -664,7 +664,7 @@ function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove 
       }`}
     >
       {/* Card header */}
-      <div className="flex items-start gap-3 px-5 pt-5 pb-3">
+      <div className="flex items-start gap-3 px-4 sm:px-5 pt-4 sm:pt-5 pb-3">
         <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${
           isDone ? 'bg-green-500 text-white' : 'bg-rose-100 text-rose-500'
         }`}>
@@ -690,7 +690,7 @@ function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove 
       </div>
 
       {/* Card body */}
-      <div className="px-5 pb-5 space-y-4">
+      <div className="px-4 sm:px-5 pb-4 sm:pb-5 space-y-4">
 
         {/* Instructions — collapsed after done, expanded while pending */}
         <InstructionsPanel items={instructions} defaultOpen={!isDone} />
@@ -871,7 +871,7 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
       <StepHeader current={3} total={3} label="Fotos" />
 
       {/* ── Sticky overview bar ── */}
-      <div className="bg-white/90 backdrop-blur-sm rounded-2xl border border-gray-100 shadow-sm px-5 py-3 sticky top-[3.75rem] z-10">
+      <div className="bg-white/90 backdrop-blur-sm rounded-2xl border border-gray-100 shadow-sm px-4 sm:px-5 py-3 sticky top-[3.75rem] z-10">
         {/* Progress bar + label */}
         <div className="flex items-center gap-3 mb-2.5">
           <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -930,7 +930,7 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
       ))}
 
       {/* ── Submit card ── */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4 space-y-3">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 sm:px-5 py-4 space-y-3">
 
         {/* Pending shortcuts */}
         {categories
@@ -1202,7 +1202,7 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
       )}
 
       {result.folder_url && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <ExternalLink className="h-5 w-5 text-rose-400" /> Pasta com Materiais
           </h3>
@@ -1227,7 +1227,7 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
       )}
 
       {files.length > 0 && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <FileText className="h-5 w-5 text-rose-400" /> Documentos
           </h3>
@@ -1255,7 +1255,7 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
       )}
 
       {result.observations && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <span className="text-rose-400">✦</span> Observações da Consultora
           </h3>
