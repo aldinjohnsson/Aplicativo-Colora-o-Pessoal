@@ -245,7 +245,7 @@ export function FormEditor() {
 
   if (previewMode) {
     return (
-      <div className="max-w-2xl mx-auto py-8 space-y-6">
+      <div className="max-w-2xl mx-auto py-8 space-y-4 sm:space-y-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Pré-visualização</h2>
           <Button onClick={() => setPreviewMode(false)} variant="outline">
@@ -257,7 +257,7 @@ export function FormEditor() {
             <h2 className="text-2xl font-bold text-gray-900">{formTitle}</h2>
             <p className="text-gray-600 mt-2">{formDescription}</p>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className="space-y-4 sm:space-y-6">
             {fields.sort((a, b) => a.order - b.order).map(field => (
               <div key={field.id} className="space-y-2">
                 <label className="block text-sm font-medium text-gray-900">
@@ -274,7 +274,7 @@ export function FormEditor() {
                 {field.type === 'radio' && <div className="space-y-2">{field.options?.map((o, i) => <label key={i} className="flex items-center space-x-2"><input type="radio" disabled className="h-4 w-4" /><span className="text-sm text-gray-700">{o}</span></label>)}</div>}
                 {field.type === 'checkbox' && <div className="space-y-2">{field.options?.map((o, i) => <label key={i} className="flex items-center space-x-2"><input type="checkbox" disabled className="h-4 w-4 rounded" /><span className="text-sm text-gray-700">{o}</span></label>)}</div>}
                 {field.type === 'image' && (
-                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 sm:p-6 text-center">
                     <Image className="h-8 w-8 text-gray-400 mx-auto mb-2" />
                     <p className="text-sm font-medium text-gray-700">
                       Até {field.maxImages || 1} foto{(field.maxImages || 1) !== 1 ? 's' : ''}
@@ -293,7 +293,7 @@ export function FormEditor() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto py-8 space-y-6">
+    <div className="max-w-4xl mx-auto py-8 space-y-4 sm:space-y-6">
       {message && (
         <div className={`rounded-lg p-4 flex items-center space-x-2 ${message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
           {message.type === 'success' ? <CheckCircle className="h-5 w-5" /> : <AlertCircle className="h-5 w-5" />}
@@ -344,7 +344,7 @@ export function FormEditor() {
           {showAddField && (
             <div className="mb-6 bg-blue-50 rounded-lg p-4 border border-blue-200">
               <p className="text-sm font-medium text-blue-900 mb-3">Selecione o tipo de campo:</p>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 md:grid-cols-2 sm:grid-cols-3 gap-2">
                 {FIELD_TYPES.map(type => {
                   const Icon = type.icon
                   return (
@@ -389,7 +389,7 @@ export function FormEditor() {
                   <div className="flex-1 min-w-0 space-y-3">
 
                     {/* Topo: número + setas + badge tipo */}
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-700">
                           #{index + 1}

@@ -293,7 +293,7 @@ export function PhotoEditor() {
       {categories.sort((a, b) => a.order - b.order).map(category => (
         <Card key={category.id}>
           <CardHeader>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-lg font-medium text-gray-900">{category.title}</h3>
                 <p className="text-gray-600">{category.description}</p>
@@ -427,7 +427,7 @@ export function PhotoEditor() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
+          <div className="space-y-3 sm:space-y-4">
             {categories.sort((a, b) => a.order - b.order).map(category => (
               <div
                 key={category.id}
@@ -444,7 +444,7 @@ export function PhotoEditor() {
                     <GripVertical className="h-5 w-5 text-gray-400" />
                   </div>
 
-                  <div className="flex-1 space-y-4">
+                  <div className="flex-1 space-y-3 sm:space-y-4">
                     {/* Title + max photos */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <Input

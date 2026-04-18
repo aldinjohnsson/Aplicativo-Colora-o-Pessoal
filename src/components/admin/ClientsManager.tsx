@@ -564,9 +564,9 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [clients, setClients] = useState<Client[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [deadlines, setDeadlines] = useState<Record<string, DeadlineData>>({})
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [themeName, setThemeName] = useState<ThemeName>('rose')
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
@@ -999,9 +999,9 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
         </div>
       )}
 
-      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-        <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+        <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-2xl max-h-[95dvh] sm:max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 flex-shrink-0">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 bg-blue-50 rounded-lg flex items-center justify-center"><ClipboardList className="h-5 w-5 text-blue-500" /></div>
               <div>
@@ -1019,7 +1019,7 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5 space-y-5">
             {orderedEntries.length === 0
               ? <p className="text-sm text-gray-400 text-center py-8">Sem respostas</p>
               : orderedEntries.map(([key, value], idx) => {
@@ -1126,7 +1126,7 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
 // ─── Photos View ──────────────────────────────────────────────────────────
 function PhotosView({ clientId, photos, photoCategories }: { clientId: string; photos: any[]; photoCategories: any[] }) {
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
   useEffect(() => { adminService.getClientPhotosWithUrls(clientId).then(p => { setPhotosWithUrls(p); setLoading(false) }) }, [clientId])
   if (loading) return <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
@@ -1140,7 +1140,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   photosWithUrls.forEach(p => { if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) } else uncategorized.push(p) })
   const downloadAll = (catPhotos: any[]) => { catPhotos.forEach((p, i) => { setTimeout(() => { const a = document.createElement('a'); a.href = p.url; a.download = p.photo_name; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a) }, i * 300) }) }
   const renderGrid = (catPhotos: any[]) => (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+    <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
       {catPhotos.map((photo, idx) => (
         <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all" onClick={() => setLightbox({ photos: catPhotos, index: idx })}>
           <img src={photo.url} alt={photo.photo_name} className="w-full h-full object-cover" loading="lazy" />
@@ -1181,7 +1181,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const { clientId } = useParams<{ clientId: string }>()
   const navigate = useNavigate()
   const [data, setData] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'ai'>('overview')
   const [showFormModal, setShowFormModal] = useState(false)
@@ -1343,7 +1343,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
-        <div className="space-y-6 p-6 max-w-6xl mx-auto w-full">
+        <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 max-w-6xl mx-auto w-full">
 
           {/* Header */}
           <div className="flex items-start justify-between flex-wrap gap-4">
@@ -1378,9 +1378,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl overflow-x-auto w-full sm:w-fit">
             {[{ id: 'overview', label: 'Visão Geral' }, { id: 'photos', label: `Fotos (${photos.length})` }, { id: 'result', label: 'Resultado' }, { id: 'ai', label: '✨ IA' }].map(({ id, label }) => (
-              <button key={id} onClick={() => setTab(id as any)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
+              <button key={id} onClick={() => setTab(id as any)} className={`px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
             ))}
           </div>
 

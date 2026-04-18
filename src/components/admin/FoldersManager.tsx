@@ -693,7 +693,7 @@ export function FoldersManager() {
     const items: SubOption[] = (prompt[field] as SubOption[]) || []
     return (
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <label className="text-xs font-semibold text-gray-700">{icon} {label}</label>
           <button
             onClick={() => openSubPicker(cat.id, prompt.id, field)}
@@ -812,7 +812,7 @@ export function FoldersManager() {
                   <div>
                     <label className="text-xs text-gray-500 block mb-1">Imagens de referência (enviadas à IA)</label>
                     {sub.images.length > 0 && (
-                      <div className="grid grid-cols-4 gap-1.5 mb-2">
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 mb-2">
                         {sub.images.map((img, idx) => (
                           <div key={idx} className="relative group">
                             <img src={img.url} alt="" className="w-full aspect-square object-cover rounded-lg border" />
@@ -865,13 +865,13 @@ export function FoldersManager() {
   // ── Folder list ────────────────────────────────────────────
 
   if (!editingFolder) return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 sm:space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">Pastas de Prompts IA</h2>
           <p className="text-sm text-gray-500">Crie pastas globais com prompts, Drive e fotos por categoria</p>
         </div>
-        <button onClick={createFolder} className="inline-flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700">
+        <button onClick={createFolder} className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700">
           <Plus className="h-4 w-4" /> Nova Pasta
         </button>
       </div>
@@ -917,7 +917,7 @@ export function FoldersManager() {
   // ── Folder editor ──────────────────────────────────────────
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div className="flex items-center gap-3">
         <button onClick={() => { setEditingFolder(null); loadFolders() }} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-5 w-5" /></button>
         <h2 className="text-lg font-semibold text-gray-900">{editingFolder.id === 'new' ? 'Nova Pasta' : editingFolder.name}</h2>
@@ -961,7 +961,7 @@ export function FoldersManager() {
 
       {/* ── Categorias ── */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="font-semibold text-gray-900 text-sm">Categorias</h3>
           <div className="flex gap-2">
             {config.categories.length === 0 && (
@@ -1153,7 +1153,7 @@ export function FoldersManager() {
 
                               {/* Tint reference */}
                              <div>
-                              <div className="flex items-center justify-between mb-1">
+                              <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
                                 <label className="text-xs font-medium text-gray-600">🎨 Referência de tinta</label>
                                 <div className="flex items-center gap-1.5">
                                   <button
@@ -1218,7 +1218,7 @@ export function FoldersManager() {
                           {/* Referência geral (para todos os outros tipos) */}
                           {cat.type !== 'cabelo' && (
                             <div>
-                              <div className="flex items-center justify-between mb-1">
+                              <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
                                 <label className="text-xs font-medium text-gray-600">📌 Referência (opcional)</label>
                                 <div className="flex items-center gap-1.5">
                                   <button
@@ -1362,7 +1362,7 @@ export function FoldersManager() {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4">
           <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl">
             {/* Header */}
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div className="px-5 py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="font-semibold text-gray-900">
                   {subPicker.field === 'lengths' ? '✂️ Comprimentos' : '🌀 Texturas'}
@@ -1406,7 +1406,7 @@ export function FoldersManager() {
                 const allSelected = allIds.every(id => pickerSelected.has(id))
                 return (
                   <>
-                    <div className="flex items-center justify-between py-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2 py-1">
                       <div className="flex-1 h-px bg-gray-200 mr-2" />
                       <span className="text-xs text-gray-400 whitespace-nowrap">existentes</span>
                       <div className="flex-1 h-px bg-gray-200 mx-2" />
@@ -1652,7 +1652,7 @@ function CopyFormatModal({ srcPrompt, allTargets, onApply, onClose }: CopyFormat
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4">
       <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-5 py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="font-semibold text-gray-900">📋 Copiar formato</p>
             <p className="text-xs text-gray-400 mt-0.5">
@@ -1673,7 +1673,7 @@ function CopyFormatModal({ srcPrompt, allTargets, onApply, onClose }: CopyFormat
             <p className="text-sm text-gray-400 text-center py-6">Nenhum outro prompt disponível</p>
           ) : (
             <>
-              <div className="flex items-center justify-between py-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 py-1">
                 <span className="text-xs text-gray-400">Selecione os prompts que receberão este formato:</span>
                 <button
                   onClick={() => setSelectedTargets(

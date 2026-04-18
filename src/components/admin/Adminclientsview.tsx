@@ -187,13 +187,13 @@ export function AdminClientsView() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-gray-50 p-3 sm:p-6">
+      <div className="max-w-7xl mx-auto w-full">
         {/* Header */}
         <div className="mb-8">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4 sm:mb-6">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">Clientes e Arquivos</h1>
+              <h1 className="text-xl sm:text-3xl font-bold text-gray-900">Clientes e Arquivos</h1>
               <p className="text-gray-600 mt-1">Gerencie todos os clientes e seus documentos</p>
             </div>
             <button
@@ -201,7 +201,7 @@ export function AdminClientsView() {
                 loadClients()
                 loadStats()
               }}
-              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              className="inline-flex items-center px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
               Atualizar
@@ -209,12 +209,12 @@ export function AdminClientsView() {
           </div>
 
           {/* Estatísticas */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Total de Clientes</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.totalClients}</p>
+                  <p className="text-lg sm:text-2xl font-bold text-gray-900">{stats.totalClients}</p>
                 </div>
                 <Users className="h-8 w-8 text-blue-600" />
               </div>
@@ -224,7 +224,7 @@ export function AdminClientsView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Total de Fotos</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.totalPhotos}</p>
+                  <p className="text-lg sm:text-2xl font-bold text-gray-900">{stats.totalPhotos}</p>
                 </div>
                 <Image className="h-8 w-8 text-purple-600" />
               </div>
@@ -234,7 +234,7 @@ export function AdminClientsView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Total de Anexos</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.totalAttachments}</p>
+                  <p className="text-lg sm:text-2xl font-bold text-gray-900">{stats.totalAttachments}</p>
                 </div>
                 <FileText className="h-8 w-8 text-green-600" />
               </div>
@@ -244,7 +244,7 @@ export function AdminClientsView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Total de Documentos</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.totalDocuments}</p>
+                  <p className="text-lg sm:text-2xl font-bold text-gray-900">{stats.totalDocuments}</p>
                 </div>
                 <FileText className="h-8 w-8 text-orange-600" />
               </div>
@@ -281,13 +281,13 @@ export function AdminClientsView() {
                 key={client.client_id}
                 className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow"
               >
-                <div className="flex items-start justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                   <div className="flex-1">
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">
                       {client.full_name}
                     </h3>
                     
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-gray-600">
+                    <div className="grid grid-cols-1 gap-2 text-sm text-gray-600">
                       <div className="flex items-center">
                         <Mail className="h-4 w-4 mr-2 text-gray-400" />
                         {client.email}
@@ -303,7 +303,7 @@ export function AdminClientsView() {
                     </div>
                   </div>
 
-                  <div className="flex items-center space-x-2 ml-4">
+                  <div className="flex items-center flex flex-wrap gap-2 mt-2 sm:mt-0 sm:ml-4">
                     <button
                       onClick={() => handleViewClient(client)}
                       className="inline-flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
@@ -338,11 +338,11 @@ export function AdminClientsView() {
 
         {/* Modal de Detalhes do Cliente */}
         {selectedClient && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-6">
-            <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between">
+          <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6">
+            <div className="bg-white rounded-t-2xl sm:rounded-lg w-full sm:max-w-6xl max-h-[95dvh] sm:max-h-[90vh] overflow-y-auto">
+              <div className="sticky top-0 bg-white border-b border-gray-200 p-3 sm:p-6 flex items-center justify-between">
                 <div>
-                  <h2 className="text-2xl font-bold text-gray-900">{selectedClient.full_name}</h2>
+                  <h2 className="text-lg sm:text-2xl font-bold text-gray-900">{selectedClient.full_name}</h2>
                   <p className="text-gray-600">{selectedClient.email}</p>
                 </div>
                 <button
@@ -353,7 +353,7 @@ export function AdminClientsView() {
                 </button>
               </div>
 
-              <div className="p-6 space-y-6">
+              <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
                 {/* Informações do Cliente */}
                 <div className="bg-gray-50 rounded-lg p-4">
                   <h3 className="font-semibold text-gray-900 mb-3">Informações do Cliente</h3>

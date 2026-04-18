@@ -66,7 +66,7 @@ export function TagsManager() {
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-      <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-emerald-50 to-teal-50">
+      <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-emerald-50 to-teal-50">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl flex items-center justify-center">
             <Tag className="h-5 w-5 text-white" />
@@ -78,7 +78,7 @@ export function TagsManager() {
         </div>
       </div>
 
-      <div className="px-6 py-5 space-y-4">
+      <div className="px-4 sm:px-4 sm:px-6 py-3 sm:py-4 sm:py-5 space-y-4">
         <p className="text-xs text-gray-500">
           Crie tags como "Coloração Pessoal" e adicione opções (Verão Suave, Outono Quente...). Na aba IA de cada cliente, selecione a opção correta.
         </p>
@@ -144,7 +144,7 @@ export function TagsManager() {
         {/* Add new tag */}
         <div className="border-t border-gray-100 pt-4">
           <p className="text-xs font-medium text-gray-600 mb-2">Nova tag:</p>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <input
               value={newTagName}
               onChange={e => setNewTagName(e.target.value)}

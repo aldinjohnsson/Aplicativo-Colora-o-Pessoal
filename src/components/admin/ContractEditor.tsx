@@ -157,13 +157,13 @@ const Card = ({ children, className = '' }: any) => (
 )
 
 const CardHeader = ({ children }: any) => (
-  <div className="px-6 py-4 border-b border-gray-200">
+  <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-200">
     {children}
   </div>
 )
 
 const CardContent = ({ children, className = '' }: any) => (
-  <div className={`px-6 py-4 ${className}`}>
+  <div className={`px-4 sm:px-6 py-3 sm:py-4 ${className}`}>
     {children}
   </div>
 )
@@ -297,7 +297,7 @@ export function ContractEditor() {
     <div className="bg-white rounded-lg p-8 border border-gray-200">
       <h1 className="text-2xl font-bold text-center mb-8">{contractTitle}</h1>
       
-      <div className="space-y-6">
+      <div className="space-y-4 sm:space-y-6">
         {sections.sort((a, b) => a.order - b.order).map(section => (
           <div key={section.id}>
             <h3 className="text-lg font-semibold mb-2">{section.title}</h3>
@@ -316,7 +316,7 @@ export function ContractEditor() {
 
   if (loading) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-4 sm:space-y-6">
         <Card>
           <CardContent className="text-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
@@ -329,7 +329,7 @@ export function ContractEditor() {
 
   if (previewMode) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-4 sm:space-y-6">
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-semibold text-gray-900">Visualização do Contrato</h2>
           <Button variant="outline" onClick={() => setPreviewMode(false)}>
@@ -342,7 +342,7 @@ export function ContractEditor() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Cabeçalho */}
       <div className="flex justify-between items-center">
         <div>

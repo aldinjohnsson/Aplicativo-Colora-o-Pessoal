@@ -138,7 +138,7 @@ export function PhotoCategoryInstructionsEditor({
       />
 
       {/* Header row */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <label className="text-sm font-medium text-gray-700">
           Instruções para o cliente
         </label>

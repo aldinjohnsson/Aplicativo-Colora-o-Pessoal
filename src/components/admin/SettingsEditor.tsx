@@ -226,7 +226,7 @@ function PdfTemplateSection({
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-      <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-pink-50">
+      <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-pink-50">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-pink-500 rounded-xl flex items-center justify-center">
             <FileText className="h-5 w-5 text-white" />
@@ -357,12 +357,12 @@ export default function SettingsEditor() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto px-4 py-6">
+    <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
 
       {/* Cabeçalho */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Configurações</h1>
+          <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
           <p className="text-sm text-gray-500 mt-0.5">Gerencie integrações, tipos de fotos e templates</p>
         </div>
         <button
@@ -393,7 +393,7 @@ export default function SettingsEditor() {
 
       {/* ── Assistente de IA Gemini ─────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-purple-50">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-purple-50">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -449,7 +449,7 @@ export default function SettingsEditor() {
 
       {/* ── E-mail (Resend) ─────────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-cyan-50">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-cyan-50">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-xl flex items-center justify-center">
               <Mail className="h-5 w-5 text-white" />

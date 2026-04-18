@@ -171,7 +171,7 @@ function Section({ title, subtitle, icon, color, items, subfolder, onAdd, onUpda
       {/* Header */}
       <button
         onClick={() => setOpen(!open)}
-        className={`w-full px-6 py-4 border-b border-gray-100 flex items-center justify-between ${color}`}
+        className={`w-full px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3 ${color}`}
       >
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white" style={{ background: subfolder === 'lengths' ? 'linear-gradient(135deg, #7c3aed, #a855f7)' : 'linear-gradient(135deg, #0891b2, #06b6d4)' }}>
@@ -189,7 +189,7 @@ function Section({ title, subtitle, icon, color, items, subfolder, onAdd, onUpda
       </button>
 
       {open && (
-        <div className="px-6 py-5 space-y-3">
+        <div className="px-4 sm:px-4 sm:px-6 py-3 sm:py-4 sm:py-5 space-y-3">
           <p className="text-xs text-gray-500">
             Cada opção aparecerá com foto para a cliente escolher. A instrução é enviada para a IA junto com o prompt de cor.
           </p>
@@ -270,9 +270,9 @@ export function HairAttributesManager() {
   )
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3 sm:space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center">
             <Scissors className="h-5 w-5 text-white" />

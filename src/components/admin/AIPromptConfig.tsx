@@ -150,7 +150,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
   const hasGeral = refPhotos.some(p => p.typeId === 'geral')
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div>
         <h3 className="font-semibold text-gray-900 flex items-center gap-2">
           <Wand2 className="h-5 w-5 text-violet-500" /> Configuração IA — {clientName}
@@ -250,7 +250,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
         <p className="text-sm font-semibold text-amber-900 flex items-center gap-2">
           <Coins className="h-4 w-4" /> Créditos
         </p>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3">
           <div className="bg-white rounded-lg p-3 border border-amber-100 text-center">
             <p className="text-xs text-gray-500 mb-1">📸 Imagens</p>
             <p className="text-2xl font-bold text-violet-600">{creditsImage}</p>
@@ -263,7 +263,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
           </div>
         </div>
         <div className="bg-white rounded-lg p-3 border border-amber-100 space-y-3">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-2 sm:gap-4">
             <div>
               <label className="text-xs text-gray-500 block mb-1">📸 Imagens</label>
               <div className="flex items-center gap-1">

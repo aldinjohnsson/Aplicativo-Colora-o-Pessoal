@@ -438,12 +438,12 @@ export function ClientsAndFilesManager() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Estatísticas */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-medium text-gray-500">Total de Clientes</p>
                 <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
@@ -456,8 +456,8 @@ export function ClientsAndFilesManager() {
         </Card>
 
         <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-medium text-gray-500">Aguardando Entrega</p>
                 <p className="text-2xl font-bold text-orange-600">{stats.pending}</p>
@@ -470,8 +470,8 @@ export function ClientsAndFilesManager() {
         </Card>
 
         <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-medium text-gray-500">Entregas Realizadas</p>
                 <p className="text-2xl font-bold text-green-600">{stats.delivered}</p>
@@ -561,8 +561,8 @@ export function ClientsAndFilesManager() {
                     className="border border-gray-200 rounded-lg overflow-hidden hover:border-gray-300 transition-colors"
                   >
                     {/* Header do Cliente */}
-                    <div className="bg-gray-50 p-4">
-                      <div className="flex items-center justify-between">
+                    <div className="bg-gray-50 p-3 sm:p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center space-x-4 flex-1">
                           {/* Checkbox de Entrega */}
                           <button
@@ -637,7 +637,7 @@ export function ClientsAndFilesManager() {
 
                     {/* Arquivos (Expandido) */}
                     {isExpanded && (
-                      <div className="p-4 bg-white space-y-4">
+                      <div className="p-3 sm:p-4 bg-white space-y-4">
                         {/* Documentos PDF */}
                         <div>
                           <h5 className="text-sm font-medium text-gray-900 mb-2 flex items-center">
@@ -645,7 +645,7 @@ export function ClientsAndFilesManager() {
                             Documentos PDF
                           </h5>
                           <div className="space-y-2">
-                            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                            <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-gray-50 rounded-lg">
                               <div className="flex items-center space-x-2">
                                 <FileText className="h-4 w-4 text-red-600" />
                                 <span className="text-sm text-gray-700">Contrato.pdf</span>
@@ -659,7 +659,7 @@ export function ClientsAndFilesManager() {
                                 Baixar
                               </Button>
                             </div>
-                            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                            <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-gray-50 rounded-lg">
                               <div className="flex items-center space-x-2">
                                 <FileText className="h-4 w-4 text-red-600" />
                                 <span className="text-sm text-gray-700">Formulário.pdf</span>
@@ -725,7 +725,7 @@ export function ClientsAndFilesManager() {
                             </h5>
                             <div className="space-y-2">
                               {files.attachments.map((file, index) => (
-                                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                                <div key={index} className="flex flex-wrap items-center justify-between gap-2 p-3 bg-gray-50 rounded-lg">
                                   <div className="flex items-center space-x-2">
                                     <Paperclip className="h-4 w-4 text-purple-600" />
                                     <span className="text-sm text-gray-700 truncate">{file.name}</span>
