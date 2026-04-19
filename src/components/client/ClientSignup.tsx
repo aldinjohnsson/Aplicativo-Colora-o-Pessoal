@@ -337,7 +337,7 @@ export function ClientSignup() {
                 {/* Mensagem de boas-vindas */}
                 <div className="space-y-3">
                   <h1 className="text-2xl font-bold text-gray-900 leading-snug">
-                    Bem-vinda!
+                    Bem-vindo(a)!
                   </h1>
                   <p className="text-gray-600 leading-relaxed text-base">
                     Estou muito feliz em ter você aqui para começarmos essa{' '}
