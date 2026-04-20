@@ -121,6 +121,54 @@ export function FoldersManager() {
   const [allFolderPrompts, setAllFolderPrompts] = useState<FolderPromptEntry[]>([])
   const [loadingPrompts, setLoadingPrompts] = useState(false)
 
+  // ── Modais de entrada/confirmação (substituem window.prompt e confirm) ──
+  interface InputModalState {
+    title: string
+    message?: string
+    placeholder?: string
+    defaultValue?: string
+    confirmLabel?: string
+    resolve: (value: string | null) => void
+  }
+  interface ConfirmModalState {
+    title: string
+    message?: string
+    confirmLabel?: string
+    cancelLabel?: string
+    danger?: boolean
+    resolve: (value: boolean) => void
+  }
+  const [inputModal, setInputModal] = useState<InputModalState | null>(null)
+  const [confirmModal, setConfirmModal] = useState<ConfirmModalState | null>(null)
+
+  const askInput = (opts: Omit<InputModalState, 'resolve'>): Promise<string | null> =>
+    new Promise(resolve => setInputModal({ ...opts, resolve }))
+
+  const askConfirm = (opts: Omit<ConfirmModalState, 'resolve'>): Promise<boolean> =>
+    new Promise(resolve => setConfirmModal({ ...opts, resolve }))
+
+  // ── Snapshots de prompts (para funcionalidade de Salvar/Cancelar) ──
+  // Ao abrir um prompt guardamos uma cópia do seu estado inicial.
+  // Cancelar -> restaura o snapshot. Salvar -> apenas fecha (mudanças já aplicadas via autosave).
+  const [promptSnapshots, setPromptSnapshots] = useState<Record<string, Prompt>>({})
+
+  // ── Abas da tela inicial (pastas / comprimentos / texturas) ──
+  type TopTab = 'pastas' | 'comprimentos' | 'texturas'
+  const [activeTab, setActiveTab] = useState<TopTab>('pastas')
+
+  // Estado do modal de edição de uma sub-option (length/texture) na aba global
+  interface GlobalEditState {
+    kind: 'length' | 'texture'
+    /** dbId null = criação; string = edição de item existente */
+    dbId: string | null
+    name: string
+    instruction: string
+    thumbnail: PromptImage | null
+    images: PromptImage[]
+  }
+  const [globalEdit, setGlobalEdit] = useState<GlobalEditState | null>(null)
+  const [savingGlobal, setSavingGlobal] = useState(false)
+
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isFirstRender = useRef(true)
   const editingFolderRef = useRef<Folder | null>(null)
@@ -167,8 +215,13 @@ export function FoldersManager() {
 
   // ── Folder CRUD ────────────────────────────────────────────
 
-  const createFolder = () => {
-    const name = window.prompt('Nome da pasta (ex: Verão Suave):')
+  const createFolder = async () => {
+    const name = await askInput({
+      title: 'Nova pasta',
+      message: 'Informe um nome para a nova pasta',
+      placeholder: 'Ex: Verão Suave',
+      confirmLabel: 'Criar',
+    })
     if (!name?.trim()) return
     isFirstRender.current = true
     setConfig({ ...emptyConfig(), folderName: name.trim(), categories: DEFAULT_CATS.map(c => ({ ...c, id: uid() })) })
@@ -214,7 +267,12 @@ export function FoldersManager() {
   }
 
   const duplicateFolder = async (f: Folder) => {
-    const name = window.prompt('Nome da cópia:', f.name + ' (cópia)')
+    const name = await askInput({
+      title: 'Duplicar pasta',
+      message: 'Informe o nome da cópia',
+      defaultValue: f.name + ' (cópia)',
+      confirmLabel: 'Duplicar',
+    })
     if (!name?.trim()) return
     const c: FolderConfig = typeof f.config === 'string' ? JSON.parse(f.config) : { ...f.config }
     await supabase.from('ai_folders').insert({ name: name.trim(), config: { ...c, folderName: name.trim() } })
@@ -222,7 +280,13 @@ export function FoldersManager() {
   }
 
   const deleteFolder = async (id: string) => {
-    if (!confirm('Excluir pasta?')) return
+    const ok = await askConfirm({
+      title: 'Excluir pasta',
+      message: 'Esta ação não pode ser desfeita. Deseja continuar?',
+      confirmLabel: 'Excluir',
+      danger: true,
+    })
+    if (!ok) return
     await supabase.from('ai_folders').delete().eq('id', id)
     if (editingFolder?.id === id) setEditingFolder(null)
     loadFolders()
@@ -269,8 +333,14 @@ export function FoldersManager() {
 
   const handleTypeModalCancel = () => setTypeModalOpen(false)
 
-  const removeCategory = (catId: string) => {
-    if (!confirm('Remover categoria?')) return
+  const removeCategory = async (catId: string) => {
+    const ok = await askConfirm({
+      title: 'Remover categoria',
+      message: 'Os prompts desta categoria também serão removidos. Deseja continuar?',
+      confirmLabel: 'Remover',
+      danger: true,
+    })
+    if (!ok) return
     setConfig(prev => ({ ...prev, categories: prev.categories.filter(c => c.id !== catId) }))
     if (activeCat === catId) { setActiveCat(null); setActivePrompt(null) }
   }
@@ -290,29 +360,79 @@ export function FoldersManager() {
 
   // ── Prompt CRUD ────────────────────────────────────────────
 
-  const addPrompt = (catId: string) => {
-    const name = window.prompt('Nome do prompt (ex: Loiro Bege):')
-    if (!name) return
+  const addPrompt = async (catId: string) => {
+    const name = await askInput({
+      title: 'Novo prompt',
+      message: 'Informe um nome para o novo prompt',
+      placeholder: 'Ex: Loiro Bege',
+      confirmLabel: 'Criar',
+    })
+    if (!name?.trim()) return
     const cat = config.categories.find(c => c.id === catId)
     if (!cat) return
     const p = newPrompt(cat.prompts.length)
-    p.name = name
+    p.name = name.trim()
     updateCat(catId, { prompts: [...cat.prompts, p] })
+    // ao criar já entra em modo edição e com snapshot
+    setPromptSnapshots(prev => ({ ...prev, [p.id]: JSON.parse(JSON.stringify(p)) }))
     setActivePrompt(p.id)
   }
 
-  const removePrompt = (catId: string, pId: string) => {
-    if (!confirm('Remover?')) return
+  const removePrompt = async (catId: string, pId: string) => {
+    const ok = await askConfirm({
+      title: 'Remover prompt',
+      message: 'Este prompt será excluído. Deseja continuar?',
+      confirmLabel: 'Remover',
+      danger: true,
+    })
+    if (!ok) return
     const cat = config.categories.find(c => c.id === catId)
     if (!cat) return
     updateCat(catId, { prompts: cat.prompts.filter(p => p.id !== pId) })
     if (activePrompt === pId) setActivePrompt(null)
+    setPromptSnapshots(prev => { const n = { ...prev }; delete n[pId]; return n })
   }
 
   const updatePrompt = (catId: string, pId: string, u: Partial<Prompt>) => {
     const cat = config.categories.find(c => c.id === catId)
     if (!cat) return
     updateCat(catId, { prompts: cat.prompts.map(p => p.id === pId ? { ...p, ...u } : p) })
+  }
+
+  /** Substitui um prompt inteiro (usado ao cancelar edição e restaurar snapshot) */
+  const replacePrompt = (catId: string, pId: string, newPrompt: Prompt) => {
+    setConfig(prev => ({
+      ...prev,
+      categories: prev.categories.map(c =>
+        c.id === catId
+          ? { ...c, prompts: c.prompts.map(p => p.id === pId ? newPrompt : p) }
+          : c
+      ),
+    }))
+  }
+
+  /** Abre um prompt para edição — guarda snapshot para permitir cancelamento */
+  const openPromptForEdit = (catId: string, pId: string) => {
+    const cat = config.categories.find(c => c.id === catId)
+    const prompt = cat?.prompts.find(p => p.id === pId)
+    if (prompt && !promptSnapshots[pId]) {
+      setPromptSnapshots(prev => ({ ...prev, [pId]: JSON.parse(JSON.stringify(prompt)) }))
+    }
+    setActivePrompt(pId)
+  }
+
+  /** Confirma as alterações do prompt atual (fecha e remove snapshot) */
+  const confirmPromptChanges = (pId: string) => {
+    setPromptSnapshots(prev => { const n = { ...prev }; delete n[pId]; return n })
+    setActivePrompt(null)
+  }
+
+  /** Descarta as alterações feitas no prompt — restaura o snapshot guardado ao abrir */
+  const cancelPromptChanges = (catId: string, pId: string) => {
+    const snap = promptSnapshots[pId]
+    if (snap) replacePrompt(catId, pId, snap)
+    setPromptSnapshots(prev => { const n = { ...prev }; delete n[pId]; return n })
+    setActivePrompt(null)
   }
 
   // ── Layout Format Copy ─────────────────────────────────────
@@ -515,6 +635,112 @@ export function FoldersManager() {
     setLoadingGlobal(false)
   }
 
+  // ── Aba global: CRUD de comprimentos/texturas (ai_sub_options) ──
+
+  /** Abre o modal para criar um novo item global */
+  const openCreateGlobal = (kind: 'length' | 'texture') => {
+    setGlobalEdit({ kind, dbId: null, name: '', instruction: '', thumbnail: null, images: [] })
+  }
+
+  /** Abre o modal para editar um item global existente */
+  const openEditGlobal = (item: GlobalSubOpt) => {
+    setGlobalEdit({
+      kind: item.kind, dbId: item.dbId ?? null,
+      name: item.name, instruction: item.instruction,
+      thumbnail: item.thumbnail, images: [...item.images],
+    })
+  }
+
+  /** Salva (insert ou update) o item global e recarrega a lista */
+  const saveGlobalEdit = async () => {
+    if (!globalEdit || !globalEdit.name.trim()) return
+    setSavingGlobal(true)
+    try {
+      const payload = {
+        kind: globalEdit.kind,
+        name: globalEdit.name.trim(),
+        instruction: globalEdit.instruction,
+        thumbnail: globalEdit.thumbnail,
+        images: globalEdit.images,
+      }
+      if (globalEdit.dbId) {
+        const { error } = await supabase.from('ai_sub_options').update(payload).eq('id', globalEdit.dbId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from('ai_sub_options').insert(payload)
+        if (error) throw error
+      }
+      setGlobalEdit(null)
+      await loadGlobalSubOpts()
+    } catch (e: any) {
+      alert('Erro ao salvar: ' + e.message)
+    } finally {
+      setSavingGlobal(false)
+    }
+  }
+
+  /** Exclui um item global — avisa que pode afetar prompts vinculados */
+  const deleteGlobalItem = async (item: GlobalSubOpt) => {
+    const label = item.kind === 'length' ? 'comprimento' : 'textura'
+    const ok = await askConfirm({
+      title: `Excluir ${label}`,
+      message: `"${item.name}" será removido do banco. Prompts que já usam este ${label} manterão uma cópia local, mas o item não estará mais disponível para vincular em novos prompts.`,
+      confirmLabel: 'Excluir',
+      danger: true,
+    })
+    if (!ok || !item.dbId) return
+    try {
+      const { error } = await supabase.from('ai_sub_options').delete().eq('id', item.dbId)
+      if (error) throw error
+      await loadGlobalSubOpts()
+    } catch (e: any) {
+      alert('Erro ao excluir: ' + e.message)
+    }
+  }
+
+  /** Upload de thumbnail dentro do modal global */
+  const handleGlobalThumbUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file || !globalEdit) return; e.target.value = ''
+    try {
+      const { storagePath, url } = await uploadFile(file, `global_${globalEdit.kind}_thumb`)
+      setGlobalEdit(prev => prev ? { ...prev, thumbnail: { storagePath, url, label: 'thumbnail' } } : prev)
+    } catch (e: any) { alert('Erro: ' + e.message) }
+  }
+
+  /** Upload de imagem de referência dentro do modal global */
+  const handleGlobalImgUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file || !globalEdit) return; e.target.value = ''
+    const defaultLabel = file.name.replace(/\.[^.]+$/, '')
+    const label = await askInput({
+      title: 'Descrição da imagem',
+      message: 'Este texto ajuda a IA a entender o conteúdo da imagem',
+      defaultValue: defaultLabel,
+      confirmLabel: 'Adicionar',
+    }) || defaultLabel
+    try {
+      const { storagePath, url } = await uploadFile(file, `global_${globalEdit.kind}_ref`)
+      setGlobalEdit(prev => prev ? { ...prev, images: [...prev.images, { storagePath, url, label }] } : prev)
+    } catch (e: any) { alert('Erro: ' + e.message) }
+  }
+
+  /** Remove a thumbnail do item global em edição */
+  const removeGlobalThumb = () => {
+    setGlobalEdit(prev => prev ? { ...prev, thumbnail: null } : prev)
+  }
+
+  /** Remove uma imagem de referência do item global em edição */
+  const removeGlobalImg = (idx: number) => {
+    setGlobalEdit(prev => prev ? { ...prev, images: prev.images.filter((_, i) => i !== idx) } : prev)
+  }
+
+  // Carrega a lista global quando o usuário entra nas abas de comprimentos/texturas
+  useEffect(() => {
+    if (!editingFolder && (activeTab === 'comprimentos' || activeTab === 'texturas')) {
+      loadGlobalSubOpts()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, editingFolder])
+
   const openSubPicker = (catId: string, pId: string, field: 'lengths' | 'textures') => {
     loadGlobalSubOpts()
     setPickerSelected(new Set())
@@ -578,7 +804,14 @@ export function FoldersManager() {
 
   const handleSubImgUpload = async (catId: string, pId: string, field: 'lengths' | 'textures', subId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return; e.target.value = ''
-    const label = window.prompt('Descrição:', file.name.replace(/\.[^.]+$/, '')) || file.name
+    const defaultLabel = file.name.replace(/\.[^.]+$/, '')
+    const label = await askInput({
+      title: 'Descrição da imagem',
+      message: 'Este texto ajuda a IA a entender o conteúdo da imagem',
+      defaultValue: defaultLabel,
+      placeholder: 'Ex: Referência de cor',
+      confirmLabel: 'Adicionar',
+    }) || defaultLabel
     setUploadingSubImg(true)
     try {
       const { storagePath, url } = await uploadFile(file, `sub_ref_${field}`)
@@ -665,7 +898,14 @@ export function FoldersManager() {
 
   const handleImgUpload = async (catId: string, pId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return; e.target.value = ''
-    const label = window.prompt('Descrição:', file.name.replace(/\.[^.]+$/, '')) || file.name
+    const defaultLabel = file.name.replace(/\.[^.]+$/, '')
+    const label = await askInput({
+      title: 'Descrição da imagem',
+      message: 'Este texto ajuda a IA a entender o conteúdo da imagem',
+      defaultValue: defaultLabel,
+      placeholder: 'Ex: Inspiração de corte',
+      confirmLabel: 'Adicionar',
+    }) || defaultLabel
     setUploadingImg(true)
     try {
       const { storagePath, url } = await uploadFile(file, 'ref')
@@ -897,57 +1137,170 @@ export function FoldersManager() {
 
   if (loading) return <div className="flex items-center justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-violet-400 border-t-transparent rounded-full" /></div>
 
-  // ── Folder list ────────────────────────────────────────────
-
-  if (!editingFolder) return (
-    <div className="space-y-4 sm:space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900">Pastas de Prompts IA</h2>
-          <p className="text-sm text-gray-500">Crie pastas globais com prompts, Drive e fotos por categoria</p>
-        </div>
-        <button onClick={createFolder} className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700">
-          <Plus className="h-4 w-4" /> Nova Pasta
-        </button>
-      </div>
-
-      {folders.length === 0 ? (
-        <div className="bg-gray-50 rounded-xl p-8 text-center">
-          <FolderOpen className="h-12 w-12 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500 text-sm">Nenhuma pasta criada</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {folders.map(f => {
-            const c = (typeof f.config === 'string' ? JSON.parse(f.config) : f.config) as FolderConfig
-            return (
-              <div key={f.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4">
-                <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                  <FolderOpen className="h-5 w-5 text-violet-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-gray-900">{f.name}</p>
-                  <div className="flex items-center gap-3 mt-0.5">
-                    <p className="text-xs text-gray-400">{c.categories?.length || 0} categorias · {c.categories?.reduce((s, cat) => s + (cat.prompts?.length || 0), 0) || 0} prompts</p>
-                    {c.driveLink && (
-                      <a href={c.driveLink} target="_blank" rel="noopener noreferrer"
-                        onClick={e => e.stopPropagation()}
-                        className="text-xs text-violet-500 flex items-center gap-1 hover:underline">
-                        <Link2 className="h-3 w-3" /> Drive
-                      </a>
-                    )}
-                  </div>
-                </div>
-                <button onClick={() => openFolder(f)} className="text-xs px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg">Editar</button>
-                <button onClick={() => duplicateFolder(f)} className="text-gray-300 hover:text-violet-500"><Copy className="h-4 w-4" /></button>
-                <button onClick={() => deleteFolder(f.id)} className="text-gray-300 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
-              </div>
-            )
-          })}
-        </div>
+  // Modais globais — renderizados em ambas as telas (lista de pastas e editor)
+  const modals = (
+    <>
+      {inputModal && (
+        <InputModal
+          title={inputModal.title}
+          message={inputModal.message}
+          placeholder={inputModal.placeholder}
+          defaultValue={inputModal.defaultValue}
+          confirmLabel={inputModal.confirmLabel}
+          onSubmit={v => { inputModal.resolve(v); setInputModal(null) }}
+          onCancel={() => { inputModal.resolve(null); setInputModal(null) }}
+        />
       )}
-    </div>
+      {confirmModal && (
+        <ConfirmModal
+          title={confirmModal.title}
+          message={confirmModal.message}
+          confirmLabel={confirmModal.confirmLabel}
+          cancelLabel={confirmModal.cancelLabel}
+          danger={confirmModal.danger}
+          onConfirm={() => { confirmModal.resolve(true); setConfirmModal(null) }}
+          onCancel={() => { confirmModal.resolve(false); setConfirmModal(null) }}
+        />
+      )}
+    </>
   )
+
+  // ── Tela inicial com abas (Pastas / Comprimentos / Texturas) ──
+
+  if (!editingFolder) {
+    const lengths = globalSubOpts.filter(o => o.kind === 'length')
+    const textures = globalSubOpts.filter(o => o.kind === 'texture')
+
+    const tabConfig: Array<{ id: TopTab; label: string; icon: string; count: number }> = [
+      { id: 'pastas', label: 'Pastas', icon: '📁', count: folders.length },
+      { id: 'comprimentos', label: 'Comprimentos', icon: '✂️', count: lengths.length },
+      { id: 'texturas', label: 'Texturas', icon: '🌀', count: textures.length },
+    ]
+
+    return (
+      <>
+        <div className="space-y-4 sm:space-y-6">
+          {/* Abas de navegação */}
+          <div className="border-b border-gray-200">
+            <div className="flex gap-1 overflow-x-auto -mb-px">
+              {tabConfig.map(tab => {
+                const active = activeTab === tab.id
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                      active
+                        ? 'border-violet-600 text-violet-700'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }`}
+                  >
+                    <span>{tab.icon}</span>
+                    <span>{tab.label}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                      active ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'
+                    }`}>
+                      {tab.count}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Conteúdo das abas */}
+          {activeTab === 'pastas' && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Pastas de Prompts IA</h2>
+                  <p className="text-sm text-gray-500">Crie pastas globais com prompts, Drive e fotos por categoria</p>
+                </div>
+                <button onClick={createFolder} className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700">
+                  <Plus className="h-4 w-4" /> Nova Pasta
+                </button>
+              </div>
+
+              {folders.length === 0 ? (
+                <div className="bg-gray-50 rounded-xl p-8 text-center">
+                  <FolderOpen className="h-12 w-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500 text-sm">Nenhuma pasta criada</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {folders.map(f => {
+                    const c = (typeof f.config === 'string' ? JSON.parse(f.config) : f.config) as FolderConfig
+                    return (
+                      <div key={f.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4">
+                        <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                          <FolderOpen className="h-5 w-5 text-violet-600" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-gray-900">{f.name}</p>
+                          <div className="flex items-center gap-3 mt-0.5">
+                            <p className="text-xs text-gray-400">{c.categories?.length || 0} categorias · {c.categories?.reduce((s, cat) => s + (cat.prompts?.length || 0), 0) || 0} prompts</p>
+                            {c.driveLink && (
+                              <a href={c.driveLink} target="_blank" rel="noopener noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="text-xs text-violet-500 flex items-center gap-1 hover:underline">
+                                <Link2 className="h-3 w-3" /> Drive
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                        <button onClick={() => openFolder(f)} className="text-xs px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg">Editar</button>
+                        <button onClick={() => duplicateFolder(f)} className="text-gray-300 hover:text-violet-500"><Copy className="h-4 w-4" /></button>
+                        <button onClick={() => deleteFolder(f.id)} className="text-gray-300 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === 'comprimentos' && (
+            <SubOptionsTabView
+              kind="length"
+              items={lengths}
+              loading={loadingGlobal}
+              onCreate={() => openCreateGlobal('length')}
+              onEdit={openEditGlobal}
+              onDelete={deleteGlobalItem}
+            />
+          )}
+
+          {activeTab === 'texturas' && (
+            <SubOptionsTabView
+              kind="texture"
+              items={textures}
+              loading={loadingGlobal}
+              onCreate={() => openCreateGlobal('texture')}
+              onEdit={openEditGlobal}
+              onDelete={deleteGlobalItem}
+            />
+          )}
+        </div>
+
+        {/* Modal de edição/criação de item global */}
+        {globalEdit && (
+          <GlobalSubOptEditModal
+            state={globalEdit}
+            saving={savingGlobal}
+            onChange={setGlobalEdit}
+            onSave={saveGlobalEdit}
+            onCancel={() => setGlobalEdit(null)}
+            onThumbUpload={handleGlobalThumbUpload}
+            onImgUpload={handleGlobalImgUpload}
+            onThumbRemove={removeGlobalThumb}
+            onImgRemove={removeGlobalImg}
+          />
+        )}
+
+        {modals}
+      </>
+    )
+  }
 
   // ── Folder editor ──────────────────────────────────────────
 
@@ -1015,39 +1368,47 @@ export function FoldersManager() {
 
           return (
             <div key={cat.id} className="border border-gray-200 rounded-xl overflow-hidden">
-              <div className={`px-4 py-3 flex items-center gap-3 cursor-pointer ${isOpen ? 'bg-violet-50' : 'bg-white hover:bg-gray-50'}`}
+              <div className={`px-3 sm:px-4 py-3 cursor-pointer ${isOpen ? 'bg-violet-50' : 'bg-white hover:bg-gray-50'}`}
                 onClick={() => { setActiveCat(isOpen ? null : cat.id); setActivePrompt(null) }}>
-                <Icon className="h-4 w-4 text-violet-500" />
-                <span className="font-medium text-sm text-gray-800 flex-1">{cat.name}</span>
-                {catType ? (
-                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ backgroundColor: catType.color + '20', color: catType.color }}>
-                    {catType.icon} {catType.name}
-                  </span>
-                ) : (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">sem tipo</span>
+                {/* Linha 1: ícone + nome + contador + ações */}
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <Icon className="h-4 w-4 text-violet-500 flex-shrink-0" />
+                  <span className="font-medium text-sm text-gray-800 flex-1 truncate min-w-0">{cat.name}</span>
+                  <span className="text-xs text-gray-400 flex-shrink-0">{cat.prompts.length}</span>
+                  <button onClick={e => { e.stopPropagation(); removeCategory(cat.id) }} className="text-gray-300 hover:text-red-500 flex-shrink-0"><Trash2 className="h-3.5 w-3.5" /></button>
+                  {isOpen ? <ChevronUp className="h-4 w-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />}
+                </div>
+                {/* Linha 2: badges (quebram se necessário, ficam abaixo em mobile) */}
+                {(catType || refType) && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2 pl-6">
+                    {catType ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ backgroundColor: catType.color + '20', color: catType.color }}>
+                        {catType.icon} {catType.name}
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">sem tipo</span>
+                    )}
+                    {refType && (
+                      <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full flex items-center gap-1">
+                        <Camera className="h-3 w-3" />
+                        {refType.icon} {refType.name}
+                      </span>
+                    )}
+                  </div>
                 )}
-                {refType && (
-                  <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full flex items-center gap-1">
-                    <Camera className="h-3 w-3" />
-                    {refType.icon} {refType.name}
-                  </span>
-                )}
-                <span className="text-xs text-gray-400">{cat.prompts.length}</span>
-                <button onClick={e => { e.stopPropagation(); removeCategory(cat.id) }} className="text-gray-300 hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
-                {isOpen ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
               </div>
 
               {isOpen && (
-                <div className="px-4 py-3 border-t border-gray-100 space-y-3">
+                <div className="px-3 sm:px-4 py-3 border-t border-gray-100 space-y-3">
                   {/* Nome */}
                   <div>
                     <label className="text-xs text-gray-500">Nome</label>
                     <input value={cat.name} onChange={e => updateCat(cat.id, { name: e.target.value })} className={`${inp} text-sm`} />
                   </div>
 
-                  {/* Tipo + Foto da cliente */}
-                  <div className="flex gap-3 flex-wrap">
-                    <div className="flex-1 min-w-[140px]">
+                  {/* Tipo + Foto da cliente — grid responsivo (empilha em mobile) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
                       <label className="text-xs text-gray-500 font-medium">Tipo</label>
                       <select
                         value={cat.type || ''}
@@ -1059,7 +1420,7 @@ export function FoldersManager() {
                         ))}
                       </select>
                     </div>
-                    <div className="flex-1 min-w-[140px]">
+                    <div>
                       <label className="text-xs text-gray-500 font-medium flex items-center gap-1">
                         <Camera className="h-3 w-3" /> Foto da cliente (IA)
                       </label>
@@ -1085,15 +1446,25 @@ export function FoldersManager() {
                   {/* Prompts */}
                   {cat.prompts.map(prompt => (
                     <div key={prompt.id} className={`border rounded-lg overflow-hidden ${activePrompt === prompt.id ? 'border-violet-300 bg-violet-50/50' : 'border-gray-200'}`}>
-                      <div className="px-3 py-2 flex items-center gap-2 cursor-pointer" onClick={() => setActivePrompt(activePrompt === prompt.id ? null : prompt.id)}>
+                      <div
+                        className="px-3 py-2 flex items-center gap-2 cursor-pointer"
+                        onClick={() => {
+                          if (activePrompt === prompt.id) {
+                            // clicar no header quando aberto = salvar alterações e fechar
+                            confirmPromptChanges(prompt.id)
+                          } else {
+                            openPromptForEdit(cat.id, prompt.id)
+                          }
+                        }}
+                      >
                         {prompt.thumbnail ? (
                           <img src={prompt.thumbnail.url} alt="" className="w-8 h-8 rounded object-cover flex-shrink-0 border" />
                         ) : (
                           <div className="w-8 h-8 rounded bg-gray-100 flex items-center justify-center flex-shrink-0"><Image className="h-4 w-4 text-gray-300" /></div>
                         )}
-                        <span className="text-sm text-gray-800 font-medium flex-1">{prompt.name}</span>
-                        <button onClick={e => { e.stopPropagation(); removePrompt(cat.id, prompt.id) }} className="text-gray-300 hover:text-red-500"><Trash2 className="h-3 w-3" /></button>
-                        {activePrompt === prompt.id ? <ChevronUp className="h-3.5 w-3.5 text-gray-400" /> : <ChevronDown className="h-3.5 w-3.5 text-gray-400" />}
+                        <span className="text-sm text-gray-800 font-medium flex-1 truncate min-w-0">{prompt.name || '(sem nome)'}</span>
+                        <button onClick={e => { e.stopPropagation(); removePrompt(cat.id, prompt.id) }} className="text-gray-300 hover:text-red-500 flex-shrink-0"><Trash2 className="h-3 w-3" /></button>
+                        {activePrompt === prompt.id ? <ChevronUp className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />}
                       </div>
 
                       {activePrompt === prompt.id && (
@@ -1310,6 +1681,22 @@ export function FoldersManager() {
                               )}
                             </div>
                           )}
+
+                          {/* Footer: Salvar / Cancelar */}
+                          <div className="flex gap-2 pt-3 mt-2 border-t border-gray-200">
+                            <button
+                              onClick={() => cancelPromptChanges(cat.id, prompt.id)}
+                              className="flex-1 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              onClick={() => confirmPromptChanges(prompt.id)}
+                              className="flex-1 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 flex items-center justify-center gap-1.5 transition-colors"
+                            >
+                              <Save className="h-3.5 w-3.5" /> Salvar
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1553,6 +1940,9 @@ export function FoldersManager() {
           />
         )
       })()}
+
+      {/* ── Input Modal + Confirm Modal (compartilhados com a tela de lista) ── */}
+      {modals}
     </div>
   )
 }
@@ -1879,6 +2269,441 @@ function CopyFormatModal({ srcPrompt, allTargets, onApply, onClose }: CopyFormat
             </button>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+// ─── InputModal ───────────────────────────────────────────────────────────────
+// Substitui o window.prompt nativo por um modal estilizado e responsivo.
+
+interface InputModalProps {
+  title: string
+  message?: string
+  placeholder?: string
+  defaultValue?: string
+  confirmLabel?: string
+  onSubmit: (value: string) => void
+  onCancel: () => void
+}
+
+function InputModal({
+  title, message, placeholder, defaultValue = '',
+  confirmLabel = 'Confirmar', onSubmit, onCancel,
+}: InputModalProps) {
+  const [value, setValue] = useState(defaultValue)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const t = setTimeout(() => { inputRef.current?.focus(); inputRef.current?.select() }, 50)
+    return () => clearTimeout(t)
+  }, [])
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault()
+    if (!value.trim()) return
+    onSubmit(value.trim())
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] bg-black/60 flex items-end sm:items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-2xl w-full max-w-sm shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <form onSubmit={handleSubmit}>
+          <div className="px-5 py-4 border-b border-gray-100">
+            <p className="font-semibold text-gray-900">{title}</p>
+            {message && <p className="text-xs text-gray-500 mt-1">{message}</p>}
+          </div>
+          <div className="px-5 py-4">
+            <input
+              ref={inputRef}
+              value={value}
+              onChange={e => setValue(e.target.value)}
+              placeholder={placeholder}
+              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              onKeyDown={e => { if (e.key === 'Escape') onCancel() }}
+            />
+          </div>
+          <div className="px-5 py-3 border-t border-gray-100 flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={!value.trim()}
+              className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50"
+            >
+              {confirmLabel}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ─── ConfirmModal ─────────────────────────────────────────────────────────────
+// Substitui o window.confirm nativo. Aceita variante "danger" para ações destrutivas.
+
+interface ConfirmModalProps {
+  title: string
+  message?: string
+  confirmLabel?: string
+  cancelLabel?: string
+  danger?: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function ConfirmModal({
+  title, message, confirmLabel = 'Confirmar', cancelLabel = 'Cancelar',
+  danger, onConfirm, onCancel,
+}: ConfirmModalProps) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] bg-black/60 flex items-end sm:items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-2xl w-full max-w-sm shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-gray-100">
+          <p className="font-semibold text-gray-900 flex items-center gap-2">
+            {danger && <AlertCircle className="h-4 w-4 text-red-500" />}
+            {title}
+          </p>
+          {message && <p className="text-sm text-gray-500 mt-1">{message}</p>}
+        </div>
+        <div className="px-5 py-3 flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${
+              danger ? 'bg-red-600 hover:bg-red-700' : 'bg-violet-600 hover:bg-violet-700'
+            }`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── SubOptionsTabView ────────────────────────────────────────────────────────
+// Lista comprimentos ou texturas cadastrados globalmente em ai_sub_options.
+// Permite criar novo, editar e excluir. Usado nas abas "Comprimentos" e "Texturas".
+
+interface SubOptionsTabViewProps {
+  kind: 'length' | 'texture'
+  items: Array<SubOption & { kind: 'length' | 'texture' }>
+  loading: boolean
+  onCreate: () => void
+  onEdit: (item: SubOption & { kind: 'length' | 'texture' }) => void
+  onDelete: (item: SubOption & { kind: 'length' | 'texture' }) => void
+}
+
+function SubOptionsTabView({ kind, items, loading, onCreate, onEdit, onDelete }: SubOptionsTabViewProps) {
+  const label = kind === 'length' ? 'Comprimento' : 'Textura'
+  const labelLower = kind === 'length' ? 'comprimento' : 'textura'
+  const labelPlural = kind === 'length' ? 'comprimentos' : 'texturas'
+  const icon = kind === 'length' ? '✂️' : '🌀'
+  const [search, setSearch] = useState('')
+
+  const filtered = search.trim()
+    ? items.filter(i =>
+        i.name.toLowerCase().includes(search.toLowerCase()) ||
+        (i.instruction || '').toLowerCase().includes(search.toLowerCase())
+      )
+    : items
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <span>{icon}</span> {labelPlural.charAt(0).toUpperCase() + labelPlural.slice(1)}
+          </h2>
+          <p className="text-sm text-gray-500">
+            {labelPlural.charAt(0).toUpperCase() + labelPlural.slice(1)} compartilhados entre todas as pastas
+          </p>
+        </div>
+        <button
+          onClick={onCreate}
+          className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700"
+        >
+          <Plus className="h-4 w-4" /> Novo {label}
+        </button>
+      </div>
+
+      {/* Busca */}
+      {items.length > 0 && (
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder={`Buscar ${labelLower}...`}
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-300"
+        />
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-10">
+          <div className="animate-spin h-6 w-6 border-2 border-violet-400 border-t-transparent rounded-full" />
+        </div>
+      ) : items.length === 0 ? (
+        <div className="bg-gray-50 rounded-xl p-8 text-center">
+          <div className="text-4xl mb-2">{icon}</div>
+          <p className="text-gray-500 text-sm">Nenhum {labelLower} cadastrado</p>
+          <p className="text-gray-400 text-xs mt-1">Crie o primeiro clicando em "Novo {label}"</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-6">Nenhum resultado para "{search}"</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtered.map(item => (
+            <div
+              key={item.dbId}
+              className="bg-white border border-gray-200 rounded-xl p-3 flex gap-3 hover:border-violet-300 transition-colors"
+            >
+              {item.thumbnail ? (
+                <img
+                  src={item.thumbnail.url}
+                  alt=""
+                  className="w-16 h-16 rounded-lg object-cover border flex-shrink-0"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                  <Image className="h-5 w-5 text-gray-300" />
+                </div>
+              )}
+              <div className="flex-1 min-w-0 flex flex-col">
+                <div className="flex items-start gap-1.5">
+                  <p className="font-medium text-sm text-gray-900 truncate flex-1">{item.name}</p>
+                </div>
+                {item.instruction && (
+                  <p className="text-xs text-gray-500 line-clamp-2 mt-0.5">{item.instruction}</p>
+                )}
+                <div className="flex items-center gap-2 mt-auto pt-1.5">
+                  {item.images.length > 0 && (
+                    <span className="text-[10px] text-gray-400 flex items-center gap-0.5">
+                      <Image className="h-3 w-3" /> {item.images.length}
+                    </span>
+                  )}
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => onEdit(item)}
+                    className="text-xs px-2.5 py-1 bg-violet-100 text-violet-700 rounded-lg hover:bg-violet-200"
+                  >
+                    Editar
+                  </button>
+                  <button
+                    onClick={() => onDelete(item)}
+                    className="text-gray-300 hover:text-red-500"
+                    title="Excluir"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ─── GlobalSubOptEditModal ────────────────────────────────────────────────────
+// Modal para criar ou editar um comprimento/textura no banco global (ai_sub_options).
+
+interface GlobalEditStateShape {
+  kind: 'length' | 'texture'
+  dbId: string | null
+  name: string
+  instruction: string
+  thumbnail: PromptImage | null
+  images: PromptImage[]
+}
+
+interface GlobalSubOptEditModalProps {
+  state: GlobalEditStateShape
+  saving: boolean
+  onChange: (next: GlobalEditStateShape) => void
+  onSave: () => void
+  onCancel: () => void
+  onThumbUpload: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onImgUpload: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onThumbRemove: () => void
+  onImgRemove: (idx: number) => void
+}
+
+function GlobalSubOptEditModal({
+  state, saving, onChange, onSave, onCancel,
+  onThumbUpload, onImgUpload, onThumbRemove, onImgRemove,
+}: GlobalSubOptEditModalProps) {
+  const label = state.kind === 'length' ? 'Comprimento' : 'Textura'
+  const labelLower = state.kind === 'length' ? 'comprimento' : 'textura'
+  const icon = state.kind === 'length' ? '✂️' : '🌀'
+  const isEdit = state.dbId !== null
+  const inp = "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+
+  return (
+    <div
+      className="fixed inset-0 z-[55] bg-black/60 flex items-end sm:items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <p className="font-semibold text-gray-900 flex items-center gap-2">
+              <span>{icon}</span>
+              {isEdit ? `Editar ${labelLower}` : `Novo ${labelLower}`}
+            </p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {isEdit
+                ? `Alterações afetam todos os prompts que usam este ${labelLower}`
+                : `Ficará disponível para vincular em qualquer prompt de cabelo`}
+            </p>
+          </div>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {/* Nome */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Nome (aparece para a cliente)
+            </label>
+            <input
+              value={state.name}
+              onChange={e => onChange({ ...state, name: e.target.value })}
+              placeholder={state.kind === 'length' ? 'Ex: Longo' : 'Ex: Cacheado'}
+              className={inp}
+              autoFocus
+            />
+          </div>
+
+          {/* Thumbnail */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              📸 Imagem de capa (aparece no chat)
+            </label>
+            {state.thumbnail ? (
+              <div className="flex items-center gap-3">
+                <img
+                  src={state.thumbnail.url}
+                  alt=""
+                  className="w-16 h-16 rounded-lg object-cover border"
+                />
+                <div className="flex gap-2">
+                  <label className="text-xs px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg cursor-pointer hover:bg-violet-200">
+                    <input type="file" accept="image/*" className="hidden" onChange={onThumbUpload} />
+                    Trocar
+                  </label>
+                  <button
+                    onClick={onThumbRemove}
+                    className="text-xs px-3 py-1.5 bg-red-100 text-red-600 rounded-lg hover:bg-red-200"
+                  >
+                    Remover
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <label className="block border border-dashed border-violet-300 rounded-lg py-3 text-center cursor-pointer hover:bg-violet-50 text-xs text-violet-600">
+                <input type="file" accept="image/*" className="hidden" onChange={onThumbUpload} />
+                + Adicionar imagem de capa
+              </label>
+            )}
+          </div>
+
+          {/* Instruction */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Instruções para a IA
+            </label>
+            <textarea
+              value={state.instruction}
+              onChange={e => onChange({ ...state, instruction: e.target.value })}
+              rows={3}
+              placeholder={state.kind === 'length' ? 'Ex: Cabelo longo até o ombro' : 'Ex: Cacheado crespo volumoso'}
+              className={`${inp} resize-y`}
+            />
+          </div>
+
+          {/* Imagens de referência */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Imagens de referência (enviadas à IA)
+            </label>
+            {state.images.length > 0 && (
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-2">
+                {state.images.map((img, idx) => (
+                  <div key={idx} className="relative group">
+                    <img
+                      src={img.url}
+                      alt=""
+                      className="w-full aspect-square object-cover rounded-lg border"
+                    />
+                    <button
+                      onClick={() => onImgRemove(idx)}
+                      className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <label className="block border border-dashed border-gray-300 rounded-lg py-2 text-center cursor-pointer hover:bg-gray-50 text-xs text-gray-500">
+              <input type="file" accept="image/*" className="hidden" onChange={onImgUpload} />
+              + Imagem de referência
+            </label>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-gray-100 flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onSave}
+            disabled={saving || !state.name.trim()}
+            className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center gap-2"
+          >
+            {saving && <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full" />}
+            <Save className="h-3.5 w-3.5" />
+            {saving ? 'Salvando...' : (isEdit ? 'Salvar alterações' : `Criar ${labelLower}`)}
+          </button>
+        </div>
       </div>
     </div>
   )
