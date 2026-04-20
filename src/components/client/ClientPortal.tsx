@@ -102,7 +102,7 @@ export function ClientPortal() {
           <ContractStep token={token!} data={data} onDone={reload} />
         )}
         {data.client.status === 'awaiting_form' && (
-          <FormStep token={token!} data={data} onDone={reload} />
+          <FormAndPhotoFlow token={token!} data={data} onDone={reload} />
         )}
         {data.client.status === 'awaiting_photos' && (
           <PhotoStep token={token!} data={data} onDone={reload} />
@@ -179,313 +179,408 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
             if (el.scrollHeight - el.scrollTop - el.clientHeight < 50) setRead(true)
           }}
         >
-          {contract ? (
-            <>
-              <h3 className="font-bold text-center text-gray-900">{contract.title}</h3>
-              {contract.sections.sort((a: any, b: any) => a.order - b.order).map((s: any) => (
-                <div key={s.id}>
-                  <h4 className="font-semibold text-gray-800 mb-1">{s.title}</h4>
-                  <p className="whitespace-pre-wrap leading-relaxed">{s.content}</p>
-                </div>
-              ))}
-            </>
-          ) : (
-            <p className="text-gray-400 text-center py-8">Contrato não configurado pelo administrador.</p>
+          <h3 className="font-bold text-base text-gray-800">{contract?.title || 'Contrato'}</h3>
+          {contract?.sections?.length === 0 && (
+            <p className="text-gray-400 text-center py-8">Nenhuma cláusula configurada</p>
           )}
-          <div className="h-4" />
+          {contract?.sections?.map(s => (
+            <div key={s.id}>
+              <h4 className="font-semibold text-gray-800 mb-1.5">{s.title}</h4>
+              <p className="whitespace-pre-wrap">{s.content}</p>
+            </div>
+          ))}
         </div>
 
-        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-4">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={agreed}
-              onChange={e => setAgreed(e.target.checked)}
-              className="mt-0.5 h-4 w-4 text-rose-500 rounded focus:ring-rose-400"
-            />
-            <span className="text-sm text-gray-700">Li e concordo com todos os termos do contrato</span>
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-3">
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} disabled={!read} className="mt-0.5 w-4 h-4 accent-rose-500" />
+            <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>
           </label>
-
-          {!read && (
-            <p className="text-xs text-amber-600 flex items-center gap-1">
-              <AlertCircle className="h-3.5 w-3.5" /> Role o contrato até o final para continuar
-            </p>
-          )}
-
-          <Btn
-            onClick={handleSign}
-            disabled={!agreed || !read}
-            loading={signing}
-            className="w-full justify-center"
-          >
+          <Btn onClick={handleSign} disabled={!agreed} loading={signing} className="w-full">
             <Check className="h-4 w-4" /> Assinar Contrato
           </Btn>
+          {!read && <p className="text-xs text-gray-400 text-center">Role até o final do contrato para continuar</p>}
         </div>
       </div>
     </div>
   )
 }
 
-// ── Step 2: Form ─────────────────────────────────────────────────────────────
+// ── NOVO: Fluxo combinado Form + Photos quando ambos são rejeitados ─────────
+
+function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const hasFormRejection   = !!data.client.form_rejection_reason
+  const hasPhotosRejection = !!data.client.photos_rejection_reason
+  const hasExistingPhotos  = (data.photos || []).length > 0
+
+  // Mostra abas quando:
+  // 1. Já há fotos (cliente precisa ver/gerenciar)
+  // 2. OU o formulário foi rejeitado (cliente já estava além desta etapa e
+  //    pode precisar adicionar/editar fotos mesmo que ainda não apareçam)
+  const showTabLayout = hasExistingPhotos || hasFormRejection
+
+  const [activeTab, setActiveTab] = useState<'form' | 'photos'>('form')
+
+  if (!showTabLayout) {
+    // Primeira vez, sem rejeição → apenas o formulário
+    return <FormStep token={token} data={data} onDone={onDone} />
+  }
+
+  // Tem fotos → formulário + aba de fotos editável
+  // submitForm já move para photos_submitted quando há fotos (ver services.ts)
+  // então ao confirmar o form chamamos onDone direto
+  return (
+    <div className="space-y-4">
+      <StepHeader current={2} total={3} label={hasFormRejection ? 'Ajustes Solicitados' : 'Formulário'} />
+
+      {(hasFormRejection || hasPhotosRejection) && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
+          <div className="flex gap-3 items-start">
+            <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800">Ajustes solicitados</p>
+              <p className="text-sm text-amber-700 mt-0.5">
+                {hasFormRejection && hasPhotosRejection
+                  ? 'A consultora solicitou ajustes no formulário e nas fotos'
+                  : hasFormRejection
+                    ? data.client.form_rejection_reason
+                    : data.client.photos_rejection_reason}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        {/* Tabs */}
+        <div className="flex border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('form')}
+            className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+              activeTab === 'form'
+                ? 'text-rose-600 border-b-2 border-rose-500 bg-rose-50/40'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <div className="flex items-center justify-center gap-2">
+              <FileText className="h-4 w-4" />
+              Formulário
+              {hasFormRejection && <div className="w-2 h-2 bg-amber-400 rounded-full" />}
+            </div>
+          </button>
+          <button
+            onClick={() => setActiveTab('photos')}
+            className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+              activeTab === 'photos'
+                ? 'text-rose-600 border-b-2 border-rose-500 bg-rose-50/40'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <div className="flex items-center justify-center gap-2">
+              <Camera className="h-4 w-4" />
+              Fotos
+              {hasPhotosRejection && <div className="w-2 h-2 bg-amber-400 rounded-full" />}
+            </div>
+          </button>
+        </div>
+
+        {activeTab === 'form' ? (
+          <FormStepContent token={token} data={data} onDone={onDone} />
+        ) : (
+          <PhotoStepContent
+            token={token}
+            data={data}
+            onDone={onDone}
+            showBackButton
+            onBack={() => setActiveTab('form')}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Step 2: Form (conteúdo reutilizável) ─────────────────────────────────────
 
 function FormStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  return (
+    <div className="space-y-4">
+      <StepHeader current={2} total={3} label="Formulário" />
+
+      {data.client.form_rejection_reason && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex gap-3 items-start">
+          <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-amber-800">Ajuste solicitado no formulário</p>
+            <p className="text-sm text-amber-700 mt-0.5">{data.client.form_rejection_reason}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <FormStepContent token={token} data={data} onDone={onDone} />
+      </div>
+    </div>
+  )
+}
+
+function FormStepContent({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
   const form = data.form
-  const [values, setValues] = useState<Record<string, any>>({})
+  const fields = form?.fields || []
+  const savedData = data.form_submission?.form_data || {}
+  const [formData, setFormData] = useState<Record<string, any>>(savedData)
   const [submitting, setSubmitting] = useState(false)
 
-  const setValue = (id: string, value: any) => setValues(v => ({ ...v, [id]: value }))
+  const handleChange = (id: string, value: any) => setFormData({ ...formData, [id]: value })
 
   const handleSubmit = async () => {
-    if (!form) return
-
-    for (const field of form.fields.filter((f: any) => f.required)) {
-      const val = values[field.id]
-      const empty = !val || (Array.isArray(val) && val.length === 0)
-      if (empty) { alert(`Por favor, preencha: ${field.label}`); return }
+    const missing = fields.filter(f => {
+      if (!f.required) return false
+      if (f.type === 'image') return !(Array.isArray(formData[f.id]) && formData[f.id].length > 0)
+      return !formData[f.id]
+    }).map(f => f.label)
+    if (missing.length > 0) {
+      alert(`Preencha os campos obrigatórios:\n• ${missing.join('\n• ')}`)
+      return
     }
-
     setSubmitting(true)
     try {
-      const processedValues: Record<string, any> = {}
-
-      for (const [key, value] of Object.entries(values)) {
-        if (value instanceof File) {
-          const path = `form-attachments/${data.client.id}/${Date.now()}_${value.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-          const { error: uploadError } = await supabase.storage
-            .from('client-photos')
-            .upload(path, value, { contentType: value.type, upsert: false })
-          if (uploadError) throw uploadError
-          const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(path)
-          processedValues[key] = urlData.publicUrl
-        } else if (Array.isArray(value) && value.length > 0 && value[0] instanceof File) {
-          const urls: string[] = []
-          for (const file of value as File[]) {
-            const path = `form-attachments/${data.client.id}/${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-            const { error: uploadError } = await supabase.storage
-              .from('client-photos')
-              .upload(path, file, { contentType: file.type, upsert: false })
-            if (uploadError) throw uploadError
-            const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(path)
-            urls.push(urlData.publicUrl)
-          }
-          processedValues[key] = urls
-        } else {
-          processedValues[key] = value
-        }
-      }
-
-      await clientService.submitForm(token, processedValues)
+      await clientService.submitForm(token, formData)
       onDone()
     } catch (e: any) { alert(e.message) } finally { setSubmitting(false) }
   }
 
   return (
-    <div className="space-y-4">
-      <StepHeader current={2} total={3} label="Formulário" />
-
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
-          <h2 className="font-semibold text-gray-900">{form?.title || 'Formulário'}</h2>
-          {form?.description && <p className="text-sm text-gray-500 mt-0.5 whitespace-pre-wrap">{form.description}</p>}
-        </div>
-
-        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-5">
-          {form?.fields.sort((a: any, b: any) => a.order - b.order).map((field: any) => (
-            <FormField key={field.id} field={field} value={values[field.id]} onChange={v => setValue(field.id, v)} />
-          ))}
-          {(!form || form.fields.length === 0) && (
-            <p className="text-sm text-gray-400 text-center py-8">Formulário não configurado.</p>
-          )}
-        </div>
-
-        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100">
-          <Btn
-            onClick={handleSubmit}
-            loading={submitting}
-            disabled={!form || form.fields.length === 0}
-            className="w-full justify-center"
-          >
-            <Send className="h-4 w-4" /> Enviar Formulário
-          </Btn>
-        </div>
+    <>
+      <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
+        <h2 className="font-semibold text-gray-900">{form?.title || 'Formulário'}</h2>
+        {form?.description && <p className="text-sm text-gray-500 mt-0.5">{form.description}</p>}
       </div>
-    </div>
+
+      <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-5">
+        {fields.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-8">Nenhum campo configurado</p>
+        ) : (
+          fields.map(f => (
+            <div key={f.id}>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                {f.label} {f.required && <span className="text-red-500">*</span>}
+              </label>
+              {f.type === 'text' && (
+                <input value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} placeholder={f.placeholder} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
+              )}
+              {f.type === 'textarea' && (
+                <textarea value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} placeholder={f.placeholder} rows={4} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" />
+              )}
+              {f.type === 'select' && (
+                <select value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400">
+                  <option value="">— Selecione —</option>
+                  {(f.options || []).map((opt, i) => <option key={i} value={opt}>{opt}</option>)}
+                </select>
+              )}
+              {f.type === 'radio' && (
+                <div className="space-y-2">
+                  {(f.options || []).map((opt, i) => (
+                    <label key={i} className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name={f.id} value={opt} checked={formData[f.id] === opt} onChange={e => handleChange(f.id, e.target.value)} className="w-4 h-4 accent-rose-500" />
+                      <span className="text-sm text-gray-700">{opt}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {f.type === 'checkbox' && (
+                <div className="space-y-2">
+                  {(f.options || []).map((opt, i) => (
+                    <label key={i} className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={(formData[f.id] || []).includes(opt)} onChange={e => {
+                        const arr = formData[f.id] || []
+                        handleChange(f.id, e.target.checked ? [...arr, opt] : arr.filter((x: string) => x !== opt))
+                      }} className="w-4 h-4 accent-rose-500" />
+                      <span className="text-sm text-gray-700">{opt}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {f.type === 'image' && (
+                <ImageUploadFormField
+                  field={f}
+                  clientId={data.client.id}
+                  value={formData[f.id] || []}
+                  onChange={imgs => handleChange(f.id, imgs)}
+                />
+              )}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100">
+        <Btn onClick={handleSubmit} loading={submitting} className="w-full">
+          <Send className="h-4 w-4" /> Enviar Respostas
+        </Btn>
+      </div>
+    </>
   )
 }
 
-function FormField({ field, value, onChange }: { field: any; value: any; onChange: (v: any) => void }) {
-  const label = field.label + (field.required ? ' *' : '')
-  const inputClass = "w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+// ── Image upload field (inside form) ────────────────────────────────────────
 
-  const formatPhone = (val: string) => {
-    const n = val.replace(/\D/g, '')
-    if (n.length <= 2) return n
-    if (n.length <= 6) return `(${n.slice(0, 2)}) ${n.slice(2)}`
-    if (n.length <= 10) return `(${n.slice(0, 2)}) ${n.slice(2, 6)}-${n.slice(6)}`
-    return `(${n.slice(0, 2)}) ${n.slice(2, 7)}-${n.slice(7, 11)}`
+interface FormImage {
+  storagePath: string
+  url: string
+}
+
+function ImageUploadFormField({
+  field,
+  clientId,
+  value,
+  onChange,
+}: {
+  field: any
+  clientId: string
+  value: FormImage[]
+  onChange: (imgs: FormImage[]) => void
+}) {
+  const maxImages: number = field.maxImages ?? 1
+  const [uploading, setUploading] = useState(false)
+  const [removing, setRemoving] = useState<Set<string>>(new Set())
+  const [error, setError] = useState('')
+
+  const isFull = value.length >= maxImages
+
+  const handleAdd = async (files: FileList | null) => {
+    if (!files) return
+    const toAdd = Array.from(files).slice(0, maxImages - value.length)
+    if (toAdd.length === 0) {
+      setError(`Limite de ${maxImages} foto${maxImages !== 1 ? 's' : ''} atingido`)
+      return
+    }
+    setError('')
+    setUploading(true)
+    try {
+      const uploaded: FormImage[] = []
+      for (const file of toAdd) {
+        const processed = await processImage(file)
+        const uniqueName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const path = `${clientId}/form/${field.id}/${uniqueName}`
+        const { error: upErr } = await supabase.storage
+          .from('client-photos')
+          .upload(path, processed, { contentType: processed.type, upsert: false })
+        if (upErr) throw upErr
+        const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(path)
+        uploaded.push({ storagePath: path, url: urlData.publicUrl })
+      }
+      onChange([...value, ...uploaded])
+    } catch (e: any) {
+      setError(`Erro ao enviar: ${e.message}`)
+    } finally {
+      setUploading(false)
+    }
   }
 
-  switch (field.type) {
-    case 'full_name':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-          <input type="text" value={value || ''} onChange={e => onChange(e.target.value)}
-            placeholder="Seu nome completo" className={inputClass} />
-        </div>
-      )
-    case 'email':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-          <input type="email" value={value || ''} onChange={e => onChange(e.target.value)}
-            placeholder="seu@email.com" className={inputClass} />
-        </div>
-      )
-    case 'phone':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-          <input type="tel" value={value || ''} onChange={e => onChange(formatPhone(e.target.value))}
-            placeholder="(11) 99999-9999" className={inputClass} />
-        </div>
-      )
-    case 'text':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-          <input value={value || ''} onChange={e => onChange(e.target.value)}
-            placeholder={field.placeholder} className={inputClass} />
-        </div>
-      )
-    case 'textarea':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-          <textarea value={value || ''} onChange={e => onChange(e.target.value)}
-            rows={4} placeholder={field.placeholder} className={`${inputClass} resize-none`} />
-        </div>
-      )
-    case 'select':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-          <select value={value || ''} onChange={e => onChange(e.target.value)} className={inputClass}>
-            <option value="">Selecione...</option>
-            {field.options?.map((o: string) => <option key={o} value={o}>{o}</option>)}
-          </select>
-        </div>
-      )
-    case 'radio':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
-          <div className="space-y-2">
-            {field.options?.map((o: string) => (
-              <label key={o} className="flex items-center gap-2.5 cursor-pointer">
-                <input type="radio" name={field.id} value={o} checked={value === o} onChange={() => onChange(o)}
-                  className="h-4 w-4 text-rose-500 focus:ring-rose-400" />
-                <span className="text-sm text-gray-700">{o}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-      )
-    case 'checkbox':
-      return (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
-          <div className="space-y-2">
-            {field.options?.map((o: string) => {
-              const vals = value || []
-              return (
-                <label key={o} className="flex items-center gap-2.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={vals.includes(o)}
-                    onChange={e => onChange(e.target.checked ? [...vals, o] : vals.filter((v: string) => v !== o))}
-                    className="h-4 w-4 text-rose-500 rounded focus:ring-rose-400"
-                  />
-                  <span className="text-sm text-gray-700">{o}</span>
-                </label>
-              )
-            })}
-          </div>
-        </div>
-      )
-    case 'image': {
-      const maxImages = field.maxImages && field.maxImages > 1 ? field.maxImages : 1
-      const files: File[] = Array.isArray(value) ? value : value instanceof File ? [value] : []
-      const remaining = maxImages - files.length
-      const isFull = remaining <= 0
+  const handleRemove = async (idx: number) => {
+    const img = value[idx]
+    setRemoving(s => new Set([...s, img.storagePath]))
+    try {
+      await supabase.storage.from('client-photos').remove([img.storagePath])
+    } catch {}
+    onChange(value.filter((_, i) => i !== idx))
+    setRemoving(s => { const n = new Set(s); n.delete(img.storagePath); return n })
+  }
 
-      const handleAddFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (!e.target.files) return
-        const picked = Array.from(e.target.files).slice(0, remaining)
-        if (maxImages === 1) onChange(picked[0] ?? null)
-        else onChange([...files, ...picked])
-        e.target.value = ''
-      }
+  return (
+    <div className="space-y-3">
+      {field.imageInstructions && (
+        <p className="text-xs text-gray-500 leading-relaxed">{field.imageInstructions}</p>
+      )}
 
-      const handleRemove = (idx: number) => {
-        if (maxImages === 1) onChange(null)
-        else { const next = files.filter((_, i) => i !== idx); onChange(next.length > 0 ? next : null) }
-      }
-
-      return (
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="block text-sm font-medium text-gray-700">{label}</label>
-            {maxImages > 1 && (
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${isFull ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                {files.length}/{maxImages} fotos
-              </span>
-            )}
-          </div>
-          {field.imageInstructions && (
-            <p className="text-xs text-gray-500 mb-2">{field.imageInstructions}</p>
-          )}
-          {files.length > 0 && (
-            <div className={`grid gap-2 mb-3 ${maxImages === 1 ? 'grid-cols-1' : 'grid-cols-3'}`}>
-              {files.map((file, idx) => (
-                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group">
-                  <img src={URL.createObjectURL(file)} alt={file.name} className="w-full h-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => handleRemove(idx)}
-                    className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 hover:bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
-                  >
-                    <X className="h-3.5 w-3.5 text-white" />
-                  </button>
-                </div>
-              ))}
+      {/* Grid of already-uploaded images + add-more slot */}
+      {value.length > 0 && (
+        <div className="grid grid-cols-3 gap-2">
+          {value.map((img, idx) => (
+            <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+              <img src={img.url} alt="" className="w-full h-full object-cover" />
+              <button
+                onClick={() => handleRemove(idx)}
+                disabled={removing.has(img.storagePath)}
+                className="absolute top-1 right-1 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-sm transition-colors disabled:opacity-50"
+              >
+                {removing.has(img.storagePath)
+                  ? <div className="animate-spin h-3 w-3 border border-white border-t-transparent rounded-full" />
+                  : <X className="h-3 w-3" />}
+              </button>
             </div>
-          )}
-          {!isFull && (
-            <label className="block border-2 border-dashed border-gray-200 hover:border-rose-300 rounded-xl p-5 text-center cursor-pointer transition-colors">
+          ))}
+
+          {/* Slot para adicionar mais fotos */}
+          {!isFull && !uploading && (
+            <label className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1">
               <input
-                type="file"
-                accept="image/*,image/heic,image/heif"
-                multiple={maxImages > 1}
-                className="hidden"
-                onChange={handleAddFiles}
+                type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
+                onChange={e => handleAdd(e.target.files)}
               />
-              <div className="space-y-1">
-                <div className="text-2xl">🖼️</div>
-                <p className="text-sm text-gray-500">
-                  {files.length === 0
-                    ? maxImages > 1 ? `Selecionar até ${maxImages} fotos` : 'Clique para selecionar uma imagem'
-                    : `Adicionar mais ${remaining} foto${remaining !== 1 ? 's' : ''}`}
-                </p>
-                <p className="text-xs text-gray-400">JPG, PNG, HEIC</p>
-              </div>
+              <Camera className="h-5 w-5 text-gray-300" />
+              <span className="text-[10px] text-gray-400">
+                {maxImages - value.length} restante{maxImages - value.length !== 1 ? 's' : ''}
+              </span>
             </label>
           )}
+
+          {/* Spinner inline quando está enviando e já tem fotos */}
+          {uploading && (
+            <div className="aspect-square rounded-xl border-2 border-dashed border-rose-200 bg-rose-50/60 flex items-center justify-center">
+              <div className="animate-spin h-5 w-5 border-2 border-rose-300 border-t-transparent rounded-full" />
+            </div>
+          )}
         </div>
-      )
-    }
-    default: return null
-  }
+      )}
+
+      {/* Drop zone — só aparece quando não há nenhuma foto ainda */}
+      {value.length === 0 && (
+        <label className={`block rounded-2xl cursor-pointer transition-all ${
+          uploading
+            ? 'bg-rose-50/60 border-2 border-rose-200 pointer-events-none'
+            : 'border-2 border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/40 active:scale-[0.99]'
+        }`}>
+          <input
+            type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
+            onChange={e => handleAdd(e.target.files)} disabled={uploading}
+          />
+          <div className="px-6 py-8 text-center">
+            {uploading ? (
+              <div className="animate-spin h-8 w-8 border-2 border-rose-300 border-t-transparent rounded-full mx-auto" />
+            ) : (
+              <>
+                <div className="w-10 h-10 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-2">
+                  <Camera className="h-5 w-5 text-rose-400" />
+                </div>
+                <p className="text-sm font-medium text-gray-700 mb-0.5">Toque para adicionar fotos</p>
+                <p className="text-xs text-gray-400">
+                  JPG, PNG, HEIC · até {maxImages} foto{maxImages !== 1 ? 's' : ''}
+                </p>
+              </>
+            )}
+          </div>
+        </label>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-2 text-xs text-red-600 bg-red-50 rounded-xl px-3 py-2">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {value.length > 0 && (
+        <div className="flex items-center gap-2 bg-green-50 rounded-xl px-3 py-2 border border-green-100">
+          <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+          <p className="text-sm text-green-700">
+            {value.length} foto{value.length !== 1 ? 's' : ''} adicionada{value.length !== 1 ? 's' : ''} ✓
+          </p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ── Step 3: Photos ───────────────────────────────────────────────────────────
@@ -507,6 +602,13 @@ interface PhotoCategory {
   // legacy fields
   video_url?: string
   instructions?: string[]
+}
+
+interface ExistingPhoto {
+  id: string
+  url: string
+  photo_name: string
+  category_id: string | null
 }
 
 /** Normalise legacy video_url + instructions[] to unified InstructionItem[] */
@@ -645,16 +747,20 @@ interface CategoryCardProps {
   cat: PhotoCategory
   index: number
   uploads: File[]
+  existingPhotos: ExistingPhoto[]
   processing: boolean
   error: string
   onAdd: (files: File[]) => void
   onRemove: (idx: number) => void
+  onRemoveExisting: (photoId: string) => void
+  removingExisting: Set<string>
 }
 
-function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove }: CategoryCardProps) {
+function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, onAdd, onRemove, onRemoveExisting, removingExisting }: CategoryCardProps) {
   const instructions = normalizeInstructions(cat)
-  const isFull = uploads.length >= cat.max_photos
-  const isDone = uploads.length > 0
+  const totalCount = existingPhotos.length + uploads.length
+  const isFull = totalCount >= cat.max_photos
+  const isDone = totalCount > 0
 
   return (
     <div
@@ -663,65 +769,74 @@ function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove 
         isDone ? 'border-green-200 bg-green-50/20' : 'border-gray-200 bg-white'
       }`}
     >
-      {/* Card header */}
-      <div className="flex items-start gap-3 px-4 sm:px-5 pt-4 sm:pt-5 pb-3">
-        <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${
-          isDone ? 'bg-green-500 text-white' : 'bg-rose-100 text-rose-500'
-        }`}>
-          {isDone ? <Check className="h-4 w-4" /> : index + 1}
+      {/* Header */}
+      <div className={`px-4 sm:px-5 py-4 border-b ${isDone ? 'border-green-100 bg-green-50/40' : 'border-gray-100'}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold flex-shrink-0 ${
+                isDone
+                  ? 'bg-green-500 text-white'
+                  : 'bg-gray-200 text-gray-600'
+              }`}>
+                {isDone ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
+              </span>
+              <h3 className="font-semibold text-gray-900">{cat.title}</h3>
+            </div>
+            {cat.description && <p className="text-xs text-gray-500 ml-8">{cat.description}</p>}
+          </div>
+          <div className="text-right flex-shrink-0">
+            <p className="text-xs font-medium text-gray-500">
+              {totalCount}/{cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}
+            </p>
+          </div>
         </div>
-
-        <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-gray-900 leading-tight">{cat.title}</h3>
-          {cat.description && (
-            <p className="text-sm text-gray-500 mt-0.5 leading-snug">{cat.description}</p>
-          )}
-        </div>
-
-        <span className={`flex-shrink-0 text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${
-          isFull
-            ? 'bg-green-100 text-green-700'
-            : uploads.length > 0
-              ? 'bg-amber-100 text-amber-700'
-              : 'bg-gray-100 text-gray-400'
-        }`}>
-          {uploads.length}/{cat.max_photos}
-        </span>
       </div>
 
-      {/* Card body */}
-      <div className="px-4 sm:px-5 pb-4 sm:pb-5 space-y-4">
-
-        {/* Instructions — collapsed after done, expanded while pending */}
-        <InstructionsPanel items={instructions} defaultOpen={!isDone} />
-
-        {/* Divider */}
-        <div className="flex items-center gap-3">
-          <div className="h-px flex-1 bg-gray-100" />
-          <span className="text-xs text-gray-400 font-medium">Suas fotos</span>
-          <div className="h-px flex-1 bg-gray-100" />
+      {/* Instructions */}
+      {instructions.length > 0 && (
+        <div className="px-4 sm:px-5 py-3 border-b border-gray-100">
+          <InstructionsPanel items={instructions} defaultOpen={!isDone} />
         </div>
+      )}
 
-        {/* Photos already added */}
-        {uploads.length > 0 && (
-          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+      {/* Photo grid */}
+      <div className="px-4 sm:px-5 py-4 space-y-3">
+        {(existingPhotos.length > 0 || uploads.length > 0) && (
+          <div className="grid grid-cols-3 gap-2">
+            {/* Existing photos */}
+            {existingPhotos.map(photo => (
+              <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+                <img src={photo.url} alt={photo.photo_name} className="w-full h-full object-cover" />
+                <button
+                  onClick={() => onRemoveExisting(photo.id)}
+                  disabled={removingExisting.has(photo.id)}
+                  className="absolute top-1 right-1 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-sm transition-colors disabled:opacity-50"
+                >
+                  {removingExisting.has(photo.id) ? (
+                    <div className="animate-spin h-3 w-3 border border-white border-t-transparent rounded-full" />
+                  ) : (
+                    <X className="h-3 w-3" />
+                  )}
+                </button>
+              </div>
+            ))}
+
+            {/* New uploads */}
             {uploads.map((file, idx) => {
               const url = URL.createObjectURL(file)
               return (
-                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden group bg-gray-100">
-                  <img
-                    src={url}
-                    alt={file.name}
-                    className="w-full h-full object-cover"
-                    onLoad={() => URL.revokeObjectURL(url)}
-                  />
+                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border-2 border-rose-300 bg-rose-50">
+                  <img src={url} alt={file.name} className="w-full h-full object-cover" />
                   <button
                     onClick={() => onRemove(idx)}
-                    className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 backdrop-blur-sm text-white rounded-full
-                      flex items-center justify-center opacity-0 group-hover:opacity-100 active:opacity-100 transition-opacity"
+                    className="absolute top-1 right-1 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-sm transition-colors"
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <X className="h-3 w-3" />
                   </button>
+                  <div className="absolute bottom-1 left-1 bg-rose-500 text-white text-[9px] px-1.5 py-0.5 rounded font-medium">
+                    NOVA
+                  </div>
                 </div>
               )
             })}
@@ -736,38 +851,33 @@ function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove 
                 />
                 <Camera className="h-5 w-5 text-gray-300" />
                 <span className="text-[10px] text-gray-400">
-                  {cat.max_photos - uploads.length} restante{cat.max_photos - uploads.length !== 1 ? 's' : ''}
+                  {cat.max_photos - totalCount} restante{cat.max_photos - totalCount !== 1 ? 's' : ''}
                 </span>
               </label>
             )}
           </div>
         )}
 
-        {/* Drop zone — only when no photos yet */}
-        {uploads.length === 0 && (
+        {/* Drop zone — only when no photos yet (neither existing nor new) */}
+        {existingPhotos.length === 0 && uploads.length === 0 && (
           <label className={`block relative rounded-2xl cursor-pointer transition-all ${
             processing
               ? 'bg-rose-50/60 border-2 border-rose-200 pointer-events-none'
               : 'border-2 border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/40 active:scale-[0.99]'
           }`}>
-            <input
-              type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
-              disabled={processing}
-              onChange={e => e.target.files && onAdd(Array.from(e.target.files))}
-            />
-            <div className="py-9 flex flex-col items-center gap-2.5 px-4 text-center">
+            <input type="file" multiple accept="image/*,image/heic,image/heif" className="hidden" onChange={e => e.target.files && onAdd(Array.from(e.target.files))} disabled={processing} />
+            <div className="px-6 py-10 text-center">
               {processing ? (
-                <>
-                  <Loader2 className="h-8 w-8 text-rose-400 animate-spin" />
-                  <span className="text-sm text-rose-500 font-medium">Processando imagens…</span>
-                </>
+                <div className="animate-spin h-8 w-8 border-3 border-rose-300 border-t-transparent rounded-full mx-auto" />
               ) : (
                 <>
-                  <div className="w-14 h-14 bg-rose-50 rounded-2xl flex items-center justify-center shadow-sm">
-                    <Camera className="h-7 w-7 text-rose-400" />
+                  <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <Camera className="h-6 w-6 text-rose-400" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-gray-700">Toque para adicionar fotos</p>
+                    <p className="text-sm font-medium text-gray-700 mb-0.5">
+                      Toque para adicionar fotos
+                    </p>
                     <p className="text-xs text-gray-400 mt-0.5">
                       JPG, PNG, HEIC · até {cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}
                     </p>
@@ -791,7 +901,7 @@ function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove 
           <div className="flex items-center gap-2 bg-green-50 rounded-xl px-4 py-2.5 border border-green-100">
             <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
             <p className="text-sm text-green-700 font-medium">
-              {uploads.length} foto{uploads.length !== 1 ? 's' : ''} adicionada{uploads.length !== 1 ? 's' : ''} ✓
+              {totalCount} foto{totalCount !== 1 ? 's' : ''} adicionada{totalCount !== 1 ? 's' : ''} ✓
             </p>
           </div>
         )}
@@ -803,15 +913,62 @@ function CategoryCard({ cat, index, uploads, processing, error, onAdd, onRemove 
 // ── PhotoStep ────────────────────────────────────────────────────────────────
 
 function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  return (
+    <div className="space-y-4">
+      <StepHeader current={3} total={3} label="Fotos" />
+
+      {data.client.photos_rejection_reason && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex gap-3 items-start">
+          <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-amber-800">Ajuste solicitado nas fotos</p>
+            <p className="text-sm text-amber-700 mt-0.5">{data.client.photos_rejection_reason}</p>
+          </div>
+        </div>
+      )}
+
+      <PhotoStepContent token={token} data={data} onDone={onDone} />
+    </div>
+  )
+}
+
+function PhotoStepContent({ 
+  token, 
+  data, 
+  onDone, 
+  showBackButton = false, 
+  onBack 
+}: { 
+  token: string
+  data: ClientPortalData
+  onDone: () => void
+  showBackButton?: boolean
+  onBack?: () => void
+}) {
   const categories: PhotoCategory[] = data.photo_categories || []
   const [uploads, setUploads]       = useState<Record<string, File[]>>({})
+  const [existingByCat, setExistingByCat] = useState<Record<string, ExistingPhoto[]>>({})
+  const [removingExisting, setRemovingExisting] = useState<Set<string>>(new Set())
   const [processing, setProcessing] = useState<Record<string, boolean>>({})
   const [finalizing, setFinalizing] = useState(false)
   const [errors, setErrors]         = useState<Record<string, string>>({})
 
+  // Load existing photos from portal data (populated after rejection)
+  useEffect(() => {
+    const byCat: Record<string, ExistingPhoto[]> = {}
+    for (const p of (data.photos || [])) {
+      if (!p.url) continue
+      const catId = p.category_id || '__none__'
+      if (!byCat[catId]) byCat[catId] = []
+      byCat[catId].push({ id: p.id, url: p.url, photo_name: p.photo_name, category_id: p.category_id })
+    }
+    setExistingByCat(byCat)
+  }, [data.photos])
+
   const addFiles = async (catId: string, files: File[], maxPhotos: number) => {
+    const currentExisting = (existingByCat[catId] || []).length
     const current   = uploads[catId] || []
-    const remaining = maxPhotos - current.length
+    const remaining = maxPhotos - currentExisting - current.length
     const toAdd     = Array.from(files).slice(0, remaining)
     if (toAdd.length === 0) {
       setErrors(e => ({ ...e, [catId]: `Limite de ${maxPhotos} foto${maxPhotos !== 1 ? 's' : ''} atingido` }))
@@ -828,14 +985,33 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
     setUploads(u => ({ ...u, [catId]: (u[catId] || []).filter((_, i) => i !== idx) }))
   }
 
-  const allFilled   = categories.every(c => (uploads[c.id] || []).length > 0)
-  const doneCount   = categories.filter(c => (uploads[c.id] || []).length > 0).length
-  const totalPhotos = Object.values(uploads).reduce((s, arr) => s + arr.length, 0)
+  const removeExistingPhoto = async (catId: string, photoId: string) => {
+    setRemovingExisting(s => new Set([...s, photoId]))
+    try {
+      await clientService.deletePhoto(token, photoId)
+      setExistingByCat(prev => ({
+        ...prev,
+        [catId]: (prev[catId] || []).filter(p => p.id !== photoId),
+      }))
+    } catch (e: any) {
+      alert(`Erro ao remover foto: ${e.message}`)
+    } finally {
+      setRemovingExisting(s => { const n = new Set(s); n.delete(photoId); return n })
+    }
+  }
+
+  const totalByCategory = (catId: string) =>
+    (existingByCat[catId] || []).length + (uploads[catId] || []).length
+
+  const allFilled   = categories.every(c => totalByCategory(c.id) > 0)
+  const doneCount   = categories.filter(c => totalByCategory(c.id) > 0).length
+  const totalPhotos = categories.reduce((s, c) => s + totalByCategory(c.id), 0)
 
   const handleFinalize = async () => {
     if (!allFilled) return
     setFinalizing(true)
     try {
+      // Only upload brand-new files — existing photos are already in the DB
       for (const cat of categories) {
         for (const file of (uploads[cat.id] || [])) {
           await clientService.uploadPhoto(token, data.client.id, file, cat.id)
@@ -856,20 +1032,15 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
 
   if (categories.length === 0) {
     return (
-      <div className="space-y-4">
-        <StepHeader current={3} total={3} label="Fotos" />
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
-          <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-          <p className="text-sm text-gray-400">Nenhuma categoria configurada</p>
-        </div>
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
+        <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" />
+        <p className="text-sm text-gray-400">Nenhuma categoria configurada</p>
       </div>
     )
   }
 
   return (
     <div className="space-y-3">
-      <StepHeader current={3} total={3} label="Fotos" />
-
       {/* ── Sticky overview bar ── */}
       <div className="bg-white/90 backdrop-blur-sm rounded-2xl border border-gray-100 shadow-sm px-4 sm:px-5 py-3 sticky top-[3.75rem] z-10">
         {/* Progress bar + label */}
@@ -890,7 +1061,7 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
         {categories.length > 1 && (
           <div className="flex gap-1.5 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
             {categories.map((cat, idx) => {
-              const done = (uploads[cat.id] || []).length > 0
+              const done = totalByCategory(cat.id) > 0
               return (
                 <button
                   key={cat.id}
@@ -922,10 +1093,13 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
           cat={cat}
           index={idx}
           uploads={uploads[cat.id] || []}
+          existingPhotos={existingByCat[cat.id] || []}
           processing={!!processing[cat.id]}
           error={errors[cat.id] || ''}
           onAdd={files => addFiles(cat.id, files, cat.max_photos)}
           onRemove={i => removeFile(cat.id, i)}
+          onRemoveExisting={photoId => removeExistingPhoto(cat.id, photoId)}
+          removingExisting={removingExisting}
         />
       ))}
 
@@ -934,7 +1108,7 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
 
         {/* Pending shortcuts */}
         {categories
-          .filter(c => !(uploads[c.id] || []).length)
+          .filter(c => totalByCategory(c.id) === 0)
           .map(cat => {
             const idx = categories.findIndex(c => c.id === cat.id)
             return (
@@ -943,176 +1117,163 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
                 onClick={() => scrollToCat(cat.id)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 transition-colors text-left"
               >
-                <div className="w-5 h-5 rounded-full border-2 border-amber-400 flex items-center justify-center flex-shrink-0">
-                  <span className="text-[9px] font-bold text-amber-500">{idx + 1}</span>
+                <span className="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">
+                  {idx + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-amber-800 truncate">{cat.title}</p>
+                  <p className="text-xs text-amber-600">Nenhuma foto enviada</p>
                 </div>
-                <p className="text-sm text-amber-800 flex-1 font-medium">{cat.title}</p>
-                <ArrowRight className="h-3.5 w-3.5 text-amber-400" />
+                <ArrowRight className="h-4 w-4 text-amber-500 flex-shrink-0" />
               </button>
             )
-          })
-        }
+          })}
 
-        {/* Photo count summary */}
-        {totalPhotos > 0 && (
-          <p className="text-xs text-gray-400 text-center">
-            {totalPhotos} foto{totalPhotos !== 1 ? 's' : ''} selecionada{totalPhotos !== 1 ? 's' : ''}
-          </p>
-        )}
-
-        {/* Main CTA */}
-        <button
-          onClick={handleFinalize}
-          disabled={!allFilled || finalizing}
-          className={`w-full py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-all ${
-            allFilled
-              ? 'bg-gradient-to-r from-rose-500 to-pink-500 text-white shadow-sm hover:from-rose-600 hover:to-pink-600 active:scale-[0.99]'
-              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-          }`}
-        >
-          {finalizing
-            ? <><Loader2 className="h-4 w-4 animate-spin" /> Enviando…</>
-            : <><Upload className="h-4 w-4" /> Enviar Fotos e Finalizar</>
-          }
-        </button>
-
-        {!allFilled && (
-          <p className="text-center text-xs text-gray-400">
-            Adicione ao menos 1 foto em cada categoria para continuar
-          </p>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Review Screen ────────────────────────────────────────────────────────────
-
-function ReviewScreen() {
-  const steps = [
-    { label: 'Revisão detalhada dos dados', description: 'Se necessário, entraremos em contato para ajustes ou complementos em até 1 dia útil.', state: 'current' as const },
-    { label: 'Análise em andamento', description: 'Aqui começa a contagem do prazo.', state: 'pending' as const },
-    { label: 'Resultado liberado', description: 'Seu resultado completo está pronto. Acesso liberado.', state: 'pending' as const },
-  ]
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
-        <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-4">
-          <Clock className="h-8 w-8 text-amber-500" />
-        </div>
-        <h2 className="text-xl font-bold text-gray-900 mb-2">Fotos em análise</h2>
-        <p className="text-gray-500 text-sm leading-relaxed">
-          Suas fotos e informações foram recebidas pela consultora e estão em análise.
-          Se necessário, entraremos em contato para ajustes ou complementos em até 1 dia útil.
-        </p>
-      </div>
-      <ProgressChecklist steps={steps} />
-    </div>
-  )
-}
-
-// ── Analysis Screen ──────────────────────────────────────────────────────────
-
-function AnalysisScreen({ data }: { data: ClientPortalData }) {
-  const deadline = data.deadline
-  const deadlineDate = deadline?.deadline_date ?? null
-  const daysLeft = deadlineDate ? businessDaysUntil(deadlineDate) : null
-
-  const steps = [
-    { label: 'Revisão detalhada dos dados', description: 'Revisão concluída.', state: 'done' as const },
-    { label: 'Análise em andamento', description: 'Estamos trabalhando na sua análise pessoal de coloração.', state: 'current' as const },
-    { label: 'Resultado liberado', description: 'Seu resultado completo está pronto. Acesso liberado.', state: 'pending' as const },
-  ]
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
-        <div className="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <Clock className="h-8 w-8 text-orange-500" />
-        </div>
-        <h2 className="text-xl font-bold text-gray-900 mb-2">Análise em andamento</h2>
-        <p className="text-gray-500 text-sm">Suas fotos foram aprovadas e estamos trabalhando na sua análise!</p>
-      </div>
-
-      {deadlineDate && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-          <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Clock className="h-5 w-5 text-rose-400" /> Prazo de Entrega
-          </h3>
-          <div className="bg-rose-50 rounded-xl p-4">
-            <p className="text-rose-800 font-semibold capitalize">{formatDeadlineDate(deadlineDate)}</p>
-            {daysLeft !== null && daysLeft > 0 && (
-              <p className="text-rose-600 text-sm mt-1">
-                {daysLeft} dia{daysLeft !== 1 ? 's' : ''} {daysLeft !== 1 ? 'úteis' : 'útil'} restante{daysLeft !== 1 ? 's' : ''}
-              </p>
-            )}
-            {daysLeft === 0 && <p className="text-rose-600 text-sm mt-1">Entrega prevista para hoje</p>}
-          </div>
-          <p className="text-xs text-gray-400 mt-3">Prazo calculado em dias úteis, sem contar feriados nacionais.</p>
-        </div>
-      )}
-
-      <ProgressChecklist steps={steps} />
-    </div>
-  )
-}
-
-// ── Progress Checklist (shared) ──────────────────────────────────────────────
-
-function ProgressChecklist({
-  steps,
-}: {
-  steps: Array<{ label: string; description: string; state: 'done' | 'current' | 'pending' }>
-}) {
-  return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-      <h3 className="font-semibold text-gray-900 mb-5">Seu progresso</h3>
-      <div className="space-y-0">
-        {steps.map((step, i) => {
-          const isLast = i === steps.length - 1
-          const iconEl =
-            step.state === 'done'
-              ? <CheckCircle className="h-5 w-5 text-green-500" />
-              : step.state === 'current'
-                ? <div className="w-5 h-5 rounded-full border-2 border-rose-400 flex items-center justify-center"><div className="w-2 h-2 rounded-full bg-rose-400" /></div>
-                : <div className="w-5 h-5 rounded-full border-2 border-gray-200" />
-
-          return (
-            <div key={step.label} className="flex gap-4">
-              <div className="flex flex-col items-center">
-                <div className="mt-0.5">{iconEl}</div>
-                {!isLast && <div className="w-px flex-1 bg-gray-100 my-2" />}
+        {/* Summary */}
+        {allFilled && (
+          <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-4 border border-green-200">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center flex-shrink-0">
+                <CheckCircle className="h-5 w-5 text-white" />
               </div>
-              <div className={`${isLast ? 'pb-0' : 'pb-5'} flex-1 min-w-0`}>
-                <p className={`text-sm font-medium ${
-                  step.state === 'current' ? 'text-rose-600' : step.state === 'done' ? 'text-gray-900' : 'text-gray-400'
-                }`}>
-                  {step.label}
-                  {step.state === 'current' && (
-                    <span className="ml-2 text-xs bg-amber-50 text-amber-600 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
-                      Em andamento
-                    </span>
-                  )}
-                </p>
-                <p className={`text-xs mt-0.5 leading-relaxed ${step.state === 'pending' ? 'text-gray-300' : 'text-gray-400'}`}>
-                  {step.description}
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-green-800">Tudo pronto!</p>
+                <p className="text-xs text-green-700 mt-0.5">
+                  {totalPhotos} foto{totalPhotos !== 1 ? 's' : ''} em {categories.length} categoria{categories.length !== 1 ? 's' : ''}
                 </p>
               </div>
             </div>
-          )
-        })}
+          </div>
+        )}
+
+        {/* Buttons */}
+        <div className="flex gap-2">
+          {showBackButton && onBack && (
+            <Btn onClick={onBack} variant="outline" className="flex-1">
+              <ChevronLeft className="h-4 w-4" /> Voltar
+            </Btn>
+          )}
+          <Btn
+            onClick={handleFinalize}
+            disabled={!allFilled}
+            loading={finalizing}
+            className={showBackButton ? "flex-1" : "w-full"}
+          >
+            {finalizing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Finalizando...
+              </>
+            ) : (
+              <>
+                <CheckCircle className="h-4 w-4" /> Finalizar Envio
+              </>
+            )}
+          </Btn>
+        </div>
+
+        {!allFilled && (
+          <p className="text-xs text-gray-400 text-center">
+            Envie ao menos 1 foto em cada categoria para continuar
+          </p>
+        )}
       </div>
     </div>
   )
 }
 
-// ── Results ──────────────────────────────────────────────────────────────────
+// ── Review screen ────────────────────────────────────────────────────────────
 
-interface RefPhoto { type: string; label: string; storagePath: string; url: string }
+function ReviewScreen() {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
+      <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-50 rounded-2xl mb-4">
+        <Clock className="h-8 w-8 text-blue-400" />
+      </div>
+      <h2 className="text-xl font-semibold text-gray-900 mb-2">Em revisão</h2>
+      <p className="text-sm text-gray-500 leading-relaxed max-w-md mx-auto">
+        Suas fotos foram enviadas com sucesso! A consultora está revisando tudo e em breve iniciará sua análise.
+      </p>
+    </div>
+  )
+}
+
+// ── Analysis screen ──────────────────────────────────────────────────────────
+
+function AnalysisScreen({ data }: { data: ClientPortalData }) {
+  const deadline = data.deadline
+
+  if (!deadline?.deadline_date) {
+    return (
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
+        <Clock className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+        <h2 className="font-semibold text-gray-900 mb-2">Análise aprovada</h2>
+        <p className="text-sm text-gray-500">Aguardando prazo ser definido...</p>
+      </div>
+    )
+  }
+
+  const daysLeft = businessDaysUntil(deadline.deadline_date)
+  const formatted = formatDeadlineDate(deadline.deadline_date)
+
+  return (
+    <div className="space-y-4">
+      {/* Status banner */}
+      <div className="bg-gradient-to-br from-blue-500 via-indigo-500 to-blue-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
+        <div
+          className="absolute inset-0 opacity-10"
+          style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
+        />
+        <div className="relative">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
+            <Palette className="h-9 w-9 text-white" />
+          </div>
+          <h2 className="text-2xl font-bold tracking-tight mb-1">Análise em andamento</h2>
+          <p className="text-blue-100 text-sm">Sua consultora está trabalhando na sua análise!</p>
+        </div>
+      </div>
+
+      {/* Deadline card */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 bg-gradient-to-br from-blue-400 to-indigo-500 rounded-2xl flex items-center justify-center flex-shrink-0">
+            <Clock className="h-7 w-7 text-white" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm text-gray-500 mb-0.5">Previsão de entrega</p>
+            <p className="text-lg font-bold text-gray-900">{formatted}</p>
+            <p className="text-xs text-gray-400 mt-1">
+              {daysLeft > 0
+                ? `${daysLeft} dia${daysLeft !== 1 ? 's' : ''} útei${daysLeft !== 1 ? 's' : ''} restante${daysLeft !== 1 ? 's' : ''}`
+                : daysLeft === 0
+                  ? 'Prazo vence hoje!'
+                  : `Prazo vencido há ${Math.abs(daysLeft)} dia${Math.abs(daysLeft) !== 1 ? 's' : ''}`
+              }
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="text-center py-2">
+        <p className="text-xs text-gray-400">
+          Você receberá um e-mail assim que o resultado estiver disponível
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ── Result screen ────────────────────────────────────────────────────────────
+
+interface RefPhoto {
+  type: string
+  label: string
+  storagePath: string
+  url: string
+}
 
 function ResultScreen({ token, data }: { token: string; data: ClientPortalData }) {
   const result = data.result
+
   const [aiPrompt, setAiPrompt] = useState<string | null>(null)
   const [aiRefPhotoUrl, setAiRefPhotoUrl] = useState<string | null>(null)
   const [aiRefPhotos, setAiRefPhotos] = useState<RefPhoto[]>([])

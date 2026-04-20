@@ -19,6 +19,7 @@ import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
 import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib/deadlineCalculator'
 import { AIPromptConfig } from './AIPromptConfig'
+import { RejectionModal } from './RejectionModal'
 
 // ─── Theme System ─────────────────────────────────────────────────────────
 const THEMES = {
@@ -856,7 +857,14 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
   const getImageUrls = (value: any): string[] => {
     if (!value) return []
     if (typeof value === 'string' && isImageUrl(value)) return [value]
-    if (Array.isArray(value)) return value.filter(isImageUrl)
+    if (Array.isArray(value)) {
+      // Novo formato salvo pelo ImageUploadFormField: [{storagePath, url}]
+      if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null && 'url' in value[0]) {
+        return (value as { url: string }[]).map(v => v.url).filter(isImageUrl)
+      }
+      // Formato legado: array de strings de URL
+      return value.filter(isImageUrl)
+    }
     return []
   }
 
@@ -1128,13 +1136,56 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
-  useEffect(() => { adminService.getClientPhotosWithUrls(clientId).then(p => { setPhotosWithUrls(p); setLoading(false) }) }, [clientId])
+  const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
+  const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(null)
+
+  const loadPhotos = async () => {
+    const p = await adminService.getClientPhotosWithUrls(clientId)
+    setPhotosWithUrls(p)
+    setLoading(false)
+  }
+
+  useEffect(() => { loadPhotos() }, [clientId])
+
+  const handleAdminUpload = async (categoryId: string, files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploadingToCategory(categoryId)
+    try {
+      for (const file of Array.from(files)) {
+        const uniqueName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const path = `${clientId}/${uniqueName}`
+
+        const { error: uploadError } = await supabase.storage
+          .from('client-photos')
+          .upload(path, file, { contentType: file.type, upsert: false })
+        if (uploadError) throw uploadError
+
+        const { error: dbError } = await supabase
+          .from('client_photos')
+          .insert({
+            client_id: clientId,
+            photo_name: uniqueName,
+            photo_type: file.type,
+            photo_size: file.size,
+            storage_path: path,
+            category_id: categoryId,
+            uploaded_at: new Date().toISOString()
+          })
+        if (dbError) throw dbError
+      }
+      await loadPhotos()
+    } catch (e: any) {
+      alert(`Erro ao fazer upload: ${e.message}`)
+    } finally {
+      setUploadingToCategory(null)
+      setSelectedCategoryForUpload(null)
+      if (uploadInputRef.current) uploadInputRef.current.value = ''
+    }
+  }
+
   if (loading) return <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
-  if (photosWithUrls.length === 0) return (
-    <div className="bg-white border border-dashed border-gray-300 rounded-xl p-12 text-center">
-      <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" /><p className="text-gray-500">Nenhuma foto enviada ainda</p>
-    </div>
-  )
+  
   const photosByCat: Record<string, any[]> = {}
   const uncategorized: any[] = []
   photosWithUrls.forEach(p => { if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) } else uncategorized.push(p) })
@@ -1149,9 +1200,55 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
       ))}
     </div>
   )
+  
+  const hasPhotos = photosWithUrls.length > 0
+
   return (
     <>
       <div className="space-y-5">
+        {/* Botão global de adicionar fotos */}
+        <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center">
+              <Upload className="h-5 w-5 text-violet-600" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-violet-900">Adicionar fotos complementares</p>
+              <p className="text-xs text-violet-600 mt-0.5">Faça upload de fotos adicionais pelo admin</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {photoCategories.length > 0 && (
+              <select
+                value={selectedCategoryForUpload || ''}
+                onChange={e => setSelectedCategoryForUpload(e.target.value || null)}
+                className="px-3 py-2 border border-violet-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white"
+              >
+                <option value="">Sem categoria</option>
+                {photoCategories.map(cat => (
+                  <option key={cat.id} value={cat.id}>{cat.title}</option>
+                ))}
+              </select>
+            )}
+            <input
+              ref={uploadInputRef}
+              type="file"
+              multiple
+              accept="image/*"
+              className="hidden"
+              onChange={e => handleAdminUpload(selectedCategoryForUpload || '__none__', e.target.files)}
+            />
+            <Btn
+              variant="primary"
+              size="sm"
+              onClick={() => uploadInputRef.current?.click()}
+              loading={uploadingToCategory !== null}
+            >
+              <Upload className="h-3.5 w-3.5" /> Adicionar Fotos
+            </Btn>
+          </div>
+        </div>
+
         {photoCategories.map(cat => { const catPhotos = photosByCat[cat.id] || []; if (catPhotos.length === 0) return null; return (
           <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
@@ -1168,6 +1265,14 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
               <Btn variant="outline" size="sm" onClick={() => downloadAll(uncategorized)}><Download className="h-3.5 w-3.5" /> Baixar todas</Btn>
             </div>
             <div className="p-5">{renderGrid(uncategorized)}</div>
+          </div>
+        )}
+
+        {!hasPhotos && (
+          <div className="bg-white border border-dashed border-gray-300 rounded-xl p-12 text-center">
+            <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" />
+            <p className="text-gray-500">Nenhuma foto enviada ainda</p>
+            <p className="text-xs text-gray-400 mt-2">Use o botão acima para adicionar fotos</p>
           </div>
         )}
       </div>
@@ -1201,6 +1306,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
   const [approvingPhotos, setApprovingPhotos] = useState(false)   // NEW
+  const [showRejection, setShowRejection] = useState(false)
+  const [rejectingPhotos, setRejectingPhotos] = useState(false)
   const [editingDeadline, setEditingDeadline] = useState(false)
   const [deadlineInput, setDeadlineInput] = useState('')
   const [savingDeadline, setSavingDeadline] = useState(false)
@@ -1276,6 +1383,21 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     } catch (e: any) { alert(e.message) } finally { setApprovingPhotos(false) }
   }
 
+  const handleReject = async (payload: {
+    rejectForm: boolean; formReason: string
+    rejectPhotos: boolean; photosReason: string
+  }) => {
+    const id = clientId!
+    if (payload.rejectForm && payload.rejectPhotos)
+      await adminService.rejectBoth(id, payload.formReason, payload.photosReason)
+    else if (payload.rejectForm)
+      await adminService.rejectForm(id, payload.formReason)
+    else
+      await adminService.rejectPhotos(id, payload.photosReason)
+    setShowRejection(false)
+    load()
+  }
+
   const handleSaveDeadline = async () => {
     if (!deadlineInput) return
     setSavingDeadline(true)
@@ -1333,7 +1455,10 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
         {/* Quick approve in topbar */}
         {client.status === 'photos_submitted' && (
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <Btn variant="outline" size="sm" onClick={() => setShowRejection(true)} className="border-amber-300 text-amber-700 hover:bg-amber-50">
+              <AlertTriangle className="h-3.5 w-3.5" /> Solicitar Ajustes
+            </Btn>
             <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos}>
               <CheckCircle className="h-3.5 w-3.5" /> Aprovar e Iniciar Análise
             </Btn>
@@ -1400,6 +1525,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       <p className="text-xs text-rose-600 mt-0.5">Revise as fotos na aba <strong>Fotos</strong> e, quando estiver pronto, aprove para iniciar a análise e notificar a cliente.</p>
                     </div>
                   </div>
+                  <Btn variant="outline" size="md" onClick={() => setShowRejection(true)} className="flex-shrink-0 border-amber-300 text-amber-700 hover:bg-amber-50">
+                    <AlertTriangle className="h-4 w-4" /> Solicitar Ajustes
+                  </Btn>
                   <Btn variant="pink" size="md" onClick={handleApprovePhotos} loading={approvingPhotos} className="flex-shrink-0">
                     <CheckCircle className="h-4 w-4" /> Aprovar Fotos
                   </Btn>
@@ -1667,6 +1795,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       {showFormModal && formSubmission && (
         <FormResponseModal formSubmission={formSubmission} planForm={planForm} onClose={() => setShowFormModal(false)} />
       )}
+      <RejectionModal
+        open={showRejection}
+        clientName={data?.client?.full_name ?? ''}
+        hasForm={!!formSubmission}
+        hasPhotos={photos.length > 0}
+        onCancel={() => setShowRejection(false)}
+        onConfirm={handleReject}
+      />
       </div>{/* end inner space-y-6 */}
       </div>{/* end overflow-y-auto */}
     </div>

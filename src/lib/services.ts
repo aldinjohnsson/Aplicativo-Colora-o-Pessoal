@@ -10,7 +10,7 @@ export type ClientStatus =
   | 'awaiting_contract'
   | 'awaiting_form'
   | 'awaiting_photos'
-  | 'photos_submitted'   // ← NOVO: fotos enviadas, aguardando revisão da admin
+  | 'photos_submitted'
   | 'in_analysis'
   | 'completed'
 
@@ -67,6 +67,11 @@ export interface Client {
   created_at: string
   updated_at: string
   plan?: Plan
+  // ── Campos de rejeição (adicionados junto com a feature de reenvio) ──
+  form_rejection_reason?: string | null
+  form_rejected_at?: string | null
+  photos_rejection_reason?: string | null
+  photos_rejected_at?: string | null
 }
 
 export interface ClientPortalData {
@@ -77,6 +82,11 @@ export interface ClientPortalData {
     phone: string | null
     status: ClientStatus
     created_at: string
+    // Rejeição também precisa vir até aqui (o banner do portal lê desses campos)
+    form_rejection_reason?: string | null
+    form_rejected_at?: string | null
+    photos_rejection_reason?: string | null
+    photos_rejected_at?: string | null
   }
   plan: { id: string; name: string; deadline_days: number } | null
   contract: PlanContract | null
@@ -92,7 +102,13 @@ export interface ClientPortalData {
     photo_size: number
     category_id: string | null
     uploaded_at: string
+    url?: string                    // ← URL reconstruída no client
   }>
+  // ── Submissão completa do formulário (para pré-preencher em caso de reenvio) ──
+  form_submission?: {
+    form_data: Record<string, any>
+    submitted_at: string
+  } | null
   deadline: { photos_sent_at: string; deadline_date: string } | null
   result: {
     folder_url: string | null
@@ -354,17 +370,17 @@ export const adminService = {
   // ---- Approve photos (admin) ----
   /**
    * Aprovação das fotos pela admin.
-   * - Calcula o prazo a partir de AGORA (momento da aprovação)
-   * - Cria/atualiza o registro em client_deadlines
-   * - Muda o status para 'in_analysis'
-   * - Envia e-mail de notificação para a cliente
+   * - Calcula o prazo a partir de AGORA
+   * - Cria/atualiza registro em client_deadlines
+   * - Muda status para 'in_analysis'
+   * - Limpa QUALQUER motivo de rejeição pendente (fotos ou formulário)
+   * - Envia e-mail de notificação
    */
   async approvePhotos(clientId: string, deadlineDays: number): Promise<void> {
     const approvedAt = new Date()
     const deadline = calculateDeadline(approvedAt, deadlineDays)
     const deadlineDateStr = formatDateForDB(deadline)
 
-    // Upsert no prazo (fotos foram enviadas antes, prazo calculado agora)
     const { error: dlError } = await supabase
       .from('client_deadlines')
       .upsert(
@@ -378,10 +394,17 @@ export const adminService = {
       )
     if (dlError) throw dlError
 
-    // Muda status para in_analysis
     const { error: stError } = await supabase
       .from('clients')
-      .update({ status: 'in_analysis', updated_at: approvedAt.toISOString() })
+      .update({
+        status: 'in_analysis',
+        updated_at: approvedAt.toISOString(),
+        // Limpa qualquer resquício de rejeição — ciclo concluído com aprovação
+        form_rejection_reason: null,
+        form_rejected_at: null,
+        photos_rejection_reason: null,
+        photos_rejected_at: null,
+      })
       .eq('id', clientId)
     if (stError) throw stError
 
@@ -410,6 +433,156 @@ export const adminService = {
       }
     } catch (e) {
       console.warn('Erro ao enviar e-mail de aprovação de fotos:', e)
+    }
+  },
+
+  // ─── Rejeição (cliente ajusta no portal, nada é apagado) ─────────────────
+
+  /**
+   * Admin solicita ajuste no formulário.
+   * - Volta status para 'awaiting_form'
+   * - Grava motivo + timestamp
+   * - NÃO apaga a submissão anterior (cliente verá o formulário pré-preenchido)
+   * - Envia e-mail com o motivo
+   */
+  async rejectForm(clientId: string, reason: string): Promise<void> {
+    if (!reason.trim()) throw new Error('Motivo obrigatório')
+
+    const { error } = await supabase
+      .from('clients')
+      .update({
+        status: 'awaiting_form',
+        form_rejection_reason: reason,
+        form_rejected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', clientId)
+    if (error) throw error
+
+    // Notifica a cliente
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('id', clientId)
+        .single()
+
+      if (client) {
+        const portalUrl = `${window.location.origin}/c/${client.token}`
+        const planName = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'form_rejected',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            portalUrl,
+            reason,
+          }
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar e-mail de rejeição de formulário:', e)
+    }
+  },
+
+  /**
+   * Admin solicita ajuste nas fotos.
+   * - Volta status para 'awaiting_photos'
+   * - Grava motivo + timestamp
+   * - NÃO apaga as fotos (cliente verá as atuais, poderá remover/substituir)
+   * - Envia e-mail com o motivo
+   */
+  async rejectPhotos(clientId: string, reason: string): Promise<void> {
+    if (!reason.trim()) throw new Error('Motivo obrigatório')
+
+    const { error } = await supabase
+      .from('clients')
+      .update({
+        status: 'awaiting_photos',
+        photos_rejection_reason: reason,
+        photos_rejected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', clientId)
+    if (error) throw error
+
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('id', clientId)
+        .single()
+
+      if (client) {
+        const portalUrl = `${window.location.origin}/c/${client.token}`
+        const planName = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'photos_rejected',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            portalUrl,
+            reason,
+          }
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar e-mail de rejeição de fotos:', e)
+    }
+  },
+
+  /**
+   * Admin solicita ajuste nos dois — formulário E fotos.
+   * Status final: 'awaiting_form' (cliente faz formulário primeiro, depois fotos).
+   * Motivos e timestamps das duas rejeições ficam gravados simultaneamente.
+   */
+  async rejectBoth(clientId: string, formReason: string, photosReason: string): Promise<void> {
+    if (!formReason.trim()) throw new Error('Motivo do formulário obrigatório')
+    if (!photosReason.trim()) throw new Error('Motivo das fotos obrigatório')
+
+    const now = new Date().toISOString()
+    const { error } = await supabase
+      .from('clients')
+      .update({
+        status: 'awaiting_form',                    // formulário primeiro
+        form_rejection_reason: formReason,
+        form_rejected_at: now,
+        photos_rejection_reason: photosReason,
+        photos_rejected_at: now,
+        updated_at: now,
+      })
+      .eq('id', clientId)
+    if (error) throw error
+
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('id', clientId)
+        .single()
+
+      if (client) {
+        const portalUrl = `${window.location.origin}/c/${client.token}`
+        const planName = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'both_rejected',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            portalUrl,
+            formReason,
+            photosReason,
+          }
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar e-mail de rejeição de ambos:', e)
     }
   },
 
@@ -505,11 +678,107 @@ export const adminService = {
 // ============================================================
 
 export const clientService = {
+  /**
+   * Carrega dados do portal.
+   *
+   * Além do RPC principal, chama `get_client_portal_extras` para trazer:
+   *  - Campos de rejeição no cliente (form/photos_rejection_reason + timestamps)
+   *  - form_submission completo (para pré-preencher em caso de reenvio)
+   *  - storage_paths das fotos (para gerar URLs públicas)
+   *
+   * Compatibilidade: se o RPC extras ainda não foi criado no Supabase,
+   * a função retorna sem enriquecer (portal funciona como antes).
+   */
   async getPortalData(token: string): Promise<ClientPortalData | null> {
     const { data, error } = await supabase.rpc('get_client_portal', { p_token: token })
     if (error) return null
     if (data?.error) return null
-    return data as ClientPortalData
+
+    const portalData = data as ClientPortalData
+    if (!portalData?.client?.id) return portalData
+
+    // Enriquecer com dados necessários pro fluxo de rejeição
+    try {
+      const { data: extras, error: extrasErr } = await supabase.rpc(
+        'get_client_portal_extras',
+        { p_token: token }
+      )
+
+      if (!extrasErr && extras) {
+        // 1. Rejeição no cliente
+        portalData.client = {
+          ...portalData.client,
+          form_rejection_reason: extras.form_rejection_reason ?? null,
+          form_rejected_at: extras.form_rejected_at ?? null,
+          photos_rejection_reason: extras.photos_rejection_reason ?? null,
+          photos_rejected_at: extras.photos_rejected_at ?? null,
+        }
+
+        // 2. Form submission completo
+        portalData.form_submission = extras.form_submission ?? null
+
+        // 3. URLs das fotos — reconstruindo a partir de extras.photo_paths
+        // IMPORTANTE: não depende de portalData.photos estar pré-populado,
+        // pois o RPC get_client_portal pode omitir fotos em status awaiting_form
+        // (e.g. após rejeição de formulário quando o cliente já tinha fotos)
+        if (Array.isArray(extras.photo_paths) && extras.photo_paths.length > 0) {
+          const photosFromPaths = extras.photo_paths
+            .filter((p: any) => p?.id && p?.storage_path)
+            .map((p: any) => {
+              const { data: urlData } = supabase.storage
+                .from('client-photos')
+                .getPublicUrl(p.storage_path)
+              return {
+                id: p.id,
+                photo_name: p.photo_name ?? '',
+                category_id: p.category_id ?? null,
+                url: urlData.publicUrl,
+              }
+            })
+
+          if (photosFromPaths.length > 0) {
+            // Mescla com portalData.photos existente (preserva campos extras se houver)
+            const existingMap = new Map((portalData.photos || []).map((ph: any) => [ph.id, ph]))
+            portalData.photos = photosFromPaths.map((ph: any) => ({
+              ...(existingMap.get(ph.id) || {}),
+              ...ph,
+            }))
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Erro ao carregar extras do portal (não crítico):', e)
+    }
+
+    // ── Fallback: busca direta das fotos quando o RPC não as retornou ──────
+    // Cobre o caso de rejeição de formulário (status=awaiting_form) onde o
+    // RPC principal não inclui as fotos na resposta
+    if (
+      portalData.client.form_rejection_reason &&
+      (!portalData.photos || portalData.photos.length === 0)
+    ) {
+      try {
+        const { data: photoRows } = await supabase
+          .from('client_photos')
+          .select('id, photo_name, category_id, storage_path')
+          .eq('client_id', portalData.client.id)
+
+        if (photoRows && photoRows.length > 0) {
+          portalData.photos = photoRows.map((p: any) => ({
+            id: p.id,
+            photo_name: p.photo_name ?? '',
+            category_id: p.category_id ?? null,
+            url: supabase.storage
+              .from('client-photos')
+              .getPublicUrl(p.storage_path).data.publicUrl,
+          }))
+        }
+      } catch (e) {
+        console.warn('Erro ao buscar fotos (fallback):', e)
+      }
+    }
+
+    return portalData
   },
 
   async signContract(token: string): Promise<void> {
@@ -518,6 +787,17 @@ export const clientService = {
     if (data?.error) throw new Error(data.error)
   },
 
+  /**
+   * Cliente envia/reenvia o formulário.
+   *
+   * Fluxo normal: status muda para 'awaiting_photos' (pelo RPC).
+   *
+   * Caso especial pós-rejeição só do formulário: se a cliente já tem fotos
+   * enviadas, pula direto para 'photos_submitted' (revisão da admin) em vez
+   * de forçar novo envio de fotos que estavam OK.
+   *
+   * Em qualquer caso, limpa os campos de rejeição do formulário.
+   */
   async submitForm(token: string, formData: Record<string, any>): Promise<void> {
     const { data, error } = await supabase.rpc('submit_client_form', {
       p_token: token,
@@ -525,6 +805,48 @@ export const clientService = {
     })
     if (error) throw error
     if (data?.error) throw new Error(data.error)
+
+    // Pós-processamento: limpar rejeição e ajustar status se necessário
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('id, photos_rejection_reason')
+        .eq('token', token)
+        .single()
+
+      if (client) {
+        const hasPendingPhotosRejection = !!client.photos_rejection_reason
+
+        const { data: photoRows } = await supabase
+          .from('client_photos')
+          .select('id')
+          .eq('client_id', client.id)
+          .limit(1)
+        const hasPhotos = (photoRows?.length ?? 0) > 0
+
+        // Regra de status pós-submit do formulário:
+        // 1. Há rejeição de fotos pendente → cliente precisa ajustar as fotos (awaiting_photos)
+        // 2. Já tem fotos e nenhuma rejeição pendente → vai pra revisão da admin (photos_submitted)
+        // 3. Sem fotos → fluxo normal, o RPC já colocou awaiting_photos
+        const newStatus = hasPendingPhotosRejection
+          ? 'awaiting_photos'
+          : hasPhotos
+            ? 'photos_submitted'
+            : undefined   // mantém o que o RPC definiu
+
+        await supabase
+          .from('clients')
+          .update({
+            ...(newStatus ? { status: newStatus } : {}),
+            form_rejection_reason: null,
+            form_rejected_at: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('token', token)
+      }
+    } catch (e) {
+      console.warn('Erro ao limpar rejeição/ajustar status pós-submitForm:', e)
+    }
   },
 
   async uploadPhoto(
@@ -554,38 +876,59 @@ export const clientService = {
   },
 
   /**
+   * Cliente remove uma foto específica (usado durante reenvio pós-rejeição).
+   *
+   * O RPC `delete_client_photo` valida que a foto pertence ao cliente do
+   * token e apaga o registro. O storage é limpo aqui em seguida.
+   */
+  async deletePhoto(token: string, photoId: string): Promise<void> {
+    const { data, error } = await supabase.rpc('delete_client_photo', {
+      p_token: token,
+      p_photo_id: photoId,
+    })
+    if (error) throw error
+    if (data?.error) throw new Error(data.error)
+
+    // Limpeza do storage (feita no client porque o RPC só devolve o path)
+    if (data?.storage_path) {
+      await supabase.storage.from('client-photos').remove([data.storage_path])
+    }
+  },
+
+  /**
    * Cliente finaliza o envio das fotos.
    *
-   * FLUXO CORRETO:
+   * FLUXO:
    *   Cliente envia fotos → status: 'photos_submitted' (em revisão)
    *   Admin aprova fotos → status: 'in_analysis' + prazo calculado
    *
-   * O prazo NÃO é calculado aqui — só é definido quando a admin aprovar.
-   *
-   * ATENÇÃO: O RPC `finalize_client_photos` no Supabase precisa estar
-   * configurado para setar status = 'photos_submitted' (não 'in_analysis').
-   * Passe p_deadline_date como null — o prazo será definido pela admin.
+   * O prazo NÃO é calculado aqui — só quando a admin aprovar.
+   * Limpa também os campos de rejeição de fotos (se houver).
    */
   async finalizePhotos(token: string): Promise<void> {
     const sentAt = new Date()
 
     const { data, error } = await supabase.rpc('finalize_client_photos', {
       p_token: token,
-      p_deadline_date: null,          // prazo calculado apenas na aprovação da admin
+      p_deadline_date: null,
       p_photos_sent_at: sentAt.toISOString(),
     })
     if (error) throw error
     if (data?.error) throw new Error(data.error)
 
-    // Safety net: garante que o status é 'photos_submitted' mesmo se o RPC
-    // estiver com versão antiga que ainda seta 'in_analysis' diretamente.
+    // Safety net + limpeza de rejeição de fotos
     await supabase
       .from('clients')
-      .update({ status: 'photos_submitted', updated_at: sentAt.toISOString() })
+      .update({
+        status: 'photos_submitted',
+        photos_rejection_reason: null,
+        photos_rejected_at: null,
+        updated_at: sentAt.toISOString(),
+      })
       .eq('token', token)
       .in('status', ['awaiting_photos', 'photos_submitted', 'in_analysis'])
 
-    // Notificação interna para a admin (opcional)
+    // Notificação para a admin
     try {
       const { data: client } = await supabase
         .from('clients')
@@ -599,7 +942,7 @@ export const clientService = {
 
         await supabase.functions.invoke('send-contract-email', {
           body: {
-            type: 'photos_submitted',   // admin recebe alerta de revisão pendente
+            type: 'photos_submitted',
             clientName: client.full_name,
             clientEmail: client.email,
             planName,

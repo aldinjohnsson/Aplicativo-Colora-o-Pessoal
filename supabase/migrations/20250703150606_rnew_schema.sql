@@ -1008,3 +1008,123 @@ CREATE POLICY "Authenticated upload instructions"
 
   ALTER TABLE plan_photo_categories
   ADD COLUMN IF NOT EXISTS instruction_items jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+  -- ══════════════════════════════════════════════════════════════════════════
+-- MS Colors — Migração para fluxo de rejeição/reenvio (CORRIGIDA v4)
+-- Execute no SQL Editor do Supabase de uma vez só.
+-- ══════════════════════════════════════════════════════════════════════════
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 1. Colunas de rastreio de rejeição na tabela `clients`
+-- ───────────────────────────────────────────────────────────────────────────
+
+alter table public.clients
+  add column if not exists form_rejection_reason   text,
+  add column if not exists form_rejected_at        timestamptz,
+  add column if not exists photos_rejection_reason text,
+  add column if not exists photos_rejected_at      timestamptz;
+
+create index if not exists idx_clients_form_rejected_at
+  on public.clients (form_rejected_at)
+  where form_rejected_at is not null;
+
+create index if not exists idx_clients_photos_rejected_at
+  on public.clients (photos_rejected_at)
+  where photos_rejected_at is not null;
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 2. RPC: get_client_portal_extras — language sql puro, sem variáveis
+-- ───────────────────────────────────────────────────────────────────────────
+
+create or replace function public.get_client_portal_extras(p_token text)
+returns jsonb
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'form_rejection_reason',   c.form_rejection_reason,
+    'form_rejected_at',        c.form_rejected_at,
+    'photos_rejection_reason', c.photos_rejection_reason,
+    'photos_rejected_at',      c.photos_rejected_at,
+    'form_submission',
+      case
+        when fs.form_data is null then null
+        else jsonb_build_object(
+          'form_data',    fs.form_data,
+          'submitted_at', fs.submitted_at
+        )
+      end,
+    'photo_paths', coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'id', p.id,
+            'photo_name', p.photo_name,
+            'category_id', p.category_id,
+            'storage_path', p.storage_path
+          )
+          order by p.uploaded_at
+        )
+        from public.client_photos p
+        where p.client_id = c.id
+      ),
+      '[]'::jsonb
+    )
+  )
+  from public.clients c
+  left join public.client_form_submissions fs
+         on fs.client_id = c.id
+  where c.token = p_token;
+$$;
+
+grant execute on function public.get_client_portal_extras(text) to anon, authenticated;
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 3. RPC: delete_client_photo — language sql puro com CTE
+--
+-- A CTE "photo_delete" usa DELETE ... USING para garantir que só apaga
+-- fotos que pertencem ao cliente do token. Se o token não existir,
+-- client_lookup retorna vazio e o DELETE não bate em nada.
+-- ───────────────────────────────────────────────────────────────────────────
+
+create or replace function public.delete_client_photo(
+  p_token    text,
+  p_photo_id uuid
+)
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $$
+  with
+  client_lookup as (
+    select id
+    from public.clients
+    where token = p_token
+  ),
+  photo_delete as (
+    delete from public.client_photos cp
+    using client_lookup cl
+    where cp.id        = p_photo_id
+      and cp.client_id = cl.id
+    returning cp.storage_path
+  )
+  select
+    case
+      when (select count(*) from client_lookup) = 0
+        then jsonb_build_object('error', 'Cliente não encontrado')
+      when (select count(*) from photo_delete) = 0
+        then jsonb_build_object('error', 'Foto não encontrada')
+      else
+        jsonb_build_object('ok', true, 'storage_path', (select storage_path from photo_delete))
+    end;
+$$;
+
+grant execute on function public.delete_client_photo(text, uuid) to anon, authenticated;
+
+
