@@ -1098,7 +1098,22 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
   }, [prev, next, onClose])
   const photo = photos[index]
-  const handleDownload = () => { const a = document.createElement('a'); a.href = photo.url; a.download = photo.photo_name; a.target = '_blank'; a.click() }
+  const handleDownload = async () => {
+  try {
+    const res = await fetch(photo.url)
+    const blob = await res.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = photo.photo_name
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(blobUrl)
+  } catch {
+    window.open(photo.url, '_blank')
+  }
+}
   return (
     <div className="fixed inset-0 bg-black/95 z-50 flex flex-col" onClick={onClose}>
       <div className="flex items-center justify-between px-4 py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
@@ -1190,7 +1205,27 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const photosByCat: Record<string, any[]> = {}
   const uncategorized: any[] = []
   photosWithUrls.forEach(p => { if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) } else uncategorized.push(p) })
-  const downloadAll = (catPhotos: any[]) => { catPhotos.forEach((p, i) => { setTimeout(() => { const a = document.createElement('a'); a.href = p.url; a.download = p.photo_name; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a) }, i * 300) }) }
+  const downloadAll = (catPhotos: any[]) => {
+  catPhotos.forEach((p, i) => {
+    setTimeout(async () => {
+      try {
+        const res = await fetch(p.url)
+        const blob = await res.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = p.photo_name
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(blobUrl)
+      } catch {
+        // fallback: abre em nova aba se fetch falhar
+        window.open(p.url, '_blank')
+      }
+    }, i * 400)
+  })
+}
   const renderGrid = (catPhotos: any[]) => (
     <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
       {catPhotos.map((photo, idx) => (
