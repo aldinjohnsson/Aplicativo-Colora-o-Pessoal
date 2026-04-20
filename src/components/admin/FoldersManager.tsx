@@ -733,13 +733,14 @@ export function FoldersManager() {
     setGlobalEdit(prev => prev ? { ...prev, images: prev.images.filter((_, i) => i !== idx) } : prev)
   }
 
-  // Carrega a lista global quando o usuário entra nas abas de comprimentos/texturas
+  // Carrega a lista global assim que a tela de listagem aparece
+  // (garante que os contadores das abas Comprimentos/Texturas já apareçam corretos).
   useEffect(() => {
-    if (!editingFolder && (activeTab === 'comprimentos' || activeTab === 'texturas')) {
+    if (!editingFolder) {
       loadGlobalSubOpts()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, editingFolder])
+  }, [editingFolder])
 
   const openSubPicker = (catId: string, pId: string, field: 'lengths' | 'textures') => {
     loadGlobalSubOpts()
