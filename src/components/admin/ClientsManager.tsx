@@ -20,6 +20,7 @@ import { supabase } from '../../lib/supabase'
 import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib/deadlineCalculator'
 import { AIPromptConfig } from './AIPromptConfig'
 import { RejectionModal } from './RejectionModal'
+import { StageController } from './StageController'
 
 // ─── Theme System ─────────────────────────────────────────────────────────
 const THEMES = {
@@ -1533,6 +1534,16 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   </Btn>
                 </div>
               )}
+
+              {/* Controle de Etapas */}
+              <StageController
+                client={client}
+                contract={contract}
+                formSubmission={formSubmission}
+                photos={photos}
+                result={result}
+                onChange={load}
+              />
 
               {/* Progresso */}
               <div className="bg-white border border-gray-200 rounded-xl p-5">

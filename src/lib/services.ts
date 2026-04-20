@@ -586,6 +586,204 @@ export const adminService = {
     }
   },
 
+  // ─── Controle de Etapas (admin) ──────────────────────────────────────────
+
+  /**
+   * Reabrir uma etapa específica — volta a cliente para um status anterior.
+   *
+   * Funciona a partir de QUALQUER status atual (inclusive `completed`).
+   * Não apaga dados: form_submission, fotos e assinatura continuam intactos —
+   * a cliente vê tudo pré-preenchido e só ajusta o que precisar.
+   *
+   * Steps:
+   *   - 'contract': volta p/ awaiting_contract (remove assinatura)
+   *   - 'form':     volta p/ awaiting_form    (+ form_rejection_reason)
+   *   - 'photos':   volta p/ awaiting_photos  (+ photos_rejection_reason)
+   *   - 'review':   volta p/ photos_submitted (remove deadline)
+   *
+   * `reason` é opcional — se não passar, usa mensagem genérica.
+   *
+   * ATENÇÃO: se a cliente estava em `completed` e você reabre, o portal
+   * deixa de mostrar o resultado automaticamente (porque é renderizado por
+   * status). Quando você avançar de volta a `completed`, o resultado
+   * reaparece intacto (não mexemos em `is_released`).
+   */
+  async reopenStep(
+    clientId: string,
+    step: 'contract' | 'form' | 'photos' | 'review',
+    reason?: string
+  ): Promise<void> {
+    const now = new Date().toISOString()
+    const defaultReason = reason?.trim() || 'A consultora solicitou um ajuste nesta etapa.'
+
+    if (step === 'contract') {
+      // Remove assinatura — a cliente vai precisar assinar de novo
+      await supabase.from('client_contracts').delete().eq('client_id', clientId)
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'awaiting_contract',
+          // limpa rejeições antigas — voltamos ao início
+          form_rejection_reason: null,
+          form_rejected_at: null,
+          photos_rejection_reason: null,
+          photos_rejected_at: null,
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'contract_reopened', defaultReason)
+    }
+
+    if (step === 'form') {
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'awaiting_form',
+          form_rejection_reason: defaultReason,
+          form_rejected_at: now,
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'form_rejected', defaultReason)
+    }
+
+    if (step === 'photos') {
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'awaiting_photos',
+          photos_rejection_reason: defaultReason,
+          photos_rejected_at: now,
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'photos_rejected', defaultReason)
+    }
+
+    if (step === 'review') {
+      // Volta pra revisão: remove o prazo (será recalculado quando aprovar
+      // de novo) e limpa qualquer rejeição pendente
+      await supabase.from('client_deadlines').delete().eq('client_id', clientId)
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'photos_submitted',
+          form_rejection_reason: null,
+          form_rejected_at: null,
+          photos_rejection_reason: null,
+          photos_rejected_at: null,
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'review_reopened', defaultReason)
+    }
+  },
+
+  /**
+   * Helper interno — dispara e-mail de notificação ao reabrir uma etapa.
+   * Não-crítico: falhas no e-mail não bloqueiam a operação.
+   */
+  async _notifyReopen(clientId: string, type: string, reason: string): Promise<void> {
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('id', clientId)
+        .single()
+      if (!client) return
+      const portalUrl = `${window.location.origin}/c/${client.token}`
+      await supabase.functions.invoke('send-contract-email', {
+        body: {
+          type,
+          clientName: client.full_name,
+          clientEmail: client.email,
+          planName: (client as any).plan?.name || '',
+          portalUrl,
+          reason,
+        },
+      })
+    } catch (e) {
+      console.warn('Erro ao notificar reabertura de etapa:', e)
+    }
+  },
+
+  /**
+   * Avançar uma etapa manualmente — pula a ação da cliente.
+   *
+   * Útil quando a etapa foi resolvida fora do sistema (ex: contrato assinado
+   * por e-mail, formulário preenchido por ligação, etc).
+   *
+   * Transições:
+   *   awaiting_contract → awaiting_form       (cria registro de assinatura)
+   *   awaiting_form     → awaiting_photos     (limpa rejeição se houver)
+   *   awaiting_photos   → photos_submitted    (envia para revisão)
+   *   photos_submitted  → in_analysis         (delega para approvePhotos)
+   *   in_analysis       → completed           (delega para releaseResult)
+   *
+   * Em `completed` não há pra onde avançar — lança erro.
+   */
+  async advanceStep(clientId: string): Promise<void> {
+    const { data: client, error } = await supabase
+      .from('clients')
+      .select('status, plan:plans(deadline_days)')
+      .eq('id', clientId)
+      .single()
+    if (error) throw error
+    if (!client) throw new Error('Cliente não encontrada')
+
+    const now = new Date().toISOString()
+    const currentStatus = client.status as string
+
+    // Casos que delegam para ações já existentes (que calculam prazo / enviam e-mail)
+    if (currentStatus === 'photos_submitted') {
+      const days = (client as any).plan?.deadline_days ?? 5
+      return this.approvePhotos(clientId, days)
+    }
+    if (currentStatus === 'in_analysis') {
+      return this.releaseResult(clientId)
+    }
+    if (currentStatus === 'completed') {
+      throw new Error('Esta cliente já está concluída — não há próxima etapa.')
+    }
+
+    // Demais transições: mudança direta de status
+    const nextByCurrent: Record<string, string> = {
+      awaiting_contract: 'awaiting_form',
+      awaiting_form: 'awaiting_photos',
+      awaiting_photos: 'photos_submitted',
+    }
+    const next = nextByCurrent[currentStatus]
+    if (!next) throw new Error(`Status desconhecido: ${currentStatus}`)
+
+    // Se pulou o contrato, registra "assinatura manual" para o progresso ficar consistente
+    if (currentStatus === 'awaiting_contract') {
+      await supabase.from('client_contracts').upsert(
+        { client_id: clientId, signed_at: now },
+        { onConflict: 'client_id' }
+      )
+    }
+
+    const { error: updateErr } = await supabase
+      .from('clients')
+      .update({
+        status: next,
+        // ao avançar, limpa rejeições pendentes da etapa que pulamos
+        ...(currentStatus === 'awaiting_form'
+          ? { form_rejection_reason: null, form_rejected_at: null }
+          : {}),
+        ...(currentStatus === 'awaiting_photos'
+          ? { photos_rejection_reason: null, photos_rejected_at: null }
+          : {}),
+        updated_at: now,
+      })
+      .eq('id', clientId)
+    if (updateErr) throw updateErr
+  },
+
   // ---- Results ----
   async getClientPhotosWithUrls(clientId: string) {
     const { data: photos } = await supabase
