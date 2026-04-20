@@ -115,6 +115,12 @@ export function FoldersManager() {
   // Set of prompt IDs currently showing the block editor for tintReference
   const [blockEditorIds, setBlockEditorIds] = useState<Set<string>>(new Set())
 
+  // Prompt picker (reusar prompt de outra pasta)
+  interface FolderPromptEntry { folderId: string; folderName: string; catId: string; catName: string; prompt: Prompt }
+  const [promptPicker, setPromptPicker] = useState<{ catId: string } | null>(null)
+  const [allFolderPrompts, setAllFolderPrompts] = useState<FolderPromptEntry[]>([])
+  const [loadingPrompts, setLoadingPrompts] = useState(false)
+
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isFirstRender = useRef(true)
   const editingFolderRef = useRef<Folder | null>(null)
@@ -440,6 +446,35 @@ export function FoldersManager() {
       n.has(pId) ? n.delete(pId) : n.add(pId)
       return n
     })
+  }
+
+  // ── Prompt picker (reusar de outras pastas) ────────────────
+
+  const openPromptPicker = async (catId: string) => {
+    setPromptPicker({ catId })
+    setLoadingPrompts(true)
+    const { data } = await supabase.from('ai_folders').select('*').order('name')
+    const entries: FolderPromptEntry[] = []
+    for (const folder of (data || [])) {
+      if (folder.id === editingFolder?.id) continue
+      const fc: FolderConfig = typeof folder.config === 'string' ? JSON.parse(folder.config) : folder.config
+      for (const cat of (fc.categories || [])) {
+        for (const p of (cat.prompts || [])) {
+          entries.push({ folderId: folder.id, folderName: folder.name, catId: cat.id, catName: cat.name, prompt: p })
+        }
+      }
+    }
+    setAllFolderPrompts(entries)
+    setLoadingPrompts(false)
+  }
+
+  const importPrompt = (catId: string, source: FolderPromptEntry) => {
+    const cat = config.categories.find(c => c.id === catId)
+    if (!cat) return
+    const copy: Prompt = { ...source.prompt, id: uid(), order: cat.prompts.length }
+    updateCat(catId, { prompts: [...cat.prompts, copy] })
+    setActivePrompt(copy.id)
+    setPromptPicker(null)
   }
 
 
@@ -1280,10 +1315,16 @@ export function FoldersManager() {
                     </div>
                   ))}
 
-                  <button onClick={() => addPrompt(cat.id)}
-                    className="w-full py-2 border border-dashed border-gray-300 rounded-lg text-xs text-gray-500 hover:text-violet-600 flex items-center justify-center gap-1">
-                    <Plus className="h-3 w-3" /> Adicionar prompt
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => addPrompt(cat.id)}
+                      className="flex-1 py-2 border border-dashed border-gray-300 rounded-lg text-xs text-gray-500 hover:text-violet-600 flex items-center justify-center gap-1">
+                      <Plus className="h-3 w-3" /> Novo prompt
+                    </button>
+                    <button onClick={() => openPromptPicker(cat.id)}
+                      className="flex-1 py-2 border border-dashed border-blue-300 rounded-lg text-xs text-blue-500 hover:text-blue-700 hover:bg-blue-50 flex items-center justify-center gap-1">
+                      <Copy className="h-3 w-3" /> Usar existente
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1356,6 +1397,16 @@ export function FoldersManager() {
         onSelect={handleTypeSelected}
         onCancel={handleTypeModalCancel}
       />
+
+      {/* ── Prompt Picker Modal ── */}
+      {promptPicker && (
+        <PromptPickerModal
+          entries={allFolderPrompts}
+          loading={loadingPrompts}
+          onSelect={entry => importPrompt(promptPicker.catId, entry)}
+          onClose={() => setPromptPicker(null)}
+        />
+      )}
 
       {/* ── Global Sub-Option Picker Modal ── */}
       {subPicker && (
@@ -1612,6 +1663,102 @@ function TintBlockEditor({ value, onChange, parseRefToBlocks, blockLinesToText }
         <Plus className="h-3 w-3" /> Adicionar bloco
       </button>
       <p className="text-[10px] text-gray-400">Cada caixa = um bloco no PDF. Linha em branco separa blocos no texto plano.</p>
+    </div>
+  )
+}
+
+// ─── PromptPickerModal ────────────────────────────────────────────────────────
+
+interface FolderPromptEntry { folderId: string; folderName: string; catId: string; catName: string; prompt: { id: string; name: string; thumbnail: any; instructions: string; [key: string]: any } }
+
+interface PromptPickerModalProps {
+  entries: FolderPromptEntry[]
+  loading: boolean
+  onSelect: (entry: FolderPromptEntry) => void
+  onClose: () => void
+}
+
+function PromptPickerModal({ entries, loading, onSelect, onClose }: PromptPickerModalProps) {
+  const [search, setSearch] = useState('')
+
+  const filtered = search.trim()
+    ? entries.filter(e =>
+        e.prompt.name.toLowerCase().includes(search.toLowerCase()) ||
+        e.folderName.toLowerCase().includes(search.toLowerCase()) ||
+        e.catName.toLowerCase().includes(search.toLowerCase())
+      )
+    : entries
+
+  // Group by folder
+  const grouped = filtered.reduce<Record<string, { folderName: string; items: FolderPromptEntry[] }>>((acc, e) => {
+    if (!acc[e.folderId]) acc[e.folderId] = { folderName: e.folderName, items: [] }
+    acc[e.folderId].items.push(e)
+    return acc
+  }, {})
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold text-gray-900">📋 Usar prompt existente</p>
+            <p className="text-xs text-gray-400 mt-0.5">Uma cópia será adicionada a esta categoria</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
+        </div>
+
+        <div className="px-4 py-3 border-b border-gray-100">
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Buscar por nome, pasta ou categoria..."
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            autoFocus
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-10">
+              <div className="animate-spin h-5 w-5 border-2 border-blue-400 border-t-transparent rounded-full" />
+            </div>
+          ) : Object.keys(grouped).length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-8">
+              {entries.length === 0 ? 'Nenhum prompt em outras pastas' : 'Nenhum resultado encontrado'}
+            </p>
+          ) : (
+            Object.values(grouped).map(group => (
+              <div key={group.folderName}>
+                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <FolderOpen className="h-3 w-3" /> {group.folderName}
+                </p>
+                <div className="space-y-1.5">
+                  {group.items.map(entry => (
+                    <button
+                      key={entry.prompt.id}
+                      onClick={() => onSelect(entry)}
+                      className="w-full flex items-center gap-3 p-3 border border-gray-200 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all text-left"
+                    >
+                      {entry.prompt.thumbnail ? (
+                        <img src={entry.prompt.thumbnail.url} alt="" className="w-10 h-10 rounded-lg object-cover border flex-shrink-0" />
+                      ) : (
+                        <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                          <FileText className="h-4 w-4 text-gray-300" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">{entry.prompt.name || '(sem nome)'}</p>
+                        <p className="text-xs text-gray-400 truncate">{entry.catName}</p>
+                      </div>
+                      <Copy className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   )
 }
