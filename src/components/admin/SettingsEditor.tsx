@@ -3,6 +3,7 @@ import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail } from '
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { supabase } from '../../lib/supabase'
+import { useTheme } from '../../lib/theme'
 
 // ── Tipo de estilo do PDF ───────────────────────────────────────────────────
 
@@ -224,58 +225,61 @@ function PdfTemplateSection({
     onSave('', '')
   }
 
+  const { theme } = useTheme()
+
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-      <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-pink-50">
+    <div className="rounded-2xl shadow-sm overflow-hidden" style={{ background: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}>
+      <div className="px-3 sm:px-6 py-3 sm:py-4" style={{ borderBottom: `1px solid ${theme.border}`, background: `linear-gradient(to right, color-mix(in srgb, #d946ef 12%, ${theme.surface2}), color-mix(in srgb, #d946ef 6%, ${theme.surface2}))` }}>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-pink-500 rounded-xl flex items-center justify-center">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #d946ef, #ec4899)' }}>
             <FileText className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h2 className="text-base font-semibold text-gray-900">PDF Modelo</h2>
-            <p className="text-sm text-gray-500">Template modelo para geração de dossiês</p>
+            <h2 className="text-base font-semibold" style={{ color: theme.text }}>PDF Modelo</h2>
+            <p className="text-sm" style={{ color: theme.text2 }}>Template modelo para geração de dossiês</p>
           </div>
         </div>
       </div>
 
       <div className="px-6 py-5 space-y-4">
-        <p className="text-sm text-gray-500">
+        <p className="text-sm" style={{ color: theme.text2 }}>
           Envie seu modelo de PDF para gerar automaticamente o dossiê capilar pela IA.
         </p>
 
         {currentFileName ? (
-          <div className="flex items-center gap-3 bg-fuchsia-50 border border-fuchsia-200 rounded-xl p-4">
-            <div className="w-10 h-10 bg-fuchsia-100 rounded-lg flex items-center justify-center flex-shrink-0">
-              <FileText className="h-5 w-5 text-fuchsia-600" />
+          <div className="flex items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, #d946ef 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, #d946ef 30%, ${theme.border})` }}>
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `color-mix(in srgb, #d946ef 18%, ${theme.surface2})` }}>
+              <FileText className="h-5 w-5" style={{ color: '#d946ef' }} />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-800">PDF modelo carregado</p>
-              <p className="text-xs text-gray-500 truncate">{currentFileName}</p>
+              <p className="text-sm font-medium" style={{ color: theme.text }}>PDF modelo carregado</p>
+              <p className="text-xs truncate" style={{ color: theme.text2 }}>{currentFileName}</p>
             </div>
             <div className="flex gap-2 flex-shrink-0">
-              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 cursor-pointer transition-colors">
+              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}>
                 <Upload className="h-3.5 w-3.5" />
                 {saving ? 'Salvando...' : 'Trocar'}
                 <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
               </label>
               <button
                 onClick={handleDelete}
-                className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 transition-colors"
+                className="p-1.5 rounded-lg transition-colors"
+                style={{ background: 'color-mix(in srgb, #ef4444 15%, transparent)', color: '#ef4444' }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
         ) : (
-          <label className={`flex flex-col items-center gap-3 border-2 border-dashed border-fuchsia-200 rounded-xl p-8 cursor-pointer hover:bg-fuchsia-50 transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`}>
-            <div className="w-12 h-12 bg-fuchsia-100 rounded-xl flex items-center justify-center">
+          <label className={`flex flex-col items-center gap-3 rounded-xl p-8 cursor-pointer transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`} style={{ border: `2px dashed color-mix(in srgb, #d946ef 40%, ${theme.border})` }}>
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: `color-mix(in srgb, #d946ef 15%, ${theme.surface2})` }}>
               {saving
-                ? <div className="animate-spin h-6 w-6 border-2 border-fuchsia-500 border-t-transparent rounded-full" />
-                : <Upload className="h-6 w-6 text-fuchsia-500" />}
+                ? <div className="animate-spin h-6 w-6 rounded-full" style={{ border: `2px solid #d946ef`, borderTopColor: 'transparent' }} />
+                : <Upload className="h-6 w-6" style={{ color: '#d946ef' }} />}
             </div>
             <div className="text-center">
-              <p className="text-sm font-medium text-gray-700">{saving ? 'Salvando PDF no banco...' : 'Clique para enviar o PDF modelo'}</p>
-              <p className="text-xs text-gray-400 mt-1">Somente arquivos .pdf</p>
+              <p className="text-sm font-medium" style={{ color: theme.text }}>{saving ? 'Salvando PDF no banco...' : 'Clique para enviar o PDF modelo'}</p>
+              <p className="text-xs mt-1" style={{ color: theme.text3 }}>Somente arquivos .pdf</p>
             </div>
             <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
           </label>

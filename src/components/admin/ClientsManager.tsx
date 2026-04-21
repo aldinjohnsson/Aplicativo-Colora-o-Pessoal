@@ -21,61 +21,7 @@ import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib
 import { AIPromptConfig } from './AIPromptConfig'
 import { RejectionModal } from './RejectionModal'
 import { StageController } from './StageController'
-
-// ─── Theme System ─────────────────────────────────────────────────────────
-const THEMES = {
-  rose: {
-    name: 'Rosa', icon: '🌸',
-    bg: '#fff5f7', surface: '#ffffff', surface2: '#fff0f3',
-    border: '#fbc8d4', text: '#3d0c17', text2: '#9f4053', text3: '#d4899f',
-    colBg: '#fce8ed', cardBg: '#ffffff', cardBorder: '#fbc8d4', cardHover: '#fff5f7',
-    accent: '#e91e63', accentFg: '#ffffff', accentLight: '#fce4ec',
-    sidebar: '#ffffff',
-  },
-  light: {
-    name: 'Claro', icon: '☀️',
-    bg: '#f4f5f7', surface: '#ffffff', surface2: '#f0f1f3',
-    border: '#dfe1e6', text: '#172b4d', text2: '#5e6c84', text3: '#97a0af',
-    colBg: '#ebecf0', cardBg: '#ffffff', cardBorder: '#dfe1e6', cardHover: '#f4f5f7',
-    accent: '#e91e63', accentFg: '#ffffff', accentLight: '#fce4ec',
-    sidebar: '#ffffff',
-  },
-  dark: {
-    name: 'Escuro', icon: '🌙',
-    bg: '#0d1117', surface: '#161b22', surface2: '#21262d',
-    border: '#30363d', text: '#e6edf3', text2: '#8b949e', text3: '#484f58',
-    colBg: '#161b22', cardBg: '#21262d', cardBorder: '#30363d', cardHover: '#2d333b',
-    accent: '#f78166', accentFg: '#ffffff', accentLight: '#3d1c18',
-    sidebar: '#161b22',
-  },
-  violet: {
-    name: 'Violeta', icon: '💜',
-    bg: '#f5f3ff', surface: '#ffffff', surface2: '#ede9fe',
-    border: '#ddd6fe', text: '#1e0a3c', text2: '#6d28d9', text3: '#a78bfa',
-    colBg: '#ede9fe', cardBg: '#ffffff', cardBorder: '#ddd6fe', cardHover: '#f5f3ff',
-    accent: '#7c3aed', accentFg: '#ffffff', accentLight: '#ede9fe',
-    sidebar: '#ffffff',
-  },
-  slate: {
-    name: 'Grafite', icon: '⚫',
-    bg: '#1e293b', surface: '#334155', surface2: '#1e293b',
-    border: '#475569', text: '#f1f5f9', text2: '#94a3b8', text3: '#64748b',
-    colBg: '#263245', cardBg: '#334155', cardBorder: '#475569', cardHover: '#3f5068',
-    accent: '#38bdf8', accentFg: '#0c4a6e', accentLight: '#075985',
-    sidebar: '#1e293b',
-  },
-  mint: {
-    name: 'Mint', icon: '🌿',
-    bg: '#f0fdf4', surface: '#ffffff', surface2: '#dcfce7',
-    border: '#bbf7d0', text: '#052e16', text2: '#166534', text3: '#4ade80',
-    colBg: '#dcfce7', cardBg: '#ffffff', cardBorder: '#bbf7d0', cardHover: '#f0fdf4',
-    accent: '#16a34a', accentFg: '#ffffff', accentLight: '#dcfce7',
-    sidebar: '#ffffff',
-  },
-}
-
-type ThemeName = keyof typeof THEMES
-type Theme = typeof THEMES.rose
+import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 
 // ─── Status Config ────────────────────────────────────────────────────────
 const STATUSES: Record<string, {
@@ -567,7 +513,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [plans, setPlans] = useState<Plan[]>([])
   const [deadlines, setDeadlines] = useState<Record<string, DeadlineData>>({})
   const [loading, setLoading] = useState(window.innerWidth >= 768)
-  const [themeName, setThemeName] = useState<ThemeName>('rose')
+  const { theme: t, themeName, setThemeName } = useTheme()
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -579,7 +525,6 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [form, setForm] = useState({ full_name: '', email: '', phone: '', birth_date: '', plan_id: '', notes: '' })
   const [themeOpen, setThemeOpen] = useState(false)
   const themeRef = useRef<HTMLDivElement>(null)
-  const t = THEMES[themeName]
   const navigate = useNavigate()
 
   useEffect(() => { load() }, [])
