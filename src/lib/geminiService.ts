@@ -11,8 +11,8 @@ import { supabase } from './supabase'
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 
 export const GEMINI_MODELS = {
-  IMAGE_GEN: 'gemini-2.0-flash-preview-image-generation',
-  IMAGE_GEN_FALLBACK: 'gemini-2.5-flash-preview-04-17', // fallback real com suporte a imagem
+  IMAGE_GEN: 'gemini-2.5-flash-image',
+  IMAGE_GEN_FALLBACK: 'gemini-3.1-flash-image-preview', // cota separada — salva quando o principal bugar
   TEXT_ONLY: 'gemini-2.5-flash',
 } as const
 
@@ -69,7 +69,7 @@ export async function urlToBase64(url: string): Promise<{ base64: string; mimeTy
 // ──────────────────────────────────────────────────────────────
 
 let _imgQueue: Promise<any> = Promise.resolve()
-const IMG_MIN_GAP_MS = 6000 // ~10 imgs/min — margem segura para evitar 429 em rajadas
+const IMG_MIN_GAP_MS = 4000 // ~15 imgs/min — bem abaixo do limite de Tier 1
 
 function queueImageRequest<T>(fn: () => Promise<T>): Promise<T> {
   const run = _imgQueue.then(async () => {
@@ -139,7 +139,7 @@ async function callImageModel(
   body: any,
   maxAttempts = 6,
 ): Promise<{ parts: GeminiResponsePart[]; raw: any } | null> {
-  const BASE_DELAY = 5000
+  const BASE_DELAY = 2000
 
   for (let a = 0; a < maxAttempts; a++) {
     if (a > 0) {
@@ -261,12 +261,12 @@ export async function chatWithGemini({
 
     const imgResult = await queueImageRequest(async () => {
       // 1ª tentativa: modelo principal
-      const primary = await callImageModel(GEMINI_MODELS.IMAGE_GEN, apiKey, imgBody, 3)
+      const primary = await callImageModel(GEMINI_MODELS.IMAGE_GEN, apiKey, imgBody, 6)
       if (primary) return { ...primary, model: GEMINI_MODELS.IMAGE_GEN as string }
 
       // Fallback: modelo alternativo (cota separada)
       if (DEBUG) console.warn(`[Gemini] modelo principal falhou, tentando fallback ${GEMINI_MODELS.IMAGE_GEN_FALLBACK}`)
-      const fallback = await callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, apiKey, imgBody, 2)
+      const fallback = await callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, apiKey, imgBody, 3)
       if (fallback) return { ...fallback, model: GEMINI_MODELS.IMAGE_GEN_FALLBACK as string }
 
       return null
