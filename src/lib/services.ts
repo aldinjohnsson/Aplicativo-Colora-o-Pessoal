@@ -860,6 +860,29 @@ export const adminService = {
     }
   },
 
+  async uploadResultFile(clientId: string, file: File): Promise<void> {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const storagePath = `${clientId}/${Date.now()}_${safeName}`
+
+    const { error: uploadError } = await supabase.storage
+      .from('client-results')
+      .upload(storagePath, file, { contentType: file.type, upsert: false })
+    if (uploadError) throw uploadError
+
+    const { error: dbError } = await supabase
+      .from('client_result_files')
+      .insert({
+        client_id: clientId,
+        file_name: file.name,
+        storage_path: storagePath,
+        file_size: file.size,
+      })
+    if (dbError) {
+      await supabase.storage.from('client-results').remove([storagePath])
+      throw dbError
+    }
+  },
+
   async deleteResultFile(fileId: string, storagePath: string): Promise<void> {
     await supabase.storage.from('client-results').remove([storagePath])
     await supabase.from('client_result_files').delete().eq('id', fileId)
@@ -1168,5 +1191,18 @@ export const clientService = {
     } catch (e) {
       console.warn('Erro ao enviar notificação de fotos enviadas:', e)
     }
+  },
+
+  // ---- Storage ----
+  /**
+   * Gera a URL pública de um arquivo de resultado no Supabase Storage.
+   * Usado pelo portal da cliente para exibir links de download dos PDFs/arquivos
+   * liberados pela admin.
+   */
+  getResultFileUrl(storagePath: string): string {
+    const { data } = supabase.storage
+      .from('client-results')
+      .getPublicUrl(storagePath)
+    return data.publicUrl
   },
 }
