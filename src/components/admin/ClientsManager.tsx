@@ -1093,23 +1093,73 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
   )
 }
 
+// ─── Photo Thumbnail ──────────────────────────────────────────────────────
+function PhotoThumb({ photo, onClick }: { photo: any; onClick: () => void }) {
+  const [visible, setVisible] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect() } },
+      { rootMargin: '200px' }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
+  return (
+    <div
+      ref={ref}
+      className="relative aspect-square rounded-lg sm:rounded-xl overflow-hidden bg-gray-200 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all touch-manipulation active:opacity-80"
+      onClick={onClick}
+    >
+      {(!loaded || !visible) && !error && (
+        <div className="absolute inset-0 bg-gray-200 animate-pulse" />
+      )}
+      {error ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+          <Camera className="h-6 w-6 text-gray-300" />
+        </div>
+      ) : visible ? (
+        <img
+          src={photo.url}
+          alt={photo.photo_name}
+          className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => { setError(true); setLoaded(true) }}
+        />
+      ) : null}
+      {loaded && (
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
+          <Maximize2 className="h-5 w-5 sm:h-6 sm:w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Photos View ──────────────────────────────────────────────────────────
 function PhotosView({ clientId, photos, photoCategories }: { clientId: string; photos: any[]; photoCategories: any[] }) {
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
-  const [loading, setLoading] = useState(window.innerWidth >= 768)
+  const [loading, setLoading] = useState(true)
   const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
   const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
   const [downloadingAll, setDownloadingAll] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(null)
 
-  const loadPhotos = async () => {
+  const loadPhotos = useCallback(async () => {
     const p = await adminService.getClientPhotosWithUrls(clientId)
     setPhotosWithUrls(p)
     setLoading(false)
-  }
+  }, [clientId])
 
-  useEffect(() => { loadPhotos() }, [clientId])
+  useEffect(() => { loadPhotos() }, [loadPhotos])
 
   const handleAdminUpload = async (categoryId: string, files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -1147,7 +1197,33 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
     }
   }
 
-  if (loading) return <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
+  if (loading) return (
+    <div className="space-y-5">
+      <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex items-center gap-3">
+        <div className="w-10 h-10 bg-violet-200 rounded-lg animate-pulse flex-shrink-0" />
+        <div className="flex-1 space-y-2">
+          <div className="h-3 w-40 bg-violet-200 rounded animate-pulse" />
+          <div className="h-2.5 w-56 bg-violet-100 rounded animate-pulse" />
+        </div>
+      </div>
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div className="space-y-1.5">
+            <div className="h-4 w-36 bg-gray-200 rounded animate-pulse" />
+            <div className="h-3 w-16 bg-gray-100 rounded animate-pulse" />
+          </div>
+          <div className="h-8 w-24 bg-gray-100 rounded-lg animate-pulse" />
+        </div>
+        <div className="p-5">
+          <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-3">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <div key={i} className="aspect-square rounded-lg sm:rounded-xl bg-gray-200 animate-pulse" style={{ animationDelay: `${i * 40}ms` }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
   
   const photosByCat: Record<string, any[]> = {}
   const uncategorized: any[] = []
@@ -1183,23 +1259,34 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
       setDownloadingAll(null)
     }
   }
-  const renderGrid = (catPhotos: any[]) => (
-    <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-3">
-      {catPhotos.map((photo, idx) => (
-        <div key={photo.id} className="relative aspect-square rounded-lg sm:rounded-xl overflow-hidden bg-gray-100 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all touch-manipulation active:opacity-80" onClick={() => setLightbox({ photos: catPhotos, index: idx })}>
-          <img src={photo.url} alt={photo.photo_name} className="w-full h-full object-cover" loading="lazy" />
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center"><Maximize2 className="h-5 w-5 sm:h-6 sm:w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" /></div>
+  const hasPhotos = photosWithUrls.length > 0
+
+  const CategoryCard = ({ title, catPhotos, label }: { title: string; catPhotos: any[]; label: string }) => (
+    <div className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+      <div className="flex items-center gap-4 flex-1 min-w-0">
+        <div className="w-12 h-12 bg-rose-50 rounded-xl flex items-center justify-center flex-shrink-0">
+          <Camera className="h-6 w-6 text-rose-400" />
         </div>
-      ))}
+        <div className="min-w-0">
+          <p className="font-semibold text-gray-900 truncate">{title}</p>
+          <p className="text-sm text-gray-400 mt-0.5">{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos, label)} loading={downloadingAll === label} disabled={downloadingAll !== null}>
+          <Download className="h-3.5 w-3.5" /> ZIP
+        </Btn>
+        <Btn variant="primary" size="sm" onClick={() => setLightbox({ photos: catPhotos, index: 0 })}>
+          <Eye className="h-3.5 w-3.5" /> Ver Fotos
+        </Btn>
+      </div>
     </div>
   )
-  
-  const hasPhotos = photosWithUrls.length > 0
 
   return (
     <>
-      <div className="space-y-5">
-        {/* Botão global de adicionar fotos */}
+      <div className="space-y-3">
+        {/* Adicionar fotos */}
         <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex items-center gap-3 flex-1">
             <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center flex-shrink-0">
@@ -1223,43 +1310,22 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
                 ))}
               </select>
             )}
-            <input
-              ref={uploadInputRef}
-              type="file"
-              multiple
-              accept="image/*"
-              className="hidden"
-              onChange={e => handleAdminUpload(selectedCategoryForUpload || '__none__', e.target.files)}
-            />
-            <Btn
-              variant="primary"
-              size="sm"
-              onClick={() => uploadInputRef.current?.click()}
-              loading={uploadingToCategory !== null}
-              className="whitespace-nowrap"
-            >
+            <input ref={uploadInputRef} type="file" multiple accept="image/*" className="hidden"
+              onChange={e => handleAdminUpload(selectedCategoryForUpload || '__none__', e.target.files)} />
+            <Btn variant="primary" size="sm" onClick={() => uploadInputRef.current?.click()} loading={uploadingToCategory !== null} className="whitespace-nowrap">
               <Upload className="h-3.5 w-3.5" /> Adicionar Fotos
             </Btn>
           </div>
         </div>
 
-        {photoCategories.map(cat => { const catPhotos = photosByCat[cat.id] || []; if (catPhotos.length === 0) return null; return (
-          <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-              <div><h3 className="font-semibold text-gray-900">{cat.title}</h3><p className="text-xs text-gray-400 mt-0.5">{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p></div>
-              <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos, cat.title)} loading={downloadingAll === cat.title} disabled={downloadingAll !== null}><Download className="h-3.5 w-3.5" /> Baixar ZIP</Btn>
-            </div>
-            <div className="p-5">{renderGrid(catPhotos)}</div>
-          </div>
-        )})}
+        {/* Cards por categoria */}
+        {photoCategories.map(cat => {
+          const catPhotos = photosByCat[cat.id] || []
+          if (catPhotos.length === 0) return null
+          return <CategoryCard key={cat.id} title={cat.title} catPhotos={catPhotos} label={cat.title} />
+        })}
         {uncategorized.length > 0 && (
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-              <div><h3 className="font-semibold text-gray-900">Fotos sem categoria</h3><p className="text-xs text-gray-400 mt-0.5">{uncategorized.length} foto{uncategorized.length !== 1 ? 's' : ''}</p></div>
-              <Btn variant="outline" size="sm" onClick={() => downloadAll(uncategorized, 'Fotos')} loading={downloadingAll === 'Fotos'} disabled={downloadingAll !== null}><Download className="h-3.5 w-3.5" /> Baixar ZIP</Btn>
-            </div>
-            <div className="p-5">{renderGrid(uncategorized)}</div>
-          </div>
+          <CategoryCard title="Fotos sem categoria" catPhotos={uncategorized} label="Fotos" />
         )}
 
         {!hasPhotos && (
