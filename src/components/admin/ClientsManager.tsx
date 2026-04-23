@@ -22,6 +22,7 @@ import { AIPromptConfig } from './AIPromptConfig'
 import { RejectionModal } from './RejectionModal'
 import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
+import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
 
 // ─── Status Config ────────────────────────────────────────────────────────
 const STATUSES: Record<string, {
@@ -642,7 +643,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         </div>
 
         {!isArchiveView && viewMode === 'board' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }} className="hidden sm:flex">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }} className="hidden md:flex">
             {COL_ORDER.map(key => {
               const cfg = STATUSES[key]
               const count = groupedByStatus[key]?.length || 0
@@ -1061,27 +1062,27 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
 }
   return (
     <div className="fixed inset-0 bg-black/95 z-50 flex flex-col" onClick={onClose}>
-      <div className="flex items-center justify-between px-4 py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
-        <p className="text-white text-sm font-medium truncate max-w-xs">{photo.photo_name}</p>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setZoom(z => Math.max(z - 0.5, 0.5))} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg"><ZoomOut className="h-4 w-4" /></button>
-          <span className="text-white/70 text-xs w-12 text-center">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(z => Math.min(z + 0.5, 4))} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg"><ZoomIn className="h-4 w-4" /></button>
-          <button onClick={handleDownload} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg"><Download className="h-4 w-4" /></button>
-          <span className="text-white/40 text-xs">{index + 1}/{photos.length}</span>
-          <button onClick={onClose} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg ml-1"><X className="h-5 w-5" /></button>
+      <div className="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
+        <p className="text-white text-xs sm:text-sm font-medium truncate max-w-[40vw] sm:max-w-xs">{photo.photo_name}</p>
+        <div className="flex items-center gap-1 sm:gap-2">
+          <button onClick={() => setZoom(z => Math.max(z - 0.5, 0.5))} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomOut className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          <span className="text-white/70 text-xs w-10 text-center hidden sm:block">{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom(z => Math.min(z + 0.5, 4))} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomIn className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          <button onClick={handleDownload} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><Download className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          <span className="text-white/40 text-xs px-1">{index + 1}/{photos.length}</span>
+          <button onClick={onClose} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation ml-1"><X className="h-5 w-5" /></button>
         </div>
       </div>
       <div className="flex-1 flex items-center justify-center overflow-hidden relative" onClick={e => e.stopPropagation()}>
-        {photos.length > 1 && <button onClick={prev} className="absolute left-4 z-10 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white"><ChevronLeft className="h-6 w-6" /></button>}
+        {photos.length > 1 && <button onClick={prev} className="absolute left-2 sm:left-4 z-10 p-3 sm:p-3 bg-black/50 hover:bg-black/70 active:bg-black/80 rounded-full text-white touch-manipulation"><ChevronLeft className="h-6 w-6" /></button>}
         <img src={photo.url} alt={photo.photo_name} className="max-w-full max-h-full object-contain select-none transition-transform duration-200" style={{ transform: `scale(${zoom})`, cursor: zoom > 1 ? 'move' : 'default' }} draggable={false} />
-        {photos.length > 1 && <button onClick={next} className="absolute right-4 z-10 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white"><ChevronRight className="h-6 w-6" /></button>}
+        {photos.length > 1 && <button onClick={next} className="absolute right-2 sm:right-4 z-10 p-3 sm:p-3 bg-black/50 hover:bg-black/70 active:bg-black/80 rounded-full text-white touch-manipulation"><ChevronRight className="h-6 w-6" /></button>}
       </div>
       {photos.length > 1 && (
-        <div className="flex-shrink-0 bg-black/60 py-3 px-4" onClick={e => e.stopPropagation()}>
-          <div className="flex gap-2 justify-center overflow-x-auto pb-1">
+        <div className="flex-shrink-0 bg-black/60 py-2 sm:py-3 px-4" onClick={e => e.stopPropagation()}>
+          <div className="flex gap-1.5 sm:gap-2 justify-center overflow-x-auto pb-1">
             {photos.map((p, i) => (
-              <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }} className={`flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden transition-all ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
+              <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }} className={`flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden transition-all touch-manipulation ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
                 <img src={p.url} alt={p.photo_name} className="w-full h-full object-cover" />
               </button>
             ))}
@@ -1098,6 +1099,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
   const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
+  const [downloadingAll, setDownloadingAll] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(null)
 
@@ -1150,33 +1152,43 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const photosByCat: Record<string, any[]> = {}
   const uncategorized: any[] = []
   photosWithUrls.forEach(p => { if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) } else uncategorized.push(p) })
-  const downloadAll = (catPhotos: any[]) => {
-  catPhotos.forEach((p, i) => {
-    setTimeout(async () => {
-      try {
-        const res = await fetch(p.url)
-        const blob = await res.blob()
-        const blobUrl = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = blobUrl
-        a.download = p.photo_name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(blobUrl)
-      } catch {
-        // fallback: abre em nova aba se fetch falhar
-        window.open(p.url, '_blank')
-      }
-    }, i * 400)
-  })
-}
+  const downloadAll = async (catPhotos: any[], label: string) => {
+    if (downloadingAll) return
+    setDownloadingAll(label)
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = new JSZip()
+      const folder = zip.folder(label) ?? zip
+      await Promise.all(
+        catPhotos.map(async (p) => {
+          try {
+            const res = await fetch(p.url)
+            const blob = await res.blob()
+            folder.file(p.photo_name, blob)
+          } catch { /* pula foto com erro */ }
+        })
+      )
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = `${label}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch (e: any) {
+      alert(`Erro ao gerar ZIP: ${e.message}`)
+    } finally {
+      setDownloadingAll(null)
+    }
+  }
   const renderGrid = (catPhotos: any[]) => (
-    <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
+    <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-3">
       {catPhotos.map((photo, idx) => (
-        <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all" onClick={() => setLightbox({ photos: catPhotos, index: idx })}>
+        <div key={photo.id} className="relative aspect-square rounded-lg sm:rounded-xl overflow-hidden bg-gray-100 cursor-pointer group hover:ring-2 hover:ring-rose-400 transition-all touch-manipulation active:opacity-80" onClick={() => setLightbox({ photos: catPhotos, index: idx })}>
           <img src={photo.url} alt={photo.photo_name} className="w-full h-full object-cover" loading="lazy" />
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center"><Maximize2 className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" /></div>
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center"><Maximize2 className="h-5 w-5 sm:h-6 sm:w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" /></div>
         </div>
       ))}
     </div>
@@ -1188,9 +1200,9 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
     <>
       <div className="space-y-5">
         {/* Botão global de adicionar fotos */}
-        <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center">
+        <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex items-center gap-3 flex-1">
+            <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center flex-shrink-0">
               <Upload className="h-5 w-5 text-violet-600" />
             </div>
             <div>
@@ -1198,12 +1210,12 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
               <p className="text-xs text-violet-600 mt-0.5">Faça upload de fotos adicionais pelo admin</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {photoCategories.length > 0 && (
               <select
                 value={selectedCategoryForUpload || ''}
                 onChange={e => setSelectedCategoryForUpload(e.target.value || null)}
-                className="px-3 py-2 border border-violet-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white"
+                className="flex-1 sm:flex-none px-3 py-2 border border-violet-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white min-w-0"
               >
                 <option value="">Sem categoria</option>
                 {photoCategories.map(cat => (
@@ -1224,6 +1236,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
               size="sm"
               onClick={() => uploadInputRef.current?.click()}
               loading={uploadingToCategory !== null}
+              className="whitespace-nowrap"
             >
               <Upload className="h-3.5 w-3.5" /> Adicionar Fotos
             </Btn>
@@ -1234,7 +1247,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
           <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div><h3 className="font-semibold text-gray-900">{cat.title}</h3><p className="text-xs text-gray-400 mt-0.5">{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p></div>
-              <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos)}><Download className="h-3.5 w-3.5" /> Baixar todas</Btn>
+              <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos, cat.title)} loading={downloadingAll === cat.title} disabled={downloadingAll !== null}><Download className="h-3.5 w-3.5" /> Baixar ZIP</Btn>
             </div>
             <div className="p-5">{renderGrid(catPhotos)}</div>
           </div>
@@ -1243,7 +1256,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div><h3 className="font-semibold text-gray-900">Fotos sem categoria</h3><p className="text-xs text-gray-400 mt-0.5">{uncategorized.length} foto{uncategorized.length !== 1 ? 's' : ''}</p></div>
-              <Btn variant="outline" size="sm" onClick={() => downloadAll(uncategorized)}><Download className="h-3.5 w-3.5" /> Baixar todas</Btn>
+              <Btn variant="outline" size="sm" onClick={() => downloadAll(uncategorized, 'Fotos')} loading={downloadingAll === 'Fotos'} disabled={downloadingAll !== null}><Download className="h-3.5 w-3.5" /> Baixar ZIP</Btn>
             </div>
             <div className="p-5">{renderGrid(uncategorized)}</div>
           </div>
@@ -1292,6 +1305,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [editingDeadline, setEditingDeadline] = useState(false)
   const [deadlineInput, setDeadlineInput] = useState('')
   const [savingDeadline, setSavingDeadline] = useState(false)
+  const [chatEnabled, setChatEnabled] = useState(true)
 
   useEffect(() => { load() }, [clientId])
 
@@ -1319,6 +1333,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setData(detail)
     setNotes(detail.client.notes || '')
     if (detail.result) setResultForm({ observations: detail.result.observations || '' })
+    if (detail.result) setChatEnabled(detail.result.chat_enabled ?? true)
     const folders = foldersRes.data || []
     setAiFolders(folders)
     const tpls = (templatesRes.data || []).map((t: any) => ({ ...t, options: Array.isArray(t.options) ? t.options : [] }))
@@ -1391,7 +1406,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const handleReleaseResult = async () => {
     const hasContent = resultForm.observations.trim() || resultFiles?.length > 0 || linkedFolderId
     if (!hasContent) { if (!confirm('⚠️ Nenhum conteúdo adicionado.\n\nDeseja liberar mesmo assim?')) return } else { if (!confirm('Liberar o resultado para a cliente?')) return }
-    setReleasingResult(true); try { await adminService.releaseResult(clientId!); load() } catch (e: any) { alert(e.message) } finally { setReleasingResult(false) }
+    setReleasingResult(true); try { await adminService.releaseResult(clientId!, { chatEnabled }); load() } catch (e: any) { alert(e.message) } finally { setReleasingResult(false) }
+  }
+  const handleSaveChatEnabled = async () => {
+    const { error } = await supabase.from('client_results').upsert(
+      { client_id: clientId!, chat_enabled: chatEnabled, updated_at: new Date().toISOString() },
+      { onConflict: 'client_id' }
+    )
+    if (error) throw error
   }
   const handleSaveAIConfig = async () => {
     setSavingAI(true); setAiSaveStatus('idle')
@@ -1417,31 +1439,46 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   return (
     <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f4f5f7' }}>
       {/* Topbar */}
-      <div style={{ background: '#ffffff', borderBottom: '2px solid #dfe1e6', padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
-        <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: '#5e6c84', display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
-          <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
-          <span style={{ display: 'block', width: 14, height: 2, background: 'currentColor', borderRadius: 2 }} />
-          <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
-        </button>
-        <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(135deg, #e91e63, #ff6090)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(233,30,99,0.3)' }}>
-          <Palette size={14} color="white" />
-        </div>
-        <div style={{ width: 1, height: 22, background: '#dfe1e6', flexShrink: 0, margin: '0 2px' }} />
-        <button onClick={() => navigate('/admin/clients')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '4px 6px', borderRadius: 6, color: '#5e6c84' }}>
-          <ArrowLeft size={14} /><span style={{ fontSize: 14, fontWeight: 600, color: '#5e6c84' }}>Clientes</span>
-        </button>
-        <span style={{ fontSize: 14, color: '#97a0af' }}>/</span>
-        <span style={{ fontSize: 14, fontWeight: 700, color: '#172b4d', marginRight: 4 }}>{client.full_name}</span>
-        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: status?.bg, color: status?.textColor }}>{status?.label}</span>
+      <div style={{ background: '#ffffff', borderBottom: '2px solid #dfe1e6', flexShrink: 0 }}>
+        {/* Linha principal */}
+        <div style={{ padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, height: 52 }}>
+          <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: '#5e6c84', display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+            <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
+            <span style={{ display: 'block', width: 14, height: 2, background: 'currentColor', borderRadius: 2 }} />
+            <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
+          </button>
+          <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(135deg, #e91e63, #ff6090)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(233,30,99,0.3)' }}>
+            <Palette size={14} color="white" />
+          </div>
+          <div style={{ width: 1, height: 22, background: '#dfe1e6', flexShrink: 0, margin: '0 2px' }} />
+          <button onClick={() => navigate('/admin/clients')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '4px 6px', borderRadius: 6, color: '#5e6c84', flexShrink: 0 }}>
+            <ArrowLeft size={14} /><span style={{ fontSize: 14, fontWeight: 600, color: '#5e6c84' }} className="hidden sm:inline">Clientes</span>
+          </button>
+          <span style={{ fontSize: 14, color: '#97a0af', flexShrink: 0 }} className="hidden sm:block">/</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: '#172b4d', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{client.full_name}</span>
+          <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: status?.bg, color: status?.textColor, flexShrink: 0 }} className="hidden sm:inline">{status?.short || status?.label}</span>
 
-        {/* Quick approve in topbar */}
+          {/* Approve buttons — desktop inline */}
+          {client.status === 'photos_submitted' && (
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexShrink: 0 }} className="hidden sm:flex">
+              <Btn variant="outline" size="sm" onClick={() => setShowRejection(true)} className="border-amber-300 text-amber-700 hover:bg-amber-50">
+                <AlertTriangle className="h-3.5 w-3.5" /> Solicitar Ajustes
+              </Btn>
+              <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos}>
+                <CheckCircle className="h-3.5 w-3.5" /> Aprovar e Iniciar Análise
+              </Btn>
+            </div>
+          )}
+        </div>
+
+        {/* Linha de aprovação — mobile only */}
         {client.status === 'photos_submitted' && (
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <Btn variant="outline" size="sm" onClick={() => setShowRejection(true)} className="border-amber-300 text-amber-700 hover:bg-amber-50">
-              <AlertTriangle className="h-3.5 w-3.5" /> Solicitar Ajustes
+          <div className="sm:hidden flex gap-2 px-3 pb-2.5">
+            <Btn variant="outline" size="sm" onClick={() => setShowRejection(true)} className="flex-1 justify-center border-amber-300 text-amber-700 hover:bg-amber-50">
+              <AlertTriangle className="h-3.5 w-3.5" /> Ajustes
             </Btn>
-            <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos}>
-              <CheckCircle className="h-3.5 w-3.5" /> Aprovar e Iniciar Análise
+            <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos} className="flex-1 justify-center">
+              <CheckCircle className="h-3.5 w-3.5" /> Aprovar Análise
             </Btn>
           </div>
         )}
@@ -1452,25 +1489,25 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
         <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 max-w-6xl mx-auto w-full">
 
           {/* Header */}
-          <div className="flex items-start justify-between flex-wrap gap-4">
+          <div className="flex items-start justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center">
+              <div className="w-12 h-12 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center flex-shrink-0">
                 <span className="text-rose-600 font-bold text-lg">{client.full_name[0].toUpperCase()}</span>
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-xl font-bold text-gray-900">{client.full_name}</h1>
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
                 </div>
-                <div className="flex items-center gap-3 text-sm text-gray-500 mt-0.5">
-                  <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" />{client.email}</span>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-gray-500 mt-0.5">
+                  <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" /><span className="truncate max-w-[180px] sm:max-w-none">{client.email}</span></span>
                   {client.phone && <span className="flex items-center gap-1"><Phone className="h-3.5 w-3.5" />{client.phone}</span>}
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Btn variant="outline" size="sm" onClick={copyLink}>{copied ? <><Check className="h-3.5 w-3.5" /> Copiado!</> : <><FileText className="h-3.5 w-3.5" /> Copiar Link</>}</Btn>
-              <a href={portalLink} target="_blank" rel="noopener noreferrer"><Btn variant="ghost" size="sm"><ExternalLink className="h-3.5 w-3.5" /> Abrir Portal</Btn></a>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Btn variant="outline" size="sm" onClick={copyLink}>{copied ? <><Check className="h-3.5 w-3.5" /> Copiado!</> : <><Copy className="h-3.5 w-3.5" /><span className="hidden sm:inline"> Copiar Link</span></>}</Btn>
+              <a href={portalLink} target="_blank" rel="noopener noreferrer"><Btn variant="ghost" size="sm"><ExternalLink className="h-3.5 w-3.5" /><span className="hidden sm:inline"> Portal</span></Btn></a>
             </div>
           </div>
 
@@ -1484,9 +1521,21 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl overflow-x-auto w-full sm:w-fit">
-            {[{ id: 'overview', label: 'Visão Geral' }, { id: 'photos', label: `Fotos (${photos.length})` }, { id: 'result', label: 'Resultado' }, { id: 'ai', label: '✨ IA' }].map(({ id, label }) => (
-              <button key={id} onClick={() => setTab(id as any)} className={`px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl overflow-x-auto scrollbar-hide -mx-3 sm:mx-0 px-3 sm:px-1 w-auto sm:w-fit">
+            {[
+              { id: 'overview', label: 'Visão Geral' },
+              { id: 'photos', label: `Fotos (${photos.length})` },
+              { id: 'result', label: 'Resultado' },
+              { id: 'documents', label: 'Documentos' },
+              { id: 'ai', label: '✨ IA' },
+            ].map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => setTab(id as any)}
+                className={`px-3 sm:px-4 py-2.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors touch-manipulation ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 active:bg-white/50'}`}
+              >
+                {label}
+              </button>
             ))}
           </div>
 
@@ -1644,6 +1693,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
           {tab === 'photos' && <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} />}
 
+          {tab === 'documents' && <ClientDocumentsTab clientId={clientId!} />}
+
           {tab === 'result' && (
             <div className="space-y-5 max-w-3xl">
               {result?.is_released ? (
@@ -1778,6 +1829,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               isReleased={result?.is_released || false}
               onRelease={handleReleaseResult}
               releasingResult={releasingResult}
+              chatEnabled={chatEnabled}
+              onChatEnabledChange={setChatEnabled}
+              onSaveChatEnabled={handleSaveChatEnabled}
             />
           </div>
         </div>

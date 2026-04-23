@@ -476,11 +476,11 @@ export function FoldersManager() {
       ? (targetPrompt.tintReference || '')
       : (targetPrompt.reference || '')
 
-    // Use existing blocks if available, else parse from caption text
-    const existingBlocks = targetPrompt.pdfLayout?.blocks
-    const baseBlocks: Array<{ rawLines: string[]; isSection: boolean; id: string }> = existingBlocks?.length
-      ? existingBlocks
-      : parseRefToBlocks(captionText)
+    // Texto SEMPRE vem da Referência atual (tintReference/reference) do prompt alvo.
+    // Nunca reusar existingBlocks: os rawLines salvos podem estar desatualizados
+    // se o usuário editou a Referência depois de já ter criado um Layout PDF.
+    // Formato copia apenas estilos, cores, fontes, margens e posições — nunca texto.
+    const baseBlocks = parseRefToBlocks(captionText)
 
     const fallbackStyle = template.blockStyles[template.blockStyles.length - 1] ?? {}
     const styledBlocks: EditorBlock[] = baseBlocks.map((b, i) => {

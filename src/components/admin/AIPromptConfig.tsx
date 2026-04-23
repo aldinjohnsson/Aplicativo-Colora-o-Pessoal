@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react'
 import {
   Wand2, Save, CheckCircle, Camera, Trash2,
-  Coins, Plus, Minus, Send, Lock, Unlock, RefreshCw
+  Coins, Plus, Minus, Send, Lock, Unlock, RefreshCw, MessageSquare
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { photoTypesService, PhotoType } from './PhotoTypesManager'
@@ -13,6 +13,9 @@ interface AIPromptConfigProps {
   isReleased: boolean
   onRelease: () => void
   releasingResult: boolean
+  chatEnabled: boolean
+  onChatEnabledChange: (v: boolean) => void
+  onSaveChatEnabled: () => Promise<void>
 }
 
 // ── Foto de referência vinculada a um type ──────────────────
@@ -24,7 +27,7 @@ export interface RefPhoto {
   url: string
 }
 
-export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, releasingResult }: AIPromptConfigProps) {
+export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, releasingResult, chatEnabled, onChatEnabledChange, onSaveChatEnabled }: AIPromptConfigProps) {
   const [photoTypes, setPhotoTypes] = useState<PhotoType[]>([])
   const [refPhotos, setRefPhotos] = useState<RefPhoto[]>([])
   const [uploadingTypeId, setUploadingTypeId] = useState<string | null>(null)
@@ -34,6 +37,9 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
   const [usedImage, setUsedImage] = useState(0)
   const [usedText, setUsedText] = useState(0)
   const [savingCredits, setSavingCredits] = useState(false)
+
+  const [savingChat, setSavingChat] = useState(false)
+  const [chatSaved, setChatSaved] = useState(false)
 
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
@@ -321,10 +327,56 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
             </p>
             <p className="text-xs text-gray-500">
               {isReleased
-                ? 'A cliente já pode acessar o resultado e a IA'
+                ? `A cliente já pode acessar o resultado${chatEnabled ? ' e o chat IA' : ''}`
                 : 'A cliente ainda não vê o resultado. Libere quando estiver pronto.'}
             </p>
           </div>
+        </div>
+
+        {/* Toggle chat — visível sempre para permitir alteração após liberação */}
+        <div className="bg-white rounded-xl border border-gray-200 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-violet-500 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-gray-800">Chat com IA</p>
+                <p className="text-xs text-gray-400">Liberar acesso à consultora virtual</p>
+              </div>
+            </div>
+            <button
+              onClick={() => { onChatEnabledChange(!chatEnabled); setChatSaved(false) }}
+              className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${chatEnabled ? 'bg-violet-500' : 'bg-gray-300'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${chatEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+            </button>
+          </div>
+          {!chatEnabled && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              A cliente verá apenas os materiais (pasta, PDFs, observações), sem chat.
+            </p>
+          )}
+          {/* Botão salvar — só aparece quando o resultado já foi liberado */}
+          {isReleased && (
+            <button
+              onClick={async () => {
+                setSavingChat(true)
+                try {
+                  await onSaveChatEnabled()
+                  setChatSaved(true)
+                  setTimeout(() => setChatSaved(false), 2500)
+                } finally { setSavingChat(false) }
+              }}
+              disabled={savingChat}
+              className="w-full py-2 bg-violet-600 text-white rounded-lg text-xs font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
+            >
+              {savingChat
+                ? <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full" />
+                : chatSaved
+                  ? <CheckCircle className="h-3.5 w-3.5" />
+                  : <Save className="h-3.5 w-3.5" />}
+              {savingChat ? 'Salvando...' : chatSaved ? 'Salvo!' : 'Salvar configuração do chat'}
+            </button>
+          )}
         </div>
 
         {!isReleased && (

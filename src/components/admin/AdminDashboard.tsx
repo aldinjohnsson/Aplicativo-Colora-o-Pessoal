@@ -1,12 +1,13 @@
 // src/components/admin/AdminDashboard.tsx
 import React, { useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom'
-import { Users, Layers, LogOut, Palette, Settings, FolderOpen, Menu, X, ChevronRight } from 'lucide-react'
+import { Users, Layers, LogOut, Palette, Settings, FolderOpen, Menu, X, ChevronRight, FileText } from 'lucide-react'
 import { adminService } from '../../lib/services'
 import { ClientsManager } from './ClientsManager'
 import { PlansManager } from './PlansManager'
 import { FoldersManager } from './FoldersManager'
 import SettingsEditor from './SettingsEditor'
+import { DocumentsHub } from './documents/DocumentsHub'
 import { ThemeProvider, useTheme, THEMES, ThemeName, Theme } from '../../lib/theme'
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 const NAV_ITEMS = [
   { to: '/admin/clients', label: 'Clientes', icon: Users, description: 'Gerenciar clientes' },
   { to: '/admin/plans', label: 'Planos', icon: Layers, description: 'Planos e pacotes' },
+  { to: '/admin/documents', label: 'Documentos', icon: FileText, description: 'Tags e templates de PDF' },
   { to: '/admin/folders', label: 'Pastas IA', icon: FolderOpen, description: 'Pastas de análise IA' },
   { to: '/admin/settings', label: 'Configurações', icon: Settings, description: 'Ajustes do sistema' },
 ]
@@ -278,6 +280,11 @@ function AdminDashboardInner({ onLogout }: Props) {
             <Route path="plans/*" element={
               <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
                 <PlansManager />
+              </div>
+            } />
+            <Route path="documents/*" element={
+              <div className="h-full">
+                <DocumentsHub />
               </div>
             } />
             <Route path="folders" element={

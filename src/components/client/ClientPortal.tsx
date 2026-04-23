@@ -1432,7 +1432,7 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
         </p>
       </div>
 
-      {!loadingPrompt && aiPrompt && (
+      {!loadingPrompt && aiPrompt && result.chat_enabled !== false && (
         <div className="space-y-2">
           <div className="flex items-center gap-2 px-1">
             <div className="h-px flex-1 bg-gradient-to-r from-transparent to-violet-200" />

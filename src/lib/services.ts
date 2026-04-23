@@ -114,6 +114,7 @@ export interface ClientPortalData {
     folder_url: string | null
     observations: string | null
     released_at: string
+    chat_enabled: boolean
     files: Array<{ id: string; file_name: string; storage_path: string; file_size: number }>
   } | null
 }
@@ -813,7 +814,7 @@ export const adminService = {
     if (error) throw error
   },
 
-  async releaseResult(clientId: string): Promise<void> {
+  async releaseResult(clientId: string, options?: { chatEnabled?: boolean }): Promise<void> {
     const { error } = await supabase
       .from('client_results')
       .upsert(
@@ -821,6 +822,7 @@ export const adminService = {
           client_id: clientId,
           is_released: true,
           released_at: new Date().toISOString(),
+          chat_enabled: options?.chatEnabled ?? true,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'client_id' }
@@ -973,6 +975,21 @@ export const clientService = {
         }
       } catch (e) {
         console.warn('Erro ao buscar fotos (fallback):', e)
+      }
+    }
+
+    // ── Buscar chat_enabled da tabela client_results ──────────────────────
+    // O RPC get_client_portal não retorna este campo, então buscamos direto.
+    if (portalData.result) {
+      try {
+        const { data: resultRow } = await supabase
+          .from('client_results')
+          .select('chat_enabled')
+          .eq('client_id', portalData.client.id)
+          .single()
+        portalData.result.chat_enabled = resultRow?.chat_enabled ?? true
+      } catch (e) {
+        portalData.result.chat_enabled = true
       }
     }
 
