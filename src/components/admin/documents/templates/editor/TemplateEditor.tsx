@@ -1,12 +1,16 @@
 // src/components/admin/documents/templates/editor/TemplateEditor.tsx
 //
-// Editor visual de template (Fase 2 — skeleton).
+// Editor visual de template — Fase 3.
 //
-// Correção chave: o PDF é carregado **UMA ÚNICA VEZ** aqui e o
-// PDFDocumentProxy é compartilhado com todos os filhos (páginas + miniaturas).
-// Motivo: pdfjs v4+ detacha o ArrayBuffer quando você chama getDocument(),
-// então abrir várias vezes o mesmo buffer causa "The PDF file is empty,
-// i.e. its size is zero bytes" no segundo consumidor em diante.
+// ATENÇÃO À ESTRATÉGIA DE ALTURA:
+// O AdminDashboard não dá altura fixa para a rota de Documentos — ela é
+// scrollável normalmente. Para evitar dependências frágeis na árvore de
+// flex do pai, este editor se "prende" ao viewport sozinho via
+//     position: sticky; top: 52px; height: calc(100vh - 52px)
+// O offset 52px desconta a topbar do AdminDashboard.
+//
+// Isso garante que palette lateral e miniaturas fiquem fixas enquanto
+// apenas o canvas central rola internamente.
 
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
@@ -14,23 +18,26 @@ import React, {
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, ZoomIn, ZoomOut, Layers, AlertCircle, Loader2,
-  Construction, FileText,
+  FileText, Type as TypeIcon, Image as ImageIcon,
+  MousePointer2, Check,
 } from 'lucide-react'
 import * as pdfjs from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { documentsService } from '../../lib/documentsService'
-import type { DocumentTemplate } from '../../types'
+import type { DocumentTag, DocumentTemplate, DocumentTemplateElement } from '../../types'
+import { DraggableTagElement } from './DraggableTagElement'
 
-// ── Worker local (mesma config do pdfUtils.ts) ────────────────────────
+// Altura da topbar global do AdminDashboard (NON-kanban header). Mantenha
+// em sincronia com o valor em AdminDashboard.tsx (atualmente height: 52).
+const ADMIN_TOPBAR_HEIGHT = 52
+
 let workerConfigured = false
 function ensureWorker() {
   if (workerConfigured) return
   pdfjs.GlobalWorkerOptions.workerSrc = workerSrc
   workerConfigured = true
 }
-
-// ── Btn ───────────────────────────────────────────────────────────────
 
 const Btn = ({
   children, onClick, variant = 'primary', size = 'md', className = '',
@@ -44,9 +51,7 @@ const Btn = ({
   const s: any = { sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm' }
   return (
     <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
+      onClick={onClick} disabled={disabled} title={title}
       className={`inline-flex items-center gap-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${v[variant]} ${s[size]} ${className}`}
     >
       {children}
@@ -64,23 +69,33 @@ export function TemplateEditor() {
 
   const [template, setTemplate] = useState<DocumentTemplate | null>(null)
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
+  const [tags, setTags] = useState<DocumentTag[]>([])
+  const [elements, setElements] = useState<DocumentTemplateElement[]>([])
+
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
 
   const [zoom, setZoom] = useState(1)
   const [activePage, setActivePage] = useState(1)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
+  const pendingSavesRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
-  // ── Load template + PDF (UMA VEZ) ─────────────────────────────
+  const tagsById = useMemo(() => {
+    const m: Record<string, DocumentTag> = {}
+    for (const t of tags) m[t.id] = t
+    return m
+  }, [tags])
+
+  // ── Load ──────────────────────────────────────────────────────────
   const load = useCallback(async () => {
     if (!templateId) return
     ensureWorker()
     setLoading(true)
     setLoadError(null)
-
-    let loadedPdf: PDFDocumentProxy | null = null
 
     try {
       const tpl = await documentsService.getTemplate(templateId)
@@ -92,39 +107,41 @@ export function TemplateEditor() {
         return
       }
 
-      const blob = await documentsService.downloadBaseTemplate(tpl.base_pdf_path)
-      const buf = await blob.arrayBuffer()
+      const [blob, tagsList, elementsList] = await Promise.all([
+        documentsService.downloadBaseTemplate(tpl.base_pdf_path),
+        documentsService.listTags({ includeInactive: false }),
+        documentsService.listTemplateElements(templateId),
+      ])
 
+      const buf = await blob.arrayBuffer()
       if (!buf || buf.byteLength === 0) {
         setLoadError('O arquivo PDF está vazio no storage.')
         return
       }
 
-      // Clone defensivo: pdfjs v4+ detacha o buffer original; manter cópia
-      // evita quebrar outros consumidores se algum dia precisarmos reler.
       const data = new Uint8Array(buf.slice(0))
+      const loadedPdf = await pdfjs.getDocument({ data }).promise
 
-      loadedPdf = await pdfjs.getDocument({ data }).promise
       setPdf(loadedPdf)
+      setTags(tagsList)
+      setElements(elementsList)
     } catch (e: any) {
       setLoadError(e?.message || 'Erro ao carregar template')
     } finally {
       setLoading(false)
     }
-
-    // cleanup: pdf destruído quando o editor desmonta (ver useEffect abaixo)
   }, [templateId])
 
   useEffect(() => { load() }, [load])
 
-  // Destroi o PDF ao desmontar (libera memória/worker)
   useEffect(() => {
     return () => {
       if (pdf) pdf.destroy().catch(() => {})
+      for (const t of Object.values(pendingSavesRef.current)) clearTimeout(t)
     }
   }, [pdf])
 
-  // ── Zoom ──────────────────────────────────────────────────────
+  // ── Zoom ──────────────────────────────────────────────────────────
   const setZoomClamped = (v: number) => setZoom(Math.max(0.4, Math.min(2.5, v)))
   const zoomIn  = () => setZoomClamped(zoom + 0.1)
   const zoomOut = () => setZoomClamped(zoom - 0.1)
@@ -156,16 +173,109 @@ export function TemplateEditor() {
     return () => container.removeEventListener('scroll', onScroll)
   }, [template, pdf])
 
-  const pageNumbers = useMemo(
-    () => pdf ? Array.from({ length: pdf.numPages }, (_, i) => i + 1) : [],
-    [pdf],
-  )
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!selectedId) return
+      const target = e.target as HTMLElement | null
+      const isTyping =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable
+      if (isTyping) return
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        handleDeleteElement(selectedId)
+      } else if (e.key === 'Escape') {
+        setSelectedId(null)
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId])
 
-  // ─── Render ──────────────────────────────────────────────────
+  // ═══════════ CRUD ═══════════
+
+  const handleCreateElement = async (tagId: string, pageNumber: number, xPt: number, yPt: number) => {
+    const tag = tagsById[tagId]
+    if (!tag || !template) return
+
+    const defaultW = tag.type === 'image' ? 180 : 180
+    const defaultH = tag.type === 'image' ? 180 : 40
+
+    let x = xPt - defaultW / 2
+    let y = yPt - defaultH / 2
+
+    const maxX = template.page_width_pt - defaultW
+    const maxY = template.page_height_pt - defaultH
+    x = Math.max(0, Math.min(maxX, x))
+    y = Math.max(0, Math.min(maxY, y))
+
+    setSaveStatus('saving')
+    try {
+      const created = await documentsService.createTemplateElement({
+        template_id: template.id,
+        tag_id: tagId,
+        page_number: pageNumber,
+        x_pt: x,
+        y_pt: y,
+        width_pt: defaultW,
+        height_pt: defaultH,
+      })
+      setElements(prev => [...prev, created])
+      setSelectedId(created.id)
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 1200)
+    } catch (e: any) {
+      setSaveStatus('error')
+      alert(e?.message || 'Erro ao criar elemento')
+    }
+  }
+
+  const handleChangeElement = (id: string, patch: Partial<DocumentTemplateElement>) => {
+    setElements(prev => prev.map(el => el.id === id ? { ...el, ...patch } : el))
+
+    if (pendingSavesRef.current[id]) clearTimeout(pendingSavesRef.current[id])
+    setSaveStatus('saving')
+    pendingSavesRef.current[id] = setTimeout(async () => {
+      delete pendingSavesRef.current[id]
+      try {
+        await documentsService.updateTemplateElement(id, patch as any)
+        setSaveStatus('saved')
+        setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 1000)
+      } catch (e: any) {
+        setSaveStatus('error')
+        console.error('Falha ao salvar elemento', e)
+      }
+    }, 400)
+  }
+
+  const handleDeleteElement = async (id: string) => {
+    const prev = elements
+    setElements(els => els.filter(el => el.id !== id))
+    if (selectedId === id) setSelectedId(null)
+    try {
+      await documentsService.deleteTemplateElement(id)
+    } catch (e: any) {
+      setElements(prev)
+      alert(e?.message || 'Erro ao excluir elemento')
+    }
+  }
+
+  // ─── Render ──────────────────────────────────────────────────────
+
+  // Estilo do container externo: preso no topo (abaixo da topbar global),
+  // altura = viewport - topbar. Assim o editor conquista altura sozinho,
+  // independentemente de o pai ter h-full ou não.
+  const fullViewportStyle: React.CSSProperties = {
+    position: 'sticky',
+    top: ADMIN_TOPBAR_HEIGHT,
+    height: `calc(100vh - ${ADMIN_TOPBAR_HEIGHT}px)`,
+  }
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center bg-gray-50">
+      <div style={fullViewportStyle} className="flex items-center justify-center bg-gray-50">
         <div className="flex items-center gap-3 text-gray-500">
           <Loader2 className="h-5 w-5 animate-spin" />
           <span className="text-sm">Carregando template...</span>
@@ -176,7 +286,7 @@ export function TemplateEditor() {
 
   if (loadError || !template) {
     return (
-      <div className="h-full flex items-center justify-center p-6">
+      <div style={fullViewportStyle} className="flex items-center justify-center p-6">
         <div className="text-center max-w-md">
           <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-3">
             <AlertCircle className="h-6 w-6 text-red-500" />
@@ -193,9 +303,14 @@ export function TemplateEditor() {
     )
   }
 
+  const pageNumbers = pdf ? Array.from({ length: pdf.numPages }, (_, i) => i + 1) : []
+
   return (
-    <div className="flex flex-col h-full bg-gray-100 overflow-hidden">
-      {/* ─── Topbar ─────────────────────────────────────────────── */}
+    <div
+      style={fullViewportStyle}
+      className="flex flex-col bg-gray-100 overflow-hidden"
+    >
+      {/* ─── Topbar do editor ───────────────────────────────────── */}
       <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3 flex-shrink-0">
         <button
           onClick={() => navigate('/admin/documents/templates')}
@@ -211,7 +326,13 @@ export function TemplateEditor() {
             {template.page_count} página{template.page_count !== 1 ? 's' : ''}
             <span className="text-gray-400">·</span>
             <span>{Math.round(template.page_width_pt)}×{Math.round(template.page_height_pt)} pt</span>
+            <span className="text-gray-400">·</span>
+            <span>{elements.length} elemento{elements.length !== 1 ? 's' : ''}</span>
           </p>
+        </div>
+
+        <div className="min-w-[80px] flex justify-end">
+          <SaveStatusIndicator status={saveStatus} />
         </div>
 
         <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
@@ -223,44 +344,34 @@ export function TemplateEditor() {
         </div>
       </div>
 
-      {/* ─── Aviso Fase 3 ──────────────────────────────────────── */}
-      <div className="bg-amber-50 border-b border-amber-100 px-4 py-2 flex items-center gap-2 flex-shrink-0">
-        <Construction className="h-4 w-4 text-amber-500 flex-shrink-0" />
-        <p className="text-xs text-amber-800">
-          Editor em construção — nesta fase você visualiza o PDF.
-          O drag-and-drop para posicionar tags chega na próxima fase.
-        </p>
-      </div>
-
-      {/* ─── Body: sidebar + canvas ─────────────────────────────── */}
+      {/* ─── Body ─────────────────────────────────────────────── */}
       <div className="flex-1 flex min-h-0">
-        {/* Sidebar: miniaturas */}
-        {pdf && template.page_count > 1 && (
-          <aside className="w-40 border-r border-gray-200 bg-white overflow-y-auto flex-shrink-0 hidden md:block">
-            <div className="p-3 space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
-                Páginas
-              </p>
-              {pageNumbers.map(n => (
-                <PageThumbnail
-                  key={n}
-                  pdf={pdf}
-                  pageNumber={n}
-                  active={activePage === n}
-                  onClick={() => scrollToPage(n)}
-                />
-              ))}
-            </div>
-          </aside>
-        )}
 
-        {/* Canvas principal */}
-        <div
-          ref={scrollRef}
-          className="flex-1 overflow-auto px-4 md:px-8 py-6"
-        >
+        {/* Palette (fixa) */}
+        <aside className="w-60 border-r border-gray-200 bg-white flex-shrink-0 hidden lg:flex flex-col min-h-0">
+          <div className="px-3 pt-3 pb-2 border-b border-gray-100 flex-shrink-0">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">
+              Tags disponíveis
+            </p>
+            <p className="text-[11px] text-gray-500 leading-tight">
+              Arraste qualquer tag para uma página do PDF.
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
+            {tags.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-8 px-2">
+                Nenhuma tag ativa. Crie uma na aba Tags.
+              </p>
+            ) : (
+              tags.map(t => <PaletteTagItem key={t.id} tag={t} />)
+            )}
+          </div>
+        </aside>
+
+        {/* Canvas (rola aqui) */}
+        <div ref={scrollRef} className="flex-1 overflow-auto px-4 md:px-8 py-6 min-h-0">
           {pdf ? (
-            <div className="flex flex-col items-center gap-5">
+            <div className="flex flex-col items-center gap-6">
               {pageNumbers.map(n => (
                 <div
                   key={n}
@@ -270,7 +381,18 @@ export function TemplateEditor() {
                   <span className="absolute -top-5 left-0 text-[11px] text-gray-400 font-medium">
                     {n}
                   </span>
-                  <PdfPageCanvas pdf={pdf} pageNumber={n} zoom={zoom} />
+                  <PdfPageCanvas
+                    pdf={pdf}
+                    pageNumber={n}
+                    zoom={zoom}
+                    elements={elements.filter(e => e.page_number === n)}
+                    tagsById={tagsById}
+                    selectedId={selectedId}
+                    onSelect={setSelectedId}
+                    onChangeElement={handleChangeElement}
+                    onDeleteElement={handleDeleteElement}
+                    onDropTag={(tagId, xPt, yPt) => handleCreateElement(tagId, n, xPt, yPt)}
+                  />
                 </div>
               ))}
             </div>
@@ -283,27 +405,112 @@ export function TemplateEditor() {
             </div>
           )}
         </div>
+
+        {/* Miniaturas (fixas) */}
+        {pdf && template.page_count > 1 && (
+          <aside className="w-32 border-l border-gray-200 bg-white flex-shrink-0 hidden md:flex flex-col min-h-0">
+            <div className="px-2 pt-3 pb-1 flex-shrink-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 px-1">
+                Páginas
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-2 min-h-0">
+              {pageNumbers.map(n => (
+                <PageThumbnail
+                  key={n}
+                  pdf={pdf}
+                  pageNumber={n}
+                  active={activePage === n}
+                  onClick={() => scrollToPage(n)}
+                />
+              ))}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//   PdfPageCanvas — renderiza UMA página. Recebe o PDF já aberto.
+//   Subcomponentes
 // ═══════════════════════════════════════════════════════════════════════
+
+function SaveStatusIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | 'error' }) {
+  if (status === 'idle') return null
+  if (status === 'saving') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-gray-400">
+        <Loader2 className="h-3 w-3 animate-spin" /> Salvando...
+      </span>
+    )
+  }
+  if (status === 'saved') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-green-600">
+        <Check className="h-3 w-3" /> Salvo
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-red-600">
+      <AlertCircle className="h-3 w-3" /> Erro
+    </span>
+  )
+}
+
+function PaletteTagItem({ tag }: { tag: DocumentTag }) {
+  const Icon = tag.type === 'image' ? ImageIcon : TypeIcon
+  const color = tag.type === 'image' ? 'text-violet-500 bg-violet-50' : 'text-sky-500 bg-sky-50'
+
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData('application/x-document-tag-id', tag.id)
+    e.dataTransfer.effectAllowed = 'copy'
+  }
+
+  return (
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      className="flex items-center gap-2 px-2 py-2 rounded-lg border border-transparent hover:border-rose-200 hover:bg-rose-50/40 cursor-grab active:cursor-grabbing transition-colors group"
+      title={`Arraste "${tag.name}" para uma página`}
+    >
+      <div className={`h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 ${color}`}>
+        <Icon className="h-3.5 w-3.5" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-medium text-gray-800 truncate leading-tight">{tag.name}</p>
+        <p className="text-[10px] text-gray-400 font-mono truncate">{tag.slug}</p>
+      </div>
+      <MousePointer2 className="h-3 w-3 text-gray-300 group-hover:text-rose-400 flex-shrink-0" />
+    </div>
+  )
+}
 
 function PdfPageCanvas({
   pdf, pageNumber, zoom,
+  elements, tagsById,
+  selectedId, onSelect,
+  onChangeElement, onDeleteElement,
+  onDropTag,
 }: {
   pdf: PDFDocumentProxy
   pageNumber: number
   zoom: number
+  elements: DocumentTemplateElement[]
+  tagsById: Record<string, DocumentTag>
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+  onChangeElement: (id: string, patch: Partial<DocumentTemplateElement>) => void
+  onDeleteElement: (id: string) => void
+  onDropTag: (tagId: string, xPt: number, yPt: number) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<{ w: number; h: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [dragHover, setDragHover] = useState(false)
 
-  // Mantém a task de render em andamento pra poder cancelar quando o zoom muda rápido
   const renderTaskRef = useRef<ReturnType<pdfjs.PDFPageProxy['render']> | null>(null)
 
   useEffect(() => {
@@ -315,7 +522,6 @@ function PdfPageCanvas({
         const page = await pdf.getPage(pageNumber)
         if (cancelled) return
 
-        // Cancela render anterior se ainda estiver rodando
         if (renderTaskRef.current) {
           try { renderTaskRef.current.cancel() } catch {}
           renderTaskRef.current = null
@@ -330,9 +536,11 @@ function PdfPageCanvas({
         canvas.height = Math.ceil(viewport.height)
 
         const logical = page.getViewport({ scale: zoom })
-        canvas.style.width  = `${Math.ceil(logical.width)}px`
-        canvas.style.height = `${Math.ceil(logical.height)}px`
-        setSize({ w: Math.ceil(logical.width), h: Math.ceil(logical.height) })
+        const w = Math.ceil(logical.width)
+        const h = Math.ceil(logical.height)
+        canvas.style.width  = `${w}px`
+        canvas.style.height = `${h}px`
+        setSize({ w, h })
 
         const ctx = canvas.getContext('2d')
         if (!ctx) { setError('Canvas indisponível'); return }
@@ -341,7 +549,6 @@ function PdfPageCanvas({
         renderTaskRef.current = task
         await task.promise
       } catch (e: any) {
-        // Se for cancelamento esperado, silencia
         if (e?.name === 'RenderingCancelledException') return
         if (!cancelled) setError(e?.message || 'Falha ao renderizar página')
       }
@@ -355,6 +562,39 @@ function PdfPageCanvas({
       }
     }
   }, [pdf, pageNumber, zoom])
+
+  const onDragOver = (e: React.DragEvent) => {
+    if (Array.from(e.dataTransfer.types).includes('application/x-document-tag-id')) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+      if (!dragHover) setDragHover(true)
+    }
+  }
+
+  const onDragLeave = () => setDragHover(false)
+
+  const onDrop = (e: React.DragEvent) => {
+    const tagId = e.dataTransfer.getData('application/x-document-tag-id')
+    if (!tagId) return
+    e.preventDefault()
+    setDragHover(false)
+
+    const overlay = overlayRef.current
+    if (!overlay || !size) return
+
+    const rect = overlay.getBoundingClientRect()
+    const xPx = e.clientX - rect.left
+    const yPx = e.clientY - rect.top
+
+    const xPt = xPx / zoom
+    const yPt = yPx / zoom
+
+    onDropTag(tagId, xPt, yPt)
+  }
+
+  const handleOverlayClick = (e: React.MouseEvent) => {
+    if (e.target === overlayRef.current) onSelect(null)
+  }
 
   if (error) {
     return (
@@ -374,21 +614,35 @@ function PdfPageCanvas({
         </div>
       )}
       <canvas ref={canvasRef} className="block" />
-      {/* Overlay vazio — receberá elementos draggable na Fase 3 */}
+
       {size && (
         <div
-          className="absolute inset-0 pointer-events-none"
+          ref={overlayRef}
+          className={`absolute inset-0 ${dragHover ? 'bg-rose-50/40 ring-2 ring-rose-400 ring-inset' : ''}`}
           style={{ width: size.w, height: size.h }}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          onMouseDown={handleOverlayClick}
           data-page={pageNumber}
-        />
+        >
+          {elements.map(el => (
+            <DraggableTagElement
+              key={el.id}
+              element={el}
+              tag={tagsById[el.tag_id]}
+              zoom={zoom}
+              selected={selectedId === el.id}
+              onSelect={() => onSelect(el.id)}
+              onChange={patch => onChangeElement(el.id, patch)}
+              onDelete={() => onDeleteElement(el.id)}
+            />
+          ))}
+        </div>
       )}
     </div>
   )
 }
-
-// ═══════════════════════════════════════════════════════════════════════
-//   PageThumbnail — miniatura na sidebar. Também usa o PDF compartilhado.
-// ═══════════════════════════════════════════════════════════════════════
 
 function PageThumbnail({
   pdf, pageNumber, active, onClick,
@@ -410,7 +664,7 @@ function PageThumbnail({
         const page = await pdf.getPage(pageNumber)
         if (cancelled) return
         const base = page.getViewport({ scale: 1 })
-        const scale = 120 / base.width
+        const scale = 100 / base.width
         const viewport = page.getViewport({ scale })
         const canvas = canvasRef.current
         if (!canvas) return
@@ -449,7 +703,7 @@ function PageThumbnail({
         )}
       </div>
       <p className={`text-[10px] py-1 font-medium ${active ? 'text-rose-600' : 'text-gray-500'}`}>
-        Página {pageNumber}
+        {pageNumber}
       </p>
     </button>
   )

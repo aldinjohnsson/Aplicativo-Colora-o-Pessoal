@@ -2,7 +2,7 @@
 //
 // Service layer da feature "Gerador de Documento".
 // Centraliza todas as chamadas Supabase relacionadas a tags, valores por
-// cliente, templates e documentos gerados.
+// cliente, templates, elementos de template e documentos gerados.
 
 import { supabase } from '../../../../lib/supabase'
 import type {
@@ -13,6 +13,7 @@ import type {
   ClientGeneratedDocument,
   ClientTagValue,
   TextImportSourceOption,
+  ElementStyle,
 } from '../types'
 import { extractPdfMetadata } from './pdfUtils'
 
@@ -20,23 +21,19 @@ import { extractPdfMetadata } from './pdfUtils'
 // Helpers
 // ══════════════════════════════════════════════════════════════════════
 
-/** Normaliza um texto em slug válido: snake_case, sem acentos nem pontuação. */
 export function toSlug(input: string): string {
   return input
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 80)
 }
 
-/** Valida formato de slug: somente [a-z0-9_], não vazio, até 80 chars. */
 export function isValidSlug(slug: string): boolean {
   return /^[a-z0-9]+(_[a-z0-9]+)*$/.test(slug) && slug.length <= 80
 }
 
-/** Sanitiza um nome de arquivo para uso em storage paths. */
 function safeFileName(name: string): string {
   const dot = name.lastIndexOf('.')
   const base = dot > 0 ? name.slice(0, dot) : name
@@ -54,26 +51,18 @@ function safeFileName(name: string): string {
 // ══════════════════════════════════════════════════════════════════════
 
 export const documentsService = {
-  // ════════════════════════════════════════════════════════════════════
-  //   TAGS  (catálogo global)
-  // ════════════════════════════════════════════════════════════════════
+  // ═══════════════ TAGS ════════════════════════════════════════════
 
   async listTags(opts?: { includeInactive?: boolean }): Promise<DocumentTag[]> {
-    let query = supabase
-      .from('document_tags')
-      .select('*')
-      .order('name', { ascending: true })
-
+    let query = supabase.from('document_tags').select('*').order('name', { ascending: true })
     if (!opts?.includeInactive) query = query.eq('is_active', true)
-
     const { data, error } = await query
     if (error) throw error
     return (data || []) as DocumentTag[]
   },
 
   async getTag(id: string): Promise<DocumentTag | null> {
-    const { data, error } = await supabase
-      .from('document_tags').select('*').eq('id', id).single()
+    const { data, error } = await supabase.from('document_tags').select('*').eq('id', id).single()
     if (error && (error as any).code !== 'PGRST116') throw error
     return (data || null) as DocumentTag | null
   },
@@ -95,8 +84,7 @@ export const documentsService = {
       default_hint: input.default_hint ?? {},
       is_active: input.is_active ?? true,
     }
-    const { data, error } = await supabase
-      .from('document_tags').insert(payload).select().single()
+    const { data, error } = await supabase.from('document_tags').insert(payload).select().single()
     if (error) {
       if ((error as any).code === '23505') throw new Error('Já existe uma tag com este identificador (slug). Escolha outro.')
       throw error
@@ -113,8 +101,7 @@ export const documentsService = {
     if (updates.default_hint !== undefined) payload.default_hint = updates.default_hint
     if (updates.is_active !== undefined) payload.is_active = updates.is_active
 
-    const { data, error } = await supabase
-      .from('document_tags').update(payload).eq('id', id).select().single()
+    const { data, error } = await supabase.from('document_tags').update(payload).eq('id', id).select().single()
     if (error) {
       if ((error as any).code === '23505') throw new Error('Já existe uma tag com este identificador (slug). Escolha outro.')
       throw error
@@ -146,15 +133,11 @@ export const documentsService = {
     return count || 0
   },
 
-  // ════════════════════════════════════════════════════════════════════
-  //   VALORES DE TAG POR CLIENTE
-  // ════════════════════════════════════════════════════════════════════
+  // ═══════════════ VALORES DE TAG POR CLIENTE ═════════════════════
 
   async listClientTagValues(clientId: string): Promise<ClientTagValue[]> {
     const { data, error } = await supabase
-      .from('client_tag_values')
-      .select('*')
-      .eq('client_id', clientId)
+      .from('client_tag_values').select('*').eq('client_id', clientId)
     if (error) throw error
     return (data || []) as ClientTagValue[]
   },
@@ -225,8 +208,7 @@ export const documentsService = {
       await supabase.storage.from('client-tag-images').remove([existing.image_storage_path]).catch(() => {})
     }
     const { error } = await supabase
-      .from('client_tag_values')
-      .delete()
+      .from('client_tag_values').delete()
       .eq('client_id', clientId).eq('tag_id', tagId)
     if (error) throw error
   },
@@ -242,8 +224,7 @@ export const documentsService = {
 
   async getSignedTagImageUrl(storagePath: string, expiresIn = 3600): Promise<string> {
     const { data, error } = await supabase.storage
-      .from('client-tag-images')
-      .createSignedUrl(storagePath, expiresIn)
+      .from('client-tag-images').createSignedUrl(storagePath, expiresIn)
     if (error) throw error
     return data.signedUrl
   },
@@ -257,9 +238,7 @@ export const documentsService = {
     const options: TextImportSourceOption[] = []
 
     const { data: client } = await supabase
-      .from('clients')
-      .select('full_name, email, phone, plan_id')
-      .eq('id', clientId).single()
+      .from('clients').select('full_name, email, phone, plan_id').eq('id', clientId).single()
 
     if (client) {
       options.push(
@@ -270,13 +249,11 @@ export const documentsService = {
     }
 
     const { data: result } = await supabase
-      .from('client_results')
-      .select('observations, folder_url')
-      .eq('client_id', clientId).maybeSingle()
+      .from('client_results').select('observations, folder_url').eq('client_id', clientId).maybeSingle()
 
     options.push(
-      { key: 'observations',  label: 'Observações do resultado',    group: 'result', groupLabel: 'Resultado', value: result?.observations || null },
-      { key: 'result_folder', label: 'Link da pasta do resultado',  group: 'result', groupLabel: 'Resultado', value: result?.folder_url || null },
+      { key: 'observations',  label: 'Observações do resultado',   group: 'result', groupLabel: 'Resultado', value: result?.observations || null },
+      { key: 'result_folder', label: 'Link da pasta do resultado', group: 'result', groupLabel: 'Resultado', value: result?.folder_url || null },
     )
 
     if (client?.plan_id) {
@@ -329,9 +306,7 @@ export const documentsService = {
     const catsMap: Record<string, string> = {}
     if (catIds.length > 0) {
       const { data: cats } = await supabase
-        .from('plan_photo_categories')
-        .select('id, title')
-        .in('id', catIds)
+        .from('plan_photo_categories').select('id, title').in('id', catIds)
       for (const c of (cats || [])) catsMap[(c as any).id] = (c as any).title
     }
 
@@ -343,9 +318,7 @@ export const documentsService = {
     }))
   },
 
-  // ════════════════════════════════════════════════════════════════════
-  //   TEMPLATES  (Fase 2)
-  // ════════════════════════════════════════════════════════════════════
+  // ═══════════════ TEMPLATES ═══════════════════════════════════════
 
   async listTemplates(opts?: { includeInactive?: boolean }): Promise<DocumentTemplate[]> {
     let q = supabase.from('document_templates').select('*').order('updated_at', { ascending: false })
@@ -361,46 +334,27 @@ export const documentsService = {
     return (data || null) as DocumentTemplate | null
   },
 
-  /**
-   * Cria um template a partir de um arquivo PDF:
-   *   1. Extrai metadados (pageCount, dimensões)
-   *   2. Insere linha em document_templates (gera id)
-   *   3. Faz upload do PDF em document-templates/{id}/base.pdf
-   *   4. Atualiza base_pdf_path e retorna o registro
-   *
-   * Se alguma etapa falhar depois da insert, remove a linha para não deixar
-   * templates "fantasma" sem arquivo.
-   */
   async createTemplate(input: {
-    name: string
-    description?: string | null
-    planId?: string | null
-    file: File
+    name: string; description?: string | null; planId?: string | null; file: File
   }): Promise<DocumentTemplate> {
     if (!input.file.type.includes('pdf') && !input.file.name.toLowerCase().endsWith('.pdf')) {
       throw new Error('Arquivo inválido: envie um PDF.')
     }
-    // Extrai metadados passando o File diretamente — pdfjs v4+ transfere o
-    // ArrayBuffer para o worker thread ao processar, o que "desanexa" (detach)
-    // o buffer original e o deixa com 0 bytes. Passando o File, pdfUtils lê
-    // seu próprio buffer internamente, deixando o arquivo intacto para o upload.
-    const meta = await extractPdfMetadata(input.file)
-    // Lê o buffer APÓS o extractPdfMetadata para garantir que está íntegro.
     const buf = await input.file.arrayBuffer()
+    const meta = await extractPdfMetadata(buf)
 
-    const insertPayload = {
-      name: input.name.trim(),
-      description: input.description?.trim() || null,
-      plan_id: input.planId || null,
-      base_pdf_path: '',   // preenche depois do upload
-      page_count: meta.pageCount,
-      page_width_pt: meta.pageWidthPt,
-      page_height_pt: meta.pageHeightPt,
-      is_active: true,
-    }
     const { data: created, error: insErr } = await supabase
       .from('document_templates')
-      .insert(insertPayload)
+      .insert({
+        name: input.name.trim(),
+        description: input.description?.trim() || null,
+        plan_id: input.planId || null,
+        base_pdf_path: '',
+        page_count: meta.pageCount,
+        page_width_pt: meta.pageWidthPt,
+        page_height_pt: meta.pageHeightPt,
+        is_active: true,
+      })
       .select().single()
     if (insErr) throw insErr
 
@@ -409,22 +363,17 @@ export const documentsService = {
 
     try {
       const up = await supabase.storage.from('document-templates').upload(
-        storagePath,
-        new Blob([buf], { type: 'application/pdf' }),
+        storagePath, new Blob([buf], { type: 'application/pdf' }),
         { contentType: 'application/pdf', upsert: true },
       )
       if (up.error) throw up.error
 
       const { data: updated, error: updErr } = await supabase
-        .from('document_templates')
-        .update({ base_pdf_path: storagePath })
-        .eq('id', id)
-        .select().single()
+        .from('document_templates').update({ base_pdf_path: storagePath })
+        .eq('id', id).select().single()
       if (updErr) throw updErr
-
       return updated as DocumentTemplate
     } catch (e) {
-      // Rollback: apaga a linha criada e tenta remover o arquivo se foi.
       await supabase.storage.from('document-templates').remove([storagePath]).catch(() => {})
       await supabase.from('document_templates').delete().eq('id', id).catch(() => {})
       throw e
@@ -446,23 +395,30 @@ export const documentsService = {
     return data as DocumentTemplate
   },
 
-  /**
-   * Exclui template + todos os arquivos no storage e, por FK cascade,
-   * também os elementos do template (document_template_elements).
-   */
   async deleteTemplate(id: string): Promise<void> {
-    // Lista TUDO que estiver na pasta {id}/ do bucket (base.pdf + o que mais vier)
-    const { data: files } = await supabase.storage
-      .from('document-templates')
-      .list(id)
+    const { data: files } = await supabase.storage.from('document-templates').list(id)
     if (files && files.length > 0) {
-      const paths = files.map(f => `${id}/${f.name}`)
-      await supabase.storage.from('document-templates').remove(paths).catch(() => {})
+      await supabase.storage.from('document-templates')
+        .remove(files.map(f => `${id}/${f.name}`)).catch(() => {})
     }
-
     const { error } = await supabase.from('document_templates').delete().eq('id', id)
     if (error) throw error
   },
+
+  async getBaseTemplateSignedUrl(storagePath: string, expiresIn = 3600): Promise<string> {
+    const { data, error } = await supabase.storage
+      .from('document-templates').createSignedUrl(storagePath, expiresIn)
+    if (error) throw error
+    return data.signedUrl
+  },
+
+  async downloadBaseTemplate(storagePath: string): Promise<Blob> {
+    const { data, error } = await supabase.storage.from('document-templates').download(storagePath)
+    if (error) throw error
+    return data
+  },
+
+  // ═══════════════ ELEMENTOS DE TEMPLATE (Fase 3) ══════════════════
 
   async listTemplateElements(templateId: string): Promise<DocumentTemplateElement[]> {
     const { data, error } = await supabase
@@ -475,29 +431,61 @@ export const documentsService = {
     return (data || []) as DocumentTemplateElement[]
   },
 
-  /** URL pública do PDF base (bucket privado → signed URL). */
-  async getBaseTemplateSignedUrl(storagePath: string, expiresIn = 3600): Promise<string> {
-    const { data, error } = await supabase.storage
-      .from('document-templates')
-      .createSignedUrl(storagePath, expiresIn)
+  async createTemplateElement(input: {
+    template_id: string
+    tag_id: string
+    page_number: number
+    x_pt: number
+    y_pt: number
+    width_pt?: number | null
+    height_pt?: number | null
+    style?: ElementStyle
+    z_index?: number
+  }): Promise<DocumentTemplateElement> {
+    const { data, error } = await supabase
+      .from('document_template_elements')
+      .insert({
+        template_id: input.template_id,
+        tag_id: input.tag_id,
+        page_number: input.page_number,
+        x_pt: input.x_pt,
+        y_pt: input.y_pt,
+        width_pt: input.width_pt ?? null,
+        height_pt: input.height_pt ?? null,
+        style: input.style ?? {},
+        z_index: input.z_index ?? 0,
+        rotation: 0,
+      })
+      .select().single()
     if (error) throw error
-    return data.signedUrl
+    return data as DocumentTemplateElement
   },
 
-  async downloadBaseTemplate(storagePath: string): Promise<Blob> {
-    const { data, error } = await supabase.storage.from('document-templates').download(storagePath)
+  async updateTemplateElement(
+    id: string,
+    updates: Partial<Pick<DocumentTemplateElement,
+      'x_pt' | 'y_pt' | 'width_pt' | 'height_pt' | 'rotation' | 'z_index' | 'style' | 'page_number'
+    >>,
+  ): Promise<DocumentTemplateElement> {
+    const { data, error } = await supabase
+      .from('document_template_elements')
+      .update(updates as any)
+      .eq('id', id)
+      .select().single()
     if (error) throw error
-    return data
+    return data as DocumentTemplateElement
   },
 
-  // ════════════════════════════════════════════════════════════════════
-  //   GENERATED DOCS  (implementação completa na Fase 5)
-  // ════════════════════════════════════════════════════════════════════
+  async deleteTemplateElement(id: string): Promise<void> {
+    const { error } = await supabase.from('document_template_elements').delete().eq('id', id)
+    if (error) throw error
+  },
+
+  // ═══════════════ GENERATED DOCS (Fase 5) ════════════════════════
 
   async listGeneratedForClient(clientId: string): Promise<ClientGeneratedDocument[]> {
     const { data, error } = await supabase
-      .from('client_generated_documents')
-      .select('*')
+      .from('client_generated_documents').select('*')
       .eq('client_id', clientId)
       .order('generated_at', { ascending: false })
     if (error) throw error

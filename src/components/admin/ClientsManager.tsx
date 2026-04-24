@@ -1341,6 +1341,115 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   )
 }
 
+// ─── Folder Picker ────────────────────────────────────────────────────────
+function FolderPicker({ folders, linkedFolderId, onSelect }: {
+  folders: any[]
+  linkedFolderId: string | null
+  onSelect: (id: string | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  const selectedFolder = folders.find((f: any) => f.id === linkedFolderId)
+  const filtered = folders.filter((f: any) => f.name.toLowerCase().includes(search.toLowerCase()))
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className={`w-full flex items-center gap-3 p-3.5 rounded-xl border text-left transition-all ${
+          open ? 'border-violet-400 ring-2 ring-violet-100' : 'border-gray-200 hover:border-violet-200'
+        } bg-white`}
+      >
+        <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${selectedFolder ? 'bg-violet-100' : 'bg-gray-100'}`}>
+          <FolderOpen className={`h-4 w-4 ${selectedFolder ? 'text-violet-600' : 'text-gray-400'}`} />
+        </div>
+        <div className="flex-1 min-w-0">
+          {selectedFolder ? (() => {
+            const cfg = typeof selectedFolder.config === 'string' ? JSON.parse(selectedFolder.config) : selectedFolder.config
+            return (
+              <>
+                <p className="text-sm font-semibold text-violet-800">{selectedFolder.name}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</p>
+              </>
+            )
+          })() : (
+            <p className="text-sm text-gray-400">Selecione uma pasta…</p>
+          )}
+        </div>
+        <ChevronDown className={`h-4 w-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-30 top-full mt-1.5 left-0 right-0 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden">
+          {folders.length > 3 && (
+            <div className="p-2 border-b border-gray-100">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+                <input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Buscar pasta..."
+                  autoFocus
+                  className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300"
+                />
+              </div>
+            </div>
+          )}
+          <div className="max-h-60 overflow-y-auto">
+            <button
+              onClick={() => { onSelect(null); setOpen(false) }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${linkedFolderId === null ? 'bg-violet-50' : 'hover:bg-gray-50'}`}
+            >
+              <div className="w-7 h-7 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                <FolderOpen className="h-3.5 w-3.5 text-gray-400" />
+              </div>
+              <span className="text-sm text-gray-500 flex-1">Nenhuma pasta vinculada</span>
+              {linkedFolderId === null && <Check className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />}
+            </button>
+            {filtered.map((f: any) => {
+              const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
+              const isLinked = linkedFolderId === f.id
+              return (
+                <button
+                  key={f.id}
+                  onClick={() => { onSelect(f.id); setOpen(false); setSearch('') }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${isLinked ? 'bg-violet-50' : 'hover:bg-gray-50'}`}
+                >
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isLinked ? 'bg-violet-100' : 'bg-gray-50'}`}>
+                    <FolderOpen className={`h-3.5 w-3.5 ${isLinked ? 'text-violet-600' : 'text-gray-400'}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-medium ${isLinked ? 'text-violet-800' : 'text-gray-700'}`}>{f.name}</p>
+                    <p className="text-xs text-gray-400">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</p>
+                  </div>
+                  {cfg?.driveLink && (
+                    <a href={cfg.driveLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-violet-500 hover:text-violet-700 flex-shrink-0 p-1">
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                  {isLinked && <Check className="h-3.5 w-3.5 text-violet-600 flex-shrink-0" />}
+                </button>
+              )
+            })}
+            {filtered.length === 0 && search && <p className="text-xs text-gray-400 text-center py-5">Nenhuma pasta encontrada</p>}
+            {folders.length === 0 && !search && <p className="text-xs text-gray-400 text-center py-5">Crie pastas em <strong>Pastas IA</strong> para vincular aqui</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Client Detail ────────────────────────────────────────────────────────
 function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const { clientId } = useParams<{ clientId: string }>()
@@ -1552,7 +1661,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
-        <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 max-w-6xl mx-auto w-full">
+        <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full">
 
           {/* Header */}
           <div className="flex items-start justify-between flex-wrap gap-3">
@@ -1564,26 +1673,73 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-xl font-bold text-gray-900">{client.full_name}</h1>
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
+                  {client.plan && <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 font-medium">{(client as any).plan.name}</span>}
                 </div>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-gray-500 mt-0.5">
                   <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" /><span className="truncate max-w-[180px] sm:max-w-none">{client.email}</span></span>
-                  {client.phone && <span className="flex items-center gap-1"><Phone className="h-3.5 w-3.5" />{client.phone}</span>}
+                  {client.phone && (
+                    <span className="flex items-center gap-1.5">
+                      <Phone className="h-3.5 w-3.5" />
+                      {client.phone}
+                      <a 
+                        href={`https://wa.me/55${client.phone.replace(/\D/g, '')}`} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="ml-0.5 text-green-600 hover:text-green-700"
+                        title="Enviar mensagem no WhatsApp"
+                      >
+                        <MessageSquare className="h-3.5 w-3.5" />
+                      </a>
+                    </span>
+                  )}
                 </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <Btn variant="outline" size="sm" onClick={copyLink}>{copied ? <><Check className="h-3.5 w-3.5" /> Copiado!</> : <><Copy className="h-3.5 w-3.5" /><span className="hidden sm:inline"> Copiar Link</span></>}</Btn>
-              <a href={portalLink} target="_blank" rel="noopener noreferrer"><Btn variant="ghost" size="sm"><ExternalLink className="h-3.5 w-3.5" /><span className="hidden sm:inline"> Portal</span></Btn></a>
             </div>
           </div>
 
           {/* Portal link */}
-          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center gap-3">
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-gray-500 mb-0.5">Link de acesso do cliente</p>
-              <p className="text-sm font-mono text-gray-700 truncate">{portalLink}</p>
+          <div className="bg-gradient-to-br from-violet-50 to-purple-50 border border-violet-200 rounded-xl p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+                  <Link2 className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">Link de Acesso do Cliente</p>
+                  <p className="text-xs text-gray-500">Compartilhe este link para o cliente acessar o portal</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <Btn 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={copyLink}
+                  className="bg-white hover:bg-violet-50 border-violet-300"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-green-600" />
+                      <span className="hidden sm:inline">Copiado!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">Copiar Link</span>
+                    </>
+                  )}
+                </Btn>
+                <a href={portalLink} target="_blank" rel="noopener noreferrer">
+                  <Btn 
+                    variant="outline" 
+                    size="sm"
+                    className="bg-white hover:bg-violet-50 border-violet-300"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Abrir Portal</span>
+                  </Btn>
+                </a>
+              </div>
             </div>
-            <Btn variant="outline" size="sm" onClick={copyLink}><Copy className="h-3.5 w-3.5" /></Btn>
           </div>
 
           {/* Tabs */}
@@ -1717,15 +1873,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 ) : <p className="text-sm text-gray-400">Prazo calculado após aprovação das fotos</p>}
               </div>
 
-              {/* Plano */}
-              {client.plan && (
-                <div className="bg-white border border-gray-200 rounded-xl p-5">
-                  <h3 className="font-semibold text-gray-900 mb-2">Plano</h3>
-                  <p className="text-sm text-gray-700">{(client as any).plan.name}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{(client as any).plan.deadline_days} dias úteis</p>
-                </div>
-              )}
-
               {/* Observações internas */}
               <div className="bg-white border border-gray-200 rounded-xl p-5">
                 <div className="flex items-center justify-between mb-3">
@@ -1762,7 +1909,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           {tab === 'documents' && <ClientDocumentsTab clientId={clientId!} />}
 
           {tab === 'result' && (
-            <div className="space-y-5 max-w-3xl">
+            <div className="space-y-5">
               {result?.is_released ? (
                 <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0" />
@@ -1775,41 +1922,23 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 </div>
               )}
 
-              <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><FolderOpen className="h-4 w-4 text-violet-500" /> Pasta vinculada</h3>
-                <p className="text-xs text-gray-500 -mt-2">Selecione a pasta criada em Pastas IA</p>
-                <div className="space-y-2">
-                  <button onClick={() => handleLinkFolder(null)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${linkedFolderId === null ? 'bg-gray-100 border-gray-300' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
-                    <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0"><FolderOpen className="h-4 w-4 text-gray-400" /></div>
-                    <span className="text-sm text-gray-500">Nenhuma pasta vinculada</span>
-                    {linkedFolderId === null && <CheckCircle className="h-4 w-4 text-gray-400 ml-auto" />}
-                  </button>
-                  {aiFolders.map((f: any) => {
-                    const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
-                    const isLinked = linkedFolderId === f.id
-                    return (
-                      <button key={f.id} onClick={() => handleLinkFolder(f.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${isLinked ? 'bg-violet-50 border-violet-300' : 'bg-white border-gray-200 hover:border-violet-200'}`}>
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isLinked ? 'bg-violet-100' : 'bg-gray-50'}`}><FolderOpen className={`h-4 w-4 ${isLinked ? 'text-violet-600' : 'text-gray-400'}`} /></div>
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-sm font-medium ${isLinked ? 'text-violet-800' : 'text-gray-800'}`}>{f.name}</p>
-                          <div className="flex items-center gap-3 mt-0.5">
-                            <span className="text-xs text-gray-400">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</span>
-                            {cfg?.driveLink && <a href={cfg.driveLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-violet-500 flex items-center gap-1 hover:underline"><Link2 className="h-3 w-3" /> Drive</a>}
-                          </div>
-                        </div>
-                        {isLinked && <CheckCircle className="h-4 w-4 text-violet-600 flex-shrink-0" />}
-                      </button>
-                    )
-                  })}
-                  {aiFolders.length === 0 && <p className="text-xs text-gray-400 text-center py-3">Crie pastas em <strong>Pastas IA</strong> para vincular aqui</p>}
+              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                    <FolderOpen className="h-4 w-4 text-violet-500" /> Pasta vinculada
+                  </h3>
+                  {linkedFolderConfig?.driveLink && (
+                    <a
+                      href={linkedFolderConfig.driveLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors font-medium"
+                    >
+                      <ExternalLink className="h-3 w-3" /> Abrir Drive
+                    </a>
+                  )}
                 </div>
-                {linkedFolderConfig?.driveLink && (
-                  <div className="flex items-center gap-2 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
-                    <Link2 className="h-4 w-4 text-violet-500 flex-shrink-0" />
-                    <span className="text-xs text-violet-700 font-medium truncate flex-1">{linkedFolderConfig.driveLink}</span>
-                    <a href={linkedFolderConfig.driveLink} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg whitespace-nowrap">Abrir Drive</a>
-                  </div>
-                )}
+                <FolderPicker folders={aiFolders} linkedFolderId={linkedFolderId} onSelect={handleLinkFolder} />
               </div>
 
               {tagTemplates.length > 0 && (
@@ -1887,7 +2016,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       )}
 
       {tab === 'ai' && (
-        <div className="max-w-3xl">
+        <div className="">
           <div className="bg-white border border-gray-200 rounded-xl p-6">
             <AIPromptConfig
               clientId={clientId!}
