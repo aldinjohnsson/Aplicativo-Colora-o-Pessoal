@@ -1,8 +1,7 @@
 // src/components/admin/documents/lib/documentsService.ts
 //
 // Service layer da feature "Gerador de Documento".
-// Centraliza todas as chamadas Supabase relacionadas a tags, valores por
-// cliente, templates, elementos de template e documentos gerados.
+// Centraliza todas as chamadas Supabase.
 
 import { supabase } from '../../../../lib/supabase'
 import type {
@@ -11,6 +10,7 @@ import type {
   DocumentTemplate,
   DocumentTemplateElement,
   ClientGeneratedDocument,
+  DocumentMapping,
   ClientTagValue,
   TextImportSourceOption,
   ElementStyle,
@@ -234,11 +234,20 @@ export const documentsService = {
     return data.publicUrl
   },
 
+  // ────────────────────────────────────────────────────────────────
+  //  "Importar de" — monta lista de fontes de texto para UM cliente
+  //  Agora inclui os campos de "Informações da análise" (ai_info_templates
+  //  + clients.ai_info_tags).
+  // ────────────────────────────────────────────────────────────────
+
   async getTextImportSources(clientId: string): Promise<TextImportSourceOption[]> {
     const options: TextImportSourceOption[] = []
 
+    // 1. Dados básicos do cliente
     const { data: client } = await supabase
-      .from('clients').select('full_name, email, phone, plan_id').eq('id', clientId).single()
+      .from('clients')
+      .select('full_name, email, phone, plan_id, ai_info_tags')
+      .eq('id', clientId).single()
 
     if (client) {
       options.push(
@@ -248,6 +257,7 @@ export const documentsService = {
       )
     }
 
+    // 2. Resultado
     const { data: result } = await supabase
       .from('client_results').select('observations, folder_url').eq('client_id', clientId).maybeSingle()
 
@@ -256,6 +266,37 @@ export const documentsService = {
       { key: 'result_folder', label: 'Link da pasta do resultado', group: 'result', groupLabel: 'Resultado', value: result?.folder_url || null },
     )
 
+    // 3. Informações da análise (ai_info_templates × ai_info_tags do cliente)
+    //    Cada template é uma "coluna" tipo Coloração Pessoal / Subtom / etc.
+    {
+      const [{ data: templates }] = await Promise.all([
+        supabase.from('ai_info_templates').select('id, name, sort_order').order('sort_order'),
+      ])
+
+      const saved: Array<{ templateId: string; value: string }> = Array.isArray(client?.ai_info_tags)
+        ? (client!.ai_info_tags as any[])
+        : []
+
+      const savedMap: Record<string, string> = {}
+      for (const row of saved) {
+        if (row && typeof row.templateId === 'string') {
+          savedMap[row.templateId] = (row.value ?? '').toString()
+        }
+      }
+
+      for (const t of (templates || []) as Array<{ id: string; name: string }>) {
+        const val = savedMap[t.id]
+        options.push({
+          key: `ai_info:${t.id}`,
+          label: t.name,
+          group: 'form',                       // reutiliza o tipo existente
+          groupLabel: 'Informações da análise',
+          value: val && val.trim() ? val : null,
+        })
+      }
+    }
+
+    // 4. Campos do formulário do plano
     if (client?.plan_id) {
       const [{ data: planForm }, { data: submission }] = await Promise.all([
         supabase.from('plan_forms').select('fields').eq('plan_id', client.plan_id).maybeSingle(),
@@ -418,7 +459,7 @@ export const documentsService = {
     return data
   },
 
-  // ═══════════════ ELEMENTOS DE TEMPLATE (Fase 3) ══════════════════
+  // ═══════════════ ELEMENTOS DE TEMPLATE ═══════════════════════════
 
   async listTemplateElements(templateId: string): Promise<DocumentTemplateElement[]> {
     const { data, error } = await supabase
@@ -432,15 +473,10 @@ export const documentsService = {
   },
 
   async createTemplateElement(input: {
-    template_id: string
-    tag_id: string
-    page_number: number
-    x_pt: number
-    y_pt: number
-    width_pt?: number | null
-    height_pt?: number | null
-    style?: ElementStyle
-    z_index?: number
+    template_id: string; tag_id: string; page_number: number
+    x_pt: number; y_pt: number
+    width_pt?: number | null; height_pt?: number | null
+    style?: ElementStyle; z_index?: number
   }): Promise<DocumentTemplateElement> {
     const { data, error } = await supabase
       .from('document_template_elements')
@@ -469,9 +505,7 @@ export const documentsService = {
   ): Promise<DocumentTemplateElement> {
     const { data, error } = await supabase
       .from('document_template_elements')
-      .update(updates as any)
-      .eq('id', id)
-      .select().single()
+      .update(updates as any).eq('id', id).select().single()
     if (error) throw error
     return data as DocumentTemplateElement
   },
@@ -481,7 +515,7 @@ export const documentsService = {
     if (error) throw error
   },
 
-  // ═══════════════ GENERATED DOCS (Fase 5) ════════════════════════
+  // ═══════════════ GENERATED DOCS ══════════════════════════════════
 
   async listGeneratedForClient(clientId: string): Promise<ClientGeneratedDocument[]> {
     const { data, error } = await supabase
@@ -501,5 +535,53 @@ export const documentsService = {
     const { data, error } = await supabase.storage.from('document-generated').download(storagePath)
     if (error) throw error
     return data
+  },
+
+  async saveGeneratedDocument(input: {
+    clientId: string
+    templateId: string
+    fileName: string
+    blob: Blob
+    mappings: DocumentMapping[]
+  }): Promise<ClientGeneratedDocument> {
+    const { clientId, templateId, fileName, blob, mappings } = input
+    const storagePath = `${clientId}/${Date.now()}_${safeFileName(fileName)}`
+
+    const up = await supabase.storage.from('document-generated').upload(
+      storagePath, blob,
+      { contentType: 'application/pdf', upsert: false },
+    )
+    if (up.error) throw up.error
+
+    let generatedBy: string | null = null
+    try {
+      const { data } = await supabase.auth.getUser()
+      generatedBy = data?.user?.id ?? null
+    } catch { /* ignore */ }
+
+    const { data: row, error } = await supabase
+      .from('client_generated_documents')
+      .insert({
+        client_id: clientId,
+        template_id: templateId,
+        storage_path: storagePath,
+        file_name: fileName,
+        file_size: blob.size,
+        mappings: mappings as any,
+        generated_by: generatedBy,
+      })
+      .select().single()
+
+    if (error) {
+      await supabase.storage.from('document-generated').remove([storagePath]).catch(() => {})
+      throw error
+    }
+    return row as ClientGeneratedDocument
+  },
+
+  async deleteGeneratedDocument(doc: ClientGeneratedDocument): Promise<void> {
+    await supabase.storage.from('document-generated').remove([doc.storage_path]).catch(() => {})
+    const { error } = await supabase.from('client_generated_documents').delete().eq('id', doc.id)
+    if (error) throw error
   },
 }

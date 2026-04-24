@@ -1,17 +1,21 @@
 // src/components/admin/documents/client/ClientTagValuesPanel.tsx
 //
-// Painel que lista todas as tags ativas e permite vincular, para ESTE cliente:
-//   • tags de texto  → textarea com auto-save + menu "Importar de"
-//   • tags de imagem → botão que abre TagValueImageDialog (fotos existentes ou upload)
-//
-// Esses valores ficam em client_tag_values e são consumidos pelo motor de
-// geração na Fase 5 (template + valores → PDF carimbado).
+// Painel de "Valores das tags para este cliente".
+// Melhorias desta revisão:
+//   • Dropdown "Importar de" renderiza em portal (createPortal + coordenadas
+//     calculadas), evitando clipping por cards adjacentes.
+//   • Slug da tag removido da UI (era exposição técnica desnecessária).
+//   • Layout mais calmo: header próprio por card, input largo, status sutil.
+//   • Tag de imagem: preview maior e ações alinhadas.
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react'
+import { createPortal } from 'react-dom'
 import {
   Tag as TagIcon, Type as TypeIcon, Image as ImageIcon,
-  Download as DownloadIcon, ChevronDown, Check, AlertCircle,
-  Trash2, Loader2, Inbox,
+  Download as DownloadIcon, ChevronDown, Check,
+  AlertCircle, Trash2, Loader2, Inbox, RefreshCw,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import type {
@@ -19,45 +23,20 @@ import type {
 } from '../types'
 import { TagValueImageDialog, ImageDialogResult } from './TagValueImageDialog'
 
-// ── Btn inline ─────────────────────────────────────────────────────────
-
-const Btn = ({
-  children, onClick, variant = 'primary', size = 'sm',
-  loading = false, disabled = false, type = 'button', className = '',
-}: any) => {
-  const v: any = {
-    primary: 'bg-rose-500 text-white hover:bg-rose-600',
-    outline: 'border border-gray-300 text-gray-700 hover:bg-gray-50',
-    ghost:   'text-gray-600 hover:bg-gray-100',
-  }
-  const s: any = { sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm' }
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled || loading}
-      className={`inline-flex items-center gap-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${v[variant]} ${s[size]} ${className}`}
-    >
-      {loading && <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />}
-      {children}
-    </button>
-  )
-}
-
 // ─── Save status ──────────────────────────────────────────────────────
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
-function StatusBadge({ status }: { status: SaveStatus }) {
+function StatusDot({ status }: { status: SaveStatus }) {
   if (status === 'idle') return null
   const map = {
-    saving: { label: 'Salvando...', className: 'text-gray-400', Icon: Loader2, spin: true },
-    saved:  { label: 'Salvo',       className: 'text-green-600', Icon: Check, spin: false },
-    error:  { label: 'Erro',        className: 'text-red-600',   Icon: AlertCircle, spin: false },
+    saving: { label: 'Salvando', cls: 'text-gray-400', Icon: Loader2, spin: true },
+    saved:  { label: 'Salvo',    cls: 'text-emerald-600', Icon: Check,  spin: false },
+    error:  { label: 'Erro',     cls: 'text-red-600',     Icon: AlertCircle, spin: false },
   }[status]
   const Icon = map.Icon
   return (
-    <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${map.className}`}>
+    <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${map.cls}`}>
       <Icon className={`h-3 w-3 ${map.spin ? 'animate-spin' : ''}`} />
       {map.label}
     </span>
@@ -68,9 +47,7 @@ function StatusBadge({ status }: { status: SaveStatus }) {
 //   ClientTagValuesPanel
 // ═══════════════════════════════════════════════════════════════════════
 
-interface Props {
-  clientId: string
-}
+interface Props { clientId: string }
 
 export function ClientTagValuesPanel({ clientId }: Props) {
   const [tags, setTags] = useState<DocumentTag[]>([])
@@ -102,7 +79,7 @@ export function ClientTagValuesPanel({ clientId }: Props) {
 
   useEffect(() => { reload() }, [reload])
 
-  const updateLocalValue = (tagId: string, value: ClientTagValue | null) => {
+  const updateLocal = (tagId: string, value: ClientTagValue | null) => {
     setValuesByTag(prev => {
       const copy = { ...prev }
       if (value) copy[tagId] = value
@@ -111,34 +88,57 @@ export function ClientTagValuesPanel({ clientId }: Props) {
     })
   }
 
-  // ── Render ─────────────────────────────────────────────────────────
+  const filledCount = useMemo(() => {
+    return tags.reduce((acc, t) => {
+      const v = valuesByTag[t.id]
+      if (!v) return acc
+      if (t.type === 'text')  return acc + (v.text_value && v.text_value.trim() ? 1 : 0)
+      if (t.type === 'image') return acc + ((v.photo_id || v.image_storage_path) ? 1 : 0)
+      return acc
+    }, 0)
+  }, [tags, valuesByTag])
 
   if (loading) {
     return (
-      <section className="bg-white border border-gray-200 rounded-xl p-6">
-        <div className="flex justify-center py-6">
-          <div className="animate-spin h-7 w-7 border-2 border-rose-400 border-t-transparent rounded-full" />
+      <section className="bg-white border border-gray-200 rounded-xl p-8">
+        <div className="flex justify-center">
+          <Loader2 className="h-6 w-6 text-rose-400 animate-spin" />
         </div>
       </section>
     )
   }
 
   return (
-    <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+    <section className="bg-white border border-gray-200 rounded-xl overflow-visible">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-gray-100">
-        <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-          <TagIcon className="h-4 w-4 text-rose-500" />
-          Valores das tags para este cliente
-        </h3>
-        <p className="text-xs text-gray-500 mt-0.5">
-          Preencha os dados deste cliente. Eles serão usados automaticamente em
-          qualquer template que referencie as tags abaixo.
-        </p>
+      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+            <TagIcon className="h-4 w-4 text-rose-500" />
+            Valores das tags para este cliente
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Esses dados entram automaticamente em qualquer template de PDF gerado.
+          </p>
+        </div>
+        {tags.length > 0 && (
+          <div className="flex items-center gap-2">
+            <div className="text-[11px] font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1">
+              {filledCount}/{tags.length} preenchida{tags.length !== 1 ? 's' : ''}
+            </div>
+            <button
+              onClick={reload}
+              title="Recarregar"
+              className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Body */}
-      <div className="p-5">
+      <div className="p-4 sm:p-5">
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2 mb-4">
             <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
@@ -147,11 +147,13 @@ export function ClientTagValuesPanel({ clientId }: Props) {
         )}
 
         {tags.length === 0 ? (
-          <div className="text-center py-8">
-            <Inbox className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-            <p className="text-sm font-medium text-gray-700">Nenhuma tag cadastrada ainda</p>
+          <div className="text-center py-10">
+            <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center mx-auto mb-3">
+              <Inbox className="h-5 w-5 text-gray-400" />
+            </div>
+            <p className="text-sm font-medium text-gray-700">Nenhuma tag cadastrada</p>
             <p className="text-xs text-gray-500 mt-1">
-              Crie tags em <span className="font-mono">Documentos → Tags</span> para começar.
+              Crie tags em <span className="text-rose-600">Documentos → Tags</span> para começar.
             </p>
           </div>
         ) : (
@@ -164,14 +166,14 @@ export function ClientTagValuesPanel({ clientId }: Props) {
                     clientId={clientId}
                     value={valuesByTag[tag.id]}
                     sources={textSources}
-                    onUpdate={v => updateLocalValue(tag.id, v)}
+                    onUpdate={v => updateLocal(tag.id, v)}
                   />
                 : <ImageTagRow
                     key={tag.id}
                     tag={tag}
                     clientId={clientId}
                     value={valuesByTag[tag.id]}
-                    onUpdate={v => updateLocalValue(tag.id, v)}
+                    onUpdate={v => updateLocal(tag.id, v)}
                   />
             ))}
           </div>
@@ -182,7 +184,48 @@ export function ClientTagValuesPanel({ clientId }: Props) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//   TextTagRow  (com autosave debounced)
+//   Card base — header + area
+// ═══════════════════════════════════════════════════════════════════════
+
+function TagRowShell({
+  icon: Icon, iconColor, title, description, status, children,
+  tone = 'default',
+}: {
+  icon: any
+  iconColor: string
+  title: string
+  description?: string | null
+  status: SaveStatus
+  children: React.ReactNode
+  tone?: 'default' | 'filled'
+}) {
+  const border = tone === 'filled' ? 'border-gray-200' : 'border-gray-200'
+  return (
+    <div className={`border ${border} rounded-xl overflow-visible bg-white transition-shadow hover:shadow-sm`}>
+      {/* Header */}
+      <div className="px-4 pt-3.5 pb-2 flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2.5 min-w-0">
+          <div className={`h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 ${iconColor}`}>
+            <Icon className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-900 truncate">{title}</p>
+            {description && (
+              <p className="text-[11px] text-gray-500 mt-0.5 leading-snug line-clamp-2">{description}</p>
+            )}
+          </div>
+        </div>
+        <div className="flex-shrink-0 pt-1"><StatusDot status={status} /></div>
+      </div>
+
+      {/* Area */}
+      <div className="px-4 pb-4">{children}</div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//   TextTagRow
 // ═══════════════════════════════════════════════════════════════════════
 
 function TextTagRow({
@@ -196,17 +239,16 @@ function TextTagRow({
 }) {
   const [text, setText] = useState(value?.text_value ?? '')
   const [status, setStatus] = useState<SaveStatus>('idle')
-  const [showImport, setShowImport] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const importBtnRef = useRef<HTMLButtonElement>(null)
 
   const savedRef = useRef(value?.text_value ?? '')
   const firstRender = useRef(true)
 
-  // Debounced save
+  // Autosave debounced (800ms)
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return }
     if (text === savedRef.current) return
-
     setStatus('saving')
     const handle = setTimeout(async () => {
       try {
@@ -214,19 +256,18 @@ function TextTagRow({
         savedRef.current = text
         onUpdate(saved)
         setStatus('saved')
-        setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 1800)
+        setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 1600)
       } catch {
         setStatus('error')
       }
     }, 800)
-
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text])
 
   const handleImport = (opt: TextImportSourceOption) => {
     if (opt.value) setText(opt.value)
-    setShowImport(false)
+    setMenuOpen(false)
   }
 
   const handleClear = async () => {
@@ -236,13 +277,137 @@ function TextTagRow({
       savedRef.current = ''
       setText('')
       onUpdate(null)
-    } catch (e) {
+    } catch {
       setStatus('error')
     }
   }
 
-  // Agrupa fontes por group
-  const groupedSources = useMemo(() => {
+  const hasValue = !!text.trim()
+
+  return (
+    <TagRowShell
+      icon={TypeIcon}
+      iconColor="text-sky-600 bg-sky-50"
+      title={tag.name}
+      description={tag.description}
+      status={status}
+      tone={hasValue ? 'filled' : 'default'}
+    >
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        placeholder="Digite o valor deste cliente..."
+        rows={2}
+        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm resize-y focus:outline-none focus:ring-2 focus:ring-rose-400/40 focus:border-rose-400 transition-colors bg-gray-50/30 focus:bg-white"
+      />
+
+      <div className="flex items-center justify-between gap-2 mt-2 flex-wrap">
+        <div className="flex items-center gap-1 relative">
+          <button
+            ref={importBtnRef}
+            type="button"
+            onClick={() => setMenuOpen(v => !v)}
+            className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md transition-colors ${
+              menuOpen
+                ? 'bg-rose-100 text-rose-700'
+                : 'text-rose-600 hover:bg-rose-50'
+            }`}
+          >
+            <DownloadIcon className="h-3 w-3" /> Importar de
+            <ChevronDown className={`h-3 w-3 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {hasValue && (
+            <button
+              onClick={handleClear}
+              className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-md hover:bg-red-50 transition-colors"
+              title="Limpar valor"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        <span className="text-[11px] text-gray-400">
+          {text.length > 0 ? `${text.length} caracteres` : ''}
+        </span>
+      </div>
+
+      {menuOpen && (
+        <ImportMenuPortal
+          anchor={importBtnRef.current}
+          sources={sources}
+          onPick={handleImport}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
+    </TagRowShell>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//   Import menu — renderizado em portal, posicionado via getBoundingClientRect
+// ═══════════════════════════════════════════════════════════════════════
+
+function ImportMenuPortal({
+  anchor, sources, onPick, onClose,
+}: {
+  anchor: HTMLButtonElement | null
+  sources: TextImportSourceOption[]
+  onPick: (opt: TextImportSourceOption) => void
+  onClose: () => void
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Calcula posição relativa à viewport. Reposiciona em resize/scroll.
+  useEffect(() => {
+    if (!anchor) return
+    const compute = () => {
+      const rect = anchor.getBoundingClientRect()
+      const menuWidth = 320
+      const menuMaxHeight = 380
+      const viewportH = window.innerHeight
+
+      let top = rect.bottom + 4
+      // Se não couber abaixo, abre acima
+      if (top + menuMaxHeight > viewportH - 10) {
+        top = Math.max(10, rect.top - menuMaxHeight - 4)
+      }
+      let left = rect.left
+      // Evita estourar à direita
+      if (left + menuWidth > window.innerWidth - 10) {
+        left = Math.max(10, window.innerWidth - menuWidth - 10)
+      }
+      setPos({ top, left, width: menuWidth })
+    }
+    compute()
+
+    window.addEventListener('resize', compute)
+    window.addEventListener('scroll', compute, true)
+    return () => {
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('scroll', compute, true)
+    }
+  }, [anchor])
+
+  // Click fora / Esc fecha
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target as Node) &&
+        anchor && !anchor.contains(e.target as Node)
+      ) onClose()
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [anchor, onClose])
+
+  // Agrupa
+  const groups = useMemo(() => {
     const g: Record<string, { label: string; items: TextImportSourceOption[] }> = {}
     for (const s of sources) {
       if (!g[s.group]) g[s.group] = { label: s.groupLabel, items: [] }
@@ -251,136 +416,57 @@ function TextTagRow({
     return g
   }, [sources])
 
-  return (
-    <div className="border border-gray-200 rounded-xl p-4 hover:border-gray-300 transition-colors">
-      <div className="flex items-start gap-3">
-        <div className="h-9 w-9 rounded-lg bg-sky-50 text-sky-500 flex items-center justify-center flex-shrink-0">
-          <TypeIcon className="h-4 w-4" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <p className="font-medium text-gray-900 truncate">{tag.name}</p>
-            <code className="text-[10px] font-mono px-1 py-0.5 rounded bg-gray-100 text-gray-500">{tag.slug}</code>
-          </div>
-          {tag.description && (
-            <p className="text-xs text-gray-500 mb-2">{tag.description}</p>
-          )}
+  if (!pos) return null
 
-          <textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            placeholder="Digite o valor deste cliente..."
-            rows={2}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm resize-y focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400"
-          />
-
-          <div className="flex items-center justify-between mt-2 gap-2 flex-wrap">
-            <div className="flex items-center gap-2 relative">
-              <button
-                ref={importBtnRef}
-                onClick={() => setShowImport(v => !v)}
-                className="inline-flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-700 font-medium px-2 py-1 rounded-md hover:bg-rose-50"
-              >
-                <DownloadIcon className="h-3 w-3" /> Importar de <ChevronDown className="h-3 w-3" />
-              </button>
-              {text && (
-                <button
-                  onClick={handleClear}
-                  className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 px-1.5 py-1 rounded-md hover:bg-red-50"
-                  title="Limpar valor"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              )}
-              {showImport && (
-                <ImportFromMenu
-                  groups={groupedSources}
-                  onPick={handleImport}
-                  onClose={() => setShowImport(false)}
-                  anchorRef={importBtnRef}
-                />
-              )}
-            </div>
-            <StatusBadge status={status} />
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Import menu (dropdown) ────────────────────────────────────────────
-
-function ImportFromMenu({
-  groups, onPick, onClose, anchorRef,
-}: {
-  groups: Record<string, { label: string; items: TextImportSourceOption[] }>
-  onPick: (opt: TextImportSourceOption) => void
-  onClose: () => void
-  anchorRef: React.RefObject<HTMLButtonElement>
-}) {
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (
-        menuRef.current && !menuRef.current.contains(e.target as Node) &&
-        anchorRef.current && !anchorRef.current.contains(e.target as Node)
-      ) onClose()
-    }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose, anchorRef])
-
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', h)
-    return () => document.removeEventListener('keydown', h)
-  }, [onClose])
-
-  const isEmpty = Object.keys(groups).length === 0
-
-  return (
+  return createPortal(
     <div
       ref={menuRef}
-      className="absolute left-0 top-full mt-1 z-40 bg-white border border-gray-200 rounded-xl shadow-xl w-80 max-h-96 overflow-y-auto"
+      className="fixed z-[100] bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+      style={{
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        maxHeight: 380,
+      }}
     >
-      {isEmpty ? (
-        <div className="px-4 py-6 text-center text-sm text-gray-500">
-          Nenhuma fonte disponível para este cliente.
-        </div>
-      ) : (
-        Object.entries(groups).map(([key, group]) => (
-          <div key={key} className="py-2 border-b border-gray-100 last:border-b-0">
-            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-              {group.label}
-            </p>
-            {group.items.map(item => {
-              const disabled = !item.value
-              return (
-                <button
-                  key={item.key}
-                  disabled={disabled}
-                  onClick={() => onPick(item)}
-                  className={`w-full text-left px-3 py-2 flex items-start gap-2 transition-colors ${
-                    disabled
-                      ? 'opacity-40 cursor-not-allowed'
-                      : 'hover:bg-rose-50'
-                  }`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-gray-800">{item.label}</p>
-                    <p className="text-[11px] text-gray-500 truncate">
-                      {item.value ? item.value : '(vazio)'}
-                    </p>
-                  </div>
-                </button>
-              )
-            })}
+      <div className="overflow-y-auto" style={{ maxHeight: 380 }}>
+        {Object.keys(groups).length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-gray-500">
+            Nenhuma fonte disponível para este cliente.
           </div>
-        ))
-      )}
-    </div>
+        ) : (
+          Object.entries(groups).map(([key, group], i) => (
+            <div key={key} className={i > 0 ? 'border-t border-gray-100' : ''}>
+              <p className="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                {group.label}
+              </p>
+              {group.items.map(item => {
+                const disabled = !item.value
+                return (
+                  <button
+                    key={item.key}
+                    disabled={disabled}
+                    onClick={() => onPick(item)}
+                    className={`w-full text-left px-3 py-2 transition-colors ${
+                      disabled
+                        ? 'opacity-40 cursor-not-allowed'
+                        : 'hover:bg-rose-50'
+                    }`}
+                  >
+                    <p className="text-xs font-medium text-gray-800">{item.label}</p>
+                    <p className="text-[11px] text-gray-500 truncate mt-0.5">
+                      {item.value ? item.value : <span className="italic">sem valor</span>}
+                    </p>
+                  </button>
+                )
+              })}
+              <div className="h-1" />
+            </div>
+          ))
+        )}
+      </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -401,7 +487,6 @@ function ImageTagRow({
   const [loadingThumb, setLoadingThumb] = useState(false)
   const [status, setStatus] = useState<SaveStatus>('idle')
 
-  // Resolve a URL do thumbnail atual (pode vir de photo_id OU image_storage_path)
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -418,7 +503,6 @@ function ImageTagRow({
           if (!cancelled) setLoadingThumb(false)
         }
       } else if (value.photo_id) {
-        // Busca o storage_path da foto referenciada
         setLoadingThumb(true)
         try {
           const photos = await documentsService.listClientPhotos(clientId)
@@ -447,7 +531,7 @@ function ImageTagRow({
       onUpdate(saved)
       setShowDialog(false)
       setStatus('saved')
-      setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 1800)
+      setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 1600)
     } catch (e: any) {
       setStatus('error')
       throw e
@@ -460,7 +544,7 @@ function ImageTagRow({
       await documentsService.clearClientTagValue(clientId, tag.id)
       onUpdate(null)
       setStatus('saved')
-      setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 1800)
+      setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 1600)
     } catch {
       setStatus('error')
     }
@@ -468,65 +552,58 @@ function ImageTagRow({
 
   const hasValue = !!value && (!!value.photo_id || !!value.image_storage_path)
   const sourceLabel = value?.image_storage_path
-    ? 'Upload avulso'
+    ? 'Imagem enviada por upload'
     : value?.photo_id
       ? 'Foto da galeria do cliente'
       : null
 
   return (
     <>
-      <div className="border border-gray-200 rounded-xl p-4 hover:border-gray-300 transition-colors">
-        <div className="flex items-start gap-3">
-          <div className="h-9 w-9 rounded-lg bg-violet-50 text-violet-500 flex items-center justify-center flex-shrink-0">
-            <ImageIcon className="h-4 w-4" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-0.5">
-              <p className="font-medium text-gray-900 truncate">{tag.name}</p>
-              <code className="text-[10px] font-mono px-1 py-0.5 rounded bg-gray-100 text-gray-500">{tag.slug}</code>
-            </div>
-            {tag.description && (
-              <p className="text-xs text-gray-500 mb-2">{tag.description}</p>
+      <TagRowShell
+        icon={ImageIcon}
+        iconColor="text-violet-600 bg-violet-50"
+        title={tag.name}
+        description={tag.description}
+        status={status}
+        tone={hasValue ? 'filled' : 'default'}
+      >
+        <div className="flex items-center gap-4">
+          <div className="h-24 w-24 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
+            {loadingThumb ? (
+              <Loader2 className="h-5 w-5 text-gray-400 animate-spin" />
+            ) : thumbUrl ? (
+              <img src={thumbUrl} alt={tag.name} className="h-full w-full object-cover" />
+            ) : (
+              <ImageIcon className="h-7 w-7 text-gray-300" />
             )}
+          </div>
 
-            <div className="flex items-center gap-3 mt-2 flex-wrap">
-              {/* thumbnail */}
-              <div className="h-16 w-16 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0">
-                {loadingThumb ? (
-                  <Loader2 className="h-4 w-4 text-gray-400 animate-spin" />
-                ) : thumbUrl ? (
-                  <img src={thumbUrl} alt={tag.name} className="h-full w-full object-cover" />
-                ) : (
-                  <ImageIcon className="h-5 w-5 text-gray-300" />
-                )}
-              </div>
-
-              <div className="flex-1 min-w-0">
-                {hasValue ? (
-                  <p className="text-xs text-gray-500">{sourceLabel}</p>
-                ) : (
-                  <p className="text-xs text-gray-400 italic">Nenhuma imagem selecionada</p>
-                )}
-                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <Btn variant="outline" size="sm" onClick={() => setShowDialog(true)}>
-                    {hasValue ? 'Trocar imagem' : 'Escolher imagem'}
-                  </Btn>
-                  {hasValue && (
-                    <button
-                      onClick={handleClear}
-                      className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 px-1.5 py-1 rounded-md hover:bg-red-50"
-                      title="Remover"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  )}
-                  <div className="ml-auto"><StatusBadge status={status} /></div>
-                </div>
-              </div>
+          <div className="flex-1 min-w-0">
+            {hasValue ? (
+              <p className="text-xs text-gray-500">{sourceLabel}</p>
+            ) : (
+              <p className="text-xs text-gray-400 italic">Nenhuma imagem selecionada</p>
+            )}
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              <button
+                onClick={() => setShowDialog(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                {hasValue ? 'Trocar imagem' : 'Escolher imagem'}
+              </button>
+              {hasValue && (
+                <button
+                  onClick={handleClear}
+                  className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-md hover:bg-red-50 transition-colors"
+                  title="Remover imagem"
+                >
+                  <Trash2 className="h-3 w-3" /> Remover
+                </button>
+              )}
             </div>
           </div>
         </div>
-      </div>
+      </TagRowShell>
 
       {showDialog && (
         <TagValueImageDialog

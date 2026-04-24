@@ -3,21 +3,22 @@
 // Aba "Documentos" dentro do detalhe do cliente (ClientsManager > ClientDetail).
 //
 // Composta por dois blocos empilhados:
-//   1. ClientTagValuesPanel   — preenche os valores das tags deste cliente
-//                                (texto livre/importado; foto existente/upload avulso)
-//   2. Lista de documentos gerados + botão de geração (wiring real na Fase 5)
+//   1. ClientTagValuesPanel  — preenche os valores das tags deste cliente
+//   2. Lista de documentos gerados + botão "Gerar documento" (Fase 5 ativa)
 
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FileText, Plus, Download, ExternalLink,
-  Inbox, AlertCircle, Clock,
+  Inbox, AlertCircle, Trash2, Loader2,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import type { ClientGeneratedDocument, DocumentTemplate } from '../types'
 import { ClientTagValuesPanel } from './ClientTagValuesPanel'
+import { GenerateDocumentDialog } from '../generate/GenerateDocumentDialog'
+import { supabase } from '../../../../lib/supabase'
 
-// ── Btn inline ─────────────────────────────────────────────────────────
+// ── Btn ────────────────────────────────────────────────────────────────
 
 const Btn = ({
   children, onClick, variant = 'primary', size = 'md',
@@ -41,6 +42,43 @@ const Btn = ({
   )
 }
 
+// ─── Confirm delete modal ─────────────────────────────────────────────
+
+function ConfirmDeleteModal({
+  title, message, onConfirm, onCancel, busy,
+}: {
+  title: string; message: string
+  onConfirm: () => void; onCancel: () => void
+  busy?: boolean
+}) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [onCancel])
+  return (
+    <div className="fixed inset-0 z-[80] bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100">
+          <p className="font-semibold text-gray-900">{title}</p>
+          <p className="text-sm text-gray-500 mt-1">{message}</p>
+        </div>
+        <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex gap-2 justify-end">
+          <Btn variant="outline" onClick={onCancel} disabled={busy}>Cancelar</Btn>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {busy && <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />}
+            Excluir
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Props ────────────────────────────────────────────────────────────
 
 interface Props {
@@ -52,45 +90,41 @@ interface Props {
 export function ClientDocumentsTab({ clientId }: Props) {
   const navigate = useNavigate()
 
+  const [clientName, setClientName] = useState<string>('')
   const [docs, setDocs] = useState<ClientGeneratedDocument[]>([])
   const [templates, setTemplates] = useState<DocumentTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [showGenerate, setShowGenerate] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<ClientGeneratedDocument | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      setLoading(true)
-      setError(null)
-      try {
-        const [d, t] = await Promise.all([
-          documentsService.listGeneratedForClient(clientId),
-          documentsService.listTemplates(),
-        ])
-        if (!cancelled) {
-          setDocs(d)
-          setTemplates(t)
-        }
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Erro ao carregar documentos')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+  const loadAll = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [d, t, clientRes] = await Promise.all([
+        documentsService.listGeneratedForClient(clientId),
+        documentsService.listTemplates(),
+        supabase.from('clients').select('full_name').eq('id', clientId).single(),
+      ])
+      setDocs(d)
+      setTemplates(t)
+      setClientName((clientRes.data as any)?.full_name || '')
+    } catch (e: any) {
+      setError(e?.message || 'Erro ao carregar documentos')
+    } finally {
+      setLoading(false)
     }
-
-    load()
-    return () => { cancelled = true }
   }, [clientId])
+
+  useEffect(() => { loadAll() }, [loadAll])
 
   const hasTemplates = templates.length > 0
 
-  const handleGenerate = () => {
-    alert(
-      'A geração automática de PDFs entra no ar na Fase 5.\n\n' +
-      'Por ora, preencha acima os valores das tags deste cliente — eles serão usados sem fricção quando a geração ficar pronta.'
-    )
+  const handleGenerated = (doc: ClientGeneratedDocument) => {
+    setDocs(prev => [doc, ...prev])
   }
 
   const handleDownload = async (doc: ClientGeneratedDocument) => {
@@ -110,14 +144,28 @@ export function ClientDocumentsTab({ clientId }: Props) {
     }
   }
 
-  // ── Render ─────────────────────────────────────────────────────────
+  const handleDelete = async () => {
+    if (!pendingDelete) return
+    setDeleting(true)
+    try {
+      await documentsService.deleteGeneratedDocument(pendingDelete)
+      setDocs(prev => prev.filter(d => d.id !== pendingDelete.id))
+      setPendingDelete(null)
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao excluir documento')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  // ── Render ──────────────────────────────────────────────────────
 
   return (
     <div className="space-y-5 max-w-3xl">
-      {/* ═══ Bloco 1: preencher valores das tags ═══════════════════════ */}
+      {/* ═══ Bloco 1: valores das tags ═══ */}
       <ClientTagValuesPanel clientId={clientId} />
 
-      {/* ═══ Bloco 2: documentos gerados ═══════════════════════════════ */}
+      {/* ═══ Bloco 2: documentos gerados ═══ */}
       <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between flex-wrap gap-3">
           <div>
@@ -128,31 +176,25 @@ export function ClientDocumentsTab({ clientId }: Props) {
             <p className="text-xs text-gray-500 mt-0.5">
               {hasTemplates
                 ? `${templates.length} template${templates.length !== 1 ? 's' : ''} disponíve${templates.length !== 1 ? 'is' : 'l'} para geração`
-                : 'Nenhum template disponível ainda'}
+                : 'Nenhum template disponível'}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Btn variant="outline" size="sm" onClick={() => navigate('/admin/documents')}>
               <ExternalLink className="h-3.5 w-3.5" /> Gerenciar tags e templates
             </Btn>
-            <Btn variant="primary" size="sm" onClick={handleGenerate} disabled={!hasTemplates}>
+            <Btn
+              variant="primary"
+              size="sm"
+              onClick={() => setShowGenerate(true)}
+              disabled={!hasTemplates}
+            >
               <Plus className="h-3.5 w-3.5" /> Gerar documento
             </Btn>
           </div>
         </div>
 
         <div className="p-5 space-y-4">
-          {!hasTemplates && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
-              <Clock className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-              <p className="text-xs text-amber-700">
-                O editor visual de templates e o motor de geração chegam na Fase 2+.
-                Enquanto isso, preencher os valores acima mantém este cliente pronto
-                para geração instantânea quando tudo estiver no ar.
-              </p>
-            </div>
-          )}
-
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
@@ -162,44 +204,75 @@ export function ClientDocumentsTab({ clientId }: Props) {
 
           {loading ? (
             <div className="flex justify-center py-6">
-              <div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" />
+              <Loader2 className="h-6 w-6 text-rose-400 animate-spin" />
             </div>
           ) : docs.length === 0 ? (
             <div className="border border-dashed border-gray-300 rounded-xl p-8 text-center">
               <Inbox className="h-5 w-5 text-gray-400 mx-auto mb-2" />
               <p className="text-sm font-medium text-gray-700">Nenhum documento gerado</p>
               <p className="text-xs text-gray-500 mt-1">
-                Os PDFs gerados para este cliente aparecerão aqui.
+                Preencha as tags acima, escolha um template e clique em "Gerar documento".
               </p>
             </div>
           ) : (
             <div className="space-y-2">
-              {docs.map(doc => (
-                <div key={doc.id} className="border border-gray-200 rounded-xl p-3 flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
-                    <FileText className="h-4 w-4" />
+              {docs.map(doc => {
+                const templateName = templates.find(t => t.id === doc.template_id)?.name
+                return (
+                  <div key={doc.id} className="border border-gray-200 rounded-xl p-3 flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                      <FileText className="h-4 w-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{doc.file_name}</p>
+                      <p className="text-xs text-gray-500">
+                        {templateName ? `${templateName} · ` : ''}
+                        Gerado em {new Date(doc.generated_at).toLocaleString('pt-BR')}
+                        {doc.file_size ? ` · ${(doc.file_size / 1024).toFixed(1)} KB` : ''}
+                      </p>
+                    </div>
+                    <Btn
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDownload(doc)}
+                      loading={downloadingId === doc.id}
+                    >
+                      <Download className="h-3.5 w-3.5" /> Baixar
+                    </Btn>
+                    <button
+                      onClick={() => setPendingDelete(doc)}
+                      title="Excluir"
+                      className="p-2 rounded-lg text-red-500 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-900 truncate">{doc.file_name}</p>
-                    <p className="text-xs text-gray-500">
-                      Gerado em {new Date(doc.generated_at).toLocaleString('pt-BR')}
-                      {doc.file_size ? ` · ${(doc.file_size / 1024).toFixed(1)} KB` : ''}
-                    </p>
-                  </div>
-                  <Btn
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDownload(doc)}
-                    loading={downloadingId === doc.id}
-                  >
-                    <Download className="h-3.5 w-3.5" /> Baixar
-                  </Btn>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
       </section>
+
+      {/* Modais */}
+      {showGenerate && (
+        <GenerateDocumentDialog
+          clientId={clientId}
+          clientName={clientName || 'Cliente'}
+          onClose={() => setShowGenerate(false)}
+          onGenerated={handleGenerated}
+        />
+      )}
+
+      {pendingDelete && (
+        <ConfirmDeleteModal
+          title="Excluir documento?"
+          message={`"${pendingDelete.file_name}" será removido permanentemente. Esta ação não pode ser desfeita.`}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={handleDelete}
+          busy={deleting}
+        />
+      )}
     </div>
   )
 }
