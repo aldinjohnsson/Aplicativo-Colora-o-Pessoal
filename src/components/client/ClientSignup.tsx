@@ -4,10 +4,48 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   Palette, User, Mail, Phone, Calendar, CheckCircle,
   AlertCircle, Loader2, ChevronRight, PenTool, ArrowLeft,
-  RefreshCw, Lock, Download, Sparkles, Heart
+  RefreshCw, Lock, Download, Sparkles, Heart, Globe
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { generateContractPDF } from '../../lib/contractPDFGenerator'
+
+// ── Lista de países (Brasil primeiro) ────────────────────────────────────────
+const COUNTRIES = [
+  'Brasil',
+  'Afeganistão', 'África do Sul', 'Albânia', 'Alemanha', 'Andorra', 'Angola',
+  'Antígua e Barbuda', 'Arábia Saudita', 'Argélia', 'Argentina', 'Armênia',
+  'Austrália', 'Áustria', 'Azerbaijão', 'Bahamas', 'Bangladesh', 'Barbados',
+  'Barein', 'Bélgica', 'Belize', 'Benin', 'Bielorrússia', 'Bolívia',
+  'Bósnia e Herzegovina', 'Botsuana', 'Brunei', 'Bulgária', 'Burquina Faso',
+  'Burundi', 'Butão', 'Cabo Verde', 'Camarões', 'Camboja', 'Canadá', 'Catar',
+  'Cazaquistão', 'Chade', 'Chile', 'China', 'Chipre', 'Colômbia', 'Comores',
+  'Congo', 'Coreia do Norte', 'Coreia do Sul', 'Costa do Marfim', 'Costa Rica',
+  'Croácia', 'Cuba', 'Dinamarca', 'Djibuti', 'Dominica', 'Egito', 'El Salvador',
+  'Emirados Árabes Unidos', 'Equador', 'Eritreia', 'Eslováquia', 'Eslovênia',
+  'Espanha', 'Eswatini', 'Estado da Palestina', 'Estados Unidos', 'Estônia',
+  'Etiópia', 'Fiji', 'Filipinas', 'Finlândia', 'França', 'Gabão', 'Gâmbia',
+  'Gana', 'Geórgia', 'Granada', 'Grécia', 'Guatemala', 'Guiana', 'Guiné',
+  'Guiné Equatorial', 'Guiné-Bissau', 'Haiti', 'Honduras', 'Hungria', 'Iêmen',
+  'Ilhas Marshall', 'Ilhas Salomão', 'Índia', 'Indonésia', 'Irã', 'Iraque',
+  'Irlanda', 'Islândia', 'Israel', 'Itália', 'Jamaica', 'Japão', 'Jordânia',
+  'Kiribati', 'Kuwait', 'Laos', 'Lesoto', 'Letônia', 'Líbano', 'Libéria',
+  'Líbia', 'Liechtenstein', 'Lituânia', 'Luxemburgo', 'Macedônia do Norte',
+  'Madagáscar', 'Malásia', 'Malawi', 'Maldivas', 'Mali', 'Malta', 'Marrocos',
+  'Maurícia', 'Mauritânia', 'México', 'Micronésia', 'Moçambique', 'Moldávia',
+  'Mônaco', 'Mongólia', 'Montenegro', 'Myanmar', 'Namíbia', 'Nauru', 'Nepal',
+  'Nicarágua', 'Níger', 'Nigéria', 'Noruega', 'Nova Zelândia', 'Omã',
+  'Países Baixos', 'Paquistão', 'Palau', 'Panamá', 'Papua Nova Guiné',
+  'Paraguai', 'Peru', 'Polônia', 'Portugal', 'Quênia', 'Quirguistão',
+  'República Centro-Africana', 'República Checa', 'República Democrática do Congo',
+  'República Dominicana', 'Romênia', 'Ruanda', 'Rússia', 'Samoa', 'San Marino',
+  'Santa Lúcia', 'São Cristóvão e Névis', 'São Tomé e Príncipe',
+  'São Vicente e Granadinas', 'Senegal', 'Serra Leoa', 'Sérvia', 'Seychelles',
+  'Singapura', 'Síria', 'Somália', 'Sri Lanka', 'Sudão', 'Sudão do Sul',
+  'Suécia', 'Suíça', 'Suriname', 'Tailândia', 'Tanzânia', 'Timor-Leste',
+  'Togo', 'Tonga', 'Trinidad e Tobago', 'Tunísia', 'Turcomenistão', 'Turquia',
+  'Tuvalu', 'Ucrânia', 'Uganda', 'Uruguai', 'Uzbequistão', 'Vanuatu',
+  'Vaticano', 'Venezuela', 'Vietnã', 'Zâmbia', 'Zimbábue',
+]
 
 interface PlanData {
   id: string
@@ -34,6 +72,9 @@ export function ClientSignup() {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [birthDate, setBirthDate] = useState('')
+  const [country, setCountry] = useState('Brasil')
+  const [clientIp, setClientIp] = useState('Obtendo...')
+  const [signTime] = useState(() => new Date())
 
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
@@ -57,6 +98,14 @@ export function ClientSignup() {
     if (!shareToken) { setPageError('Link inválido.'); setLoading(false); return }
     loadPlan()
   }, [shareToken])
+
+  // Busca o IP real do cliente ao montar o componente
+  useEffect(() => {
+    fetch('https://api.ipify.org?format=json')
+      .then(r => r.json())
+      .then(d => setClientIp(d.ip || 'Não disponível'))
+      .catch(() => setClientIp('Não disponível'))
+  }, [])
 
   const loadPlan = async () => {
     setLoading(true)
@@ -190,7 +239,7 @@ export function ClientSignup() {
       const signedAt = new Date().toISOString()
       const signatureDataUrl = hasContract ? (canvasRef.current?.toDataURL('image/png') || '') : ''
       const contractData = {
-        clientInfo: { fullName, email, phone, birthDate },
+        clientInfo: { fullName, email, phone, birthDate, country, ip: clientIp },
         signature: signatureDataUrl,
         signedAt,
         agreed: true,
@@ -248,7 +297,7 @@ export function ClientSignup() {
       await downloadContractPDF(
         plan.contract.title || 'Contrato',
         plan.contract.sections || [],
-        { fullName, email, phone: phone || '' },
+        { fullName, email, phone: phone || '', country, ip: clientIp },
         new Date().toISOString()
       )
     } catch (e) {
@@ -479,6 +528,24 @@ export function ClientSignup() {
                 <p className="text-xs text-gray-400 mt-1.5 flex items-center gap-1">
                   <Lock className="h-3 w-3" /> Será usada como senha para acessar seu portal
                 </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  País de residência <span className="text-rose-400">*</span>
+                </label>
+                <div className="relative">
+                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                  <select
+                    value={country}
+                    onChange={e => setCountry(e.target.value)}
+                    className={`${inp} pl-10`}
+                  >
+                    {COUNTRIES.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               {formError && <ErrorBox message={formError} />}

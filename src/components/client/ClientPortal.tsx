@@ -144,27 +144,112 @@ function StepHeader({ current, total, label }: { current: number; total: number;
   )
 }
 
+// ── Lista de países (Brasil primeiro) ────────────────────────────────────────
+
+const COUNTRIES = [
+  'Brasil',
+  'Afeganistão', 'África do Sul', 'Albânia', 'Alemanha', 'Andorra', 'Angola',
+  'Antígua e Barbuda', 'Arábia Saudita', 'Argélia', 'Argentina', 'Armênia',
+  'Austrália', 'Áustria', 'Azerbaijão', 'Bahamas', 'Bangladesh', 'Barbados',
+  'Barein', 'Bélgica', 'Belize', 'Benin', 'Bielorrússia', 'Bolívia',
+  'Bósnia e Herzegovina', 'Botsuana', 'Brunei', 'Bulgária', 'Burquina Faso',
+  'Burundi', 'Butão', 'Cabo Verde', 'Camarões', 'Camboja', 'Canadá', 'Catar',
+  'Cazaquistão', 'Chade', 'Chile', 'China', 'Chipre', 'Colômbia', 'Comores',
+  'Congo', 'Coreia do Norte', 'Coreia do Sul', 'Costa do Marfim', 'Costa Rica',
+  'Croácia', 'Cuba', 'Dinamarca', 'Djibuti', 'Dominica', 'Egito', 'El Salvador',
+  'Emirados Árabes Unidos', 'Equador', 'Eritreia', 'Eslováquia', 'Eslovênia',
+  'Espanha', 'Eswatini', 'Estado da Palestina', 'Estados Unidos', 'Estônia',
+  'Etiópia', 'Fiji', 'Filipinas', 'Finlândia', 'França', 'Gabão', 'Gâmbia',
+  'Gana', 'Geórgia', 'Granada', 'Grécia', 'Guatemala', 'Guiana', 'Guiné',
+  'Guiné Equatorial', 'Guiné-Bissau', 'Haiti', 'Honduras', 'Hungria', 'Iêmen',
+  'Ilhas Marshall', 'Ilhas Salomão', 'Índia', 'Indonésia', 'Irã', 'Iraque',
+  'Irlanda', 'Islândia', 'Israel', 'Itália', 'Jamaica', 'Japão', 'Jordânia',
+  'Kiribati', 'Kuwait', 'Laos', 'Lesoto', 'Letônia', 'Líbano', 'Libéria',
+  'Líbia', 'Liechtenstein', 'Lituânia', 'Luxemburgo', 'Macedônia do Norte',
+  'Madagáscar', 'Malásia', 'Malawi', 'Maldivas', 'Mali', 'Malta', 'Marrocos',
+  'Maurícia', 'Mauritânia', 'México', 'Micronésia', 'Moçambique', 'Moldávia',
+  'Mônaco', 'Mongólia', 'Montenegro', 'Myanmar', 'Namíbia', 'Nauru', 'Nepal',
+  'Nicarágua', 'Níger', 'Nigéria', 'Noruega', 'Nova Zelândia', 'Omã',
+  'Países Baixos', 'Paquistão', 'Palau', 'Panamá', 'Papua Nova Guiné',
+  'Paraguai', 'Peru', 'Polônia', 'Portugal', 'Quênia', 'Quirguistão',
+  'República Centro-Africana', 'República Checa', 'República Democrática do Congo',
+  'República Dominicana', 'Romênia', 'Ruanda', 'Rússia', 'Samoa', 'San Marino',
+  'Santa Lúcia', 'São Cristóvão e Névis', 'São Tomé e Príncipe',
+  'São Vicente e Granadinas', 'Senegal', 'Serra Leoa', 'Sérvia', 'Seychelles',
+  'Singapura', 'Síria', 'Somália', 'Sri Lanka', 'Sudão', 'Sudão do Sul',
+  'Suécia', 'Suíça', 'Suriname', 'Tailândia', 'Tanzânia', 'Timor-Leste',
+  'Togo', 'Tonga', 'Trinidad e Tobago', 'Tunísia', 'Turcomenistão', 'Turquia',
+  'Tuvalu', 'Ucrânia', 'Uganda', 'Uruguai', 'Uzbequistão', 'Vanuatu',
+  'Vaticano', 'Venezuela', 'Vietnã', 'Zâmbia', 'Zimbábue',
+]
+
 // ── Step 1: Contract ─────────────────────────────────────────────────────────
 
 function ContractStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
   const [read, setRead] = useState(false)
   const [agreed, setAgreed] = useState(false)
   const [signing, setSigning] = useState(false)
+  const [country, setCountry] = useState('Brasil')
+  const [clientIp, setClientIp] = useState<string>('Obtendo...')
+  const [signTime] = useState(() => new Date())
+
+  // Busca o IP real do cliente ao montar o componente
+  useEffect(() => {
+    fetch('https://api.ipify.org?format=json')
+      .then(r => r.json())
+      .then(d => setClientIp(d.ip || 'Não disponível'))
+      .catch(() => setClientIp('Não disponível'))
+  }, [])
 
   const handleSign = async () => {
     if (!agreed) return
     setSigning(true)
     try {
-      await clientService.signContract(token)
+      await clientService.signContract(token, {
+        country,
+        ip: clientIp,
+        signedAt: new Date().toISOString(),
+      })
       onDone()
     } catch (e: any) { alert(e.message) } finally { setSigning(false) }
   }
 
   const contract = data.contract
 
+  const formattedDate = signTime.toLocaleDateString('pt-BR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  })
+  const formattedTime = signTime.toLocaleTimeString('pt-BR', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+
   return (
     <div className="space-y-4">
       <StepHeader current={1} total={3} label="Contrato" />
+
+      {/* ── Banner de metadados (IP / Data / Hora) ── */}
+      <div className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 space-y-1.5">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+          Registro de acesso
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs text-gray-700">
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+            <span><strong>IP:</strong> {clientIp}</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+            <span><strong>Data:</strong> {formattedDate}</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+            <span><strong>Hora:</strong> {formattedTime}</span>
+          </span>
+        </div>
+        <p className="text-[10px] text-gray-400 pt-0.5">
+          Esses dados serão registrados junto à assinatura digital no PDF do contrato.
+        </p>
+      </div>
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
@@ -191,7 +276,23 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
           ))}
         </div>
 
-        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-3">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-4">
+          {/* Campo de País */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              País de residência
+            </label>
+            <select
+              value={country}
+              onChange={e => setCountry(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
+            >
+              {COUNTRIES.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+
           <label className="flex items-start gap-2.5 cursor-pointer">
             <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} disabled={!read} className="mt-0.5 w-4 h-4 accent-rose-500" />
             <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>

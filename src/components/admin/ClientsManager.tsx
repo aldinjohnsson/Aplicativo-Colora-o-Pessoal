@@ -1577,7 +1577,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   }
 
   const copyLink = () => { const link = `${window.location.origin}/c/${data.client.token}`; navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000) }
-  const handleSaveResult = async () => { setSavingResult(true); try { await adminService.saveResult(clientId!, resultForm); load() } catch (e: any) { alert(e.message) } finally { setSavingResult(false) } }
+  const handleSaveResult = async () => { setSavingResult(true); try { await adminService.saveResult(clientId!, resultForm) } catch (e: any) { alert(e.message) } finally { setSavingResult(false) } }
   const handleReleaseResult = async () => {
     const hasContent = resultForm.observations.trim() || resultFiles?.length > 0 || linkedFolderId
     if (!hasContent) { if (!confirm('⚠️ Nenhum conteúdo adicionado.\n\nDeseja liberar mesmo assim?')) return } else { if (!confirm('Liberar o resultado para a cliente?')) return }
@@ -2005,7 +2005,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               )}
             </div>
             <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
-              <Btn onClick={async () => { await handleSaveResult(); await handleSaveAIConfig() }} loading={savingResult || savingAI}>
+              <Btn onClick={async () => { await handleSaveResult(); await handleSaveAIConfig(); await load() }} loading={savingResult || savingAI}>
                 <Save className="h-4 w-4" /> Salvar
               </Btn>
               {aiSaveStatus === 'saved' && <span className="text-sm text-green-600 flex items-center gap-1"><CheckCircle className="h-4 w-4" /> Salvo!</span>}

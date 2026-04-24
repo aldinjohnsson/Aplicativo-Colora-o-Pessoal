@@ -1019,10 +1019,33 @@ export const clientService = {
     return portalData
   },
 
-  async signContract(token: string): Promise<void> {
+  async signContract(
+    token: string,
+    meta?: { country?: string; ip?: string; signedAt?: string }
+  ): Promise<void> {
     const { data, error } = await supabase.rpc('sign_client_contract', { p_token: token })
     if (error) throw error
     if (data?.error) throw new Error(data.error)
+
+    // Salva país, IP e timestamp de assinatura no registro do cliente.
+    // Wrapped em try/catch para não quebrar o fluxo caso as colunas ainda não
+    // existam no banco (adicione `country`, `signed_ip` e `signed_at` à tabela
+    // `clients` se quiser persistir esses dados).
+    if (meta && (meta.country || meta.ip)) {
+      try {
+        await supabase
+          .from('clients')
+          .update({
+            ...(meta.country  ? { country: meta.country }      : {}),
+            ...(meta.ip       ? { signed_ip: meta.ip }         : {}),
+            ...(meta.signedAt ? { signed_at: meta.signedAt }   : {}),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('token', token)
+      } catch (_) {
+        // Silently ignore — columns may not exist yet
+      }
+    }
   },
 
   /**
