@@ -299,7 +299,28 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       let materialsToSend: MaterialData[] = mats || promptMaterials
       if (!isAccessory && !resultMaterialsSent.current && resultMaterials.length > 0) { materialsToSend = [...resultMaterials, ...materialsToSend]; resultMaterialsSent.current = true }
       const activeRef = refPhotoOverride || (refBase64 ? { base64: refBase64, mime: refMime } : null)
+      console.log('[GeminiChat] enviando →', {
+        forceImage: isImage,
+        clientFirst: isAccessory,
+        hasUserImage: !!uB64,
+        hasRefPhoto: !!activeRef?.base64,
+        materialsCount: materialsToSend.length,
+        userTextPreview: text.slice(0, 120),
+      })
       const response = await chatWithGemini({ apiKey, systemPrompt: fullSystemPrompt, history, userText: text, userImageBase64: uB64, userImageMimeType: uMime, referencePhotoBase64: activeRef?.base64 || undefined, referencePhotoMimeType: activeRef?.mime || refMime, materials: materialsToSend, forceImage: isImage, clientFirst: isAccessory })
+      console.log('[GeminiChat] resposta ←', {
+        modelUsed: response.modelUsed,
+        imageGenerationFailed: response.imageGenerationFailed,
+        partsCount: response.parts.length,
+        textParts: response.parts.filter(p => p.type === 'text').length,
+        imageParts: response.parts.filter(p => p.type === 'image').length,
+        firstCandidateFinishReason: response.raw?.candidates?.[0]?.finishReason,
+        firstImageMime: response.parts.find(p => p.type === 'image')?.imageMimeType,
+        firstImageSizeKB: (() => {
+          const b64 = response.parts.find(p => p.type === 'image')?.imageBase64
+          return b64 ? Math.round((b64.length * 3 / 4) / 1024) : null
+        })(),
+      })
       const mainText = response.parts.filter(p => p.type === 'text' && p.text?.trim()).map(p => p.text).join('\n').trim()
       setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: mainText || '✨', responseParts: response.parts, imageGenerationFailed: response.imageGenerationFailed } : m))
       const hasImage = response.parts.some(p => p.type === 'image' && p.imageBase64)
