@@ -1026,6 +1026,21 @@ export const clientService = {
       }
     }
 
+    // ── Buscar arquivos de resultado (PDFs) da tabela client_result_files ──
+    // O RPC get_client_portal não inclui os arquivos — buscamos direto.
+    if (portalData.result) {
+      try {
+        const { data: filesRows } = await supabase
+          .from('client_result_files')
+          .select('id, file_name, storage_path, file_size')
+          .eq('client_id', portalData.client.id)
+          .order('uploaded_at')
+        portalData.result.files = filesRows || []
+      } catch (e) {
+        portalData.result.files = portalData.result.files ?? []
+      }
+    }
+
     return portalData
   },
 
