@@ -97,3 +97,19 @@ END $$;
 
 
 ALTER TABLE client_results ADD COLUMN IF NOT EXISTS chat_enabled boolean NOT NULL DEFAULT true;
+
+
+ALTER TABLE clients
+  DROP CONSTRAINT clients_status_check;
+
+ALTER TABLE clients
+  ADD CONSTRAINT clients_status_check
+  CHECK (status IN (
+    'awaiting_contract',
+    'awaiting_form',
+    'awaiting_photos',
+    'photos_submitted',
+    'in_analysis',
+    'preparing_materials',
+    'completed'
+  ));
