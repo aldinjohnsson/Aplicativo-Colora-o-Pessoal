@@ -6,6 +6,7 @@ import {
   Camera, AlertCircle, FileText, ExternalLink, Download,
   ChevronLeft, ChevronRight, Play, Image as ImageIcon,
   CheckCircle2, ArrowRight, Loader2, ChevronDown, ChevronUp,
+  Package, Sparkles,
 } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
