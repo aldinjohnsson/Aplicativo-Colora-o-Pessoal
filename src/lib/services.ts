@@ -12,6 +12,7 @@ export type ClientStatus =
   | 'awaiting_photos'
   | 'photos_submitted'
   | 'in_analysis'
+  | 'preparing_materials'
   | 'completed'
 
 export interface Plan {
@@ -745,6 +746,15 @@ export const adminService = {
       return this.approvePhotos(clientId, days)
     }
     if (currentStatus === 'in_analysis') {
+      // Avança para "Preparando Materiais" — resultado ainda não liberado
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'preparing_materials', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'preparing_materials') {
       return this.releaseResult(clientId)
     }
     if (currentStatus === 'completed') {

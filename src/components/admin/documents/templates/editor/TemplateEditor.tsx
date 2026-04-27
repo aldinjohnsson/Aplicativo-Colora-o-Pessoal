@@ -1,16 +1,20 @@
 // src/components/admin/documents/templates/editor/TemplateEditor.tsx
 //
-// Editor visual de template — Fase 3.
+// Editor visual de template — Fase 3 + painel de propriedades.
+//
+// NOVIDADES:
+//  • Painel de propriedades (direita) aparece ao selecionar um elemento:
+//    - Texto: família, tamanho, cor, negrito/itálico, alinhamento H e V,
+//             altura de linha, transformação, autoFit.
+//    - Imagem: objectFit (cover / contain).
+//    - Ambos: campos numéricos de X, Y, Largura, Altura em pt.
+//  • Preview WYSIWYG já refletia os estilos; agora o usuário CONTROLA.
 //
 // ATENÇÃO À ESTRATÉGIA DE ALTURA:
 // O AdminDashboard não dá altura fixa para a rota de Documentos — ela é
 // scrollável normalmente. Para evitar dependências frágeis na árvore de
 // flex do pai, este editor se "prende" ao viewport sozinho via
 //     position: sticky; top: 52px; height: calc(100vh - 52px)
-// O offset 52px desconta a topbar do AdminDashboard.
-//
-// Isso garante que palette lateral e miniaturas fiquem fixas enquanto
-// apenas o canvas central rola internamente.
 
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
@@ -19,17 +23,19 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, ZoomIn, ZoomOut, Layers, AlertCircle, Loader2,
   FileText, Type as TypeIcon, Image as ImageIcon,
-  MousePointer2, Check,
+  MousePointer2, Check, AlignLeft, AlignCenter, AlignRight,
+  AlignJustify, ChevronUp, ChevronsUpDown, ChevronDown,
 } from 'lucide-react'
 import * as pdfjs from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { documentsService } from '../../lib/documentsService'
-import type { DocumentTag, DocumentTemplate, DocumentTemplateElement } from '../../types'
+import type {
+  DocumentTag, DocumentTemplate, DocumentTemplateElement, ElementStyle,
+} from '../../types'
+import { SUPPORTED_FONTS } from '../../types'
 import { DraggableTagElement } from './DraggableTagElement'
 
-// Altura da topbar global do AdminDashboard (NON-kanban header). Mantenha
-// em sincronia com o valor em AdminDashboard.tsx (atualmente height: 52).
 const ADMIN_TOPBAR_HEIGHT = 52
 
 let workerConfigured = false
@@ -89,6 +95,11 @@ export function TemplateEditor() {
     for (const t of tags) m[t.id] = t
     return m
   }, [tags])
+
+  const selectedElement = useMemo(
+    () => elements.find(e => e.id === selectedId) ?? null,
+    [elements, selectedId],
+  )
 
   // ── Load ──────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -264,9 +275,6 @@ export function TemplateEditor() {
 
   // ─── Render ──────────────────────────────────────────────────────
 
-  // Estilo do container externo: preso no topo (abaixo da topbar global),
-  // altura = viewport - topbar. Assim o editor conquista altura sozinho,
-  // independentemente de o pai ter h-full ou não.
   const fullViewportStyle: React.CSSProperties = {
     position: 'sticky',
     top: ADMIN_TOPBAR_HEIGHT,
@@ -406,8 +414,15 @@ export function TemplateEditor() {
           )}
         </div>
 
-        {/* Miniaturas (fixas) */}
-        {pdf && template.page_count > 1 && (
+        {/* Painel direito: Propriedades (quando selecionado) ou Miniaturas */}
+        {selectedElement ? (
+          <StylePanel
+            element={selectedElement}
+            tag={tagsById[selectedElement.tag_id]}
+            template={template}
+            onChange={handleChangeElement}
+          />
+        ) : pdf && template.page_count > 1 ? (
           <aside className="w-32 border-l border-gray-200 bg-white flex-shrink-0 hidden md:flex flex-col min-h-0">
             <div className="px-2 pt-3 pb-1 flex-shrink-0">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 px-1">
@@ -426,14 +441,394 @@ export function TemplateEditor() {
               ))}
             </div>
           </aside>
-        )}
+        ) : null}
       </div>
     </div>
   )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//   Subcomponentes
+//   StylePanel — Painel de propriedades do elemento selecionado
+// ═══════════════════════════════════════════════════════════════════════
+
+function StylePanel({
+  element, tag, template, onChange,
+}: {
+  element: DocumentTemplateElement
+  tag: DocumentTag | undefined
+  template: DocumentTemplate
+  onChange: (id: string, patch: Partial<DocumentTemplateElement>) => void
+}) {
+  const style: ElementStyle = (element.style as ElementStyle) || {}
+  const isImage = tag?.type === 'image'
+
+  const updateStyle = (patch: Partial<ElementStyle>) => {
+    onChange(element.id, { style: { ...style, ...patch } as any })
+  }
+
+  const updateGeom = (patch: Partial<Pick<DocumentTemplateElement,
+    'x_pt' | 'y_pt' | 'width_pt' | 'height_pt'
+  >>) => {
+    onChange(element.id, patch)
+  }
+
+  return (
+    <aside className="w-64 border-l border-gray-200 bg-white flex-shrink-0 hidden md:flex flex-col min-h-0 overflow-hidden">
+      {/* Header */}
+      <div className="px-3 py-3 border-b border-gray-100 flex-shrink-0">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+          Propriedades
+        </p>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          {isImage
+            ? <ImageIcon className="h-3.5 w-3.5 text-violet-500" />
+            : <TypeIcon className="h-3.5 w-3.5 text-sky-500" />}
+          <p className="text-xs font-medium text-gray-700 truncate">
+            {tag?.name ?? '(tag removida)'}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {/* ── Posição e Tamanho ── */}
+        <PropSection title="Posição e tamanho">
+          <div className="grid grid-cols-2 gap-2">
+            <NumericField
+              label="X (pt)"
+              value={element.x_pt}
+              min={0}
+              max={template.page_width_pt - (element.width_pt ?? 10)}
+              onChange={v => updateGeom({ x_pt: v })}
+            />
+            <NumericField
+              label="Y (pt)"
+              value={element.y_pt}
+              min={0}
+              max={template.page_height_pt - (element.height_pt ?? 10)}
+              onChange={v => updateGeom({ y_pt: v })}
+            />
+            <NumericField
+              label="Largura"
+              value={element.width_pt ?? (isImage ? 180 : 180)}
+              min={10}
+              max={template.page_width_pt}
+              onChange={v => updateGeom({ width_pt: v })}
+            />
+            <NumericField
+              label="Altura"
+              value={element.height_pt ?? (isImage ? 180 : 40)}
+              min={4}
+              max={template.page_height_pt}
+              onChange={v => updateGeom({ height_pt: v })}
+            />
+          </div>
+        </PropSection>
+
+        {isImage ? (
+          /* ── Opções de imagem ── */
+          <PropSection title="Ajuste da imagem">
+            <p className="text-[11px] text-gray-500 mb-2 leading-snug">
+              Como a imagem preenche o retângulo:
+            </p>
+            <div className="flex gap-2">
+              <FitButton
+                active={(style.objectFit ?? 'cover') === 'cover'}
+                onClick={() => updateStyle({ objectFit: 'cover' })}
+                label="Cobrir"
+                hint="Preenche tudo, corta bordas"
+              />
+              <FitButton
+                active={style.objectFit === 'contain'}
+                onClick={() => updateStyle({ objectFit: 'contain' })}
+                label="Conter"
+                hint="Imagem inteira, sem corte"
+              />
+            </div>
+          </PropSection>
+        ) : (
+          <>
+            {/* ── Fonte ── */}
+            <PropSection title="Fonte">
+              {/* Família */}
+              <div className="mb-2">
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">Família</label>
+                <select
+                  value={style.fontFamily ?? 'Inter'}
+                  onChange={e => updateStyle({ fontFamily: e.target.value })}
+                  className="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-rose-400"
+                >
+                  {SUPPORTED_FONTS.map(f => (
+                    <option key={f} value={f}>{f}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Tamanho + Cor */}
+              <div className="flex gap-2 mb-2">
+                <div className="flex-1">
+                  <label className="block text-[11px] font-medium text-gray-500 mb-1">Tamanho (pt)</label>
+                  <NumericField
+                    value={style.fontSize ?? 14}
+                    min={4}
+                    max={200}
+                    onChange={v => updateStyle({ fontSize: v })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 mb-1">Cor</label>
+                  <div className="relative">
+                    <input
+                      type="color"
+                      value={style.color ?? '#111827'}
+                      onChange={e => updateStyle({ color: e.target.value })}
+                      className="h-[30px] w-9 rounded-lg border border-gray-200 cursor-pointer p-0.5 bg-white"
+                      title="Cor do texto"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Negrito / Itálico */}
+              <div className="flex gap-2">
+                <StyleToggle
+                  active={!!style.bold}
+                  onClick={() => updateStyle({ bold: !style.bold })}
+                  className="font-bold"
+                  label="N"
+                  title="Negrito"
+                />
+                <StyleToggle
+                  active={!!style.italic}
+                  onClick={() => updateStyle({ italic: !style.italic })}
+                  className="italic"
+                  label="I"
+                  title="Itálico"
+                />
+              </div>
+            </PropSection>
+
+            {/* ── Alinhamento ── */}
+            <PropSection title="Alinhamento">
+              {/* Horizontal */}
+              <div className="mb-2">
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">Horizontal</label>
+                <div className="flex gap-1">
+                  {(
+                    [
+                      { value: 'left',    Icon: AlignLeft,    title: 'Esquerda' },
+                      { value: 'center',  Icon: AlignCenter,  title: 'Centro'   },
+                      { value: 'right',   Icon: AlignRight,   title: 'Direita'  },
+                      { value: 'justify', Icon: AlignJustify, title: 'Justificado' },
+                    ] as const
+                  ).map(({ value, Icon, title }) => (
+                    <button
+                      key={value}
+                      title={title}
+                      onClick={() => updateStyle({ align: value })}
+                      className={`flex-1 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                        (style.align ?? 'left') === value
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Vertical */}
+              <div>
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">Vertical</label>
+                <div className="flex gap-1">
+                  {(
+                    [
+                      { value: 'top',    Icon: ChevronUp,       title: 'Topo'   },
+                      { value: 'middle', Icon: ChevronsUpDown,  title: 'Meio'   },
+                      { value: 'bottom', Icon: ChevronDown,     title: 'Base'   },
+                    ] as const
+                  ).map(({ value, Icon, title }) => (
+                    <button
+                      key={value}
+                      title={title}
+                      onClick={() => updateStyle({ verticalAlign: value })}
+                      className={`flex-1 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                        (style.verticalAlign ?? 'top') === value
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </PropSection>
+
+            {/* ── Mais opções ── */}
+            <PropSection title="Mais opções">
+              <div className="space-y-2">
+                <NumericField
+                  label="Altura de linha"
+                  value={style.lineHeight ?? 1.3}
+                  min={0.8}
+                  max={4}
+                  step={0.1}
+                  onChange={v => updateStyle({ lineHeight: v })}
+                />
+                <NumericField
+                  label="Espaçamento entre letras (pt)"
+                  value={style.letterSpacing ?? 0}
+                  min={-5}
+                  max={30}
+                  step={0.5}
+                  onChange={v => updateStyle({ letterSpacing: v })}
+                />
+
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 mb-1">
+                    Transformação
+                  </label>
+                  <select
+                    value={style.textTransform ?? 'none'}
+                    onChange={e => updateStyle({ textTransform: e.target.value as any })}
+                    className="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-rose-400"
+                  >
+                    <option value="none">Normal</option>
+                    <option value="uppercase">MAIÚSCULAS</option>
+                    <option value="lowercase">minúsculas</option>
+                  </select>
+                </div>
+
+                {/* AutoFit */}
+                <label className="flex items-center gap-2 cursor-pointer select-none group">
+                  <div
+                    onClick={() => updateStyle({ autoFit: !style.autoFit })}
+                    className={`w-8 h-4 rounded-full relative transition-colors ${
+                      style.autoFit ? 'bg-rose-500' : 'bg-gray-200'
+                    }`}
+                  >
+                    <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                      style.autoFit ? 'translate-x-4' : 'translate-x-0.5'
+                    }`} />
+                  </div>
+                  <span className="text-[11px] text-gray-600">
+                    Auto-fit <span className="text-gray-400">(reduz fonte pra caber)</span>
+                  </span>
+                </label>
+              </div>
+            </PropSection>
+          </>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+// ─── Micro-componentes do painel ──────────────────────────────────────
+
+function PropSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="px-3 py-3 border-b border-gray-100 last:border-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2.5">
+        {title}
+      </p>
+      {children}
+    </div>
+  )
+}
+
+function NumericField({
+  label, value, min, max, step = 1, onChange,
+}: {
+  label?: string
+  value: number
+  min?: number
+  max?: number
+  step?: number
+  onChange: (v: number) => void
+}) {
+  // Estado local pra não travar o cursor enquanto digita
+  const [local, setLocal] = useState(String(Math.round(value * 100) / 100))
+
+  useEffect(() => {
+    setLocal(String(Math.round(value * 100) / 100))
+  }, [value])
+
+  const commit = () => {
+    const n = parseFloat(local)
+    if (Number.isNaN(n)) { setLocal(String(value)); return }
+    const clamped = min !== undefined ? Math.max(min, n) : n
+    const final   = max !== undefined ? Math.min(max, clamped) : clamped
+    onChange(Math.round(final * 100) / 100)
+  }
+
+  return (
+    <div>
+      {label && (
+        <label className="block text-[11px] font-medium text-gray-500 mb-1">{label}</label>
+      )}
+      <input
+        type="number"
+        value={local}
+        min={min}
+        max={max}
+        step={step}
+        onChange={e => setLocal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') commit() }}
+        className="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-rose-400"
+      />
+    </div>
+  )
+}
+
+function StyleToggle({
+  active, onClick, label, title, className = '',
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  title: string
+  className?: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`h-8 w-10 rounded-lg text-sm border transition-colors ${className} ${
+        active
+          ? 'bg-rose-500 text-white border-rose-500'
+          : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function FitButton({
+  active, onClick, label, hint,
+}: {
+  active: boolean; onClick: () => void; label: string; hint: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 rounded-xl border py-2 px-3 text-left transition-colors ${
+        active
+          ? 'border-rose-500 bg-rose-50'
+          : 'border-gray-200 hover:border-gray-300 bg-white'
+      }`}
+    >
+      <p className={`text-xs font-medium ${active ? 'text-rose-700' : 'text-gray-700'}`}>{label}</p>
+      <p className="text-[10px] text-gray-400 mt-0.5 leading-snug">{hint}</p>
+    </button>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//   Subcomponentes existentes (sem alteração)
 // ═══════════════════════════════════════════════════════════════════════
 
 function SaveStatusIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | 'error' }) {

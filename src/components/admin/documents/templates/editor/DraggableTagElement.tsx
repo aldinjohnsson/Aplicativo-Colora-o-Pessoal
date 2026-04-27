@@ -5,15 +5,24 @@
 //
 // Coordenadas e tamanhos são trocados entre pt (banco) e px (editor):
 //   px = pt * zoom
+//
+// PREVIEW WYSIWYG: para tags de texto, renderizamos `{{slug}}` aplicando a
+// mesma fontFamily/size/cor/alinhamento configurados — assim o usuário vê
+// no editor exatamente como o texto vai sair no PDF (aproximação muito
+// próxima — pequenas diferenças sub-pixel entre browser e pdf-lib são
+// inevitáveis).
+//
+// Para tags de imagem, mostramos um placeholder com badge do modo de
+// ajuste ('Cobrir' / 'Conter') pra deixar claro o que foi escolhido.
 
 import React from 'react'
 import { Rnd } from 'react-rnd'
-import { Image as ImageIcon, Type as TypeIcon, X } from 'lucide-react'
-import type { DocumentTag, DocumentTemplateElement } from '../../types'
+import { Image as ImageIcon, X } from 'lucide-react'
+import type { DocumentTag, DocumentTemplateElement, ElementStyle } from '../../types'
 
 interface Props {
   element: DocumentTemplateElement
-  tag: DocumentTag | undefined     // undefined quando a tag foi deletada (órfão)
+  tag: DocumentTag | undefined     // undefined = tag deletada (órfão)
   zoom: number                      // 1 = escala real (1pt = 1px)
   selected: boolean
   onSelect: () => void
@@ -26,19 +35,19 @@ interface Props {
 export function DraggableTagElement({
   element, tag, zoom, selected, onSelect, onChange, onDelete,
 }: Props) {
-  // Fallbacks de tamanho quando nunca foi definido: 180×40pt pra texto, 180×180pt pra imagem
-  const fallbackW = tag?.type === 'image' ? 180 : 180
-  const fallbackH = tag?.type === 'image' ? 180 : 40
+  const isImage = tag?.type === 'image'
+
+  // Defaults de tamanho
+  const fallbackW = isImage ? 180 : 180
+  const fallbackH = isImage ? 180 : 40
   const wPt = element.width_pt ?? fallbackW
   const hPt = element.height_pt ?? fallbackH
 
-  // Converte pt → px para display
+  // pt → px
   const xPx = element.x_pt * zoom
   const yPx = element.y_pt * zoom
   const wPx = wPt * zoom
   const hPx = hPt * zoom
-
-  const isImage = tag?.type === 'image'
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -68,40 +77,24 @@ export function DraggableTagElement({
         topRight: true, bottomRight: true, bottomLeft: true, topLeft: true,
       }}
       className={`group ${selected ? 'z-20' : 'z-10'}`}
-      style={{
-        // react-rnd aplica estilos inline; display é setado internamente
-        pointerEvents: 'auto',
-      }}
+      style={{ pointerEvents: 'auto' }}
     >
       <div
         onMouseDown={onSelect}
         className={`relative w-full h-full transition-colors ${
           selected
-            ? 'ring-2 ring-rose-500 bg-rose-50/30'
-            : 'ring-1 ring-rose-300/60 bg-rose-50/10 hover:ring-rose-400 hover:bg-rose-50/20'
+            ? 'ring-2 ring-rose-500 bg-rose-50/20'
+            : 'ring-1 ring-rose-300/60 hover:ring-rose-400 hover:bg-rose-50/10'
         }`}
         style={{ boxSizing: 'border-box' }}
       >
-        {/* Conteúdo visual — placeholder "{{nome_tag}}" ou ícone */}
         {isImage ? (
-          <div className="w-full h-full flex flex-col items-center justify-center text-rose-500/80 select-none pointer-events-none px-2 text-center overflow-hidden">
-            <ImageIcon className="h-5 w-5 mb-1" />
-            <p className="text-[10px] font-medium truncate max-w-full">
-              {tag ? tag.name : '(tag removida)'}
-            </p>
-          </div>
+          <ImagePreview tag={tag} style={element.style as ElementStyle} />
         ) : (
-          <div className="w-full h-full flex items-start justify-start text-rose-600 select-none pointer-events-none p-1.5 overflow-hidden">
-            <div className="flex items-start gap-1 text-[11px] font-mono">
-              <TypeIcon className="h-3 w-3 mt-0.5 flex-shrink-0" />
-              <span className="truncate">
-                {tag ? `{{${tag.slug}}}` : '(tag removida)'}
-              </span>
-            </div>
-          </div>
+          <TextPreview tag={tag} style={element.style as ElementStyle} zoom={zoom} />
         )}
 
-        {/* Botão delete (só aparece quando selecionado) */}
+        {/* Botão excluir (só quando selecionado) */}
         {selected && (
           <button
             onMouseDown={e => e.stopPropagation()}
@@ -113,13 +106,95 @@ export function DraggableTagElement({
           </button>
         )}
 
-        {/* Label no topo quando selecionado */}
+        {/* Label flutuante com nome da tag (só quando selecionado) */}
         {selected && tag && (
-          <div className="absolute -top-5 left-0 text-[10px] font-medium text-rose-600 bg-white px-1.5 py-0.5 rounded shadow-sm border border-rose-200 whitespace-nowrap">
+          <div className="absolute -top-5 left-0 text-[10px] font-medium text-rose-600 bg-white px-1.5 py-0.5 rounded shadow-sm border border-rose-200 whitespace-nowrap pointer-events-none">
             {tag.name}
           </div>
         )}
       </div>
     </Rnd>
+  )
+}
+
+// ─── Preview de texto ─────────────────────────────────────────────────
+
+function TextPreview({
+  tag, style, zoom,
+}: { tag: DocumentTag | undefined; style: ElementStyle | undefined; zoom: number }) {
+  const s = style || {}
+
+  // Defaults espelhando os defaults de generatePdf.ts
+  const fontFamily   = s.fontFamily ?? 'Inter'
+  const fontSizePt   = s.fontSize ?? 14
+  const lineHeight   = s.lineHeight ?? 1.3
+  const letterSpacingPt = s.letterSpacing ?? 0
+  const align        = s.align ?? 'left'
+  const verticalAlign= s.verticalAlign ?? 'top'
+  const color        = s.color ?? '#111827'
+  const bold         = !!s.bold
+  const italic       = !!s.italic
+  const transform    = s.textTransform ?? 'none'
+
+  const justify =
+    verticalAlign === 'middle' ? 'center' :
+    verticalAlign === 'bottom' ? 'flex-end' :
+    'flex-start'
+
+  // texto preview: {{slug}} (placeholder; ainda não temos cliente no editor)
+  const previewText = tag ? `{{${tag.slug}}}` : '(tag removida)'
+
+  return (
+    <div
+      className="w-full h-full overflow-hidden select-none pointer-events-none flex"
+      style={{
+        // empurra o conteúdo verticalmente conforme verticalAlign
+        flexDirection: 'column',
+        justifyContent: justify,
+      }}
+    >
+      <div
+        style={{
+          fontFamily: `"${fontFamily}", sans-serif`,
+          fontSize: `${fontSizePt * zoom}px`,
+          fontWeight: bold ? 700 : 400,
+          fontStyle: italic ? 'italic' : 'normal',
+          color,
+          textAlign: align as any,
+          lineHeight,
+          letterSpacing: `${letterSpacingPt * zoom}px`,
+          textTransform: transform as any,
+          width: '100%',
+          // Mantém quebras suaves; oculta o que escapa do retângulo.
+          // Não usamos -webkit-line-clamp pra não esconder linhas de
+          // antemão — overflow:hidden no pai já basta.
+          wordBreak: 'break-word',
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {previewText}
+      </div>
+    </div>
+  )
+}
+
+// ─── Preview de imagem ────────────────────────────────────────────────
+
+function ImagePreview({
+  tag, style,
+}: { tag: DocumentTag | undefined; style: ElementStyle | undefined }) {
+  const fit = style?.objectFit ?? 'cover'
+  const fitLabel = fit === 'cover' ? 'Cobrir' : 'Conter'
+
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center text-rose-500/80 select-none pointer-events-none px-2 text-center overflow-hidden">
+      <ImageIcon className="h-5 w-5 mb-1" />
+      <p className="text-[10px] font-medium truncate max-w-full">
+        {tag ? tag.name : '(tag removida)'}
+      </p>
+      <p className="text-[9px] text-rose-400/80 mt-0.5">
+        {fitLabel}
+      </p>
+    </div>
   )
 }

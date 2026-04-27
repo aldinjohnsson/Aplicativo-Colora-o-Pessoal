@@ -19,14 +19,14 @@
 
 import React, { useState } from 'react'
 import {
-  Check, FileText, ClipboardList, Camera, Eye, Sparkles,
+  Check, FileText, ClipboardList, Camera, Eye, Sparkles, Package,
   ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'result'
+type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'result'
 
 interface StepDef {
   key: StepKey
@@ -82,8 +82,16 @@ const STEPS: StepDef[] = [
     currentDot: 'bg-orange-500 text-white ring-4 ring-orange-100',
     currentBorder: 'border-orange-200 bg-orange-50/50',
     activeStatus: 'in_analysis',
-    doneStatuses: ['completed'],
+    doneStatuses: ['preparing_materials', 'completed'],
     reopenKey: null, // análise não se "reabre" diretamente — volta p/ revisão
+  },
+  {
+    key: 'materials', label: 'Preparando Materiais', icon: Package,
+    currentDot: 'bg-teal-500 text-white ring-4 ring-teal-100',
+    currentBorder: 'border-teal-200 bg-teal-50/50',
+    activeStatus: 'preparing_materials',
+    doneStatuses: ['completed'],
+    reopenKey: null,
   },
   {
     key: 'result', label: 'Resultado', icon: Check,
@@ -234,7 +242,10 @@ export function StageController({
       if (!confirm(`Aprovar fotos de ${client.full_name} e iniciar análise?\n\nIsso calcula o prazo e envia e-mail para a cliente.`)) return
     }
     if (client.status === 'in_analysis') {
-      if (!confirm('Liberar o resultado para a cliente?')) return
+      if (!confirm('Mover para "Preparando Materiais"? O resultado ainda não será liberado para a cliente.')) return
+    }
+    if (client.status === 'preparing_materials') {
+      if (!confirm('Liberar o resultado para a cliente? Isso enviará e-mail de notificação.')) return
     }
 
     setAdvancing(true)

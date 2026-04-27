@@ -81,19 +81,38 @@ export interface DocumentTemplate {
 }
 
 // ─── Estilos aplicados a um elemento ───────────────────────────────────
+//
+// Este objeto é guardado em document_template_elements.style (JSONB).
+// Adicionar campos NOVOS é seguro — campos antigos seguem com defaults
+// na engine de geração e no editor.
 
 export interface ElementStyle {
-  // texto
+  // ── texto ──────────────────────────────────────
   fontFamily?: string
-  fontSize?: number
-  color?: string
+  fontSize?: number                 // em pt
+  color?: string                    // hex (#rrggbb ou #rgb)
   bold?: boolean
   italic?: boolean
   align?: 'left' | 'center' | 'right' | 'justify'
-  lineHeight?: number
-  letterSpacing?: number
+  /** Posicionamento vertical do bloco de texto dentro do retângulo */
+  verticalAlign?: 'top' | 'middle' | 'bottom'
+  lineHeight?: number               // multiplicador (ex: 1.3)
+  letterSpacing?: number            // em pt
   textTransform?: 'none' | 'uppercase' | 'lowercase'
-  // imagem
+  /**
+   * Quando true, a engine reduz o fontSize automaticamente até o texto
+   * caber dentro do retângulo (largura E altura). Útil quando o tamanho
+   * do conteúdo varia bastante entre clientes. Default: false.
+   */
+  autoFit?: boolean
+
+  // ── imagem ────────────────────────────────────
+  /**
+   * 'cover'   — preenche todo o retângulo, cortando o excedente
+   *             (recorte é feito via canvas antes do embed).
+   * 'contain' — encaixa inteira dentro do retângulo, mantém proporção,
+   *             pode sobrar borda nos lados curtos.
+   */
   objectFit?: 'cover' | 'contain'
 }
 
@@ -144,7 +163,7 @@ export interface ClientGeneratedDocument {
   generated_by: string | null
 }
 
-// ─── Fontes suportadas pelo editor (Fase 2+) ──────────────────────────
+// ─── Fontes suportadas pelo editor ─────────────────────────────────────
 
 export const SUPPORTED_FONTS = [
   'Inter',

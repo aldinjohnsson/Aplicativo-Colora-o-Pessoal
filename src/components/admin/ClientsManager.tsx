@@ -55,6 +55,11 @@ const STATUSES: Record<string, {
     color: '#f97316', bg: '#ffedd5', textColor: '#9a3412',
     tailwindColor: 'bg-orange-100 text-orange-700', tailwindBg: 'bg-orange-50',
   },
+  preparing_materials: {
+    label: 'Preparando Materiais', short: 'Materiais',
+    color: '#0d9488', bg: '#ccfbf1', textColor: '#134e4a',
+    tailwindColor: 'bg-teal-100 text-teal-700', tailwindBg: 'bg-teal-50',
+  },
   completed: {
     label: 'Concluído', short: 'Concluído',
     color: '#22c55e', bg: '#dcfce7', textColor: '#166534',
@@ -62,7 +67,7 @@ const STATUSES: Record<string, {
   },
 }
 // photos_submitted is between awaiting_photos and in_analysis
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'completed']
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'completed']
 
 // ─── Avatar Helpers ───────────────────────────────────────────────────────
 const AVATAR_COLORS: [string, string][] = [
@@ -405,6 +410,7 @@ function KanbanSidebar({
             {navBtn('all', 'Todas as clientes', total)}
             {navBtn('danger', 'Prazo crítico', dangerCount, '#ef4444', <AlertTriangle size={14} />)}
             {navBtn('photos_submitted', 'Aguardando revisão', counts['photos_submitted'] || 0, '#9d174d', <Camera size={14} />)}
+            {navBtn('preparing_materials', 'Preparando materiais', counts['preparing_materials'] || 0, '#0d9488', <Layers size={14} />)}
 
             <div style={{ borderTop: `1px solid ${t.border}`, margin: '8px 0', padding: '8px 0 4px' }}>
               <p style={{ margin: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: t.text3, textTransform: 'uppercase' as const, letterSpacing: 1 }}>Por status</p>
@@ -1577,7 +1583,16 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   }
 
   const copyLink = () => { const link = `${window.location.origin}/c/${data.client.token}`; navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000) }
-  const handleSaveResult = async () => { setSavingResult(true); try { await adminService.saveResult(clientId!, resultForm) } catch (e: any) { alert(e.message) } finally { setSavingResult(false) } }
+  const handleSaveResult = async () => {
+    setSavingResult(true)
+    try {
+      await adminService.saveResult(clientId!, resultForm)
+      // Primeira vez que o resultado é salvo: avança para "Preparando Materiais"
+      if (data?.client?.status === 'in_analysis') {
+        await adminService.updateClient(clientId!, { status: 'preparing_materials' } as any)
+      }
+    } catch (e: any) { alert(e.message) } finally { setSavingResult(false) }
+  }
   const handleReleaseResult = async () => {
     const hasContent = resultForm.observations.trim() || resultFiles?.length > 0 || linkedFolderId
     if (!hasContent) { if (!confirm('⚠️ Nenhum conteúdo adicionado.\n\nDeseja liberar mesmo assim?')) return } else { if (!confirm('Liberar o resultado para a cliente?')) return }
@@ -1809,7 +1824,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       done: ['in_analysis', 'completed'].includes(client.status),
                       badge: client.status === 'photos_submitted' ? { text: 'Aguardando aprovação', color: 'text-pink-700 bg-pink-50 border border-pink-200' } : undefined,
                     },
-                    { label: 'Análise em andamento', done: ['in_analysis', 'completed'].includes(client.status) },
+                    { label: 'Análise em andamento', done: ['in_analysis', 'preparing_materials', 'completed'].includes(client.status) },
+                    { label: 'Preparando materiais', done: ['preparing_materials', 'completed'].includes(client.status) },
                     { label: 'Resultado liberado', done: result?.is_released },
                   ].map(({ label, done, date, badge }: any) => (
                     <div key={label} className="flex items-center gap-3">
@@ -1914,6 +1930,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0" />
                   <div><p className="text-sm font-medium text-green-800">Resultado liberado</p><p className="text-xs text-green-600">A cliente pode visualizar desde {new Date(result.released_at).toLocaleString('pt-BR')}</p></div>
+                </div>
+              ) : client.status === 'preparing_materials' ? (
+                <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex items-center gap-3">
+                  <CheckCircle className="h-5 w-5 text-teal-600 flex-shrink-0" />
+                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Quando os materiais estiverem prontos, libere pela aba ✨ IA</p></div>
                 </div>
               ) : (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">

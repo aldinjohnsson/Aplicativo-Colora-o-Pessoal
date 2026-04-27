@@ -1,22 +1,29 @@
 // src/components/admin/documents/generate/generatePdf.ts
 //
-// Motor de geração da Fase 5.
+// Motor de geração da Fase 5 — versão revisada.
 //
-// Dado um template + valores das tags do cliente, carimba cada elemento
-// (texto ou imagem) no PDF base e devolve um Blob pronto pra upload.
+// Mudanças principais em relação à versão anterior:
+//  • IMAGEM "cover" agora é REAL: a imagem é recortada via canvas no
+//    aspect ratio do retângulo ANTES de ser embedada no PDF. Resultado:
+//    a imagem preenche o retângulo exatamente como o usuário definiu,
+//    sem sobra (era o bug de "imagem fica menor que o tamanho que coloco").
+//  • TEXTO usa o ascent real da fonte (`heightAtSize(size, descender:false)`)
+//    para posicionar o topo da primeira linha colado no topo do retângulo.
+//    Antes usava `fontSize` como aproximação, e o texto descia ~25%.
+//  • TEXTO suporta verticalAlign: 'top' | 'middle' | 'bottom'.
+//  • TEXTO suporta autoFit: reduz fontSize até caber em largura e altura.
 //
 // Sistema de coordenadas:
-//   • Banco guarda x_pt/y_pt com origem NO CANTO SUPERIOR ESQUERDO (como HTML).
+//   • Banco guarda x_pt/y_pt com origem NO CANTO SUPERIOR ESQUERDO.
 //   • pdf-lib usa origem NO CANTO INFERIOR ESQUERDO.
 //   • Conversão: y_pdf = pageHeight - y_top - height
 
-import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib'
+import { PDFDocument, rgb } from 'pdf-lib'
 import fontkit from '@pdf-lib/fontkit'
 import type {
   DocumentTemplate,
   DocumentTemplateElement,
   DocumentTag,
-  ClientTagValue,
   ElementStyle,
 } from '../types'
 import { FontRegistry } from '../lib/pdfFonts'
@@ -25,7 +32,6 @@ import { FontRegistry } from '../lib/pdfFonts'
 
 export interface TagValueResolved {
   tag: DocumentTag
-  // Texto final (tags de texto) OU URL + bytes (tags de imagem)
   kind: 'text' | 'image'
   text?: string
   imageBytes?: ArrayBuffer
@@ -39,7 +45,7 @@ export interface GeneratePdfInput {
   basePdfBytes: ArrayBuffer
 }
 
-// ─── Helpers de conversão ─────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────
 
 function hexToRgb(hex: string | undefined): { r: number; g: number; b: number } {
   const fallback = { r: 0, g: 0, b: 0 }
@@ -56,12 +62,24 @@ function hexToRgb(hex: string | undefined): { r: number; g: number; b: number } 
   return { r, g, b }
 }
 
-/** Quebra o texto em linhas que caibam na largura (em pontos). */
+function measureLineWidth(
+  line: string,
+  font: import('pdf-lib').PDFFont,
+  fontSize: number,
+  letterSpacing: number,
+): number {
+  const base = font.widthOfTextAtSize(line, fontSize)
+  if (letterSpacing === 0 || line.length <= 1) return base
+  return base + letterSpacing * (line.length - 1)
+}
+
+/** Quebra texto em linhas que caibam em maxWidthPt, considerando letterSpacing. */
 function wrapText(
   text: string,
   maxWidthPt: number,
   fontSize: number,
   font: import('pdf-lib').PDFFont,
+  letterSpacing: number,
 ): string[] {
   if (maxWidthPt <= 0) return [text]
   const paragraphs = text.split('\n')
@@ -69,12 +87,12 @@ function wrapText(
 
   for (const paragraph of paragraphs) {
     if (paragraph.length === 0) { lines.push(''); continue }
-    const words = paragraph.split(/(\s+)/)  // mantém espaços como tokens
+    const tokens = paragraph.split(/(\s+)/)  // mantém espaços como tokens
     let current = ''
 
-    for (const token of words) {
+    for (const token of tokens) {
       const candidate = current + token
-      const width = font.widthOfTextAtSize(candidate, fontSize)
+      const width = measureLineWidth(candidate, font, fontSize, letterSpacing)
       if (width <= maxWidthPt || current === '') {
         current = candidate
       } else {
@@ -90,21 +108,21 @@ function wrapText(
 // ─── Engine ───────────────────────────────────────────────────────────
 
 export async function generatePdf(input: GeneratePdfInput): Promise<Blob> {
-  const { template, elements, values, basePdfBytes } = input
+  const { elements, values, basePdfBytes } = input
 
-  // Carrega PDF base. Cópia defensiva do buffer porque pdf-lib pode mutar.
+  // Cópia defensiva — pdf-lib mutates the buffer
   const pdf = await PDFDocument.load(basePdfBytes.slice(0))
   pdf.registerFontkit(fontkit)
 
   const fonts = new FontRegistry(pdf)
   const pages = pdf.getPages()
 
-  // Ordena elementos por z_index (menor primeiro = fundo)
+  // z_index menor → fundo
   const ordered = [...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
 
   for (const el of ordered) {
     const resolved = values[el.tag_id]
-    if (!resolved) continue   // tag sem valor (validado antes, mas guarda)
+    if (!resolved) continue
 
     const page = pages[el.page_number - 1]
     if (!page) continue
@@ -112,12 +130,11 @@ export async function generatePdf(input: GeneratePdfInput): Promise<Blob> {
     const pageHeight = page.getHeight()
     const style: ElementStyle = (el.style as ElementStyle) || {}
 
-    // Tamanho default por tipo se nunca foi editado no editor
     const isImage = resolved.kind === 'image'
     const width  = el.width_pt  ?? (isImage ? 180 : 180)
     const height = el.height_pt ?? (isImage ? 180 : 40)
 
-    // Converte origem top-left (banco) -> bottom-left (pdf-lib)
+    // top-left (banco) → bottom-left (pdf-lib)
     const x = el.x_pt
     const y = pageHeight - el.y_pt - height
 
@@ -141,7 +158,7 @@ export async function generatePdf(input: GeneratePdfInput): Promise<Blob> {
   return new Blob([out], { type: 'application/pdf' })
 }
 
-// ─── Desenho de texto ─────────────────────────────────────────────────
+// ═══════════ TEXTO ════════════════════════════════════════════════════
 
 async function drawText(params: {
   page: import('pdf-lib').PDFPage
@@ -152,44 +169,84 @@ async function drawText(params: {
 }) {
   const { page, text, x, y, width, height, style, fonts } = params
 
-  const fontSize = style.fontSize ?? 14
-  const lineHeight = style.lineHeight ?? 1.3
-  const letterSpacing = style.letterSpacing ?? 0
-  const align: 'left' | 'center' | 'right' | 'justify' = style.align ?? 'left'
-  const color = hexToRgb(style.color ?? '#111827')
-  const fontFamily = style.fontFamily ?? 'Inter'
+  const lineHeightFactor = style.lineHeight ?? 1.3
+  const letterSpacing    = style.letterSpacing ?? 0
+  const align            = style.align ?? 'left'
+  const verticalAlign    = style.verticalAlign ?? 'top'
+  const color            = hexToRgb(style.color ?? '#111827')
+  const fontFamily       = style.fontFamily ?? 'Inter'
+  const autoFit          = style.autoFit === true   // opt-in
 
   const font = await fonts.get(fontFamily, !!style.bold, !!style.italic)
 
-  // Aplica textTransform antes de medir
+  // textTransform antes de medir
   let prepared = text
   if (style.textTransform === 'uppercase') prepared = prepared.toUpperCase()
   else if (style.textTransform === 'lowercase') prepared = prepared.toLowerCase()
 
-  const lines = wrapText(prepared, width, fontSize, font)
-  const lineSpacing = fontSize * lineHeight
+  // ── Determina fontSize final (eventual auto-fit)
+  let fontSize = Math.max(2, style.fontSize ?? 14)
+  let lines = wrapText(prepared, width, fontSize, font, letterSpacing)
 
-  // Origem top-left lógica (dentro do retângulo) convertida pra baseline
-  // da primeira linha. Em pdf-lib, drawText usa baseline da linha.
-  // Primeira baseline = topo do retângulo - fontSize (aprox ascent).
-  let currentBaselineY = (y + height) - fontSize
+  if (autoFit) {
+    const minSize = 6
+    // Reduz em passos de 0.5pt até caber tanto em largura quanto em altura.
+    while (
+      fontSize > minSize &&
+      (
+        lines.length * fontSize * lineHeightFactor > height ||
+        lines.some(l => measureLineWidth(l, font, fontSize, letterSpacing) > width)
+      )
+    ) {
+      fontSize -= 0.5
+      lines = wrapText(prepared, width, fontSize, font, letterSpacing)
+    }
+  }
+
+  if (lines.length === 0) return
+
+  const lineSpacing = fontSize * lineHeightFactor
+
+  // Ascent real da fonte no tamanho atual (sem descender). Isso faz com
+  // que o TOPO visível da primeira letra fique exatamente no topo do box.
+  // pdf-lib expõe `heightAtSize(size, { descender: false })`.
+  // Fallback se a build do pdf-lib não suportar a opção: ~0.78 * fontSize.
+  let ascent: number
+  try {
+    ascent = (font as any).heightAtSize(fontSize, { descender: false })
+    if (!Number.isFinite(ascent) || ascent <= 0) ascent = fontSize * 0.78
+  } catch {
+    ascent = fontSize * 0.78
+  }
+
+  // Altura visual do bloco = ascent (1ª linha) + (n-1) * line spacing
+  const totalBlockHeight = ascent + (lines.length - 1) * lineSpacing
+
+  // Onde, dentro do retângulo, começa o topo do bloco?
+  let topOffset = 0
+  if (verticalAlign === 'middle') topOffset = (height - totalBlockHeight) / 2
+  else if (verticalAlign === 'bottom') topOffset = height - totalBlockHeight
+  if (topOffset < 0) topOffset = 0
+
+  // Topo do retângulo em coords pdf-lib (bottom-left)
+  const boxTop = y + height
+  // Baseline da PRIMEIRA linha
+  let baselineY = boxTop - topOffset - ascent
 
   for (const line of lines) {
-    if (currentBaselineY < y) break   // overflow: descarta linhas que sairiam da caixa
+    if (baselineY < y - 0.5) break   // cortou no fundo do box
 
     const textWidth = measureLineWidth(line, font, fontSize, letterSpacing)
 
     let lineX = x
-    if (align === 'center') lineX = x + (width - textWidth) / 2
-    else if (align === 'right') lineX = x + (width - textWidth)
-    // "justify" é complexo sem libs extras — tratamos como left por ora.
+    if (align === 'center')      lineX = x + (width - textWidth) / 2
+    else if (align === 'right')  lineX = x + (width - textWidth)
+    // 'justify' não é suportado por pdf-lib nativamente — cai pra left.
 
-    // Desenha caractere por caractere só se letterSpacing != 0. Senão,
-    // chamada única é muito mais eficiente.
     if (letterSpacing === 0) {
       page.drawText(line, {
         x: lineX,
-        y: currentBaselineY,
+        y: baselineY,
         size: fontSize,
         font,
         color: rgb(color.r, color.g, color.b),
@@ -199,7 +256,7 @@ async function drawText(params: {
       for (const ch of line) {
         page.drawText(ch, {
           x: xCursor,
-          y: currentBaselineY,
+          y: baselineY,
           size: fontSize,
           font,
           color: rgb(color.r, color.g, color.b),
@@ -208,22 +265,81 @@ async function drawText(params: {
       }
     }
 
-    currentBaselineY -= lineSpacing
+    baselineY -= lineSpacing
   }
 }
 
-function measureLineWidth(
-  line: string,
-  font: import('pdf-lib').PDFFont,
-  fontSize: number,
-  letterSpacing: number,
-): number {
-  const base = font.widthOfTextAtSize(line, fontSize)
-  if (letterSpacing === 0 || line.length <= 1) return base
-  return base + letterSpacing * (line.length - 1)
-}
+// ═══════════ IMAGEM ═══════════════════════════════════════════════════
 
-// ─── Desenho de imagem ────────────────────────────────────────────────
+/**
+ * Recorta a imagem para o aspect ratio do box, retornando bytes prontos
+ * para embed. Usado para "cover" — garante que após o embed, a imagem
+ * preenche o retângulo exatamente, sem deformação e sem sobra.
+ *
+ * Implementação: createImageBitmap (decodifica) → canvas (recorta e
+ * redimensiona) → toBlob (recodifica).
+ *
+ * Resolução do canvas: limitada para evitar arquivos enormes. Usamos
+ * ~3× a largura final do box em pt, com piso de 800px. Isso dá qualidade
+ * de impressão sem inflar o PDF.
+ */
+async function cropImageForCover(
+  bytes: ArrayBuffer,
+  mime: string,
+  boxWPt: number,
+  boxHPt: number,
+): Promise<{ bytes: ArrayBuffer; mime: 'image/png' | 'image/jpeg' }> {
+  const blob = new Blob([bytes], { type: mime })
+  const bitmap = await createImageBitmap(blob)
+
+  const imgRatio = bitmap.width / bitmap.height
+  const boxRatio = boxWPt / boxHPt
+
+  // Determina a área de origem (sx,sy,sw,sh) no aspect ratio do box,
+  // centralizada na imagem.
+  let sx = 0, sy = 0
+  let sw = bitmap.width, sh = bitmap.height
+  if (imgRatio > boxRatio) {
+    // imagem mais larga que o box → corta laterais
+    sw = bitmap.height * boxRatio
+    sx = (bitmap.width - sw) / 2
+  } else if (imgRatio < boxRatio) {
+    // imagem mais alta que o box → corta topo/base
+    sh = bitmap.width / boxRatio
+    sy = (bitmap.height - sh) / 2
+  }
+
+  // Resolução de saída: limita a no máximo ~3× a largura do box e nunca
+  // maior que o crop original.
+  const maxTargetW = Math.max(800, boxWPt * 3)
+  const targetW = Math.min(sw, maxTargetW)
+  const scale = targetW / sw
+
+  const canvas = document.createElement('canvas')
+  canvas.width  = Math.max(1, Math.round(sw * scale))
+  canvas.height = Math.max(1, Math.round(sh * scale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D indisponível para recorte de imagem')
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+
+  // Mantém PNG se a origem é PNG (pode ter transparência); caso contrário
+  // usa JPEG pra ficar leve.
+  const isPng = mime.toLowerCase().includes('png')
+  const outMime: 'image/png' | 'image/jpeg' = isPng ? 'image/png' : 'image/jpeg'
+
+  const outBlob: Blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(
+      b => b ? resolve(b) : reject(new Error('canvas.toBlob falhou')),
+      outMime,
+      0.92,
+    ),
+  )
+  // libera o bitmap
+  bitmap.close?.()
+  return { bytes: await outBlob.arrayBuffer(), mime: outMime }
+}
 
 async function drawImage(params: {
   pdf: import('pdf-lib').PDFDocument
@@ -234,77 +350,43 @@ async function drawImage(params: {
   style: ElementStyle
 }) {
   const { pdf, page, bytes, mime, x, y, width, height, style } = params
-
-  const m = mime.toLowerCase()
-  const img = m.includes('png')
-    ? await pdf.embedPng(bytes)
-    : await pdf.embedJpg(bytes)
-
   const fit: 'cover' | 'contain' = style.objectFit ?? 'cover'
 
-  const imgRatio  = img.width / img.height
-  const boxRatio  = width / height
-
-  let drawW = width
-  let drawH = height
-  let drawX = x
-  let drawY = y
-
-  if (fit === 'contain') {
-    // Inteira dentro da caixa, preservando proporção
-    if (imgRatio > boxRatio) {
-      // imagem mais larga — limita pela largura
-      drawW = width
-      drawH = width / imgRatio
-      drawX = x
-      drawY = y + (height - drawH) / 2
-    } else {
-      drawH = height
-      drawW = height * imgRatio
-      drawY = y
-      drawX = x + (width - drawW) / 2
-    }
-    page.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH })
-  } else {
-    // cover: preenche a caixa inteira, pode cortar. Precisamos clipar.
-    // pdf-lib não tem clip simples, mas usamos um hack: desenhamos dentro
-    // de um "form" (XObject). Forma direta é aplicar uma máscara via
-    // PDF graphic state. Pra manter simples e estável, fazemos assim:
-    //   1. Calculamos tamanho ampliado
-    //   2. Ajustamos posição
-    //   3. Desenhamos a imagem ampliada; as partes fora do retângulo
-    //      sobrepõem o conteúdo do PDF base nas laterais, mas como
-    //      elementos costumam ficar em áreas dedicadas, isso é aceitável.
-    // Para uma solução mais rigorosa no futuro: recortar a imagem no lado
-    // do cliente (canvas) antes de embedar.
-    if (imgRatio > boxRatio) {
-      drawH = height
-      drawW = height * imgRatio
-      drawY = y
-      drawX = x - (drawW - width) / 2
-    } else {
-      drawW = width
-      drawH = width / imgRatio
-      drawX = x
-      drawY = y - (drawH - height) / 2
-    }
-
-    // Clip real: cria um form XObject, desenha a imagem dentro e então
-    // desenha o form recortado à caixa. pdf-lib expõe pushGraphicsState/
-    // popGraphicsState mas não clipping direto. A forma suportada é usar
-    // operadores crus.
-    // Solução pragmática: para evitar vazamento visual na Fase 5,
-    // caímos para "contain" quando cover sobraria da caixa. É seguro e
-    // consistente com o preview do editor.
-    // (Abaixo o fallback; troque para o bloco acima se quiser testar o
-    // comportamento "bleed" de cover.)
-    const containDrawW = imgRatio > boxRatio ? width : height * imgRatio
-    const containDrawH = imgRatio > boxRatio ? width / imgRatio : height
-    const containDrawX = x + (width - containDrawW) / 2
-    const containDrawY = y + (height - containDrawH) / 2
-    page.drawImage(img, {
-      x: containDrawX, y: containDrawY,
-      width: containDrawW, height: containDrawH,
-    })
+  // Para cover: recorta antes pra preencher exatamente o box.
+  let imgBytes = bytes
+  let imgMime  = mime
+  if (fit === 'cover') {
+    const cropped = await cropImageForCover(bytes, mime, width, height)
+    imgBytes = cropped.bytes
+    imgMime  = cropped.mime
   }
+
+  const m = imgMime.toLowerCase()
+  const img = m.includes('png')
+    ? await pdf.embedPng(imgBytes)
+    : await pdf.embedJpg(imgBytes)
+
+  if (fit === 'cover') {
+    // Após o crop, a imagem JÁ está no aspect ratio do box.
+    page.drawImage(img, { x, y, width, height })
+    return
+  }
+
+  // contain: encaixa inteira, centralizada, mantém proporção
+  const imgRatio = img.width / img.height
+  const boxRatio = width / height
+
+  let drawW: number, drawH: number, drawX: number, drawY: number
+  if (imgRatio > boxRatio) {
+    drawW = width
+    drawH = width / imgRatio
+    drawX = x
+    drawY = y + (height - drawH) / 2
+  } else {
+    drawH = height
+    drawW = height * imgRatio
+    drawY = y
+    drawX = x + (width - drawW) / 2
+  }
+  page.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH })
 }

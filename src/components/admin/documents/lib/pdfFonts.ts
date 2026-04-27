@@ -48,6 +48,42 @@ import ralewayBold       from '@fontsource/raleway/files/raleway-latin-700-norma
 import ralewayItalic     from '@fontsource/raleway/files/raleway-latin-400-italic.woff?url'
 import ralewayBoldItalic from '@fontsource/raleway/files/raleway-latin-700-italic.woff?url'
 
+// ─── Inter ─────────────────────────────────────────────────────────────
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/700.css'
+import '@fontsource/inter/400-italic.css'
+import '@fontsource/inter/700-italic.css'
+ 
+// ─── Roboto ───────────────────────────────────────────────────────────
+import '@fontsource/roboto/400.css'
+import '@fontsource/roboto/700.css'
+import '@fontsource/roboto/400-italic.css'
+import '@fontsource/roboto/700-italic.css'
+ 
+// ─── Open Sans ────────────────────────────────────────────────────────
+import '@fontsource/open-sans/400.css'
+import '@fontsource/open-sans/700.css'
+import '@fontsource/open-sans/400-italic.css'
+import '@fontsource/open-sans/700-italic.css'
+ 
+// ─── Montserrat ──────────────────────────────────────────────────────
+import '@fontsource/montserrat/400.css'
+import '@fontsource/montserrat/700.css'
+import '@fontsource/montserrat/400-italic.css'
+import '@fontsource/montserrat/700-italic.css'
+ 
+// ─── Poppins ─────────────────────────────────────────────────────────
+import '@fontsource/poppins/400.css'
+import '@fontsource/poppins/700.css'
+import '@fontsource/poppins/400-italic.css'
+import '@fontsource/poppins/700-italic.css'
+ 
+// ─── Raleway ─────────────────────────────────────────────────────────
+import '@fontsource/raleway/400.css'
+import '@fontsource/raleway/700.css'
+import '@fontsource/raleway/400-italic.css'
+import '@fontsource/raleway/700-italic.css'
+
 // IMPORTANTE: por que .woff e não .ttf?
 //   O pacote @fontsource moderno distribui .woff e .woff2. O pdf-lib via
 //   fontkit aceita .ttf, .otf e .woff (descomprime), mas NÃO aceita .woff2
