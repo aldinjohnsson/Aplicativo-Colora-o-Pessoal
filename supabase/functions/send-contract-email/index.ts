@@ -420,7 +420,41 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // TIPO 5: RESULTADO LIBERADO
+    // TIPO 5b: RESULTADO PARCIAL LIBERADO (prévia durante simulações)
+    // Disparado SOMENTE quando a admin clica em "Liberar resultado parcial"
+    // Mensagem diferenciada: avisa que as simulações ainda continuam
+    // ============================================================
+    if (emailType === 'partial_result_released') {
+      const { clientName, clientEmail, planName } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const subject = `Prévia do seu resultado disponível - MS Color`
+
+      const clientHtml = buildEmail(
+        `Prévia do seu Resultado`,
+        `Olá, <strong>${clientName}</strong>!`,
+        `<div class="alert-pink">
+          <p class="alert-pink-emoji">✨</p>
+          <p class="alert-pink-title">Sua prévia está disponível!</p>
+          <p class="alert-pink-text">Acesse o portal para conferir o resultado parcial da sua análise.</p>
+        </div>
+        <div class="alert-yellow">
+          <p class="alert-yellow-title">⏳ Simulações ainda em andamento</p>
+          <p class="alert-yellow-sub">Nossa consultora ainda está finalizando os últimos detalhes. Você receberá um novo aviso assim que o resultado completo estiver pronto.</p>
+        </div>
+        ${linkButton(portalUrl, 'Ver minha prévia')}
+        <p class="small-center">Qualquer dúvida, entre em contato com a consultora.</p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
+      ])
+      logResults(results, 'partial_result_released')
+      return jsonResponse({ success: true, type: 'partial_result_released' })
+    }
+
+    // ============================================================
+    // TIPO 5: RESULTADO FINAL LIBERADO
     // Somente a cliente recebe — admin nao precisa de notificacao
     // ============================================================
     if (emailType === 'result_released') {

@@ -56,14 +56,19 @@ const STATUSES: Record<string, {
     tailwindColor: 'bg-orange-100 text-orange-700', tailwindBg: 'bg-orange-50',
   },
   preparing_materials: {
-    label: 'Preparando Materiais', short: 'Materiais',
+    label: 'Fazer Dossiê', short: 'Dossiê',
     color: '#0d9488', bg: '#ccfbf1', textColor: '#134e4a',
     tailwindColor: 'bg-teal-100 text-teal-700', tailwindBg: 'bg-teal-50',
   },
   validating_materials: {
-    label: 'Validar Materiais', short: 'Validar',
+    label: 'Validar Dossiê', short: 'Validar Dossiê',
     color: '#6366f1', bg: '#e0e7ff', textColor: '#3730a3',
     tailwindColor: 'bg-indigo-100 text-indigo-700', tailwindBg: 'bg-indigo-50',
+  },
+  simulating: {
+    label: 'Simulações', short: 'Simulações',
+    color: '#8b5cf6', bg: '#ede9fe', textColor: '#5b21b6',
+    tailwindColor: 'bg-violet-100 text-violet-700', tailwindBg: 'bg-violet-50',
   },
   completed: {
     label: 'Concluído', short: 'Concluído',
@@ -72,11 +77,11 @@ const STATUSES: Record<string, {
   },
 }
 // photos_submitted is between awaiting_photos and in_analysis
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed']
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed']
 
 // ─── Drag & Drop: mapa de reopen keys ────────────────────────────────────
 // Mapeia cada coluna destino para a chave usada em reopenStep
-const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result'> = {
+const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result'> = {
   awaiting_contract:   'contract',
   awaiting_form:       'form',
   awaiting_photos:     'photos',
@@ -84,6 +89,7 @@ const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' |
   in_analysis:         'analysis',
   preparing_materials: 'materials',
   validating_materials: 'validate_materials',
+  simulating:          'simulations',
   completed:           'result',
 }
 

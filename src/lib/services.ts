@@ -14,6 +14,7 @@ export type ClientStatus =
   | 'in_analysis'
   | 'preparing_materials'
   | 'validating_materials'   // interno — cliente vê "Preparando Materiais"
+  | 'simulating'             // interno — cliente vê "Preparando Materiais"
   | 'completed'
 
 export interface Plan {
@@ -613,7 +614,7 @@ export const adminService = {
    */
   async reopenStep(
     clientId: string,
-    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result',
+    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result',
     reason?: string
   ): Promise<void> {
     const now = new Date().toISOString()
@@ -729,15 +730,32 @@ export const adminService = {
       return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
     }
 
-    if (step === 'result') {
-      // "Reabrir resultado" volta pra preparing_materials e oculta o resultado
-      // no portal — ele reaparece intacto quando avançar de volta a completed.
+    if (step === 'simulations') {
+      // Volta para simulações — etapa interna, cliente não vê mudança
+      // IMPORTANTE: reseta is_released para evitar que resultado parcial
+      // anterior reapareça automaticamente no portal
+      await supabase
+        .from('client_results')
+        .update({ is_released: false, updated_at: now })
+        .eq('client_id', clientId)
       const { error } = await supabase
         .from('clients')
-        .update({
-          status: 'preparing_materials',
-          updated_at: now,
-        })
+        .update({ status: 'simulating', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
+    }
+
+    if (step === 'result') {
+      // "Reabrir resultado" volta pra preparing_materials e oculta o resultado
+      // no portal — reseta is_released para garantir que não apareça em nenhum status intermediário
+      await supabase
+        .from('client_results')
+        .update({ is_released: false, updated_at: now })
+        .eq('client_id', clientId)
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'preparing_materials', updated_at: now })
         .eq('id', clientId)
       if (error) throw error
       return this._notifyReopen(clientId, 'result_reopened', defaultReason)
@@ -823,6 +841,15 @@ export const adminService = {
       return
     }
     if (currentStatus === 'validating_materials') {
+      // Avança para "Simulações" — etapa interna, cliente ainda vê "Preparando Materiais"
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'simulating', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'simulating') {
       return this.releaseResult(clientId)
     }
     if (currentStatus === 'completed') {
@@ -936,6 +963,65 @@ export const adminService = {
     } catch (e) {
       console.warn('Erro ao enviar e-mail de resultado liberado:', e)
     }
+  },
+
+  /**
+   * Libera o resultado parcialmente — mesma lógica do releaseResult,
+   * mas SEM avançar o status para 'completed'.
+   * Usado durante a etapa de Simulações. O e-mail disparado é o
+   * 'partial_result_released', diferente do 'result_released' final.
+   */
+  async releasePartialResult(clientId: string, options?: { chatEnabled?: boolean }): Promise<void> {
+    const { error } = await supabase
+      .from('client_results')
+      .upsert(
+        {
+          client_id: clientId,
+          is_released: true,
+          released_at: new Date().toISOString(),
+          chat_enabled: options?.chatEnabled ?? true,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'client_id' }
+      )
+    if (error) throw error
+
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('id', clientId)
+        .single()
+
+      if (client) {
+        const portalUrl = `${window.location.origin}/c/${client.token}`
+        const planName = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'partial_result_released',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            portalUrl,
+          }
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar e-mail de resultado parcial:', e)
+    }
+  },
+
+  /**
+   * Cancela a liberação parcial do resultado.
+   * Oculta o resultado do portal sem alterar o status da cliente.
+   */
+  async cancelPartialResult(clientId: string): Promise<void> {
+    const { error } = await supabase
+      .from('client_results')
+      .update({ is_released: false, updated_at: new Date().toISOString() })
+      .eq('client_id', clientId)
+    if (error) throw error
   },
 
   async uploadResultFile(clientId: string, file: File): Promise<void> {

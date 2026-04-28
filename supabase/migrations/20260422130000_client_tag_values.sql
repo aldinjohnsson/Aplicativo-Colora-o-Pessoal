@@ -134,5 +134,6 @@ CHECK (status IN (
   'in_analysis',
   'preparing_materials',
   'validating_materials',
+  'simulating',
   'completed'
 ));

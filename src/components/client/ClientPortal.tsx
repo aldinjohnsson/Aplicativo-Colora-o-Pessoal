@@ -6,7 +6,7 @@ import {
   Camera, AlertCircle, FileText, ExternalLink, Download,
   ChevronLeft, ChevronRight, Play, Image as ImageIcon,
   CheckCircle2, ArrowRight, Loader2, ChevronDown, ChevronUp,
-  Package,
+  Package, Sparkles,
 } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
@@ -122,6 +122,11 @@ export function ClientPortal() {
         {data.client.status === 'validating_materials' && (
           // Status interno de validação — pra cliente é idêntico a preparing_materials.
           <AnalysisScreen data={data} materialsBeingPrepared />
+        )}
+        {data.client.status === 'simulating' && (
+          !!data.result
+            ? <ResultScreen token={token!} data={data} simulatingMode />
+            : <AnalysisScreen data={data} materialsBeingPrepared />
         )}
         {data.client.status === 'completed' && (
           <ResultScreen token={token!} data={data} />
@@ -1427,7 +1432,7 @@ interface RefPhoto {
   url: string
 }
 
-function ResultScreen({ token, data }: { token: string; data: ClientPortalData }) {
+function ResultScreen({ token, data, simulatingMode = false }: { token: string; data: ClientPortalData; simulatingMode?: boolean }) {
   const result = data.result
 
   const [aiPrompt, setAiPrompt] = useState<string | null>(null)
@@ -1493,20 +1498,67 @@ function ResultScreen({ token, data }: { token: string; data: ClientPortalData }
 
   return (
     <div className="space-y-4">
-      {/* Banner */}
-      <div className="bg-gradient-to-br from-rose-500 via-pink-500 to-rose-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
-        <div
-          className="absolute inset-0 opacity-10"
-          style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
-        />
-        <div className="relative">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
-            <CheckCircle className="h-9 w-9 text-white" />
+      {/* Banner — muda conforme o modo */}
+      {simulatingMode ? (
+        <>
+          <div className="bg-gradient-to-br from-violet-500 via-purple-500 to-violet-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
+            <div
+              className="absolute inset-0 opacity-10"
+              style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
+            />
+            <div className="relative">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
+                <Sparkles className="h-9 w-9 text-white" />
+              </div>
+              <h2 className="text-2xl font-bold tracking-tight">Simulações em andamento</h2>
+              <p className="text-violet-100 text-sm mt-1.5">
+                Sua consultora está finalizando os últimos detalhes. Confira abaixo o resultado parcial!
+              </p>
+            </div>
           </div>
-          <h2 className="text-2xl font-bold tracking-tight">Sua análise está pronta!</h2>
-          <p className="text-rose-100 text-sm mt-1.5">Confira todos os materiais abaixo</p>
+
+          {/* Card de prazo final */}
+          {data.deadline?.deadline_date && (() => {
+            const daysLeft = businessDaysUntil(data.deadline.deadline_date)
+            const formatted = formatDeadlineDate(data.deadline.deadline_date)
+            return (
+              <div className="bg-white rounded-2xl border border-violet-200 shadow-sm p-5">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-gradient-to-br from-violet-400 to-purple-500 rounded-2xl flex items-center justify-center flex-shrink-0">
+                    <Clock className="h-6 w-6 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-xs text-gray-500 mb-0.5">Previsão de entrega final</p>
+                    <p className="text-base font-bold text-gray-900">{formatted}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {daysLeft > 0
+                        ? `${daysLeft} dia${daysLeft !== 1 ? 's' : ''} útei${daysLeft !== 1 ? 's' : ''} restante${daysLeft !== 1 ? 's' : ''}`
+                        : daysLeft === 0
+                          ? 'Prazo vence hoje!'
+                          : `Prazo vencido há ${Math.abs(daysLeft)} dia${Math.abs(daysLeft) !== 1 ? 's' : ''}`
+                      }
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+        </>
+      ) : (
+        <div className="bg-gradient-to-br from-rose-500 via-pink-500 to-rose-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
+          <div
+            className="absolute inset-0 opacity-10"
+            style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
+          />
+          <div className="relative">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
+              <CheckCircle className="h-9 w-9 text-white" />
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight">Sua análise está pronta!</h2>
+            <p className="text-rose-100 text-sm mt-1.5">Confira todos os materiais abaixo</p>
+          </div>
         </div>
-      </div>
+      )}
 
       {!hasContent && (
         <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-8 text-center">

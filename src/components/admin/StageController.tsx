@@ -2,15 +2,15 @@
 import React, { useState } from 'react'
 import {
   Check, FileText, ClipboardList, Camera, Eye, Sparkles, Package,
-  ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2,
+  ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2, Unlock, Lock,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
 import { useTheme } from '../../lib/theme'
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result'
-type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result'
+type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result'
+type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result'
 
 interface StepDef {
   key: StepKey
@@ -36,7 +36,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(245,158,11,0.12)',
     activeBorder: 'rgba(245,158,11,0.35)',
     activeStatus: 'awaiting_contract',
-    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
+    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
     reopenKey: 'contract',
   },
   {
@@ -45,7 +45,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(59,130,246,0.12)',
     activeBorder: 'rgba(59,130,246,0.35)',
     activeStatus: 'awaiting_form',
-    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
+    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
     reopenKey: 'form',
   },
   {
@@ -54,7 +54,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(168,85,247,0.12)',
     activeBorder: 'rgba(168,85,247,0.35)',
     activeStatus: 'awaiting_photos',
-    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
+    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
     reopenKey: 'photos',
   },
   {
@@ -63,7 +63,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(236,72,153,0.12)',
     activeBorder: 'rgba(236,72,153,0.35)',
     activeStatus: 'photos_submitted',
-    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
+    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
     reopenKey: 'review',
   },
   {
@@ -72,7 +72,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(249,115,22,0.12)',
     activeBorder: 'rgba(249,115,22,0.35)',
     activeStatus: 'in_analysis',
-    doneStatuses: ['preparing_materials', 'validating_materials', 'completed'],
+    doneStatuses: ['preparing_materials', 'validating_materials', 'simulating', 'completed'],
     reopenKey: 'analysis',
   },
   {
@@ -81,7 +81,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(20,184,166,0.12)',
     activeBorder: 'rgba(20,184,166,0.35)',
     activeStatus: 'preparing_materials',
-    doneStatuses: ['validating_materials', 'completed'],
+    doneStatuses: ['validating_materials', 'simulating', 'completed'],
     reopenKey: 'materials',
   },
   {
@@ -90,8 +90,17 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(99,102,241,0.12)',
     activeBorder: 'rgba(99,102,241,0.35)',
     activeStatus: 'validating_materials',
-    doneStatuses: ['completed'],
+    doneStatuses: ['simulating', 'completed'],
     reopenKey: 'validate_materials',
+  },
+  {
+    key: 'simulations', label: 'Simulações', icon: Sparkles,
+    dotColor: '#8b5cf6',
+    activeBg: 'rgba(139,92,246,0.12)',
+    activeBorder: 'rgba(139,92,246,0.35)',
+    activeStatus: 'simulating',
+    doneStatuses: ['completed'],
+    reopenKey: 'simulations',
   },
   {
     key: 'result', label: 'Resultado', icon: Check,
@@ -242,6 +251,8 @@ export function StageController({
   const { theme: t } = useTheme()
   const [reopenTarget, setReopenTarget] = useState<StepDef | null>(null)
   const [advancing, setAdvancing] = useState(false)
+  const [releasingPartial, setReleasingPartial] = useState(false)
+  const [cancelingPartial, setCancelingPartial] = useState(false)
 
   const currentIdx = STEPS.findIndex(s => s.activeStatus === client.status)
   const fromCompleted = client.status === 'completed'
@@ -272,6 +283,9 @@ export function StageController({
       if (!confirm('Mover para "Validar Materiais"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
     }
     if (client.status === 'validating_materials') {
+      if (!confirm('Mover para "Simulações"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
+    }
+    if (client.status === 'simulating') {
       if (!confirm('Liberar o resultado para a cliente? Isso enviará e-mail de notificação.')) return
     }
 
@@ -287,6 +301,32 @@ export function StageController({
   }
 
   const canAdvance = currentIdx >= 0 && currentIdx < STEPS.length - 1
+
+  const handleReleasePartial = async () => {
+    if (!confirm(`Liberar resultado parcial para ${client.full_name}?\n\nA cliente poderá ver o resultado no portal, mas a etapa de Simulações continuará aberta internamente.\n\nIsso enviará e-mail de notificação.`)) return
+    setReleasingPartial(true)
+    try {
+      await adminService.releasePartialResult(client.id)
+      await onChange()
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao liberar resultado parcial')
+    } finally {
+      setReleasingPartial(false)
+    }
+  }
+
+  const handleCancelPartial = async () => {
+    if (!confirm(`Cancelar a prévia do resultado para ${client.full_name}?\n\nO resultado deixará de aparecer no portal até você liberar novamente.`)) return
+    setCancelingPartial(true)
+    try {
+      await adminService.cancelPartialResult(client.id)
+      await onChange()
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao cancelar resultado parcial')
+    } finally {
+      setCancelingPartial(false)
+    }
+  }
 
   return (
     <div
@@ -370,7 +410,7 @@ export function StageController({
 
               {/* Label */}
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <p
                     className="text-sm font-medium"
                     style={{ color: isFuture ? t.text3 : t.text }}
@@ -398,7 +438,58 @@ export function StageController({
                       🔒 interno
                     </span>
                   )}
+                  {step.key === 'simulations' && (
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: 'rgba(139,92,246,0.18)', color: '#8b5cf6', border: '1px solid rgba(139,92,246,0.3)' }}
+                    >
+                      🔒 interno
+                    </span>
+                  )}
                 </div>
+
+                {/* Botão de liberação/cancelamento parcial — linha própria, visível só quando atual */}
+                {step.key === 'simulations' && isCurrent && (
+                  <div className="mt-2">
+                    {result?.is_released ? (
+                      <button
+                        onClick={handleCancelPartial}
+                        disabled={cancelingPartial}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+                        style={{
+                          border: '1px solid rgba(239,68,68,0.4)',
+                          color: '#b91c1c',
+                          background: 'rgba(239,68,68,0.08)',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.15)')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
+                        title="Oculta o resultado do portal sem alterar a etapa"
+                      >
+                        {cancelingPartial
+                          ? <><Loader2 className="h-3 w-3 animate-spin" /> Cancelando…</>
+                          : <><Lock className="h-3 w-3" /> Cancelar prévia do resultado</>}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleReleasePartial}
+                        disabled={releasingPartial}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+                        style={{
+                          border: '1px solid rgba(139,92,246,0.4)',
+                          color: '#7c3aed',
+                          background: 'rgba(139,92,246,0.1)',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(139,92,246,0.2)')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(139,92,246,0.1)')}
+                        title="Libera o resultado no portal sem avançar a etapa"
+                      >
+                        {releasingPartial
+                          ? <><Loader2 className="h-3 w-3 animate-spin" /> Liberando…</>
+                          : <><Unlock className="h-3 w-3" /> Liberar resultado parcial</>}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Reabrir button — disponível para qualquer etapa concluída ou atual */}
