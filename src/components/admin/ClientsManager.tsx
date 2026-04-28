@@ -828,9 +828,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
       }
       setConfirmState({
         title: `Voltar para "${targetLabel}"?`,
-        body: `Os dados de "${name}" ficam preservados — a cliente só ajusta o que precisar.`,
+        body: targetStatus === 'awaiting_contract'
+          ? `Atenção: voltar "${name}" para o contrato apaga TUDO que ela já enviou (formulário, fotos e prazo). Use só se for realmente recomeçar do zero.`
+          : `Os dados de "${name}" ficam preservados — a cliente só ajusta o que precisar.`,
         confirmLabel: 'Voltar etapa',
-        confirmColor: '#6366f1',
+        confirmColor: targetStatus === 'awaiting_contract' ? '#dc2626' : '#6366f1',
         onConfirm: async () => {
           applyOptimistic()
           try {

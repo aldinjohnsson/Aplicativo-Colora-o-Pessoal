@@ -217,10 +217,13 @@ export const adminService = {
   },
 
   async savePlanContract(planId: string, contract: PlanContract): Promise<void> {
+    // Não enviamos `updated_at` no payload — se a coluna existir, fica a cargo
+    // do trigger `set_updated_at` do Postgres; se não existir (como em
+    // `plan_contracts`), o upsert quebraria. Mesma lógica em `savePlanForm`.
     const { error } = await supabase
       .from('plan_contracts')
       .upsert(
-        { plan_id: planId, ...contract, updated_at: new Date().toISOString() },
+        { plan_id: planId, ...contract },
         { onConflict: 'plan_id' }
       )
     if (error) throw error
@@ -237,10 +240,12 @@ export const adminService = {
   },
 
   async savePlanForm(planId: string, form: PlanForm): Promise<void> {
+    // Mesmo motivo de `savePlanContract`: se a coluna `updated_at` não existir
+    // em `plan_forms`, o upsert quebra. Deixa o trigger cuidar (se houver).
     const { error } = await supabase
       .from('plan_forms')
       .upsert(
-        { plan_id: planId, ...form, updated_at: new Date().toISOString() },
+        { plan_id: planId, ...form },
         { onConflict: 'plan_id' }
       )
     if (error) throw error
@@ -621,13 +626,61 @@ export const adminService = {
     const defaultReason = reason?.trim() || 'A consultora solicitou um ajuste nesta etapa.'
 
     if (step === 'contract') {
-      // Remove assinatura — a cliente vai precisar assinar de novo
-      await supabase.from('client_contracts').delete().eq('client_id', clientId)
+      // ─── HARD RESET ─────────────────────────────────────────────────────
+      // Voltar pro contrato é o ponto mais inicial do funil — qualquer dado
+      // gerado nas etapas seguintes vira inconsistente. Apagamos TUDO:
+      //   - assinatura
+      //   - submissão do formulário (form vai vir em branco)
+      //   - fotos (DB + storage)
+      //   - prazo
+      //   - resultado e arquivos de resultado (DB + storage)
+      //
+      // OBS: para reabertura do form/photos/etc, o comportamento continua
+      // sendo SOFT (preserva dados pra cliente só ajustar). Só `contract`
+      // faz limpeza total porque conceitualmente é "começar de novo".
+
+      // 1. Coleta storage_paths antes de deletar do banco
+      const [{ data: photoRows }, { data: resultFileRows }] = await Promise.all([
+        supabase.from('client_photos').select('storage_path').eq('client_id', clientId),
+        supabase.from('client_result_files').select('storage_path').eq('client_id', clientId),
+      ])
+
+      // 2. Limpa storage (não-crítico — registros DB são removidos a seguir
+      //    independentemente disso)
+      if (photoRows?.length) {
+        try {
+          await supabase.storage
+            .from('client-photos')
+            .remove(photoRows.map(p => p.storage_path).filter(Boolean))
+        } catch (e) {
+          console.warn('Erro ao limpar fotos do storage durante reset do contrato:', e)
+        }
+      }
+      if (resultFileRows?.length) {
+        try {
+          await supabase.storage
+            .from('client-results')
+            .remove(resultFileRows.map(f => f.storage_path).filter(Boolean))
+        } catch (e) {
+          console.warn('Erro ao limpar arquivos de resultado do storage durante reset do contrato:', e)
+        }
+      }
+
+      // 3. Apaga tudo no banco em paralelo
+      await Promise.all([
+        supabase.from('client_contracts').delete().eq('client_id', clientId),
+        supabase.from('client_form_submissions').delete().eq('client_id', clientId),
+        supabase.from('client_photos').delete().eq('client_id', clientId),
+        supabase.from('client_deadlines').delete().eq('client_id', clientId),
+        supabase.from('client_result_files').delete().eq('client_id', clientId),
+        supabase.from('client_results').delete().eq('client_id', clientId),
+      ])
+
+      // 4. Status volta para o início + limpa rejeições antigas
       const { error } = await supabase
         .from('clients')
         .update({
           status: 'awaiting_contract',
-          // limpa rejeições antigas — voltamos ao início
           form_rejection_reason: null,
           form_rejected_at: null,
           photos_rejection_reason: null,
@@ -636,7 +689,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'contract_reopened', defaultReason)
+      return
     }
 
     if (step === 'form') {
@@ -650,7 +703,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'form_rejected', defaultReason)
+      return
     }
 
     if (step === 'photos') {
@@ -664,7 +717,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'photos_rejected', defaultReason)
+      return
     }
 
     if (step === 'review') {
@@ -683,7 +736,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'review_reopened', defaultReason)
+      return
     }
 
     if (step === 'analysis') {
@@ -701,7 +754,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'analysis_reopened', defaultReason)
+      return
     }
 
     if (step === 'materials') {
@@ -714,7 +767,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
+      return
     }
 
     if (step === 'validate_materials') {
@@ -727,7 +780,7 @@ export const adminService = {
         })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
+      return
     }
 
     if (step === 'simulations') {
@@ -743,7 +796,7 @@ export const adminService = {
         .update({ status: 'simulating', updated_at: now })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
+      return
     }
 
     if (step === 'result') {
@@ -758,13 +811,14 @@ export const adminService = {
         .update({ status: 'preparing_materials', updated_at: now })
         .eq('id', clientId)
       if (error) throw error
-      return this._notifyReopen(clientId, 'result_reopened', defaultReason)
+      return
     }
   },
 
   /**
-   * Helper interno — dispara e-mail de notificação ao reabrir uma etapa.
-   * Não-crítico: falhas no e-mail não bloqueiam a operação.
+   * @deprecated — não é mais chamado.
+   * Reabertura de etapas pelo StageController não envia e-mail.
+   * E-mails de rejeição são disparados apenas pelos métodos rejectForm/rejectPhotos/rejectBoth.
    */
   async _notifyReopen(clientId: string, type: string, reason: string): Promise<void> {
     try {
@@ -1206,6 +1260,8 @@ export const clientService = {
     if (error) throw error
     if (data?.error) throw new Error(data.error)
 
+    const signedAt = meta?.signedAt ?? new Date().toISOString()
+
     // Salva país, IP e timestamp de assinatura no registro do cliente.
     // Wrapped em try/catch para não quebrar o fluxo caso as colunas ainda não
     // existam no banco (adicione `country`, `signed_ip` e `signed_at` à tabela
@@ -1224,6 +1280,55 @@ export const clientService = {
       } catch (_) {
         // Silently ignore — columns may not exist yet
       }
+    }
+
+    // ── Notificação por e-mail (cliente + admin) ────────────────────────────
+    // Dispara a Edge Function `send-contract-email` com type='contract_signed'
+    // que gera o PDF do contrato e manda para os dois.
+    // Roda em try/catch — falha de e-mail não deve quebrar a assinatura.
+    // É chamado em TODA assinatura (inclusive re-assinatura após reabertura),
+    // já que cada assinatura é um evento de negócio que merece registro.
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, plan_id, plan:plans(name)')
+        .eq('token', token)
+        .single()
+
+      if (client) {
+        // Busca o conteúdo do contrato pra gerar o PDF na Edge Function
+        let contractTitle: string | undefined
+        let sections: any[] = []
+        if ((client as any).plan_id) {
+          const { data: planContract } = await supabase
+            .from('plan_contracts')
+            .select('title, sections')
+            .eq('plan_id', (client as any).plan_id)
+            .maybeSingle()
+          if (planContract) {
+            contractTitle = planContract.title
+            sections = Array.isArray(planContract.sections) ? planContract.sections : []
+          }
+        }
+
+        const portalUrl = `${window.location.origin}/c/${token}`
+        const planName  = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'contract_signed',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            signedAt,
+            contractTitle,
+            sections,
+            portalUrl,
+          },
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar e-mail de contrato assinado:', e)
     }
   },
 

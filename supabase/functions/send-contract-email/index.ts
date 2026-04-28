@@ -296,42 +296,17 @@ serve(async (req) => {
     // Cliente recebe confirmação + prazo; admin recebe aviso para revisar
     // ============================================================
     if (emailType === 'photos_finalized') {
-      const { clientName, clientEmail, planName, deadlineDate } = payload
-      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+      const { clientName, clientEmail, planName } = payload
 
-      const formattedDeadline = deadlineDate
-        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
-        : ''
-
-      const subject = `Suas fotos foram recebidas - MS Color`
-
-      const clientHtml = buildEmail(
-        'Fotos Recebidas!',
-        `Ola, <strong>${clientName}</strong>!`,
-        `<div class="alert-green">
-          <p class="alert-green-title">&#128247; Recebemos suas fotos e informacoes!</p>
-          <p class="alert-green-text">Sua analise de coloracao pessoal esta em andamento.</p>
-        </div>
-        ${formattedDeadline ? `
-        <div class="alert-yellow">
-          <p class="alert-yellow-title">&#128197; Prazo de entrega estimado</p>
-          <p class="alert-yellow-value">${formattedDeadline}</p>
-          <p class="alert-yellow-sub">Prazo calculado em dias uteis, sem contar feriados nacionais.</p>
-        </div>` : ''}
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">Acompanhe o andamento e acesse o resultado quando estiver pronto:</p>
-        ${linkButton(portalUrl, 'Acompanhar minha analise')}
-        <p class="small-center">Guarde este e-mail — voce pode acessar seu portal por ele quando precisar.</p>`
-      )
-
+      // Somente a consultora recebe — cliente nao precisa de confirmacao neste momento
       const adminHtml = buildEmail(
-        '&#128247; Fotos para Revisar',
+        '📷 Fotos para Revisar',
         `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
-        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName], ['Prazo', formattedDeadline || 'Nao definido']])}`
+        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
-        send(ADMIN_EMAIL, `[MS Color] &#128247; Fotos para revisar: ${clientName}`, adminHtml),
+        send(ADMIN_EMAIL, `[MS Color] 📷 Fotos para revisar: ${clientName}`, adminHtml),
       ])
       logResults(results, 'photos_finalized')
       return jsonResponse({ success: true, type: 'photos_finalized' })
@@ -483,6 +458,174 @@ serve(async (req) => {
       ])
       logResults(results, 'result_released')
       return jsonResponse({ success: true, type: 'result_released' })
+    }
+
+    // ============================================================
+    // TIPO 6: FOTOS APROVADAS (admin aprovou as fotos da cliente)
+    // Cliente recebe confirmação + botão para acompanhar a análise
+    // ============================================================
+    if (emailType === 'photos_approved') {
+      const { clientName, clientEmail, planName, deadlineDate } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const formattedDeadline = deadlineDate
+        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', {
+            weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+          })
+        : ''
+
+      const subject = `Suas fotos foram aprovadas! - MS Color`
+
+      const clientHtml = buildEmail(
+        'Fotos Aprovadas!',
+        `Ola, <strong>${clientName}</strong>!`,
+        `<div class="alert-green">
+          <p class="alert-green-title">&#10003; Suas fotos foram aprovadas!</p>
+          <p class="alert-green-text">Tudo certo por aqui. Sua analise de coloracao pessoal ja esta em andamento.</p>
+        </div>
+        ${formattedDeadline ? `
+        <div class="alert-yellow">
+          <p class="alert-yellow-title">&#128197; Previsao de entrega</p>
+          <p class="alert-yellow-value">${formattedDeadline}</p>
+          <p class="alert-yellow-sub">Prazo calculado em dias uteis. Voce recebera um aviso quando o resultado estiver pronto.</p>
+        </div>` : ''}
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">Acompanhe o andamento da sua analise pelo portal:</p>
+        ${linkButton(portalUrl, 'Acompanhar minha analise')}
+        <p class="small-center">Qualquer duvida, entre em contato com a consultora.</p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
+      ])
+      logResults(results, 'photos_approved')
+      return jsonResponse({ success: true, type: 'photos_approved' })
+    }
+
+    // ============================================================
+    // TIPO 7: FOTOS REJEITADAS (admin solicitou ajuste nas fotos)
+    // Cliente recebe motivo + botão para entrar no portal
+    // ============================================================
+    if (emailType === 'photos_rejected') {
+      const { clientName, clientEmail, planName, reason } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const subject = `Suas fotos precisam de um ajuste - MS Color`
+
+      const clientHtml = buildEmail(
+        'Ajuste nas Fotos',
+        `Ola, <strong>${clientName}</strong>!`,
+        `<div class="alert-amber">
+          <p class="alert-amber-title">&#9888;&#65039; Precisamos de um ajuste nas suas fotos</p>
+          <p class="alert-amber-text">Nao se preocupe — suas fotos atuais estao salvas. Acesse o portal e substitua apenas o que for solicitado abaixo.</p>
+        </div>
+        <div class="rejection-box rejection-purple">
+          <p class="rejection-type rejection-type-purple">&#128247; Motivo do ajuste</p>
+          <p class="rejection-reason">${reason}</p>
+        </div>
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para enviar as novas fotos:</p>
+        ${linkButton(portalUrl, 'Acessar portal e corrigir')}
+        <p class="small-center">Apos o reenvio, suas fotos serao revisadas novamente.</p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
+      ])
+      logResults(results, 'photos_rejected')
+      return jsonResponse({ success: true, type: 'photos_rejected' })
+    }
+
+    // ============================================================
+    // TIPO 8: FORMULARIO REJEITADO (admin solicitou ajuste no form)
+    // Cliente recebe motivo + botão para entrar no portal
+    // ============================================================
+    if (emailType === 'form_rejected') {
+      const { clientName, clientEmail, planName, reason } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const subject = `Seu formulario precisa de um ajuste - MS Color`
+
+      const clientHtml = buildEmail(
+        'Ajuste no Formulario',
+        `Ola, <strong>${clientName}</strong>!`,
+        `<div class="alert-amber">
+          <p class="alert-amber-title">&#9888;&#65039; Precisamos de um ajuste no seu formulario</p>
+          <p class="alert-amber-text">Nao se preocupe — seus dados estao salvos. Acesse o portal e corrija apenas o que for solicitado abaixo.</p>
+        </div>
+        <div class="rejection-box rejection-blue">
+          <p class="rejection-type rejection-type-blue">&#128203; Motivo do ajuste</p>
+          <p class="rejection-reason">${reason}</p>
+        </div>
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para realizar a correcao:</p>
+        ${linkButton(portalUrl, 'Acessar portal e corrigir')}
+        <p class="small-center">Apos a correcao, o formulario sera reenviado automaticamente para revisao.</p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
+      ])
+      logResults(results, 'form_rejected')
+      return jsonResponse({ success: true, type: 'form_rejected' })
+    }
+
+    // ============================================================
+    // TIPO 9: AMBOS REJEITADOS (admin solicitou ajuste em fotos + form)
+    // Cliente recebe os dois motivos + botão para entrar no portal
+    // ============================================================
+    if (emailType === 'both_rejected') {
+      const { clientName, clientEmail, planName, formReason, photosReason } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const subject = `Ajustes necessarios na sua analise - MS Color`
+
+      const clientHtml = buildEmail(
+        'Ajustes Necessarios',
+        `Ola, <strong>${clientName}</strong>!`,
+        `<div class="alert-amber">
+          <p class="alert-amber-title">&#9888;&#65039; Precisamos de alguns ajustes antes de continuar</p>
+          <p class="alert-amber-text">Nao se preocupe — seus dados estao salvos. Acesse o portal e corrija apenas o que for solicitado abaixo.</p>
+        </div>
+        ${photosReason ? `
+        <div class="rejection-box rejection-purple">
+          <p class="rejection-type rejection-type-purple">&#128247; Ajuste nas fotos</p>
+          <p class="rejection-reason">${photosReason}</p>
+        </div>` : ''}
+        ${formReason ? `
+        <div class="rejection-box rejection-blue">
+          <p class="rejection-type rejection-type-blue">&#128203; Ajuste no formulario</p>
+          <p class="rejection-reason">${formReason}</p>
+        </div>` : ''}
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para realizar os ajustes:</p>
+        ${linkButton(portalUrl, 'Acessar portal e corrigir')}
+        <p class="small-center">Apos os ajustes, o envio sera feito automaticamente para nova revisao.</p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
+      ])
+      logResults(results, 'both_rejected')
+      return jsonResponse({ success: true, type: 'both_rejected' })
+    }
+
+    // ============================================================
+    // ALIAS: photos_submitted → redireciona para photos_finalized
+    // services.ts envia 'photos_submitted' mas o handler historico
+    // usa 'photos_finalized'. Suportamos os dois para compatibilidade.
+    // ============================================================
+    if (emailType === 'photos_submitted') {
+      const { clientName, clientEmail, planName } = payload
+
+      // Somente a consultora recebe — cliente nao precisa de confirmacao neste momento
+      const adminHtml = buildEmail(
+        '📷 Fotos para Revisar',
+        `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
+        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
+      )
+
+      const results = await Promise.allSettled([
+        send(ADMIN_EMAIL, `[MS Color] 📷 Fotos para revisar: ${clientName}`, adminHtml),
+      ])
+      logResults(results, 'photos_submitted')
+      return jsonResponse({ success: true, type: 'photos_submitted' })
     }
 
     return jsonResponse({ error: 'Tipo de e-mail desconhecido: ' + emailType }, 400)

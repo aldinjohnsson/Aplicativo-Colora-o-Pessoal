@@ -137,3 +137,34 @@ CHECK (status IN (
   'simulating',
   'completed'
 ));
+
+-- ============================================================
+-- Migration: adiciona colunas updated_at que estão faltando
+-- Execute no SQL Editor do Supabase
+-- ============================================================
+
+-- 1. client_contracts (causa do erro "column updated_at does not exist")
+ALTER TABLE client_contracts
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 2. plan_contracts (prevenção — savePlanContract envia updated_at)
+ALTER TABLE plan_contracts
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 3. plan_forms (prevenção — savePlanForm envia updated_at)
+ALTER TABLE plan_forms
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 4. client_deadlines (prevenção — approvePhotos envia updated_at)
+ALTER TABLE client_deadlines
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- Confirmar
+SELECT 
+  table_name,
+  column_name,
+  data_type
+FROM information_schema.columns
+WHERE table_name IN ('client_contracts','plan_contracts','plan_forms','client_deadlines')
+  AND column_name = 'updated_at'
+ORDER BY table_name;
