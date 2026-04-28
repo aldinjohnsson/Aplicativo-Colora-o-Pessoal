@@ -36,7 +36,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(245,158,11,0.12)',
     activeBorder: 'rgba(245,158,11,0.35)',
     activeStatus: 'awaiting_contract',
-    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'completed'],
+    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
     reopenKey: 'contract',
   },
   {
@@ -45,7 +45,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(59,130,246,0.12)',
     activeBorder: 'rgba(59,130,246,0.35)',
     activeStatus: 'awaiting_form',
-    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'completed'],
+    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
     reopenKey: 'form',
   },
   {
@@ -54,7 +54,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(168,85,247,0.12)',
     activeBorder: 'rgba(168,85,247,0.35)',
     activeStatus: 'awaiting_photos',
-    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'completed'],
+    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
     reopenKey: 'photos',
   },
   {
@@ -63,7 +63,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(236,72,153,0.12)',
     activeBorder: 'rgba(236,72,153,0.35)',
     activeStatus: 'photos_submitted',
-    doneStatuses: ['in_analysis', 'preparing_materials', 'completed'],
+    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'completed'],
     reopenKey: 'review',
   },
   {
@@ -72,7 +72,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(249,115,22,0.12)',
     activeBorder: 'rgba(249,115,22,0.35)',
     activeStatus: 'in_analysis',
-    doneStatuses: ['preparing_materials', 'completed'],
+    doneStatuses: ['preparing_materials', 'validating_materials', 'completed'],
     reopenKey: 'analysis',
   },
   {

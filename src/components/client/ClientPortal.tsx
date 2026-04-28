@@ -1317,7 +1317,7 @@ function ReviewScreen() {
             <h3 className="text-sm font-semibold text-gray-900 mb-1">Prazo de revisão</h3>
             <p className="text-sm text-gray-600 leading-relaxed">
               A revisão é feita em até <strong className="text-gray-900">1 dia útil</strong>. Você receberá um e-mail
-              quando suas fotos forem aprovadas — ou, se algum ajuste for necessário, com instruções para reenviar.
+              quando suas fotos forem aprovadas ou se algum ajuste for necessário, com instruções para reenviar.
             </p>
           </div>
         </div>

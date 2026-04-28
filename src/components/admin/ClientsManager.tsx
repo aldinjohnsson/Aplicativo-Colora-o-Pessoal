@@ -2090,15 +2090,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                     { label: `Fotos enviadas (${photos.length})`, done: photos.length > 0 && !['awaiting_contract', 'awaiting_form', 'awaiting_photos'].includes(client.status) },
                     {
                       label: 'Fotos aprovadas (revisão concluída)',
-                      done: ['in_analysis', 'preparing_materials', 'validating_materials', 'completed'].includes(client.status),
+                      done: ['in_analysis', 'completed'].includes(client.status),
                       badge: client.status === 'photos_submitted' ? { text: 'Aguardando aprovação', color: 'text-pink-700 bg-pink-50 border border-pink-200' } : undefined,
                     },
-                    { label: 'Análise em andamento', done: ['in_analysis', 'preparing_materials', 'validating_materials', 'completed'].includes(client.status) },
-                    { label: 'Preparando materiais', done: ['preparing_materials', 'validating_materials', 'completed'].includes(client.status) },
-                    // Só marca como liberado quando o cliente realmente está em "completed".
-                    // Se uma etapa anterior foi reaberta, is_released pode estar true no banco
-                    // mas o resultado não está mais visível pra cliente.
-                    { label: 'Resultado liberado', done: !!result?.is_released && client.status === 'completed' },
+                    { label: 'Análise em andamento', done: ['in_analysis', 'preparing_materials', 'completed'].includes(client.status) },
+                    { label: 'Preparando materiais', done: ['preparing_materials', 'completed'].includes(client.status) },
+                    { label: 'Resultado liberado', done: result?.is_released },
                   ].map(({ label, done, date, badge }: any) => (
                     <div key={label} className="flex items-center gap-3">
                       <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: done ? 'rgba(34,197,94,0.15)' : t.surface2 }}>
