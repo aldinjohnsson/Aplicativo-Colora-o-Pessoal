@@ -1,105 +1,106 @@
 // src/components/admin/StageController.tsx
-//
-// Painel de controle de etapas — permite ao admin avançar ou voltar em
-// qualquer momento, inclusive após a cliente ter concluído tudo.
-//
-// Reaproveita o sistema de rejeição: ao voltar uma etapa, grava o motivo
-// em `*_rejection_reason` e o portal da cliente já mostra o banner de ajuste
-// automaticamente (nada precisa mudar no ClientPortal).
-//
-// Uso:
-//   <StageController
-//     client={client}
-//     contract={contract}
-//     formSubmission={formSubmission}
-//     photos={photos}
-//     result={result}
-//     onChange={load}
-//   />
-
 import React, { useState } from 'react'
 import {
   Check, FileText, ClipboardList, Camera, Eye, Sparkles, Package,
   ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
+import { useTheme } from '../../lib/theme'
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'result'
+type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result'
+type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result'
 
 interface StepDef {
   key: StepKey
   label: string
   icon: React.ElementType
-  /** classes estáticas para o círculo quando a etapa está ATUAL */
-  currentDot: string
-  /** classes estáticas para o container quando a etapa está ATUAL */
-  currentBorder: string
+  /** cor hex do ponto quando a etapa está ATUAL */
+  dotColor: string
+  /** cor rgba para o container quando a etapa está ATUAL */
+  activeBg: string
+  activeBorder: string
   /** a partir de qual status da cliente esta etapa está "ativa" */
   activeStatus: string
   /** quais statuses significam que esta etapa JÁ está concluída */
   doneStatuses: string[]
-  /** chave usada no reopenStep (null = não reabrível, ex: resultado) */
-  reopenKey: 'contract' | 'form' | 'photos' | 'review' | null
+  /** chave usada no reopenStep */
+  reopenKey: ReopenKey
 }
 
 const STEPS: StepDef[] = [
   {
     key: 'contract', label: 'Contrato', icon: FileText,
-    currentDot: 'bg-amber-500 text-white ring-4 ring-amber-100',
-    currentBorder: 'border-amber-200 bg-amber-50/50',
+    dotColor: '#f59e0b',
+    activeBg: 'rgba(245,158,11,0.12)',
+    activeBorder: 'rgba(245,158,11,0.35)',
     activeStatus: 'awaiting_contract',
-    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'completed'],
+    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'completed'],
     reopenKey: 'contract',
   },
   {
     key: 'form', label: 'Formulário', icon: ClipboardList,
-    currentDot: 'bg-blue-500 text-white ring-4 ring-blue-100',
-    currentBorder: 'border-blue-200 bg-blue-50/50',
+    dotColor: '#3b82f6',
+    activeBg: 'rgba(59,130,246,0.12)',
+    activeBorder: 'rgba(59,130,246,0.35)',
     activeStatus: 'awaiting_form',
-    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'completed'],
+    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'completed'],
     reopenKey: 'form',
   },
   {
     key: 'photos', label: 'Fotos', icon: Camera,
-    currentDot: 'bg-purple-500 text-white ring-4 ring-purple-100',
-    currentBorder: 'border-purple-200 bg-purple-50/50',
+    dotColor: '#a855f7',
+    activeBg: 'rgba(168,85,247,0.12)',
+    activeBorder: 'rgba(168,85,247,0.35)',
     activeStatus: 'awaiting_photos',
-    doneStatuses: ['photos_submitted', 'in_analysis', 'completed'],
+    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'completed'],
     reopenKey: 'photos',
   },
   {
     key: 'review', label: 'Revisão', icon: Eye,
-    currentDot: 'bg-pink-500 text-white ring-4 ring-pink-100',
-    currentBorder: 'border-pink-200 bg-pink-50/50',
+    dotColor: '#ec4899',
+    activeBg: 'rgba(236,72,153,0.12)',
+    activeBorder: 'rgba(236,72,153,0.35)',
     activeStatus: 'photos_submitted',
-    doneStatuses: ['in_analysis', 'completed'],
+    doneStatuses: ['in_analysis', 'preparing_materials', 'completed'],
     reopenKey: 'review',
   },
   {
     key: 'analysis', label: 'Análise', icon: Sparkles,
-    currentDot: 'bg-orange-500 text-white ring-4 ring-orange-100',
-    currentBorder: 'border-orange-200 bg-orange-50/50',
+    dotColor: '#f97316',
+    activeBg: 'rgba(249,115,22,0.12)',
+    activeBorder: 'rgba(249,115,22,0.35)',
     activeStatus: 'in_analysis',
     doneStatuses: ['preparing_materials', 'completed'],
-    reopenKey: null, // análise não se "reabre" diretamente — volta p/ revisão
+    reopenKey: 'analysis',
   },
   {
     key: 'materials', label: 'Preparando Materiais', icon: Package,
-    currentDot: 'bg-teal-500 text-white ring-4 ring-teal-100',
-    currentBorder: 'border-teal-200 bg-teal-50/50',
+    dotColor: '#14b8a6',
+    activeBg: 'rgba(20,184,166,0.12)',
+    activeBorder: 'rgba(20,184,166,0.35)',
     activeStatus: 'preparing_materials',
+    doneStatuses: ['validating_materials', 'completed'],
+    reopenKey: 'materials',
+  },
+  {
+    key: 'validate_materials', label: 'Validar Materiais', icon: ClipboardList,
+    dotColor: '#6366f1',
+    activeBg: 'rgba(99,102,241,0.12)',
+    activeBorder: 'rgba(99,102,241,0.35)',
+    activeStatus: 'validating_materials',
     doneStatuses: ['completed'],
-    reopenKey: null,
+    reopenKey: 'validate_materials',
   },
   {
     key: 'result', label: 'Resultado', icon: Check,
-    currentDot: 'bg-green-500 text-white ring-4 ring-green-100',
-    currentBorder: 'border-green-200 bg-green-50/50',
+    dotColor: '#22c55e',
+    activeBg: 'rgba(34,197,94,0.12)',
+    activeBorder: 'rgba(34,197,94,0.35)',
     activeStatus: 'completed',
-    doneStatuses: [], // é a última etapa
-    reopenKey: null,
+    doneStatuses: [],
+    reopenKey: 'result',
   },
 ]
 
@@ -114,6 +115,7 @@ function ReopenModal({
   onCancel: () => void
   onConfirm: (reason: string) => Promise<void>
 }) {
+  const { theme: t } = useTheme()
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -132,28 +134,34 @@ function ReopenModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div
+        className="rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+        style={{ background: t.surface, border: `1px solid ${t.border}` }}
+      >
+        {/* Header */}
         <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <RotateCcw className="h-5 w-5 flex-shrink-0" />
-            <div className="min-w-0">
-              <p className="font-semibold text-sm">Reabrir etapa: {stepLabel}</p>
-            </div>
+            <p className="font-semibold text-sm">Reabrir etapa: {stepLabel}</p>
           </div>
           <button onClick={onCancel} className="p-1 rounded-lg hover:bg-white/20" disabled={submitting}>
             <X className="h-4 w-4" />
           </button>
         </div>
 
+        {/* Body */}
         <div className="px-5 py-5 space-y-3">
-          <p className="text-sm text-gray-600">
+          <p className="text-sm" style={{ color: t.text2 }}>
             A cliente voltará para esta etapa e verá os dados atuais em modo de edição.
-            <strong className="text-gray-800"> Nada é apagado</strong> — ela decide o que manter e o que trocar.
+            <strong style={{ color: t.text }}> Nada é apagado</strong> — ela decide o que manter e o que trocar.
           </p>
 
           {fromCompleted && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex gap-2 text-xs text-amber-800">
+            <div
+              className="rounded-lg p-3 flex gap-2 text-xs"
+              style={{ background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.35)', color: '#b45309' }}
+            >
               <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
               <p>
                 Esta cliente estava com o resultado liberado. Ao reabrir, o resultado deixa de ser
@@ -163,7 +171,7 @@ function ReopenModal({
           )}
 
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
+            <label className="block text-xs font-medium mb-1" style={{ color: t.text2 }}>
               Motivo (opcional)
             </label>
             <textarea
@@ -172,17 +180,33 @@ function ReopenModal({
               rows={3}
               placeholder="Ex: Preciso adicionar um campo novo ao formulário…"
               maxLength={500}
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+              className="w-full px-3 py-2 text-sm rounded-lg focus:outline-none resize-none"
+              style={{
+                background: t.surface2,
+                border: `1px solid ${t.border}`,
+                color: t.text,
+              }}
             />
-            <p className="text-[10px] text-gray-400 text-right mt-1">{reason.length}/500</p>
+            <p className="text-[10px] text-right mt-1" style={{ color: t.text3 }}>
+              {reason.length}/500
+            </p>
           </div>
         </div>
 
-        <div className="px-5 py-4 border-t border-gray-100 flex gap-3 bg-gray-50">
+        {/* Footer */}
+        <div
+          className="px-5 py-4 flex gap-3"
+          style={{ borderTop: `1px solid ${t.border}` }}
+        >
           <button
             onClick={onCancel}
             disabled={submitting}
-            className="flex-1 py-2.5 border border-gray-200 bg-white text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
+            style={{
+              background: t.surface2,
+              border: `1px solid ${t.border}`,
+              color: t.text2,
+            }}
           >
             Cancelar
           </button>
@@ -215,6 +239,7 @@ interface StageControllerProps {
 export function StageController({
   client, contract, formSubmission, photos, result, onChange,
 }: StageControllerProps) {
+  const { theme: t } = useTheme()
   const [reopenTarget, setReopenTarget] = useState<StepDef | null>(null)
   const [advancing, setAdvancing] = useState(false)
 
@@ -222,7 +247,7 @@ export function StageController({
   const fromCompleted = client.status === 'completed'
 
   const handleReopen = async (reason: string) => {
-    if (!reopenTarget || !reopenTarget.reopenKey) return
+    if (!reopenTarget) return
     await adminService.reopenStep(client.id, reopenTarget.reopenKey, reason || undefined)
     setReopenTarget(null)
     await onChange()
@@ -231,7 +256,6 @@ export function StageController({
   const handleAdvance = async () => {
     const nextStep = STEPS[currentIdx + 1]
     if (!nextStep) return
-    // Aviso extra para casos sensíveis
     if (client.status === 'awaiting_form' && !formSubmission) {
       if (!confirm('A cliente ainda não enviou o formulário.\n\nTem certeza que quer avançar pulando essa etapa?')) return
     }
@@ -245,6 +269,9 @@ export function StageController({
       if (!confirm('Mover para "Preparando Materiais"? O resultado ainda não será liberado para a cliente.')) return
     }
     if (client.status === 'preparing_materials') {
+      if (!confirm('Mover para "Validar Materiais"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
+    }
+    if (client.status === 'validating_materials') {
       if (!confirm('Liberar o resultado para a cliente? Isso enviará e-mail de notificação.')) return
     }
 
@@ -259,17 +286,25 @@ export function StageController({
     }
   }
 
-  const canAdvance = currentIdx < STEPS.length - 1
+  const canAdvance = currentIdx >= 0 && currentIdx < STEPS.length - 1
 
   return (
-    <div className="md:col-span-2 bg-white border border-gray-200 rounded-xl p-5">
+    <div
+      className="md:col-span-2 rounded-xl p-5"
+      style={{
+        background: t.surface,
+        border: `1px solid ${t.border}`,
+        transition: 'background 0.25s ease, border-color 0.25s ease',
+      }}
+    >
+      {/* Header row */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-            <ChevronRight className="h-4 w-4 text-gray-400" />
+          <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
+            <ChevronRight className="h-4 w-4" style={{ color: t.text2 }} />
             Controle de etapas
           </h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs mt-0.5" style={{ color: t.text2 }}>
             Avance ou volte etapas manualmente. Ao voltar, os dados ficam preservados — a cliente só ajusta o que precisar.
           </p>
         </div>
@@ -287,59 +322,97 @@ export function StageController({
         )}
       </div>
 
-      {/* Barra de etapas */}
+      {/* Steps list */}
       <div className="space-y-2">
         {STEPS.map((step, idx) => {
           const isDone = step.doneStatuses.includes(client.status)
           const isCurrent = step.activeStatus === client.status
           const isFuture = !isDone && !isCurrent
-          const canReopen = (isDone || isCurrent) && !!step.reopenKey
+          // Reabrir só faz sentido em etapas CONCLUÍDAS — voltar o cliente
+          // para refazer aquela etapa. A única exceção é "Resultado" (status
+          // completed), pois reabrir nesse caso tira a liberação do resultado
+          // e volta pra preparing_materials. Reabrir uma etapa que já é a
+          // atual em outros casos (ex: preparing_materials clicar em Reabrir
+          // Preparando Materiais) seria UPDATE pro mesmo status — não faria
+          // nada visível pra cliente, então o botão é escondido.
+          const canReopen = isDone || (isCurrent && step.key === 'result')
           const Icon = step.icon
 
-          // Cor visual
-          const dotClass = isDone
-            ? 'bg-green-500 text-white'
+          // Dot styles
+          const dotStyle: React.CSSProperties = isDone
+            ? { background: '#22c55e', color: '#fff' }
             : isCurrent
-              ? step.currentDot
-              : 'bg-gray-100 text-gray-400'
+            ? { background: step.dotColor, color: '#fff', boxShadow: `0 0 0 4px ${step.dotColor}33` }
+            : { background: t.surface2, color: t.text3 }
 
-          const containerClass = isCurrent
-            ? step.currentBorder
+          // Container styles
+          const containerStyle: React.CSSProperties = isCurrent
+            ? { background: step.activeBg, border: `1px solid ${step.activeBorder}` }
             : isDone
-              ? 'border-green-100 bg-green-50/30'
-              : 'border-gray-100 bg-gray-50/30'
+            ? { background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.25)' }
+            : { background: t.surface2, border: `1px solid ${t.border}` }
 
           return (
             <div
               key={step.key}
-              className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${containerClass}`}
+              className="flex items-center gap-3 p-3 rounded-lg transition-colors"
+              style={containerStyle}
             >
-              <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${dotClass}`}>
+              {/* Dot */}
+              <div
+                className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                style={dotStyle}
+              >
                 {isDone
                   ? <Check className="h-4 w-4" />
                   : <Icon className="h-4 w-4" />}
               </div>
 
+              {/* Label */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className={`text-sm font-medium ${isFuture ? 'text-gray-400' : 'text-gray-800'}`}>
+                  <p
+                    className="text-sm font-medium"
+                    style={{ color: isFuture ? t.text3 : t.text }}
+                  >
                     {idx + 1}. {step.label}
                   </p>
                   {isCurrent && (
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-white bg-gray-800 px-1.5 py-0.5 rounded">
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: t.accent, color: t.accentFg }}
+                    >
                       atual
                     </span>
                   )}
                   {isDone && (
-                    <span className="text-[10px] font-medium text-green-600">concluída</span>
+                    <span className="text-[10px] font-medium" style={{ color: '#16a34a' }}>
+                      concluída
+                    </span>
+                  )}
+                  {step.key === 'validate_materials' && (
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: 'rgba(99,102,241,0.18)', color: '#6366f1', border: '1px solid rgba(99,102,241,0.3)' }}
+                    >
+                      🔒 interno
+                    </span>
                   )}
                 </div>
               </div>
 
+              {/* Reabrir button — disponível para qualquer etapa concluída ou atual */}
               {canReopen && (
                 <button
                   onClick={() => setReopenTarget(step)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium border border-amber-200 text-amber-700 bg-white rounded-lg hover:bg-amber-50"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors"
+                  style={{
+                    border: '1px solid rgba(245,158,11,0.4)',
+                    color: '#b45309',
+                    background: 'rgba(245,158,11,0.1)',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'rgba(245,158,11,0.2)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'rgba(245,158,11,0.1)')}
                   title={`Voltar a cliente para ${step.label}`}
                 >
                   <RotateCcw className="h-3 w-3" />

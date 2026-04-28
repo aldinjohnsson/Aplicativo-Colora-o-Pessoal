@@ -113,3 +113,26 @@ ALTER TABLE clients
     'preparing_materials',
     'completed'
   ));
+
+  -- Permite leitura pública dos arquivos de resultado
+-- (acesso é controlado pelo token do portal, não por auth)
+CREATE POLICY "Portal can read result files"
+ON client_result_files
+FOR SELECT
+USING (true);
+
+ALTER TABLE clients
+DROP CONSTRAINT clients_status_check;
+
+ALTER TABLE clients
+ADD CONSTRAINT clients_status_check
+CHECK (status IN (
+  'awaiting_contract',
+  'awaiting_form',
+  'awaiting_photos',
+  'photos_submitted',
+  'in_analysis',
+  'preparing_materials',
+  'validating_materials',
+  'completed'
+));

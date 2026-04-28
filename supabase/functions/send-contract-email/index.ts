@@ -8,7 +8,18 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// ── Helpers para gerar o PDF ──────────────────────────────────
+// ── Corrige portalUrl com localhost vindo do frontend em dev ─────────────────
+// Configure SITE_URL no painel do Supabase → Edge Functions → Secrets
+// Ex: SITE_URL=https://seudominio.com.br
+function sanitizePortalUrl(url: string): string {
+  if (!url) return url
+  const siteUrl = Deno.env.get('SITE_URL') || ''
+  if (!siteUrl) return url
+  // substitui qualquer origem localhost:XXXX ou localhost pelo domínio real
+  return url.replace(/^https?:\/\/localhost(:\d+)?/, siteUrl.replace(/\/$/, ''))
+}
+
+// ── Helpers para gerar o PDF ──────────────────────────────────────────────────
 
 function wrapText(text: string, font: any, fontSize: number, maxWidth: number): string[] {
   const lines: string[] = []
@@ -84,53 +95,108 @@ async function generateContractPDF(
   page.drawText(`em ${formattedDate}`, { x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45) })
   const pages = pdfDoc.getPages()
   pages.forEach((p, i) => {
-    p.drawText(`MS Colors - Coloracao Pessoal  -  Pagina ${i + 1} de ${pages.length}`, { x: MARGIN, y: 30, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.65) })
+    p.drawText(`MS Color - Coloracao Pessoal  -  Pagina ${i + 1} de ${pages.length}`, { x: MARGIN, y: 30, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.65) })
   })
   return await pdfDoc.save()
 }
 
-// ── Template base de e-mail ───────────────────────────────────
+// ── Template base de e-mail (responsivo para mobile) ─────────────────────────
 
 function buildEmail(title: string, greeting: string, body: string): string {
-  return `<!DOCTYPE html><html lang="pt-BR">
-  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-  <body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:32px 16px">
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>${title}</title>
+  <style>
+    body { margin: 0; padding: 0; background: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; -webkit-text-size-adjust: 100%; }
+    .wrapper { background: #f3f4f6; padding: 24px 12px; }
+    .container { max-width: 600px; width: 100%; margin: 0 auto; }
+    .header { background: linear-gradient(135deg, #fb7185, #ec4899); border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center; }
+    .header-brand { margin: 0 0 4px; font-size: 11px; color: #ffe4e6; letter-spacing: 2px; text-transform: uppercase; }
+    .header-title { margin: 0; font-size: 20px; color: #ffffff; font-weight: 700; line-height: 1.3; }
+    .body { background: #ffffff; padding: 28px 24px; border-radius: 0 0 16px 16px; }
+    .greeting { margin: 0 0 20px; color: #374151; font-size: 15px; line-height: 1.6; }
+    .footer-brand { margin: 28px 0 0; color: #9ca3af; font-size: 11px; text-align: center; }
+    .info-box { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 16px 0; }
+    .info-row { display: flex; padding: 5px 0; font-size: 14px; }
+    .info-label { color: #6b7280; min-width: 100px; flex-shrink: 0; }
+    .info-value { color: #374151; font-weight: 600; }
+    .btn-wrap { text-align: center; margin: 24px 0; }
+    .btn { display: inline-block; background: linear-gradient(135deg, #fb7185, #ec4899); color: #ffffff !important; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 15px; }
+    .alert-green { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .alert-green-title { margin: 0 0 4px; font-size: 14px; color: #166534; font-weight: 600; }
+    .alert-green-text { margin: 0; font-size: 13px; color: #15803d; }
+    .alert-yellow { background: #fefce8; border: 1px solid #fde68a; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .alert-yellow-title { margin: 0 0 4px; font-size: 13px; color: #92400e; font-weight: 600; }
+    .alert-yellow-value { margin: 0; font-size: 15px; color: #78350f; font-weight: 700; text-transform: capitalize; }
+    .alert-yellow-sub { margin: 6px 0 0; font-size: 12px; color: #a16207; }
+    .alert-pink { background: linear-gradient(135deg, #fdf2f8, #fce7f3); border: 1px solid #fbcfe8; border-radius: 12px; padding: 20px; margin-bottom: 16px; text-align: center; }
+    .alert-pink-emoji { margin: 0 0 8px; font-size: 28px; }
+    .alert-pink-title { margin: 0 0 4px; font-size: 16px; color: #9d174d; font-weight: 700; }
+    .alert-pink-text { margin: 0; font-size: 13px; color: #be185d; }
+    .alert-amber { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .alert-amber-title { margin: 0 0 4px; font-size: 14px; color: #92400e; font-weight: 600; }
+    .alert-amber-text { margin: 0; font-size: 13px; color: #b45309; }
+    .rejection-box { border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+    .rejection-purple { background: #faf5ff; border: 1px solid #e9d5ff; }
+    .rejection-blue { background: #eff6ff; border: 1px solid #bfdbfe; }
+    .rejection-type { margin: 0 0 6px; font-size: 13px; font-weight: 700; }
+    .rejection-type-purple { color: #7c3aed; }
+    .rejection-type-blue { color: #2563eb; }
+    .rejection-reason { margin: 0; font-size: 14px; color: #374151; line-height: 1.6; }
+    .small-center { color: #9ca3af; font-size: 12px; text-align: center; line-height: 1.6; }
+    @media only screen and (max-width: 480px) {
+      .wrapper { padding: 12px 8px !important; }
+      .header { padding: 20px 16px !important; border-radius: 12px 12px 0 0 !important; }
+      .header-title { font-size: 17px !important; }
+      .body { padding: 20px 16px !important; border-radius: 0 0 12px 12px !important; }
+      .btn { padding: 13px 24px !important; font-size: 14px !important; display: block !important; }
+      .info-box { padding: 12px !important; }
+      .info-row { flex-direction: column !important; padding: 6px 0 !important; }
+      .info-label { min-width: auto !important; margin-bottom: 2px; font-size: 11px !important; }
+      .info-value { font-size: 13px !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
       <tr><td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%">
-          <tr><td style="background:linear-gradient(135deg,#fb7185,#ec4899);border-radius:16px 16px 0 0;padding:32px;text-align:center">
-            <p style="margin:0;font-size:13px;color:#ffe4e6;letter-spacing:2px;text-transform:uppercase">MS Colors</p>
-            <h1 style="margin:8px 0 0;font-size:20px;color:#fff;font-weight:700">${title}</h1>
+        <table class="container" cellpadding="0" cellspacing="0" role="presentation">
+          <tr><td class="header">
+            <p class="header-brand">MS Color</p>
+            <h1 class="header-title">${title}</h1>
           </td></tr>
-          <tr><td style="background:#fff;padding:32px;border-radius:0 0 16px 16px">
-            <p style="margin:0 0 20px;color:#374151;font-size:15px">${greeting}</p>
+          <tr><td class="body">
+            <p class="greeting">${greeting}</p>
             ${body}
-            <p style="margin:28px 0 0;color:#9ca3af;font-size:12px;text-align:center">MS Colors &middot; Coloracao Pessoal</p>
+            <p class="footer-brand">MS Color &middot; Coloracao Pessoal</p>
           </td></tr>
         </table>
       </td></tr>
     </table>
-  </body></html>`
+  </div>
+</body>
+</html>`
 }
 
 function linkButton(url: string, label: string): string {
-  return `<div style="text-align:center;margin:24px 0">
-    <a href="${url}" style="display:inline-block;background:linear-gradient(135deg,#fb7185,#ec4899);color:#fff;padding:14px 32px;border-radius:12px;text-decoration:none;font-weight:600;font-size:15px">${label}</a>
-  </div>`
+  return `<div class="btn-wrap"><a href="${url}" class="btn">${label}</a></div>`
 }
 
 function infoTable(rows: Array<[string, string]>): string {
   const trs = rows.map(([label, value]) => `
-    <tr>
-      <td style="padding:6px 0;color:#6b7280;width:110px;font-size:14px">${label}</td>
-      <td style="padding:6px 0;font-weight:600;font-size:14px;color:#374151">${value}</td>
-    </tr>`).join('')
-  return `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin:16px 0">
-    <table width="100%" cellpadding="0" cellspacing="0">${trs}</table>
-  </div>`
+    <div class="info-row">
+      <span class="info-label">${label}</span>
+      <span class="info-value">${value}</span>
+    </div>`).join('')
+  return `<div class="info-box">${trs}</div>`
 }
 
-// ── Edge Function principal ───────────────────────────────────
+// ── Edge Function principal ───────────────────────────────────────────────────
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -141,7 +207,6 @@ serve(async (req) => {
     const payload = await req.json()
     const emailType = payload.type || 'contract_signed'
 
-    // ── Buscar configuracoes ──────────────────────────────
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -156,7 +221,7 @@ serve(async (req) => {
     const cfg = settingsRow?.content as any
     const RESEND_API_KEY = cfg?.resendApiKey
     const ADMIN_EMAIL    = cfg?.adminEmail
-    const FROM_EMAIL     = cfg?.fromEmail || 'MS Colors <onboarding@resend.dev>'
+    const FROM_EMAIL     = cfg?.fromEmail || 'MS Color <onboarding@resend.dev>'
 
     if (!RESEND_API_KEY || !ADMIN_EMAIL) {
       console.warn('E-mail nao configurado. Pulando envio.')
@@ -179,9 +244,11 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 1: CONTRATO ASSINADO
+    // Envia PDF do contrato para cliente e admin
     // ============================================================
     if (emailType === 'contract_signed') {
-      const { clientName, clientEmail, planName, signedAt, contractTitle, sections, portalUrl } = payload
+      const { clientName, clientEmail, planName, signedAt, contractTitle, sections } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDate = new Date(signedAt).toLocaleString('pt-BR', {
         day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -197,109 +264,188 @@ serve(async (req) => {
       }
 
       const attachments = pdfBase64 ? [{ filename: `Contrato - ${planName}.pdf`, content: pdfBase64 }] : []
-      const subject = `Contrato de ${planName} - MS Colors`
+      const subject = `Contrato de ${planName} - MS Color`
 
       const clientHtml = buildEmail(
         'Contrato Assinado',
         `Ola, <strong>${clientName}</strong>!`,
-        `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:20px;margin-bottom:16px">
-          <p style="margin:0 0 4px;font-size:14px;color:#166534;font-weight:600">Contrato assinado com sucesso!</p>
-          <p style="margin:0;font-size:13px;color:#15803d">O PDF do contrato esta anexo neste e-mail.</p>
+        `<div class="alert-green">
+          <p class="alert-green-title">&#10003; Contrato assinado com sucesso!</p>
+          <p class="alert-green-text">O PDF do contrato esta anexo neste e-mail para seu registro.</p>
         </div>
         ${infoTable([['Plano', planName], ['Nome', clientName], ['E-mail', clientEmail], ['Assinado em', formattedDate]])}
-        ${portalUrl ? `<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 0">Acompanhe o andamento da sua analise pelo link abaixo:</p>${linkButton(portalUrl, 'Acessar meu portal')}` : ''}`
+        ${portalUrl ? `<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 0">Acompanhe o andamento da sua analise pelo portal:</p>${linkButton(portalUrl, 'Acessar meu portal')}` : ''}`
       )
 
       const adminHtml = buildEmail(
         'Nova Assinatura de Contrato',
-        'Nova cliente cadastrada!',
+        '&#128221; Nova cliente cadastrada!',
         `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName], ['Assinado em', formattedDate]])}`
       )
 
       const results = await Promise.allSettled([
         send(clientEmail, subject, clientHtml, attachments),
-        send(ADMIN_EMAIL, subject, adminHtml, attachments),
+        send(ADMIN_EMAIL, `[MS Color] Nova assinatura: ${clientName} - ${planName}`, adminHtml, attachments),
       ])
       logResults(results, 'contract_signed')
       return jsonResponse({ success: true, type: 'contract_signed' })
     }
 
     // ============================================================
-    // TIPO 2: FOTOS FINALIZADAS
+    // TIPO 2: FOTOS FINALIZADAS (cliente submeteu fotos)
+    // Cliente recebe confirmação + prazo; admin recebe aviso para revisar
     // ============================================================
     if (emailType === 'photos_finalized') {
-      const { clientName, clientEmail, planName, portalUrl, deadlineDate } = payload
+      const { clientName, clientEmail, planName, deadlineDate } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDeadline = deadlineDate
         ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
         : ''
 
-      const subject = `Suas fotos foram recebidas - MS Colors`
+      const subject = `Suas fotos foram recebidas - MS Color`
 
       const clientHtml = buildEmail(
         'Fotos Recebidas!',
         `Ola, <strong>${clientName}</strong>!`,
-        `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:20px;margin-bottom:16px">
-          <p style="margin:0 0 4px;font-size:14px;color:#166534;font-weight:600">Recebemos suas fotos e informacoes!</p>
-          <p style="margin:0;font-size:13px;color:#15803d">Sua analise de coloracao pessoal esta em andamento.</p>
+        `<div class="alert-green">
+          <p class="alert-green-title">&#128247; Recebemos suas fotos e informacoes!</p>
+          <p class="alert-green-text">Sua analise de coloracao pessoal esta em andamento.</p>
         </div>
         ${formattedDeadline ? `
-        <div style="background:#fefce8;border:1px solid #fde68a;border-radius:12px;padding:20px;margin-bottom:16px">
-          <p style="margin:0 0 4px;font-size:13px;color:#92400e;font-weight:600">Prazo de entrega</p>
-          <p style="margin:0;font-size:15px;color:#78350f;font-weight:700;text-transform:capitalize">${formattedDeadline}</p>
-          <p style="margin:6px 0 0;font-size:12px;color:#a16207">Prazo calculado em dias uteis, sem contar feriados nacionais.</p>
+        <div class="alert-yellow">
+          <p class="alert-yellow-title">&#128197; Prazo de entrega estimado</p>
+          <p class="alert-yellow-value">${formattedDeadline}</p>
+          <p class="alert-yellow-sub">Prazo calculado em dias uteis, sem contar feriados nacionais.</p>
         </div>` : ''}
-        <p style="color:#374151;font-size:14px;line-height:1.6">Acompanhe o andamento e acesse o resultado quando estiver pronto:</p>
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">Acompanhe o andamento e acesse o resultado quando estiver pronto:</p>
         ${linkButton(portalUrl, 'Acompanhar minha analise')}
-        <p style="color:#9ca3af;font-size:12px;text-align:center">Guarde este e-mail para acessar seu portal quando precisar.</p>`
+        <p class="small-center">Guarde este e-mail — voce pode acessar seu portal por ele quando precisar.</p>`
       )
 
       const adminHtml = buildEmail(
-        'Fotos Finalizadas',
-        'Uma cliente finalizou o envio de fotos!',
+        '&#128247; Fotos para Revisar',
+        `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
         `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName], ['Prazo', formattedDeadline || 'Nao definido']])}`
       )
 
       const results = await Promise.allSettled([
         send(clientEmail, subject, clientHtml),
-        send(ADMIN_EMAIL, `Fotos finalizadas: ${clientName} - ${planName}`, adminHtml),
+        send(ADMIN_EMAIL, `[MS Color] &#128247; Fotos para revisar: ${clientName}`, adminHtml),
       ])
       logResults(results, 'photos_finalized')
       return jsonResponse({ success: true, type: 'photos_finalized' })
     }
 
     // ============================================================
-    // TIPO 3: RESULTADO LIBERADO
+    // TIPO 3: ANALISE APROVADA (admin aprovou fotos + form)
+    // Somente cliente recebe — admin ja sabe que acabou de aprovar
     // ============================================================
-    if (emailType === 'result_released') {
-      const { clientName, clientEmail, planName, portalUrl } = payload
+    if (emailType === 'analysis_approved') {
+      const { clientName, clientEmail, planName, deadlineDate } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
-      const subject = `Sua analise esta pronta! - MS Colors`
+      const formattedDeadline = deadlineDate
+        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+        : ''
+
+      const subject = `Sua analise foi aprovada! - MS Color`
 
       const clientHtml = buildEmail(
-        'Sua Analise esta Pronta!',
+        'Analise em Andamento!',
         `Ola, <strong>${clientName}</strong>!`,
-        `<div style="background:linear-gradient(135deg,#fdf2f8,#fce7f3);border:1px solid #fbcfe8;border-radius:12px;padding:24px;margin-bottom:16px;text-align:center">
-          <p style="margin:0 0 8px;font-size:28px">&#127881;</p>
-          <p style="margin:0 0 4px;font-size:16px;color:#9d174d;font-weight:700">Sua analise de coloracao pessoal esta pronta!</p>
-          <p style="margin:0;font-size:13px;color:#be185d">Acesse o link abaixo para ver seu resultado completo.</p>
+        `<div class="alert-green">
+          <p class="alert-green-title">&#10003; Tudo certo! Sua analise foi aprovada.</p>
+          <p class="alert-green-text">Suas fotos e formulario foram revisados e estao prontos para a analise de coloracao.</p>
         </div>
-        ${linkButton(portalUrl, 'Ver meu resultado')}
-        <p style="color:#6b7280;font-size:13px;text-align:center;line-height:1.6">
-          Estou muito feliz em compartilhar sua paleta de cores!<br>
-          Qualquer duvida, estou a disposicao.
-        </p>`
-      )
-
-      const adminHtml = buildEmail(
-        'Resultado Liberado',
-        'Um resultado foi liberado para a cliente.',
-        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
+        ${formattedDeadline ? `
+        <div class="alert-yellow">
+          <p class="alert-yellow-title">&#128197; Previsao de entrega</p>
+          <p class="alert-yellow-value">${formattedDeadline}</p>
+          <p class="alert-yellow-sub">Prazo calculado em dias uteis. Voce recebera um aviso quando o resultado estiver pronto.</p>
+        </div>` : ''}
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">Acompanhe o status da sua analise pelo portal:</p>
+        ${linkButton(portalUrl, 'Ver status da minha analise')}
+        <p class="small-center">Qualquer duvida, entre em contato com a consultora.</p>`
       )
 
       const results = await Promise.allSettled([
         send(clientEmail, subject, clientHtml),
-        send(ADMIN_EMAIL, `Resultado liberado: ${clientName}`, adminHtml),
+      ])
+      logResults(results, 'analysis_approved')
+      return jsonResponse({ success: true, type: 'analysis_approved' })
+    }
+
+    // ============================================================
+    // TIPO 4: AJUSTE SOLICITADO (admin rejeitou fotos e/ou form)
+    // Somente cliente recebe — admin acabou de solicitar
+    // ============================================================
+    if (emailType === 'analysis_rejected') {
+      const { clientName, clientEmail, planName, rejectPhotos, photosReason, rejectForm, formReason } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const subject = `Ajuste necessario na sua analise - MS Color`
+
+      const rejectionBlocks = [
+        rejectPhotos && photosReason ? `
+        <div class="rejection-box rejection-purple">
+          <p class="rejection-type rejection-type-purple">&#128247; Ajuste nas fotos</p>
+          <p class="rejection-reason">${photosReason}</p>
+        </div>` : '',
+        rejectForm && formReason ? `
+        <div class="rejection-box rejection-blue">
+          <p class="rejection-type rejection-type-blue">&#128203; Ajuste no formulario</p>
+          <p class="rejection-reason">${formReason}</p>
+        </div>` : '',
+      ].filter(Boolean).join('')
+
+      const clientHtml = buildEmail(
+        'Ajuste Necessario',
+        `Ola, <strong>${clientName}</strong>!`,
+        `<div class="alert-amber">
+          <p class="alert-amber-title">&#9888;&#65039; Precisamos de um ajuste antes de continuar</p>
+          <p class="alert-amber-text">Nao se preocupe — seus dados estao salvos. Acesse o portal e ajuste apenas o que for solicitado abaixo.</p>
+        </div>
+        ${rejectionBlocks}
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para realizar os ajustes:</p>
+        ${linkButton(portalUrl, 'Acessar e corrigir')}
+        <p class="small-center">Apos o ajuste, o envio sera feito automaticamente para nova revisao.</p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
+      ])
+      logResults(results, 'analysis_rejected')
+      return jsonResponse({ success: true, type: 'analysis_rejected' })
+    }
+
+    // ============================================================
+    // TIPO 5: RESULTADO LIBERADO
+    // Somente a cliente recebe — admin nao precisa de notificacao
+    // ============================================================
+    if (emailType === 'result_released') {
+      const { clientName, clientEmail, planName } = payload
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+
+      const subject = `Sua analise ${planName} esta pronta! - MS Color`
+
+      const clientHtml = buildEmail(
+        `Sua Analise ${planName} esta Pronta!`,
+        `Ola, <strong>${clientName}</strong>!`,
+        `<div class="alert-pink">
+          <p class="alert-pink-emoji">&#127881;</p>
+          <p class="alert-pink-title">Sua analise ${planName} esta pronta!</p>
+          <p class="alert-pink-text">Acesse o link abaixo para ver seu resultado completo.</p>
+        </div>
+        ${linkButton(portalUrl, 'Ver meu resultado')}
+        <p class="small-center">
+          Muito obrigada por me escolher para fazer parte dessa descoberta,<br>
+          foi um prazer atender voce. &#10084;&#65039;
+        </p>`
+      )
+
+      const results = await Promise.allSettled([
+        send(clientEmail, subject, clientHtml),
       ])
       logResults(results, 'result_released')
       return jsonResponse({ success: true, type: 'result_released' })

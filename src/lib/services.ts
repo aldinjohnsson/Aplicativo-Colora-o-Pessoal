@@ -13,6 +13,7 @@ export type ClientStatus =
   | 'photos_submitted'
   | 'in_analysis'
   | 'preparing_materials'
+  | 'validating_materials'   // interno — cliente vê "Preparando Materiais"
   | 'completed'
 
 export interface Plan {
@@ -612,7 +613,7 @@ export const adminService = {
    */
   async reopenStep(
     clientId: string,
-    step: 'contract' | 'form' | 'photos' | 'review',
+    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result',
     reason?: string
   ): Promise<void> {
     const now = new Date().toISOString()
@@ -682,6 +683,64 @@ export const adminService = {
         .eq('id', clientId)
       if (error) throw error
       return this._notifyReopen(clientId, 'review_reopened', defaultReason)
+    }
+
+    if (step === 'analysis') {
+      // Volta pra análise: remove o prazo (será recalculado ao aprovar fotos de novo)
+      await supabase.from('client_deadlines').delete().eq('client_id', clientId)
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'in_analysis',
+          form_rejection_reason: null,
+          form_rejected_at: null,
+          photos_rejection_reason: null,
+          photos_rejected_at: null,
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'analysis_reopened', defaultReason)
+    }
+
+    if (step === 'materials') {
+      // Volta pra preparação de materiais
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'preparing_materials',
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
+    }
+
+    if (step === 'validate_materials') {
+      // Volta para validação interna de materiais
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'validating_materials',
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'materials_reopened', defaultReason)
+    }
+
+    if (step === 'result') {
+      // "Reabrir resultado" volta pra preparing_materials e oculta o resultado
+      // no portal — ele reaparece intacto quando avançar de volta a completed.
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: 'preparing_materials',
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return this._notifyReopen(clientId, 'result_reopened', defaultReason)
     }
   },
 
@@ -755,6 +814,15 @@ export const adminService = {
       return
     }
     if (currentStatus === 'preparing_materials') {
+      // Avança para "Validar Materiais" — etapa interna, cliente ainda vê "Preparando Materiais"
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'validating_materials', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'validating_materials') {
       return this.releaseResult(clientId)
     }
     if (currentStatus === 'completed') {

@@ -174,7 +174,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     localStorage.setItem(chatKey(clientId), serializeMessages(messages))
   }, [messages, clientId])
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  // Scroll só dentro do container de mensagens, NUNCA a página inteira.
+  // scrollIntoView (mesmo com block: 'nearest') pode rolar a janela em mobile,
+  // fazendo a tela "saltar" para o final do chat assim que ele monta.
+  useEffect(() => {
+    const end = endRef.current
+    if (!end) return
+    const container = end.parentElement
+    if (container) container.scrollTop = container.scrollHeight
+  }, [messages])
 
   const loadImages = async (images: PromptImage[]): Promise<MaterialData[]> => {
     if (!images.length) return []
@@ -578,9 +586,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   return (
     <>
       {showPdfModal && <PdfModal />}
+      {/*
+        Altura do chat:
+        - Mobile (< sm): 75dvh com mínimo absoluto de 480px (fallback caso dvh
+          não seja suportado) e máximo de 720px. Não usamos min() inline porque
+          alguns WebViews móveis (Instagram in-app, Safari iOS antigo)
+          renderizavam o container com altura zero, escondendo o chat por
+          completo no e-mail/portal.
+        - Desktop (>= sm): 780px fixo, mas no max-h respeita a viewport menos
+          margem para a barra de endereços e header — assim o chat também não
+          vaza em laptops com tela pequena.
+      */}
       <div
-        className="flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
-        style={{ height: 'min(780px, calc(100dvh - 120px))' }}
+        className="flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-[75dvh] min-h-[480px] max-h-[720px] sm:h-[780px] sm:max-h-[calc(100dvh_-_120px)]"
       >
         {/* Header */}
         <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-5 py-3 sm:py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">

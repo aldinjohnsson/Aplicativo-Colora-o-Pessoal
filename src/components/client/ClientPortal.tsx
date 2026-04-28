@@ -6,7 +6,7 @@ import {
   Camera, AlertCircle, FileText, ExternalLink, Download,
   ChevronLeft, ChevronRight, Play, Image as ImageIcon,
   CheckCircle2, ArrowRight, Loader2, ChevronDown, ChevronUp,
-  Package, Sparkles,
+  Package,
 } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
@@ -115,7 +115,13 @@ export function ClientPortal() {
           <AnalysisScreen data={data} />
         )}
         {data.client.status === 'preparing_materials' && (
-          <PreparingMaterialsScreen data={data} />
+          // Cliente continua vendo "Análise em andamento" + prazo, com aviso
+          // discreto de que os materiais estão sendo preparados.
+          <AnalysisScreen data={data} materialsBeingPrepared />
+        )}
+        {data.client.status === 'validating_materials' && (
+          // Status interno de validação — pra cliente é idêntico a preparing_materials.
+          <AnalysisScreen data={data} materialsBeingPrepared />
         )}
         {data.client.status === 'completed' && (
           <ResultScreen token={token!} data={data} />
@@ -1290,21 +1296,51 @@ function PhotoStepContent({
 
 function ReviewScreen() {
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
-      <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-50 rounded-2xl mb-4">
-        <Clock className="h-8 w-8 text-blue-400" />
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-50 rounded-2xl mb-4">
+          <Clock className="h-8 w-8 text-blue-400" />
+        </div>
+        <h2 className="text-xl font-semibold text-gray-900 mb-2">Em revisão</h2>
+        <p className="text-sm text-gray-500 leading-relaxed max-w-md mx-auto">
+          Suas fotos e formulário foram enviados com sucesso! A consultora está revisando tudo.
+        </p>
       </div>
-      <h2 className="text-xl font-semibold text-gray-900 mb-2">Em revisão</h2>
-      <p className="text-sm text-gray-500 leading-relaxed max-w-md mx-auto">
-        Suas fotos foram enviadas com sucesso! A consultora está revisando tudo e em breve iniciará sua análise.
-      </p>
+
+      {/* Aviso de prazo de revisão */}
+      <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl border border-blue-200 p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+            <Clock className="h-5 w-5 text-blue-500" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">Prazo de revisão</h3>
+            <p className="text-sm text-gray-600 leading-relaxed">
+              A revisão é feita em até <strong className="text-gray-900">1 dia útil</strong>. Você receberá um e-mail
+              quando suas fotos forem aprovadas — ou, se algum ajuste for necessário, com instruções para reenviar.
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
 
 // ── Analysis screen ──────────────────────────────────────────────────────────
+//
+// Usada para os status: in_analysis, preparing_materials, validating_materials.
+// Quando `materialsBeingPrepared` é true, mostra um aviso discreto abaixo do
+// prazo informando que os materiais estão sendo preparados.
+// Visualmente o cliente continua vendo "Análise em andamento" (mantém o prazo
+// de entrega original) — apenas ganha uma linha extra de status.
 
-function AnalysisScreen({ data }: { data: ClientPortalData }) {
+function AnalysisScreen({
+  data,
+  materialsBeingPrepared = false,
+}: {
+  data: ClientPortalData
+  materialsBeingPrepared?: boolean
+}) {
   const deadline = data.deadline
 
   if (!deadline?.deadline_date) {
@@ -1358,90 +1394,24 @@ function AnalysisScreen({ data }: { data: ClientPortalData }) {
         </div>
       </div>
 
+      {/* Aviso discreto: materiais sendo preparados */}
+      {materialsBeingPrepared && (
+        <div className="bg-gradient-to-br from-teal-50 to-cyan-50 rounded-2xl border border-teal-200 p-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-white rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+              <Package className="h-5 w-5 text-teal-500" />
+            </div>
+            <p className="text-sm text-gray-700 leading-snug">
+              <strong className="text-gray-900">Os materiais estão sendo preparados.</strong>{' '}
+              Em breve você terá acesso ao seu resultado completo.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="text-center py-2">
         <p className="text-xs text-gray-400">
           Você receberá um e-mail assim que o resultado estiver disponível
-        </p>
-      </div>
-    </div>
-  )
-}
-
-// ── Preparing Materials screen ───────────────────────────────────────────────
-
-function PreparingMaterialsScreen({ data }: { data: ClientPortalData }) {
-  const deadline = data.deadline
-
-  if (!deadline?.deadline_date) {
-    return (
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
-        <Clock className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-        <h2 className="font-semibold text-gray-900 mb-2">Análise concluída</h2>
-        <p className="text-sm text-gray-500">Aguardando prazo ser definido...</p>
-      </div>
-    )
-  }
-
-  const daysLeft = businessDaysUntil(deadline.deadline_date)
-  const formatted = formatDeadlineDate(deadline.deadline_date)
-
-  return (
-    <div className="space-y-4">
-      {/* Status banner */}
-      <div className="bg-gradient-to-br from-teal-500 via-cyan-500 to-teal-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
-        <div
-          className="absolute inset-0 opacity-10"
-          style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
-        />
-        <div className="relative">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
-            <Package className="h-9 w-9 text-white" />
-          </div>
-          <h2 className="text-2xl font-bold tracking-tight mb-1">Preparando seus materiais</h2>
-          <p className="text-teal-100 text-sm">Sua análise foi concluída! Agora estamos organizando todos os seus documentos.</p>
-        </div>
-      </div>
-
-      {/* Deadline card */}
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-gradient-to-br from-teal-400 to-cyan-500 rounded-2xl flex items-center justify-center flex-shrink-0">
-            <Clock className="h-7 w-7 text-white" />
-          </div>
-          <div className="flex-1">
-            <p className="text-sm text-gray-500 mb-0.5">Previsão de entrega</p>
-            <p className="text-lg font-bold text-gray-900">{formatted}</p>
-            <p className="text-xs text-gray-400 mt-1">
-              {daysLeft > 0
-                ? `${daysLeft} dia${daysLeft !== 1 ? 's' : ''} útei${daysLeft !== 1 ? 's' : ''} restante${daysLeft !== 1 ? 's' : ''}`
-                : daysLeft === 0
-                  ? 'Prazo vence hoje!'
-                  : `Prazo vencido há ${Math.abs(daysLeft)} dia${Math.abs(daysLeft) !== 1 ? 's' : ''}`
-              }
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Info card */}
-      <div className="bg-gradient-to-br from-teal-50 to-cyan-50 rounded-2xl border border-teal-200 p-6">
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
-            <Sparkles className="h-5 w-5 text-teal-500" />
-          </div>
-          <div className="flex-1">
-            <h3 className="text-sm font-semibold text-gray-900 mb-1">Quase lá!</h3>
-            <p className="text-sm text-gray-600 leading-relaxed">
-              Sua consultora está finalizando os últimos detalhes e preparando todos os materiais da sua análise. 
-              Em breve você terá acesso completo ao seu resultado.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="text-center py-2">
-        <p className="text-xs text-gray-400">
-          Você receberá um e-mail assim que tudo estiver pronto
         </p>
       </div>
     </div>

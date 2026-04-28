@@ -60,6 +60,11 @@ const STATUSES: Record<string, {
     color: '#0d9488', bg: '#ccfbf1', textColor: '#134e4a',
     tailwindColor: 'bg-teal-100 text-teal-700', tailwindBg: 'bg-teal-50',
   },
+  validating_materials: {
+    label: 'Validar Materiais', short: 'Validar',
+    color: '#6366f1', bg: '#e0e7ff', textColor: '#3730a3',
+    tailwindColor: 'bg-indigo-100 text-indigo-700', tailwindBg: 'bg-indigo-50',
+  },
   completed: {
     label: 'Concluído', short: 'Concluído',
     color: '#22c55e', bg: '#dcfce7', textColor: '#166534',
@@ -67,7 +72,20 @@ const STATUSES: Record<string, {
   },
 }
 // photos_submitted is between awaiting_photos and in_analysis
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'completed']
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'completed']
+
+// ─── Drag & Drop: mapa de reopen keys ────────────────────────────────────
+// Mapeia cada coluna destino para a chave usada em reopenStep
+const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'result'> = {
+  awaiting_contract:   'contract',
+  awaiting_form:       'form',
+  awaiting_photos:     'photos',
+  photos_submitted:    'review',
+  in_analysis:         'analysis',
+  preparing_materials: 'materials',
+  validating_materials: 'validate_materials',
+  completed:           'result',
+}
 
 // ─── Avatar Helpers ───────────────────────────────────────────────────────
 const AVATAR_COLORS: [string, string][] = [
@@ -128,10 +146,13 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 // ─── Kanban Card ──────────────────────────────────────────────────────────
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
+  onDragStart, isDragging,
 }: {
   client: Client; deadline?: DeadlineData | null; theme: Theme
   onView: () => void; onArchive: () => void; onDelete: () => void; onStar: () => void
   compact: boolean; starred: boolean
+  onDragStart?: () => void
+  isDragging?: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -149,12 +170,19 @@ function KanbanCard({
 
   return (
     <div
+      draggable
+      onDragStart={e => {
+        e.dataTransfer.effectAllowed = 'move'
+        onDragStart?.()
+      }}
       style={{
         background: t.cardBg,
         border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : dl?.urgency === 'warning' ? '#fcd34d' : needsReview ? '#fbcfe8' : t.cardBorder}`,
         borderRadius: 10, padding: compact ? '9px 12px' : '12px 14px',
-        marginBottom: 8, cursor: 'pointer', position: 'relative',
-        transition: 'box-shadow 0.15s', boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
+        marginBottom: 8, cursor: isDragging ? 'grabbing' : 'grab', position: 'relative',
+        opacity: isDragging ? 0.45 : 1,
+        transition: 'box-shadow 0.15s, opacity 0.15s',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
       }}
       onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)' }}
       onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.06)' }}
@@ -259,17 +287,22 @@ function KanbanCard({
 function KanbanColumn({
   statusKey, clients, deadlines, starredIds, theme: t,
   onView, onArchive, onDelete, onStar, collapsed, onToggleCollapse,
+  onDragStart, onDrop, draggingClientId,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
   onView: (id: string) => void; onArchive: (id: string) => void
   onDelete: (id: string) => void; onStar: (id: string) => void
   collapsed: boolean; onToggleCollapse: () => void
+  onDragStart?: (clientId: string) => void
+  onDrop?: (targetStatus: string) => void
+  draggingClientId?: string | null
 }) {
   const cfg = STATUSES[statusKey]
   const dangerCount = clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length
   const reviewCount = statusKey === 'photos_submitted' ? clients.length : 0
   const [compact, setCompact] = useState(false)
+  const [isDragOver, setIsDragOver] = useState(false)
 
   if (collapsed) {
     return (
@@ -296,12 +329,21 @@ function KanbanColumn({
   }
 
   return (
-    <div style={{
-      flexShrink: 0, width: 'clamp(240px, 80vw, 380px)', background: t.colBg, borderRadius: 12,
-      border: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column',
-      maxHeight: '100%', overflow: 'hidden',
-    }}>
-      <div style={{ padding: '10px 12px 8px', borderBottom: `1px solid ${t.border}`, background: t.colBg, position: 'sticky', top: 0, zIndex: 2 }}>
+    <div
+      onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setIsDragOver(true) }}
+      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragOver(false) }}
+      onDrop={e => { e.preventDefault(); setIsDragOver(false); onDrop?.(statusKey) }}
+      style={{
+        flexShrink: 0, width: 'clamp(240px, 80vw, 380px)',
+        background: isDragOver ? cfg.bg : t.colBg,
+        borderRadius: 12,
+        border: isDragOver ? `2px dashed ${cfg.color}` : `1px solid ${t.border}`,
+        display: 'flex', flexDirection: 'column',
+        maxHeight: '100%', overflow: 'hidden',
+        transition: 'background 0.15s, border 0.15s',
+      }}
+    >
+      <div style={{ padding: '10px 12px 8px', borderBottom: `1px solid ${t.border}`, background: isDragOver ? cfg.bg : t.colBg, position: 'sticky', top: 0, zIndex: 2, transition: 'background 0.15s' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
           <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 0.2 }}>{cfg.short}</span>
@@ -330,13 +372,17 @@ function KanbanColumn({
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6 }}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
-            <p style={{ fontSize: 12, margin: 0 }}>Nenhuma cliente</p>
+            <p style={{ fontSize: 12, margin: 0 }}>
+              {isDragOver ? 'Soltar aqui' : 'Nenhuma cliente'}
+            </p>
           </div>
         ) : (
           clients.map(client => (
             <KanbanCard
               key={client.id} client={client} deadline={deadlines[client.id] || null}
               theme={t} compact={compact} starred={starredIds.has(client.id)}
+              onDragStart={() => onDragStart?.(client.id)}
+              isDragging={draggingClientId === client.id}
               onView={() => onView(client.id)} onArchive={() => onArchive(client.id)}
               onDelete={() => onDelete(client.id)} onStar={() => onStar(client.id)}
             />
@@ -514,6 +560,115 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
   )
 }
 
+// ─── Drag Confirm Modal ───────────────────────────────────────────────────
+interface ConfirmState {
+  title: string
+  body: string
+  confirmLabel: string
+  confirmColor?: string
+  infoOnly?: boolean
+  onConfirm: () => Promise<void> | void
+}
+
+function DragConfirmModal({
+  state, onClose, theme: t,
+}: {
+  state: ConfirmState; onClose: () => void; theme: Theme
+}) {
+  const [loading, setLoading] = useState(false)
+
+  const handleConfirm = async () => {
+    if (state.infoOnly) { onClose(); return }
+    setLoading(true)
+    try { await state.onConfirm() } finally { setLoading(false); onClose() }
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+      onClick={e => { if (e.target === e.currentTarget && !loading) onClose() }}
+    >
+      <div style={{
+        background: t.surface, borderRadius: 18,
+        border: `1px solid ${t.border}`,
+        boxShadow: '0 24px 64px rgba(0,0,0,0.35)',
+        width: '100%', maxWidth: 420, padding: '28px 28px 24px',
+        display: 'flex', flexDirection: 'column', gap: 20,
+        animation: 'modalIn 0.18s cubic-bezier(0.34,1.56,0.64,1)',
+      }}>
+        <style>{`@keyframes modalIn{from{opacity:0;transform:scale(0.92) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+            background: state.infoOnly ? '#fef3c7' : `${t.accent}1a`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            {state.infoOnly
+              ? <AlertTriangle size={22} color="#b45309" />
+              : <ChevronRight size={24} color={t.accent} />
+            }
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: t.text, lineHeight: 1.3 }}>
+              {state.title}
+            </p>
+            <p style={{ margin: '8px 0 0', fontSize: 13, color: t.text2, lineHeight: 1.6 }}>
+              {state.body}
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          {!state.infoOnly && (
+            <button
+              onClick={onClose}
+              disabled={loading}
+              style={{
+                padding: '10px 20px', borderRadius: 10,
+                border: `1px solid ${t.border}`, background: 'none',
+                cursor: 'pointer', fontSize: 13, fontWeight: 500, color: t.text2,
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = t.surface2)}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+            >
+              Cancelar
+            </button>
+          )}
+          <button
+            onClick={handleConfirm}
+            disabled={loading}
+            style={{
+              padding: '10px 22px', borderRadius: 10, border: 'none',
+              background: state.infoOnly ? '#f59e0b' : (state.confirmColor || t.accent),
+              color: 'white', cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 13, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 8,
+              opacity: loading ? 0.75 : 1,
+              transition: 'opacity 0.15s, filter 0.15s',
+            }}
+            onMouseEnter={e => { if (!loading) (e.currentTarget as HTMLButtonElement).style.filter = 'brightness(1.1)' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.filter = 'none' }}
+          >
+            {loading && (
+              <div className="animate-spin" style={{
+                width: 14, height: 14,
+                border: '2px solid rgba(255,255,255,0.35)',
+                borderTopColor: 'white', borderRadius: '50%',
+              }} />
+            )}
+            {state.infoOnly ? 'Entendido' : state.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Clients List ─────────────────────────────────────────────────────────
 function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [clients, setClients] = useState<Client[]>([])
@@ -534,11 +689,22 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const themeRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
 
+  // ── Drag & Drop state ──────────────────────────────────────────────────
+  const [draggingClientId, setDraggingClientId] = useState<string | null>(null)
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
+
   useEffect(() => { load() }, [])
   useEffect(() => {
     const h = (e: MouseEvent) => { if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false) }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  // Limpa o estado de drag se o usuário soltar fora de qualquer coluna
+  useEffect(() => {
+    const h = () => setDraggingClientId(null)
+    document.addEventListener('dragend', h)
+    return () => document.removeEventListener('dragend', h)
   }, [])
 
   const load = async () => {
@@ -554,6 +720,18 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at } })
     setDeadlines(dlMap)
     setLoading(false)
+  }
+
+  // Sincroniza dados em segundo plano sem mostrar spinner (usado após optimistic updates)
+  const silentLoad = async () => {
+    const [c, dl] = await Promise.all([
+      adminService.getClients(),
+      supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
+    ])
+    setClients(c)
+    const dlMap: Record<string, DeadlineData> = {}
+    ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at } })
+    setDeadlines(dlMap)
   }
 
   const handleCreate = async () => {
@@ -577,6 +755,89 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     await adminService.deleteClient(id); load()
   }
   const toggleCollapse = useCallback((key: string) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] })), [])
+
+  // ── Handler de drop: avança ou reabre etapa ────────────────────────────
+  // ── Handler de drop: avança ou reabre etapa ────────────────────────────
+  const handleDrop = useCallback((targetStatus: string) => {
+    if (!draggingClientId) return
+    const client = clients.find(c => c.id === draggingClientId)
+    const clientIdSnap = draggingClientId   // captura antes de resetar
+    setDraggingClientId(null)
+    if (!client || client.status === targetStatus) return
+
+    const fromIdx = COL_ORDER.indexOf(client.status)
+    const toIdx   = COL_ORDER.indexOf(targetStatus)
+    if (fromIdx === -1 || toIdx === -1) return
+
+    const targetLabel = STATUSES[targetStatus]?.label ?? targetStatus
+    const name = client.full_name
+    const previousStatus = client.status  // salva para rollback
+
+    // Move o card localmente antes da confirmação visual
+    const applyOptimistic = () =>
+      setClients(prev => prev.map(c =>
+        c.id === clientIdSnap ? { ...c, status: targetStatus as any } : c
+      ))
+
+    // Reverte se a API retornar erro
+    const rollback = () =>
+      setClients(prev => prev.map(c =>
+        c.id === clientIdSnap ? { ...c, status: previousStatus } : c
+      ))
+
+    if (toIdx > fromIdx) {
+      // ── Avançar ────────────────────────────────────────────────────────
+      const steps = toIdx - fromIdx
+      setConfirmState({
+        title: `Mover para "${targetLabel}"?`,
+        body: steps > 1
+          ? `"${name}" vai avançar ${steps} etapas de uma vez.`
+          : `"${name}" será movida para "${targetLabel}".`,
+        confirmLabel: 'Confirmar',
+        onConfirm: async () => {
+          applyOptimistic()
+          try {
+            for (let i = 0; i < steps; i++) {
+              await adminService.advanceStep(clientIdSnap)
+            }
+            silentLoad()  // sincroniza em segundo plano sem spinner
+          } catch (e: any) {
+            rollback()
+            alert(e?.message || 'Erro ao mover cliente')
+          }
+        },
+      })
+    } else {
+      // ── Voltar ─────────────────────────────────────────────────────────
+      const reopenKey = REOPEN_KEY_MAP[targetStatus]
+      if (!reopenKey) {
+        setConfirmState({
+          title: 'Etapa não disponível via arrasto',
+          body: `Para retornar para "${targetLabel}", use o Controle de Etapas dentro do cadastro da cliente.`,
+          confirmLabel: 'Entendido',
+          infoOnly: true,
+          onConfirm: () => {},
+        })
+        return
+      }
+      setConfirmState({
+        title: `Voltar para "${targetLabel}"?`,
+        body: `Os dados de "${name}" ficam preservados — a cliente só ajusta o que precisar.`,
+        confirmLabel: 'Voltar etapa',
+        confirmColor: '#6366f1',
+        onConfirm: async () => {
+          applyOptimistic()
+          try {
+            await adminService.reopenStep(clientIdSnap, reopenKey, 'Movido via kanban')
+            silentLoad()  // sincroniza em segundo plano sem spinner
+          } catch (e: any) {
+            rollback()
+            alert(e?.message || 'Erro ao mover cliente')
+          }
+        },
+      })
+    }
+  }, [draggingClientId, clients])
 
   const activeClients = useMemo(() => clients.filter(c => !archivedIds.has(c.id)), [clients, archivedIds])
   const archivedClients = useMemo(() => clients.filter(c => archivedIds.has(c.id)), [clients, archivedIds])
@@ -621,6 +882,13 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: t.bg, fontFamily: 'system-ui,-apple-system,sans-serif', overflow: 'hidden' }}>
+      {confirmState && (
+        <DragConfirmModal
+          state={confirmState}
+          onClose={() => setConfirmState(null)}
+          theme={t}
+        />
+      )}
       {/* Toolbar */}
       <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
         <button onClick={onOpenNav} title="Menu de navegação"
@@ -723,9 +991,23 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
               ) : (
                 <div style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden', padding: '16px 20px 20px', display: 'flex', gap: 14, alignItems: 'flex-start' }}>
                   {COL_ORDER.map(key => (
-                    <KanbanColumn key={key} statusKey={key} clients={groupedByStatus[key] || []} deadlines={deadlines} starredIds={starredIds} theme={t}
-                      collapsed={!!collapsed[key]} onToggleCollapse={() => toggleCollapse(key)}
-                      onView={id => navigate(`/admin/clients/${id}`)} onArchive={handleArchive} onDelete={handleDelete} onStar={handleStar} />
+                    <KanbanColumn
+                      key={key}
+                      statusKey={key}
+                      clients={groupedByStatus[key] || []}
+                      deadlines={deadlines}
+                      starredIds={starredIds}
+                      theme={t}
+                      collapsed={!!collapsed[key]}
+                      onToggleCollapse={() => toggleCollapse(key)}
+                      onView={id => navigate(`/admin/clients/${id}`)}
+                      onArchive={handleArchive}
+                      onDelete={handleDelete}
+                      onStar={handleStar}
+                      onDragStart={setDraggingClientId}
+                      onDrop={handleDrop}
+                      draggingClientId={draggingClientId}
+                    />
                   ))}
                 </div>
               )}
@@ -963,72 +1245,43 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
       <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
         <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-2xl max-h-[95dvh] sm:max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
           <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 flex-shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 bg-blue-50 rounded-lg flex items-center justify-center"><ClipboardList className="h-5 w-5 text-blue-500" /></div>
-              <div>
-                <h2 className="font-semibold text-gray-900">Respostas do Formulário</h2>
-                {formSubmission?.submitted_at && <p className="text-xs text-gray-400">Enviado em {new Date(formSubmission.submitted_at).toLocaleString('pt-BR')}</p>}
-              </div>
-            </div>
+            <h2 className="text-base sm:text-lg font-bold text-gray-900">Respostas do Formulário</h2>
             <div className="flex items-center gap-2">
-              <Btn variant="outline" size="sm" onClick={handleDownloadPDF} disabled={generatingPDF}>
-                {generatingPDF
-                  ? <><div className="animate-spin h-3.5 w-3.5 border-2 border-gray-400 border-t-transparent rounded-full" /> Gerando...</>
-                  : <><Download className="h-3.5 w-3.5" /> Baixar PDF</>}
+              <Btn variant="outline" size="sm" onClick={handleDownloadPDF} loading={generatingPDF}>
+                <Download className="h-3.5 w-3.5" /> PDF
               </Btn>
-              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 ml-1"><X className="h-5 w-5" /></button>
+              <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><X className="h-5 w-5" /></button>
             </div>
           </div>
-
-          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5 space-y-5">
-            {orderedEntries.length === 0
-              ? <p className="text-sm text-gray-400 text-center py-8">Sem respostas</p>
-              : orderedEntries.map(([key, value], idx) => {
+          <div className="overflow-y-auto flex-1 px-4 sm:px-6 py-4 space-y-5">
+            {orderedEntries.length === 0 ? (
+              <p className="text-gray-400 text-sm text-center py-8">Nenhuma resposta encontrada</p>
+            ) : (
+              orderedEntries.map(([key, value], i) => {
                 const field = fieldMap[key]
                 const label = field?.label || key
                 const imgUrls = getImageUrls(value)
                 const isImg = field?.type === 'image' || imgUrls.length > 0
-
                 return (
-                  <div key={key} className="border-b border-gray-100 pb-5 last:border-0 last:pb-0">
-                    <p className="text-sm font-bold text-blue-900 mb-3">
-                      {idx + 1}. {label}
-                    </p>
-
+                  <div key={key} className="space-y-1.5">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{i + 1}. {label}</p>
                     {isImg ? (
-                      imgUrls.length === 0
-                        ? <p className="text-sm text-gray-400 italic">Nenhuma imagem enviada</p>
-                        : (
-                          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
-                            {imgUrls.map((url, i) => (
-                              <div key={i} className="relative group cursor-pointer rounded-xl overflow-hidden border border-gray-200 bg-gray-50"
-                                onClick={() => setLightboxUrl(url)}>
-                                <img
-                                  src={url}
-                                  alt={`Imagem ${i + 1}`}
-                                  className="w-full object-cover"
-                                  style={{ maxHeight: 220, objectFit: 'cover' }}
-                                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-                                />
-                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center">
-                                  <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                                </div>
-                                <a href={url} target="_blank" rel="noopener noreferrer"
-                                  className="absolute bottom-2 right-2 bg-white/80 hover:bg-white rounded-lg p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={e => e.stopPropagation()} title="Abrir original">
-                                  <ExternalLink className="h-3.5 w-3.5 text-gray-600" />
-                                </a>
-                              </div>
-                            ))}
-                          </div>
-                        )
+                      imgUrls.length === 0 ? (
+                        <p className="text-sm text-gray-400 italic">Nenhuma imagem</p>
+                      ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                          {imgUrls.map((url, idx) => (
+                            <img key={idx} src={url} alt={`${label} ${idx + 1}`} className="w-full aspect-square object-cover rounded-lg cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxUrl(url)} />
+                          ))}
+                        </div>
+                      )
                     ) : (
-                      <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{getTextValue(value)}</p>
+                      <p className="text-sm text-gray-800 bg-gray-50 rounded-lg px-3 py-2.5 whitespace-pre-wrap">{getTextValue(value)}</p>
                     )}
                   </div>
                 )
               })
-            }
+            )}
           </div>
         </div>
       </div>
@@ -1151,6 +1404,7 @@ function PhotoThumb({ photo, onClick }: { photo: any; onClick: () => void }) {
 
 // ─── Photos View ──────────────────────────────────────────────────────────
 function PhotosView({ clientId, photos, photoCategories }: { clientId: string; photos: any[]; photoCategories: any[] }) {
+  const { theme: t } = useTheme()
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
@@ -1212,18 +1466,18 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
           <div className="h-2.5 w-56 bg-violet-100 rounded animate-pulse" />
         </div>
       </div>
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div className="rounded-xl overflow-hidden" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: `1px solid ${t.border}` }}>
           <div className="space-y-1.5">
-            <div className="h-4 w-36 bg-gray-200 rounded animate-pulse" />
-            <div className="h-3 w-16 bg-gray-100 rounded animate-pulse" />
+            <div className="h-4 w-36 rounded animate-pulse" style={{ background: t.surface2 }} />
+            <div className="h-3 w-16 rounded animate-pulse" style={{ background: t.surface2 }} />
           </div>
-          <div className="h-8 w-24 bg-gray-100 rounded-lg animate-pulse" />
+          <div className="h-8 w-24 rounded-lg animate-pulse" style={{ background: t.surface2 }} />
         </div>
         <div className="p-5">
           <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-3">
             {Array.from({ length: 10 }).map((_, i) => (
-              <div key={i} className="aspect-square rounded-lg sm:rounded-xl bg-gray-200 animate-pulse" style={{ animationDelay: `${i * 40}ms` }} />
+              <div key={i} className="aspect-square rounded-lg sm:rounded-xl animate-pulse" style={{ background: t.surface2, animationDelay: `${i * 40}ms` }} />
             ))}
           </div>
         </div>
@@ -1268,14 +1522,14 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const hasPhotos = photosWithUrls.length > 0
 
   const CategoryCard = ({ title, catPhotos, label }: { title: string; catPhotos: any[]; label: string }) => (
-    <div className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+    <div className="rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
       <div className="flex items-center gap-4 flex-1 min-w-0">
         <div className="w-12 h-12 bg-rose-50 rounded-xl flex items-center justify-center flex-shrink-0">
           <Camera className="h-6 w-6 text-rose-400" />
         </div>
         <div className="min-w-0">
-          <p className="font-semibold text-gray-900 truncate">{title}</p>
-          <p className="text-sm text-gray-400 mt-0.5">{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p>
+          <p className="font-semibold truncate" style={{ color: t.text }}>{title}</p>
+          <p className="text-sm mt-0.5" style={{ color: t.text3 }}>{catPhotos.length} foto{catPhotos.length !== 1 ? 's' : ''}</p>
         </div>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
@@ -1335,10 +1589,10 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
         )}
 
         {!hasPhotos && (
-          <div className="bg-white border border-dashed border-gray-300 rounded-xl p-12 text-center">
-            <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-500">Nenhuma foto enviada ainda</p>
-            <p className="text-xs text-gray-400 mt-2">Use o botão acima para adicionar fotos</p>
+          <div className="rounded-xl p-12 text-center" style={{ background: t.surface, border: `1px dashed ${t.border}` }}>
+            <Camera className="h-10 w-10 mx-auto mb-3" style={{ color: t.text3 }} />
+            <p style={{ color: t.text2 }}>Nenhuma foto enviada ainda</p>
+            <p className="text-xs mt-2" style={{ color: t.text3 }}>Use o botão acima para adicionar fotos</p>
           </div>
         )}
       </div>
@@ -1353,6 +1607,7 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
   linkedFolderId: string | null
   onSelect: (id: string | null) => void
 }) {
+  const { theme: t } = useTheme()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const ref = useRef<HTMLDivElement>(null)
@@ -1372,11 +1627,14 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(v => !v)}
-        className={`w-full flex items-center gap-3 p-3.5 rounded-xl border text-left transition-all ${
-          open ? 'border-violet-400 ring-2 ring-violet-100' : 'border-gray-200 hover:border-violet-200'
-        } bg-white`}
+        className="w-full flex items-center gap-3 p-3.5 rounded-xl border text-left transition-all"
+        style={{
+          background: t.surface,
+          borderColor: open ? '#8b5cf6' : t.border,
+          boxShadow: open ? '0 0 0 2px rgba(139,92,246,0.15)' : 'none',
+        }}
       >
-        <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${selectedFolder ? 'bg-violet-100' : 'bg-gray-100'}`}>
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: selectedFolder ? 'rgba(139,92,246,0.15)' : t.surface2 }}>
           <FolderOpen className={`h-4 w-4 ${selectedFolder ? 'text-violet-600' : 'text-gray-400'}`} />
         </div>
         <div className="flex-1 min-w-0">
@@ -1384,29 +1642,30 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
             const cfg = typeof selectedFolder.config === 'string' ? JSON.parse(selectedFolder.config) : selectedFolder.config
             return (
               <>
-                <p className="text-sm font-semibold text-violet-800">{selectedFolder.name}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</p>
+                <p className="text-sm font-semibold" style={{ color: t.accent }}>{selectedFolder.name}</p>
+                <p className="text-xs mt-0.5" style={{ color: t.text3 }}>{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</p>
               </>
             )
           })() : (
-            <p className="text-sm text-gray-400">Selecione uma pasta…</p>
+            <p className="text-sm" style={{ color: t.text3 }}>Selecione uma pasta…</p>
           )}
         </div>
         <ChevronDown className={`h-4 w-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
-        <div className="absolute z-30 top-full mt-1.5 left-0 right-0 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden">
+        <div className="absolute z-30 top-full mt-1.5 left-0 right-0 rounded-xl shadow-2xl overflow-hidden" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
           {folders.length > 3 && (
-            <div className="p-2 border-b border-gray-100">
+            <div className="p-2" style={{ borderBottom: `1px solid ${t.border}` }}>
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5" style={{ color: t.text3 }} />
                 <input
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder="Buscar pasta..."
                   autoFocus
-                  className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300"
+                  className="w-full pl-8 pr-3 py-2 text-sm rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300"
+                  style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }}
                 />
               </div>
             </div>
@@ -1414,13 +1673,16 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
           <div className="max-h-60 overflow-y-auto">
             <button
               onClick={() => { onSelect(null); setOpen(false) }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${linkedFolderId === null ? 'bg-violet-50' : 'hover:bg-gray-50'}`}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors"
+              style={{ background: linkedFolderId === null ? t.accentLight : 'transparent' }}
+              onMouseEnter={e => { if (linkedFolderId !== null) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
+              onMouseLeave={e => { if (linkedFolderId !== null) (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
             >
-              <div className="w-7 h-7 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                <FolderOpen className="h-3.5 w-3.5 text-gray-400" />
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: t.surface2 }}>
+                <FolderOpen className="h-3.5 w-3.5" style={{ color: t.text3 }} />
               </div>
-              <span className="text-sm text-gray-500 flex-1">Nenhuma pasta vinculada</span>
-              {linkedFolderId === null && <Check className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />}
+              <span className="text-sm flex-1" style={{ color: t.text2 }}>Nenhuma pasta vinculada</span>
+              {linkedFolderId === null && <Check className="h-3.5 w-3.5 flex-shrink-0" style={{ color: t.accent }} />}
             </button>
             {filtered.map((f: any) => {
               const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
@@ -1429,26 +1691,29 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
                 <button
                   key={f.id}
                   onClick={() => { onSelect(f.id); setOpen(false); setSearch('') }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${isLinked ? 'bg-violet-50' : 'hover:bg-gray-50'}`}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors"
+                  style={{ background: isLinked ? t.accentLight : 'transparent' }}
+                  onMouseEnter={e => { if (!isLinked) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
+                  onMouseLeave={e => { if (!isLinked) (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
                 >
-                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isLinked ? 'bg-violet-100' : 'bg-gray-50'}`}>
-                    <FolderOpen className={`h-3.5 w-3.5 ${isLinked ? 'text-violet-600' : 'text-gray-400'}`} />
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isLinked ? t.accentLight : t.surface2 }}>
+                    <FolderOpen className="h-3.5 w-3.5" style={{ color: isLinked ? t.accent : t.text3 }} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-medium ${isLinked ? 'text-violet-800' : 'text-gray-700'}`}>{f.name}</p>
-                    <p className="text-xs text-gray-400">{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</p>
+                    <p className="text-sm font-medium" style={{ color: isLinked ? t.accent : t.text }}>{f.name}</p>
+                    <p className="text-xs" style={{ color: t.text3 }}>{cfg?.categories?.length || 0} cat · {cfg?.categories?.reduce((s: number, c: any) => s + (c.prompts?.length || 0), 0) || 0} prompts</p>
                   </div>
                   {cfg?.driveLink && (
-                    <a href={cfg.driveLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-violet-500 hover:text-violet-700 flex-shrink-0 p-1">
+                    <a href={cfg.driveLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="flex-shrink-0 p-1" style={{ color: t.accent }}>
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   )}
-                  {isLinked && <Check className="h-3.5 w-3.5 text-violet-600 flex-shrink-0" />}
+                  {isLinked && <Check className="h-3.5 w-3.5 flex-shrink-0" style={{ color: t.accent }} />}
                 </button>
               )
             })}
-            {filtered.length === 0 && search && <p className="text-xs text-gray-400 text-center py-5">Nenhuma pasta encontrada</p>}
-            {folders.length === 0 && !search && <p className="text-xs text-gray-400 text-center py-5">Crie pastas em <strong>Pastas IA</strong> para vincular aqui</p>}
+            {filtered.length === 0 && search && <p className="text-xs text-center py-5" style={{ color: t.text3 }}>Nenhuma pasta encontrada</p>}
+            {folders.length === 0 && !search && <p className="text-xs text-center py-5" style={{ color: t.text3 }}>Crie pastas em <strong>Pastas IA</strong> para vincular aqui</p>}
           </div>
         </div>
       )}
@@ -1458,6 +1723,7 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
 
 // ─── Client Detail ────────────────────────────────────────────────────────
 function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
+  const { theme: t } = useTheme()
   const { clientId } = useParams<{ clientId: string }>()
   const navigate = useNavigate()
   const [data, setData] = useState<any>(null)
@@ -1619,20 +1885,20 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (!file) return; setUploadingFile(true); try { await adminService.uploadResultFile(clientId!, file); load() } catch (e: any) { alert(e.message) } finally { setUploadingFile(false); if (fileInputRef.current) fileInputRef.current.value = '' } }
   const handleDeleteFile = async (fileId: string, storagePath: string) => { if (!confirm('Remover este arquivo?')) return; await adminService.deleteResultFile(fileId, storagePath); load() }
 
-  if (loading) return <div className="flex justify-center py-20"><div className="animate-spin h-8 w-8 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
-  if (!data) return <div className="text-center py-20 text-gray-500">Cliente não encontrado</div>
+  if (loading) return <div className="flex justify-center py-20" style={{ background: t.bg, flex: 1 }}><div className="animate-spin h-8 w-8 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
+  if (!data) return <div className="text-center py-20" style={{ background: t.bg, color: t.text2, flex: 1 }}>Cliente não encontrado</div>
 
   const { client, contract, formSubmission, photos, deadline, result, resultFiles, photoCategories, planForm } = data
   const status = STATUSES[client.status]
   const portalLink = `${window.location.origin}/c/${client.token}`
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f4f5f7' }}>
+    <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: t.bg }}>
       {/* Topbar */}
-      <div style={{ background: '#ffffff', borderBottom: '2px solid #dfe1e6', flexShrink: 0 }}>
+      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0 }}>
         {/* Linha principal */}
         <div style={{ padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, height: 52 }}>
-          <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: '#5e6c84', display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+          <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
             <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
             <span style={{ display: 'block', width: 14, height: 2, background: 'currentColor', borderRadius: 2 }} />
             <span style={{ display: 'block', width: 18, height: 2, background: 'currentColor', borderRadius: 2 }} />
@@ -1640,12 +1906,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(135deg, #e91e63, #ff6090)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(233,30,99,0.3)' }}>
             <Palette size={14} color="white" />
           </div>
-          <div style={{ width: 1, height: 22, background: '#dfe1e6', flexShrink: 0, margin: '0 2px' }} />
-          <button onClick={() => navigate('/admin/clients')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '4px 6px', borderRadius: 6, color: '#5e6c84', flexShrink: 0 }}>
-            <ArrowLeft size={14} /><span style={{ fontSize: 14, fontWeight: 600, color: '#5e6c84' }} className="hidden sm:inline">Clientes</span>
+          <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />
+          <button onClick={() => navigate('/admin/clients')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '4px 6px', borderRadius: 6, color: t.text2, flexShrink: 0 }}>
+            <ArrowLeft size={14} /><span style={{ fontSize: 14, fontWeight: 600, color: t.text2 }} className="hidden sm:inline">Clientes</span>
           </button>
-          <span style={{ fontSize: 14, color: '#97a0af', flexShrink: 0 }} className="hidden sm:block">/</span>
-          <span style={{ fontSize: 14, fontWeight: 700, color: '#172b4d', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{client.full_name}</span>
+          <span style={{ fontSize: 14, color: t.text3, flexShrink: 0 }} className="hidden sm:block">/</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{client.full_name}</span>
           <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: status?.bg, color: status?.textColor, flexShrink: 0 }} className="hidden sm:inline">{status?.short || status?.label}</span>
 
           {/* Approve buttons — desktop inline */}
@@ -1686,11 +1952,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               </div>
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-xl font-bold text-gray-900">{client.full_name}</h1>
+                  <h1 className="text-xl font-bold" style={{ color: t.text }}>{client.full_name}</h1>
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
-                  {client.plan && <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 font-medium">{(client as any).plan.name}</span>}
+                  {client.plan && <span className="text-xs px-2 py-1 rounded font-medium" style={{ background: t.surface2, color: t.text2 }}>{(client as any).plan.name}</span>}
                 </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-gray-500 mt-0.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm mt-0.5" style={{ color: t.text3 }}>
                   <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" /><span className="truncate max-w-[180px] sm:max-w-none">{client.email}</span></span>
                   {client.phone && (
                     <span className="flex items-center gap-1.5">
@@ -1758,7 +2024,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl overflow-x-auto scrollbar-hide -mx-3 sm:mx-0 px-3 sm:px-1 w-auto sm:w-fit">
+          <div className="flex gap-1 p-1 rounded-xl overflow-x-auto scrollbar-hide -mx-3 sm:mx-0 px-3 sm:px-1 w-auto sm:w-fit" style={{ background: t.surface2 }}>
             {[
               { id: 'overview', label: 'Visão Geral' },
               { id: 'photos', label: `Fotos (${photos.length})` },
@@ -1769,7 +2035,10 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               <button
                 key={id}
                 onClick={() => setTab(id as any)}
-                className={`px-3 sm:px-4 py-2.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors touch-manipulation ${tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 active:bg-white/50'}`}
+                className="px-3 sm:px-4 py-2.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors touch-manipulation"
+                style={tab === id
+                  ? { background: t.surface, color: t.text, boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }
+                  : { background: 'transparent', color: t.text3 }}
               >
                 {label}
               </button>
@@ -1812,8 +2081,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               />
 
               {/* Progresso */}
-              <div className="bg-white border border-gray-200 rounded-xl p-5">
-                <h3 className="font-semibold text-gray-900 mb-4">Progresso</h3>
+              <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+                <h3 className="font-semibold mb-4" style={{ color: t.text }}>Progresso</h3>
                 <div className="space-y-3">
                   {[
                     { label: 'Contrato assinado', done: !!contract, date: contract?.signed_at },
@@ -1821,21 +2090,23 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                     { label: `Fotos enviadas (${photos.length})`, done: photos.length > 0 && !['awaiting_contract', 'awaiting_form', 'awaiting_photos'].includes(client.status) },
                     {
                       label: 'Fotos aprovadas (revisão concluída)',
-                      done: ['in_analysis', 'completed'].includes(client.status),
+                      done: ['in_analysis', 'preparing_materials', 'validating_materials', 'completed'].includes(client.status),
                       badge: client.status === 'photos_submitted' ? { text: 'Aguardando aprovação', color: 'text-pink-700 bg-pink-50 border border-pink-200' } : undefined,
                     },
-                    { label: 'Análise em andamento', done: ['in_analysis', 'preparing_materials', 'completed'].includes(client.status) },
-                    { label: 'Preparando materiais', done: ['preparing_materials', 'completed'].includes(client.status) },
-                    { label: 'Resultado liberado', done: result?.is_released },
+                    { label: 'Análise em andamento', done: ['in_analysis', 'preparing_materials', 'validating_materials', 'completed'].includes(client.status) },
+                    { label: 'Preparando materiais', done: ['preparing_materials', 'validating_materials', 'completed'].includes(client.status) },
+                    // Só marca como liberado quando o cliente realmente está em "completed".
+                    // Se uma etapa anterior foi reaberta, is_released pode estar true no banco
+                    // mas o resultado não está mais visível pra cliente.
+                    { label: 'Resultado liberado', done: !!result?.is_released && client.status === 'completed' },
                   ].map(({ label, done, date, badge }: any) => (
                     <div key={label} className="flex items-center gap-3">
-                      <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-green-100' : 'bg-gray-100'}`}>
-                        {done ? <Check className="h-3.5 w-3.5 text-green-600" /> : <div className="w-2 h-2 rounded-full bg-gray-300" />}
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: done ? 'rgba(34,197,94,0.15)' : t.surface2 }}>
+                        {done ? <Check className="h-3.5 w-3.5 text-green-500" /> : <div className="w-2 h-2 rounded-full" style={{ background: t.text3 }} />}
                       </div>
                       <div className="flex-1 flex items-center gap-2 flex-wrap">
-                        <span className={`text-sm ${done ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>{label}</span>
-                        {date && <span className="text-xs text-gray-400">{new Date(date).toLocaleDateString('pt-BR')}</span>}
-                        {badge && !done && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`}>{badge.text}</span>}
+                        <span className="text-sm" style={{ color: done ? t.text : t.text3, fontWeight: done ? 500 : 400 }}>{label}</span>
+                        {date && <span className="text-xs" style={{ color: t.text3 }}>{new Date(date).toLocaleDateString('pt-BR')}</span>}
                       </div>
                     </div>
                   ))}
@@ -1843,9 +2114,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               </div>
 
               {/* Prazo */}
-              <div className="bg-white border border-gray-200 rounded-xl p-5">
+              <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold text-gray-900">Prazo</h3>
+                  <h3 className="font-semibold" style={{ color: t.text }}>Prazo</h3>
                   {deadline?.deadline_date && !editingDeadline && client.status !== 'photos_submitted' && (
                     <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline.deadline_date); setEditingDeadline(true) }}><Calendar className="h-3.5 w-3.5" /> Editar</Btn>
                   )}
@@ -1858,14 +2129,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 ) : deadline?.deadline_date ? (
                   <div className="space-y-3">
                     <div>
-                      <p className="text-xs text-gray-500 mb-0.5">Fotos enviadas em</p>
-                      <p className="text-sm font-medium text-gray-800">{new Date(deadline.photos_sent_at).toLocaleString('pt-BR')}</p>
+                      <p className="text-xs mb-0.5" style={{ color: t.text3 }}>Fotos enviadas em</p>
+                      <p className="text-sm font-medium" style={{ color: t.text }}>{new Date(deadline.photos_sent_at).toLocaleString('pt-BR')}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500 mb-0.5">Prazo de entrega</p>
+                      <p className="text-xs mb-0.5" style={{ color: t.text3 }}>Prazo de entrega</p>
                       {editingDeadline ? (
                         <div className="space-y-2">
-                          <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
+                          <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
                           <div className="flex gap-2">
                             <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
                             <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
@@ -1873,7 +2144,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         </div>
                       ) : (
                         <>
-                          <p className="text-sm font-medium text-gray-800">{formatDeadlineDate(deadline.deadline_date)}</p>
+                          <p className="text-sm font-medium" style={{ color: t.text }}>{formatDeadlineDate(deadline.deadline_date)}</p>
                           {client.status !== 'completed' && (() => {
                           const dias = calendarDaysUntil(deadline.deadline_date)
                           return (
@@ -1886,32 +2157,33 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       )}
                     </div>
                   </div>
-                ) : <p className="text-sm text-gray-400">Prazo calculado após aprovação das fotos</p>}
+                ) : <p className="text-sm" style={{ color: t.text3 }}>Prazo calculado após aprovação das fotos</p>}
               </div>
 
               {/* Observações internas */}
-              <div className="bg-white border border-gray-200 rounded-xl p-5">
+              <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-semibold text-gray-900 flex items-center gap-2"><MessageSquare className="h-4 w-4 text-gray-400" /> Observações Internas</h3>
+                  <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}><MessageSquare className="h-4 w-4" style={{ color: t.text3 }} /> Observações Internas</h3>
                   <Btn variant={notesSaved ? 'green' : 'outline'} size="sm" onClick={handleSaveNotes} loading={savingNotes} disabled={notes === (client.notes || '')}>
                     {notesSaved ? <><Check className="h-3.5 w-3.5" /> Salvo</> : <><Save className="h-3.5 w-3.5" /> Salvar</>}
                   </Btn>
                 </div>
                 <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Anotações internas (não visível para a cliente)..."
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none bg-gray-50 focus:bg-white transition-colors" />
+                  className="w-full px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none transition-colors"
+                  style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
                 {notes !== (client.notes || '') && <p className="text-xs text-amber-500 mt-1.5 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> Alterações não salvas</p>}
               </div>
 
               {/* Formulário */}
-              <div className={`border rounded-xl p-5 md:col-span-2 ${formSubmission ? 'bg-white border-gray-200' : 'bg-gray-50 border-dashed border-gray-300'}`}>
+              <div className="rounded-xl p-5 md:col-span-2" style={{ background: t.surface, border: formSubmission ? `1px solid ${t.border}` : `1px dashed ${t.border}` }}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${formSubmission ? 'bg-blue-50' : 'bg-gray-100'}`}>
-                      <ClipboardList className={`h-5 w-5 ${formSubmission ? 'text-blue-500' : 'text-gray-400'}`} />
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: formSubmission ? 'rgba(59,130,246,0.1)' : t.surface2 }}>
+                      <ClipboardList className="h-5 w-5" style={{ color: formSubmission ? '#3b82f6' : t.text3 }} />
                     </div>
                     <div>
-                      <h3 className="font-semibold text-gray-900">Formulário</h3>
-                      {formSubmission ? <p className="text-xs text-gray-400">Enviado em {new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR')}</p> : <p className="text-xs text-gray-400">Aguardando envio do cliente</p>}
+                      <h3 className="font-semibold" style={{ color: t.text }}>Formulário</h3>
+                      {formSubmission ? <p className="text-xs" style={{ color: t.text3 }}>Enviado em {new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR')}</p> : <p className="text-xs" style={{ color: t.text3 }}>Aguardando envio do cliente</p>}
                     </div>
                   </div>
                   {formSubmission && <Btn variant="outline" size="sm" onClick={() => setShowFormModal(true)}><Eye className="h-3.5 w-3.5" /> Ver Respostas</Btn>}
@@ -1931,7 +2203,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0" />
                   <div><p className="text-sm font-medium text-green-800">Resultado liberado</p><p className="text-xs text-green-600">A cliente pode visualizar desde {new Date(result.released_at).toLocaleString('pt-BR')}</p></div>
                 </div>
-              ) : client.status === 'preparing_materials' ? (
+              ) : (client.status === 'preparing_materials' || client.status === 'validating_materials') ? (
                 <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-teal-600 flex-shrink-0" />
                   <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Quando os materiais estiverem prontos, libere pela aba ✨ IA</p></div>
@@ -1943,9 +2215,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 </div>
               )}
 
-              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="rounded-xl p-4 space-y-3" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                  <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: t.text }}>
                     <FolderOpen className="h-4 w-4 text-violet-500" /> Pasta vinculada
                   </h3>
                   {linkedFolderConfig?.driveLink && (
@@ -1963,22 +2235,22 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               </div>
 
               {tagTemplates.length > 0 && (
-                <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-                  <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Tag className="h-4 w-4 text-emerald-500" /> Informações da análise</h3>
+                <div className="rounded-xl p-5 space-y-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+                  <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}><Tag className="h-4 w-4 text-emerald-500" /> Informações da análise</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {clientTags.map(tag => {
                       const template = tagTemplates.find(t => t.id === tag.templateId)
                       const options = template?.options || []
                       return (
                         <div key={tag.templateId}>
-                          <label className="block text-xs font-medium text-gray-700 mb-1">{tag.name}</label>
+                          <label className="block text-xs font-medium mb-1" style={{ color: t.text2 }}>{tag.name}</label>
                           {options.length > 0 ? (
-                            <select value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${tag.value ? 'text-gray-800' : 'text-gray-400'}`}>
+                            <select value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: tag.value ? t.text : t.text3 }}>
                               <option value="">— Selecione —</option>
                               {options.map((opt: string, i: number) => <option key={i} value={opt}>{opt}</option>)}
                             </select>
-                          ) : (
-                            <input value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} placeholder="Digite o valor..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+                        ) : (
+                            <input value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} placeholder="Digite o valor..." className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
                           )}
                         </div>
                       )
@@ -1987,30 +2259,30 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 </div>
               )}
 
-              <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-                <h3 className="font-semibold text-gray-900">Observações e arquivos</h3>
+              <div className="rounded-xl p-5 space-y-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+                <h3 className="font-semibold" style={{ color: t.text }}>Observações e arquivos</h3>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Observações</label>
-                  <textarea value={resultForm.observations} onChange={e => setResultForm({ ...resultForm, observations: e.target.value })} rows={4} placeholder="Comentários, recomendações, paleta de cores..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" />
+                  <label className="block text-sm font-medium mb-1" style={{ color: t.text2 }}>Observações</label>
+                  <textarea value={resultForm.observations} onChange={e => setResultForm({ ...resultForm, observations: e.target.value })} rows={4} placeholder="Comentários, recomendações, paleta de cores..." className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
             </div>
             <div>
               <div className="flex items-center justify-between mb-3">
-                <label className="text-sm font-medium text-gray-700">Arquivos PDF</label>
+                <label className="text-sm font-medium" style={{ color: t.text2 }}>Arquivos PDF</label>
                 <Btn variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} loading={uploadingFile}>
                   <Upload className="h-3.5 w-3.5" /> Upload PDF
                 </Btn>
                 <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden" onChange={handleUploadFile} />
               </div>
               {!resultFiles || resultFiles.length === 0 ? (
-                <p className="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-200 rounded-lg">Nenhum arquivo adicionado</p>
+              <p className="text-sm py-4 text-center rounded-lg" style={{ color: t.text3, border: `1px dashed ${t.border}` }}>Nenhum arquivo adicionado</p>
               ) : (
                 <div className="space-y-2">
                   {resultFiles.map((f: any) => (
-                    <div key={f.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div key={f.id} className="flex items-center justify-between p-3 rounded-lg" style={{ background: t.surface2 }}>
                       <div className="flex items-center gap-2 min-w-0">
                         <FileText className="h-4 w-4 text-red-500 flex-shrink-0" />
-                        <span className="text-sm text-gray-700 truncate">{f.file_name}</span>
-                        <span className="text-xs text-gray-400">{(f.file_size / 1024).toFixed(0)} KB</span>
+                        <span className="text-sm truncate" style={{ color: t.text }}>{f.file_name}</span>
+                        <span className="text-xs" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
                       </div>
                       <div className="flex items-center gap-2 ml-3">
                         <a href={adminService.getResultFileUrl(f.storage_path)} target="_blank" rel="noopener noreferrer">
@@ -2025,12 +2297,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
+            <div className="flex items-center gap-3 pt-2" style={{ borderTop: `1px solid ${t.border}` }}>
               <Btn onClick={async () => { await handleSaveResult(); await handleSaveAIConfig(); await load() }} loading={savingResult || savingAI}>
                 <Save className="h-4 w-4" /> Salvar
               </Btn>
               {aiSaveStatus === 'saved' && <span className="text-sm text-green-600 flex items-center gap-1"><CheckCircle className="h-4 w-4" /> Salvo!</span>}
-              <span className="text-xs text-gray-400 ml-auto flex items-center gap-1"><Lock className="h-3 w-3" /> Liberação somente na aba ✨ IA</span>
+              <span className="text-xs ml-auto flex items-center gap-1" style={{ color: t.text3 }}><Lock className="h-3 w-3" /> Liberação somente na aba ✨ IA</span>
             </div>
           </div>
         </div>
@@ -2038,7 +2310,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {tab === 'ai' && (
         <div className="">
-          <div className="bg-white border border-gray-200 rounded-xl p-6">
+          <div className="rounded-xl p-6" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
             <AIPromptConfig
               clientId={clientId!}
               clientName={client.full_name}
