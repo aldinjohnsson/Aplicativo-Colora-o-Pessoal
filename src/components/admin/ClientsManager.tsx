@@ -13,7 +13,7 @@ import {
   AlertTriangle, Save, MessageSquare, Link2, Tag,
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
-  SlidersHorizontal, ChevronDown, Palette,
+  SlidersHorizontal, ChevronDown, Palette, Pencil,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -79,6 +79,15 @@ const STATUSES: Record<string, {
 }
 // photos_submitted is between awaiting_photos and in_analysis
 const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed']
+
+/** Retorna o nome de exibição: customizado > short padrão */
+function getColLabel(
+  statusKey: string,
+  customLabels: Record<string, string>,
+  field: 'short' | 'label' = 'short'
+): string {
+  return customLabels[statusKey] ?? STATUSES[statusKey]?.[field] ?? statusKey
+}
 
 // ─── Drag & Drop: mapa de reopen keys ────────────────────────────────────
 // Mapeia cada coluna destino para a chave usada em reopenStep
@@ -295,6 +304,8 @@ function KanbanColumn({
   statusKey, clients, deadlines, starredIds, theme: t,
   onView, onArchive, onDelete, onStar, collapsed, onToggleCollapse,
   onDragStart, onDrop, draggingClientId,
+  displayLabel,
+  onRenameLabel,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -304,12 +315,37 @@ function KanbanColumn({
   onDragStart?: (clientId: string) => void
   onDrop?: (targetStatus: string) => void
   draggingClientId?: string | null
+  displayLabel: string
+  onRenameLabel: (newName: string) => Promise<void>
 }) {
   const cfg = STATUSES[statusKey]
   const dangerCount = clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length
   const reviewCount = statusKey === 'photos_submitted' ? clients.length : 0
   const [compact, setCompact] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+
+  // ── Inline label editing ──────────────────────────────────────────────
+  const [editingLabel, setEditingLabel] = useState(false)
+  const [labelDraft, setLabelDraft] = useState('')
+  const labelInputRef = useRef<HTMLInputElement>(null)
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setLabelDraft(displayLabel)
+    setEditingLabel(true)
+    setTimeout(() => labelInputRef.current?.select(), 30)
+  }
+
+  const commitEdit = async () => {
+    const trimmed = labelDraft.trim()
+    setEditingLabel(false)
+    if (!trimmed || trimmed === displayLabel) return
+    try {
+      await onRenameLabel(trimmed)
+    } catch {
+      alert('Erro ao salvar nome da coluna')
+    }
+  }
 
   if (collapsed) {
     return (
@@ -323,7 +359,7 @@ function KanbanColumn({
       >
         <div style={{ width: 10, height: 10, borderRadius: '50%', background: cfg.color }} />
         <span style={{ fontSize: 11, fontWeight: 700, color: t.text2, writingMode: 'vertical-rl', textOrientation: 'mixed', letterSpacing: 1, transform: 'rotate(180deg)', userSelect: 'none' }}>
-          {cfg.short}
+          {displayLabel}
         </span>
         <span style={{ fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight, borderRadius: 20, padding: '2px 6px', minWidth: 22, textAlign: 'center' }}>
           {clients.length}
@@ -353,7 +389,72 @@ function KanbanColumn({
       <div style={{ padding: '10px 12px 8px', borderBottom: `1px solid ${t.border}`, background: isDragOver ? cfg.bg : t.colBg, position: 'sticky', top: 0, zIndex: 2, transition: 'background 0.15s' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
-          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 0.2 }}>{cfg.short}</span>
+          {/* Nome da coluna — clique duplo ou ícone para editar */}
+          {editingLabel ? (
+            <>
+              <input
+                ref={labelInputRef}
+                value={labelDraft}
+                onChange={e => setLabelDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') commitEdit()
+                  if (e.key === 'Escape') setEditingLabel(false)
+                }}
+                style={{
+                  flex: 1, fontSize: 13, fontWeight: 700, color: t.text,
+                  background: t.surface2, border: `1px solid ${t.accent}`,
+                  borderRadius: 6, padding: '1px 6px', outline: 'none', minWidth: 0,
+                }}
+                autoFocus
+                maxLength={40}
+                onClick={e => e.stopPropagation()}
+              />
+              <button
+                onClick={e => { e.stopPropagation(); commitEdit() }}
+                title="Confirmar"
+                style={{
+                  background: t.accent, border: 'none', cursor: 'pointer',
+                  padding: '2px 5px', color: '#fff', borderRadius: 5, display: 'flex',
+                  alignItems: 'center', flexShrink: 0,
+                }}
+              >
+                <Check size={11} />
+              </button>
+              <button
+                onClick={e => { e.stopPropagation(); setEditingLabel(false) }}
+                title="Cancelar"
+                style={{
+                  background: 'none', border: `1px solid ${t.border}`, cursor: 'pointer',
+                  padding: '2px 5px', color: t.text3, borderRadius: 5, display: 'flex',
+                  alignItems: 'center', flexShrink: 0,
+                }}
+              >
+                <X size={11} />
+              </button>
+            </>
+          ) : (
+            <span
+              title="Duplo clique para renomear"
+              onDoubleClick={startEdit}
+              style={{ flex: 1, fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 0.2, cursor: 'text' }}
+            >
+              {displayLabel}
+            </span>
+          )}
+          {!editingLabel && (
+            <button
+              onClick={startEdit}
+              title="Renomear coluna"
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: 2, color: t.text3, borderRadius: 4, display: 'flex', opacity: 0.5,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+              onMouseLeave={e => (e.currentTarget.style.opacity = '0.5')}
+            >
+              <Pencil size={11} />
+            </button>
+          )}
           <span style={{ fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight, borderRadius: 20, padding: '1px 7px', minWidth: 22, textAlign: 'center' }}>
             {clients.length}
           </span>
@@ -403,11 +504,12 @@ function KanbanColumn({
 // ─── Kanban Sidebar ───────────────────────────────────────────────────────
 function KanbanSidebar({
   theme: t, clients, search, onSearch, filter, onFilter,
-  sidebarOpen, onToggle, total, archivedCount, deadlines,
+  sidebarOpen, onToggle, total, archivedCount, deadlines, columnLabels,
 }: {
   theme: Theme; clients: Client[]; search: string; onSearch: (v: string) => void
   filter: string; onFilter: (v: string) => void; sidebarOpen: boolean; onToggle: () => void
   total: number; archivedCount: number; deadlines: Record<string, DeadlineData>
+  columnLabels: Record<string, string>
 }) {
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
@@ -442,7 +544,7 @@ function KanbanSidebar({
     <>
       {sidebarOpen && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 29, background: 'rgba(0,0,0,0.4)' }}
-          className="sm:hidden" onClick={onToggle} />
+        className="sm:hidden" onClick={onToggle} />
       )}
       <div style={{
         width: sidebarOpen ? 220 : 0, flexShrink: 0, background: t.sidebar,
@@ -482,7 +584,7 @@ function KanbanSidebar({
                     onMouseLeave={e => { if (filter !== key) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
                   >
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
-                    <span style={{ flex: 1 }}>{cfg.short}</span>
+                    <span style={{ flex: 1 }}>{getColLabel(key, columnLabels)}</span>
                     <span style={{ fontSize: 11, color: t.text3 }}>{counts[key]}</span>
                   </button>
                 )
@@ -700,7 +802,13 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [draggingClientId, setDraggingClientId] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
 
+  // ── Labels customizadas das colunas ──────────────────────────────────
+  const [columnLabels, setColumnLabels] = useState<Record<string, string>>({})
+
   useEffect(() => { load() }, [])
+  useEffect(() => {
+    adminService.getColumnLabels().then(setColumnLabels).catch(console.error)
+  }, [])
   useEffect(() => {
     const h = (e: MouseEvent) => { if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false) }
     document.addEventListener('mousedown', h)
@@ -995,7 +1103,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <KanbanSidebar theme={t} clients={activeClients} search={search} onSearch={setSearch}
           filter={filter} onFilter={setFilter} sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(v => !v)}
-          total={activeClients.length} archivedCount={archivedClients.length} deadlines={deadlines} />
+          total={activeClients.length} archivedCount={archivedClients.length} deadlines={deadlines}
+          columnLabels={columnLabels} />
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {isArchiveView && (
@@ -1031,6 +1140,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       onDragStart={setDraggingClientId}
                       onDrop={handleDrop}
                       draggingClientId={draggingClientId}
+                      displayLabel={getColLabel(key, columnLabels)}
+                      onRenameLabel={async (newName) => {
+                        await adminService.upsertColumnLabel(key, newName)
+                        setColumnLabels(prev => ({ ...prev, [key]: newName }))
+                      }}
                     />
                   ))}
                 </div>

@@ -168,3 +168,82 @@ FROM information_schema.columns
 WHERE table_name IN ('client_contracts','plan_contracts','plan_forms','client_deadlines')
   AND column_name = 'updated_at'
 ORDER BY table_name;
+
+-- ============================================================
+-- Função para limpar completamente fotos e anexos de um cliente
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION clean_client_files(p_client_id TEXT)
+RETURNS JSON AS $$
+DECLARE
+  v_photos_deleted INTEGER := 0;
+  v_attachments_deleted INTEGER := 0;
+  v_storage_paths TEXT[];
+  v_path TEXT;
+  v_result JSON;
+BEGIN
+  -- 1. Coletar todos os caminhos de storage antes de deletar
+  SELECT array_agg(storage_path)
+  INTO v_storage_paths
+  FROM (
+    SELECT storage_path FROM client_photos WHERE client_id = p_client_id
+    UNION ALL
+    SELECT storage_path FROM client_attachments WHERE client_id = p_client_id
+  ) paths;
+
+  -- 2. Deletar registros de fotos
+  DELETE FROM client_photos 
+  WHERE client_id = p_client_id;
+  GET DIAGNOSTICS v_photos_deleted = ROW_COUNT;
+
+  -- 3. Deletar registros de anexos
+  DELETE FROM client_attachments 
+  WHERE client_id = p_client_id;
+  GET DIAGNOSTICS v_attachments_deleted = ROW_COUNT;
+
+  -- 4. Retornar resultado
+  v_result := json_build_object(
+    'success', true,
+    'client_id', p_client_id,
+    'photos_deleted', v_photos_deleted,
+    'attachments_deleted', v_attachments_deleted,
+    'storage_paths', v_storage_paths
+  );
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Permissão para admins
+GRANT EXECUTE ON FUNCTION clean_client_files(TEXT) TO authenticated;
+
+-- ============================================================
+-- View para verificar arquivos órfãos (no bucket mas não no DB)
+-- ============================================================
+
+CREATE OR REPLACE VIEW orphaned_files_check AS
+SELECT 
+  c.client_id,
+  c.full_name,
+  COUNT(DISTINCT p.id) as photos_count,
+  COUNT(DISTINCT a.id) as attachments_count,
+  c.status,
+  c.created_at
+FROM client_data c
+LEFT JOIN client_photos p ON c.client_id = p.client_id
+LEFT JOIN client_attachments a ON c.client_id = a.client_id
+GROUP BY c.client_id, c.full_name, c.status, c.created_at
+ORDER BY c.created_at DESC;
+
+-- Tabela de nomes de exibição das colunas do Kanban
+create table if not exists kanban_column_labels (
+  status_key  text primary key,  -- ex: 'awaiting_contract'
+  display_name text not null      -- ex: 'Onboarding'
+);
+
+-- Permissão para a service role (se usar RLS)
+alter table kanban_column_labels enable row level security;
+
+create policy "Admin full access"
+  on kanban_column_labels for all
+  using (true) with check (true);

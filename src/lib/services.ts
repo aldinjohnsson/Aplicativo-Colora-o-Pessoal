@@ -1112,6 +1112,36 @@ export const adminService = {
       .getPublicUrl(storagePath)
     return data.publicUrl
   },
+
+  // ─── Kanban Column Labels ───────────────────────────────────────────────────
+
+  /** Retorna mapa { status_key → display_name } */
+  async getColumnLabels(): Promise<Record<string, string>> {
+    const { data, error } = await supabase
+      .from('kanban_column_labels')
+      .select('status_key, display_name')
+    if (error) throw error
+    const map: Record<string, string> = {}
+    for (const row of data ?? []) map[row.status_key] = row.display_name
+    return map
+  },
+
+  /** Salva ou atualiza o nome de exibição de uma coluna */
+  async upsertColumnLabel(statusKey: string, displayName: string): Promise<void> {
+    const { error } = await supabase
+      .from('kanban_column_labels')
+      .upsert({ status_key: statusKey, display_name: displayName }, { onConflict: 'status_key' })
+    if (error) throw error
+  },
+
+  /** Remove customização (volta ao nome padrão) */
+  async deleteColumnLabel(statusKey: string): Promise<void> {
+    const { error } = await supabase
+      .from('kanban_column_labels')
+      .delete()
+      .eq('status_key', statusKey)
+    if (error) throw error
+  },
 }
 
 // ============================================================
