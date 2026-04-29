@@ -275,7 +275,13 @@ export function FoldersManager() {
     })
     if (!name?.trim()) return
     const c: FolderConfig = typeof f.config === 'string' ? JSON.parse(f.config) : { ...f.config }
-    await supabase.from('ai_folders').insert({ name: name.trim(), config: { ...c, folderName: name.trim() } })
+    const clonedCategories = await Promise.all(
+      (c.categories || []).map(async cat => ({
+        ...cat,
+        prompts: await Promise.all((cat.prompts || []).map((p, i) => clonePrompt(p as Prompt, i)))
+      }))
+    )
+    await supabase.from('ai_folders').insert({ name: name.trim(), config: { ...c, folderName: name.trim(), categories: clonedCategories } })
     loadFolders()
   }
 
@@ -588,10 +594,10 @@ export function FoldersManager() {
     setLoadingPrompts(false)
   }
 
-  const importPrompt = (catId: string, source: FolderPromptEntry) => {
+  const importPrompt = async (catId: string, source: FolderPromptEntry) => {
     const cat = config.categories.find(c => c.id === catId)
     if (!cat) return
-    const copy: Prompt = { ...source.prompt, id: uid(), order: cat.prompts.length }
+    const copy = await clonePrompt(source.prompt as Prompt, cat.prompts.length)
     updateCat(catId, { prompts: [...cat.prompts, copy] })
     setActivePrompt(copy.id)
     setPromptPicker(null)
@@ -771,16 +777,15 @@ export function FoldersManager() {
     setSubPicker(null)
   }
 
-  const duplicateSubOption = (catId: string, pId: string, field: 'lengths' | 'textures', subId: string) => {
+  const duplicateSubOption = async (catId: string, pId: string, field: 'lengths' | 'textures', subId: string) => {
     const cat = config.categories.find(c => c.id === catId)
     const prompt = cat?.prompts.find(p => p.id === pId)
     const sub = (prompt?.[field] || []).find((s: SubOption) => s.id === subId)
     if (!sub) return
-    const copy: SubOption = { ...sub, id: uid(), dbId: undefined }
+    const copy = await cloneSubOption(sub, field)
     updatePrompt(catId, pId, { [field]: [...(prompt![field] || []), copy] })
     if (field === 'lengths') setOpenLengthId(copy.id)
     else setOpenTextureId(copy.id)
-    // remove from "edit ok" so the copy starts fresh (not locked)
     setLinkedEditOk(prev => { const n = new Set(prev); n.delete(subId); return n })
   }
 
@@ -829,7 +834,7 @@ export function FoldersManager() {
     const prompt = cat?.prompts.find(p => p.id === pId)
     const sub = (prompt?.[field] || []).find((s: SubOption) => s.id === subId)
     if (!sub) return
-    try { await supabase.storage.from('client-photos').remove([sub.images[idx].storagePath]) } catch {}
+    // Não deleta do Storage — o arquivo pode estar sendo usado por prompts copiados
     updateSubOption(catId, pId, field, subId, { images: sub.images.filter((_: any, i: number) => i !== idx) })
   }
 
@@ -887,6 +892,39 @@ export function FoldersManager() {
     return { storagePath: path, url: supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl }
   }
 
+  // ── Helpers de clonagem de imagens ────────────────────────
+  // Ao copiar um prompt, cada imagem é re-enviada para um novo
+  // storagePath independente, evitando que a remoção de uma
+  // referência quebre outras cópias que usam o mesmo arquivo.
+
+  const cloneImage = async (img: PromptImage, prefix: string): Promise<PromptImage> => {
+    try {
+      const res = await fetch(img.url)
+      const blob = await res.blob()
+      const ext = img.url.split('.').pop()?.split('?')[0] || 'jpg'
+      const path = `ai-materials/folders/${prefix}_${Date.now()}_${uid()}.${ext}`
+      const { error } = await supabase.storage.from('client-photos').upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true })
+      if (error) return img
+      return { storagePath: path, url: supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl, label: img.label }
+    } catch {
+      return img
+    }
+  }
+
+  const cloneSubOption = async (sub: SubOption, prefix: string): Promise<SubOption> => {
+    const thumbnail = sub.thumbnail ? await cloneImage(sub.thumbnail, `${prefix}_thumb`) : null
+    const images = await Promise.all(sub.images.map((img, i) => cloneImage(img, `${prefix}_img${i}`)))
+    return { ...sub, id: uid(), dbId: undefined, thumbnail, images }
+  }
+
+  const clonePrompt = async (prompt: Prompt, order: number): Promise<Prompt> => {
+    const thumbnail = prompt.thumbnail ? await cloneImage(prompt.thumbnail, 'thumb') : null
+    const images = await Promise.all((prompt.images || []).map((img, i) => cloneImage(img, `img${i}`)))
+    const lengths = await Promise.all((prompt.lengths || []).map((l, i) => cloneSubOption(l, `len${i}`)))
+    const textures = await Promise.all((prompt.textures || []).map((t, i) => cloneSubOption(t, `tex${i}`)))
+    return { ...prompt, id: uid(), order, thumbnail, images, lengths, textures }
+  }
+
   const handleThumbUpload = async (catId: string, pId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return; e.target.value = ''
     setUploadingThumb(true)
@@ -921,7 +959,7 @@ export function FoldersManager() {
     const cat = config.categories.find(c => c.id === catId)
     const prompt = cat?.prompts.find(p => p.id === pId)
     if (!prompt) return
-    try { await supabase.storage.from('client-photos').remove([prompt.images[idx].storagePath]) } catch {}
+    // Não deleta do Storage — o arquivo pode estar sendo usado por prompts copiados
     updatePrompt(catId, pId, { images: prompt.images.filter((_, i) => i !== idx) })
   }
 
@@ -929,7 +967,7 @@ export function FoldersManager() {
     const cat = config.categories.find(c => c.id === catId)
     const prompt = cat?.prompts.find(p => p.id === pId)
     if (!prompt?.thumbnail) return
-    try { await supabase.storage.from('client-photos').remove([prompt.thumbnail.storagePath]) } catch {}
+    // Não deleta do Storage — o arquivo pode estar sendo usado por prompts copiados
     updatePrompt(catId, pId, { thumbnail: null })
   }
 

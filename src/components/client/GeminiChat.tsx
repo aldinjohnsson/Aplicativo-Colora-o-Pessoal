@@ -520,8 +520,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
               {selectedCat.prompts.map(p => (
                 <button key={p.id} onClick={() => handlePromptClick(p)} disabled={loading} className="flex flex-col items-center gap-1 p-1.5 bg-white border border-gray-200 rounded-lg hover:border-violet-300 hover:bg-violet-50 transition-all disabled:opacity-50 text-center">
-                  {(p.thumbnail?.url || p.images?.[0]?.url) ? <img src={p.thumbnail?.url || p.images[0].url} alt={p.name} className="w-full aspect-[4/3] object-cover rounded" /> : <div className="w-full aspect-[4/3] bg-gray-100 rounded flex items-center justify-center"><Wand2 className="h-4 w-4 text-gray-300" /></div>}
-                  <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{p.name}</span>
+                <div className="w-full aspect-[4/3] bg-gray-100 rounded flex items-center justify-center relative overflow-hidden">
+                  <Wand2 className="h-4 w-4 text-gray-300" />
+                  {(p.thumbnail?.url || p.images?.[0]?.url) && (
+                    <img src={p.thumbnail?.url || p.images[0].url} alt={p.name}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onError={e => { e.currentTarget.style.display = 'none' }} />
+                  )}
+                </div>                  
+                <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{p.name}</span>
                 </button>
               ))}
             </div>
@@ -539,7 +546,14 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
               {(selectedPrompt.lengths || []).map(length => (
                 <button key={length.id} onClick={() => handleLengthClick(length)} disabled={loading} className="flex flex-col items-center gap-1 p-1.5 bg-white border border-gray-200 rounded-lg hover:border-violet-300 hover:bg-violet-50 transition-all disabled:opacity-50 text-center">
-                  {length.thumbnail?.url ? <img src={length.thumbnail.url} alt={length.name} className="w-full aspect-[4/3] object-cover rounded" /> : <div className="w-full aspect-[4/3] bg-gradient-to-br from-violet-50 to-purple-100 rounded flex items-center justify-center"><Scissors className="h-5 w-5 text-violet-300" /></div>}
+               <div className="w-full aspect-[4/3] bg-gradient-to-br from-violet-50 to-purple-100 rounded flex items-center justify-center relative overflow-hidden">
+                  <Scissors className="h-5 w-5 text-violet-300" />
+                  {length.thumbnail?.url && (
+                    <img src={length.thumbnail.url} alt={length.name}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onError={e => { e.currentTarget.style.display = 'none' }} />
+                  )}
+                </div>
                   <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{length.name || '—'}</span>
                 </button>
               ))}
@@ -558,7 +572,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
               {(selectedPrompt.textures || []).map(texture => (
                 <button key={texture.id} onClick={() => handleTextureClick(texture)} disabled={loading} className="flex flex-col items-center gap-1 p-1.5 bg-white border border-gray-200 rounded-lg hover:border-violet-300 hover:bg-violet-50 transition-all disabled:opacity-50 text-center">
-                  {texture.thumbnail?.url ? <img src={texture.thumbnail.url} alt={texture.name} className="w-full aspect-[4/3] object-cover rounded" /> : <div className="w-full aspect-[4/3] bg-gradient-to-br from-cyan-50 to-teal-100 rounded flex items-center justify-center"><svg className="h-5 w-5 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12c0-4 3-7 6-7s6 3 6 7-3 7-6 7" /><path d="M9 12c0-2 1.5-3.5 3-3.5" /></svg></div>}
+                <div className="w-full aspect-[4/3] bg-gradient-to-br from-cyan-50 to-teal-100 rounded flex items-center justify-center relative overflow-hidden">
+                  <svg className="h-5 w-5 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 12c0-4 3-7 6-7s6 3 6 7-3 7-6 7" /><path d="M9 12c0-2 1.5-3.5 3-3.5" />
+                  </svg>
+                  {texture.thumbnail?.url && (
+                    <img src={texture.thumbnail.url} alt={texture.name}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onError={e => { e.currentTarget.style.display = 'none' }} />
+                  )}
+                </div>
                   <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{texture.name || '—'}</span>
                 </button>
               ))}
