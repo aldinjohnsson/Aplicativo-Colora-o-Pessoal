@@ -171,13 +171,19 @@ function captionToBlocks(caption: string): EditorBlock[] {
 }
 
 function estimateBlockH(block: EditorBlock, wPts: number): number {
+  const hSize = block.headerSize ?? 8.5
+  const bSize = block.bodySize   ?? 7.5
   const charW = 4.2
-  const cpl = Math.max(1, Math.floor(wPts / charW))
-  const lines = block.rawLines.reduce((s, l) => {
-    const c = l.replace(EMOJI_RE_CLEAN, '').trim()
-    return s + Math.max(1, Math.ceil((c.length || 1) / cpl))
-  }, 0)
-  return Math.max(18, lines * 11 + (block.isSection ? 4 : 0) + 6)
+  const cpl   = Math.max(1, Math.floor(wPts / charW))
+  let totalH  = 0
+  for (let i = 0; i < block.rawLines.length; i++) {
+    const c = block.rawLines[i].replace(EMOJI_RE_CLEAN, '').trim()
+    const wrapped = Math.max(1, Math.ceil((c.length || 1) / cpl))
+    // Primeira linha de seção renderiza em hSize; demais em bSize
+    const lh = (i === 0 && block.isSection) ? hSize * 1.47 : bSize * 1.47
+    totalH += wrapped * lh
+  }
+  return Math.max(18, totalH + 6)
 }
 
 function initFreeformBlocks(blocks: EditorBlock[], photo: PhotoConfig, mgH: number): EditorBlock[] {
@@ -636,10 +642,12 @@ export function PDFLayoutEditor({
     const bColor = variant === 'accent' ? '#ffffff' : (block.bodyColor   ?? style.bodyColor   ?? '#645859')
     const titleAlign = block.titleAlign ?? 'left'
     const textAlign  = block.textAlign  ?? 'left'
-    const lineH  = bSize * 1.47
+    // Cada linha usa lineHeight proporcional ao seu próprio fontSize
+    const hLineH = hSize * 1.47
+    const bLineH = bSize * 1.47
     const padding = 6
     const maxLines = maxHeightPts !== undefined
-      ? Math.max(1, Math.floor((maxHeightPts - padding) / (lineH / SCALE)))
+      ? Math.max(1, Math.floor((maxHeightPts - padding) / (bLineH / SCALE)))
       : Infinity
 
     let lineCount = 0
@@ -650,6 +658,7 @@ export function PDFLayoutEditor({
       const isFirst = i === 0, isSub = /^[•*\-→>]/.test(raw)
       const bold = isFirst && block.isSection
       const align = bold ? titleAlign : textAlign
+      const lineH = bold ? hLineH : bLineH
       return (
         <div key={i} style={{
           fontSize: bold ? hSize : bSize, color: bold ? hColor : bColor,
@@ -713,11 +722,12 @@ export function PDFLayoutEditor({
     if (!rawLabel.trim()) return null
 
     // Mesma lógica do drawItemLabel no PDF: mostra só a primeira parte antes de " — "
-    // (remove sufixos de comprimento/textura que possam ter sido concatenados).
     const label = rawLabel.split(/\s*—\s*/)[0].trim() || rawLabel
 
     const displayText = (labelConfig.uppercase !== false) ? label.toUpperCase() : label
-    const fontSize    = ((labelConfig.fontSize ?? 7) * SCALE)
+    // Mínimo 9px no preview — o PDF usa o tamanho real (7pt), mas na tela 5px é ilegível
+    const fontSizePts = labelConfig.fontSize ?? 7
+    const fontSize    = Math.max(9, fontSizePts * SCALE)
     const color       = labelConfig.color ?? (style.headerColor ?? '#77304F')
     const fontFamily  = FONT_CSS[labelConfig.fontFamily ?? 'Helvetica']
     const fontWeight  = labelConfig.bold !== false ? 700 : 400
@@ -725,7 +735,7 @@ export function PDFLayoutEditor({
     const customX = labelConfig.x !== undefined ? labelConfig.x * SCALE : null
     const customY = labelConfig.y !== undefined ? labelConfig.y * SCALE : null
 
-    const top  = customY !== null ? customY : (photoBottomPx + 3)
+    const top  = customY !== null ? customY : (photoBottomPx + 4)
     const left = customX !== null ? customX : photoLeftPx
     const width = customX !== null ? 'auto' : photoWidthPx
 
@@ -734,6 +744,11 @@ export function PDFLayoutEditor({
         position: 'absolute',
         top, left, width,
         textAlign: customX !== null ? 'left' : 'center',
+        // Chip visual para indicar posição no editor — não afeta o PDF gerado
+        background: `${color}18`,
+        borderRadius: 3,
+        border: `1px dashed ${color}55`,
+        padding: '1px 4px',
         fontSize,
         fontFamily,
         color,
@@ -743,7 +758,7 @@ export function PDFLayoutEditor({
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
-        padding: '0 2px',
+        boxSizing: 'border-box' as const,
       }}>
         {displayText}
       </div>
@@ -1014,13 +1029,16 @@ export function PDFLayoutEditor({
                   data-block-id={block.id}
                   style={{
                     position: 'absolute',
-                    left, top, width: widt, minHeight: hgt,
+                    left, top, width: widt,
+                    // height exata + overflow hidden = preview 100% fiel ao PDF
+                    height: hgt, overflow: 'hidden',
                     opacity: isDrag ? 0.3 : 1,
                     cursor: 'pointer', borderRadius: 2,
                     padding: '1px 3px 1px 6px',
                     outline: isSel ? `1.5px solid ${accent}` : '1px solid transparent',
                     background: isSel ? `${accent}12` : 'transparent',
                     transition: 'outline 0.12s',
+                    boxSizing: 'border-box',
                   }}
                   onClick={e => { e.stopPropagation(); setSelectedId(block.id) }}
                 >

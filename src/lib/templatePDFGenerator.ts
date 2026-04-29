@@ -612,6 +612,7 @@ async function renderFlowItem(
     const textX = colX + hPad.left
 
     for (const rl of rlines) {
+      if (textY < CONTENT_BTM) break  // proteção: nunca renderizar abaixo da área de conteúdo
       const font = rl.bold ? bStyle.fontHeaderBold : bStyle.fontBody
       drawAlignedLine(curPage, rl, textX, textW, font, textY, forcedColor)
       textY -= bStyle.lineH
@@ -645,11 +646,16 @@ async function renderFreeformItem(
   const mgH         = layout.pageMarginH ?? MG
   const photoConfig = layout.photo ?? { x: MG, y: 72, w: 192, h: 700 }
 
-  const maxBottom   = blocks.reduce((m, b) => Math.max(m, (b.y ?? 72) + (b.h ?? 40)), photoConfig.y + photoConfig.h)
+  // Ordenar por y crescente (topo → rodapé em coordenadas de page-top).
+  // Necessário para calcular a altura disponível de cada bloco sem h explícito,
+  // usando a distância até o início do bloco seguinte na mesma página.
+  const sortedBlocks = [...blocks].sort((a, b) => (a.y ?? 72) - (b.y ?? 72))
+
+  const maxBottom   = sortedBlocks.reduce((m, b) => Math.max(m, (b.y ?? 72) + (b.h ?? 40)), photoConfig.y + photoConfig.h)
   const totalPages  = Math.max(1, Math.ceil(maxBottom / PH))
 
-  const blocksByPage = new Map<number, typeof blocks>()
-  for (const block of blocks) {
+  const blocksByPage = new Map<number, typeof sortedBlocks>()
+  for (const block of sortedBlocks) {
     const pi = Math.floor((block.y ?? 72) / PH)
     if (!blocksByPage.has(pi)) blocksByPage.set(pi, [])
     blocksByPage.get(pi)!.push(block)
@@ -698,7 +704,7 @@ async function renderFreeformItem(
       // Em PDF, drawText y é a BASELINE do texto.
       // Offset por lineH pra primeira baseline ficar uma linha abaixo do topo,
       // mais o padding superior quando há variant visual.
-      let textY    = PH - byPage - bStyle.lineH - vPad.top
+      let textY = PH - byPage - bStyle.lineH - vPad.top
 
       const rlines = renderBlockLines(
         {
@@ -713,18 +719,41 @@ async function renderFreeformItem(
         textW, bStyle,
       )
 
-      // Altura disponível pro texto dentro do card (descontando padding vertical)
-      const textAvailH = block.h ? (block.h - vPad.top - vPad.bottom) : undefined
-      const effectiveLines = textAvailH !== undefined
-        ? rlines.slice(0, Math.max(1, Math.floor(textAvailH / bStyle.lineH)))
-        : rlines
+      // ── Altura efetiva do bloco ──────────────────────────────────────────
+      // Se block.h está definido: usa ele (mantém o comportamento original).
+      // Se NÃO está: calcula a distância até o próximo bloco na mesma página
+      // (ou até CONTENT_BTM), impedindo que o texto transborde e sobreponha
+      // o bloco seguinte — principal causa de textos sobrepostos no PDF.
+      let effectiveBlockH: number
+      if (block.h != null) {
+        effectiveBlockH = block.h
+      } else {
+        const nextBlock = pageBlocks[bi + 1]
+        if (nextBlock) {
+          const nextByPage = (nextBlock.y ?? 72) - pageYOffsetPts
+          const gap = block.marginBelow ?? 8
+          effectiveBlockH = Math.max(
+            bStyle.lineH + vPad.top + vPad.bottom,
+            nextByPage - byPage - gap,
+          )
+        } else {
+          // Último bloco da página: ocupa até CONTENT_BTM
+          effectiveBlockH = Math.max(
+            bStyle.lineH + vPad.top + vPad.bottom,
+            PH - byPage - CONTENT_BTM - 4,
+          )
+        }
+      }
+
+      const textAvailH     = effectiveBlockH - vPad.top - vPad.bottom
+      const effectiveLines = rlines.slice(0, Math.max(1, Math.floor(textAvailH / bStyle.lineH)))
 
       // ── Fundo do bloco (card/outline/accent/soft) — desenhado PRIMEIRO ────
       if (variant !== 'plain') {
-        // O fundo usa as dimensões COMPLETAS do bloco (como o usuário posicionou).
-        // Se o usuário não definiu h explicitamente, dimensionamos para comportar
-        // as linhas + padding vertical.
-        const bgH = block.h ?? (effectiveLines.length * bStyle.lineH + vPad.top + vPad.bottom)
+        // Usa a altura natural das linhas visíveis + padding (limitada a effectiveBlockH).
+        const bgH = block.h != null
+          ? block.h
+          : Math.min(effectiveBlockH, effectiveLines.length * bStyle.lineH + vPad.top + vPad.bottom)
         const bgY = PH - byPage - bgH
         drawBlockBackground(page, variant, bx, bgY, bw, bgH, bStyle, block.blockBgColor)
       }
