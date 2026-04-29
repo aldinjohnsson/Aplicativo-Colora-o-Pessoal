@@ -23,6 +23,7 @@ import { RejectionModal } from './RejectionModal'
 import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
+import { cleanClientFiles } from '../../services/cleanupService'
 
 // ─── Status Config ────────────────────────────────────────────────────────
 const STATUSES: Record<string, {
@@ -757,12 +758,27 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const handleDelete = async (id: string) => {
     const client = clients.find(c => c.id === id)
     if (!client) return
-    if (!confirm(`Excluir "${client.full_name}"? Todos os dados e arquivos serão removidos.`)) return
-    await adminService.deleteClient(id); load()
+    if (!confirm(`Excluir "${client.full_name}"?\n\nTodos os dados, fotos e arquivos serão removidos permanentemente. Esta ação não pode ser desfeita.`)) return
+
+    // Optimistic: remove da UI imediatamente
+    setClients(prev => prev.filter(c => c.id !== id))
+
+    try {
+      // 1. Limpa fotos e anexos do storage
+      const cleanup = await cleanClientFiles(id)
+      if (!cleanup.success && cleanup.errors.length > 0) {
+        console.warn('⚠️ Limpeza parcial do storage:', cleanup.errors)
+      }
+      // 2. Deleta o registro do banco (CASCADE cuida das tabelas filhas)
+      await adminService.deleteClient(id)
+    } catch (e: any) {
+      console.error('Erro ao excluir cliente:', e)
+      alert('Erro ao excluir cliente: ' + (e?.message ?? 'Tente novamente.'))
+      load() // restaura estado real em caso de falha
+    }
   }
   const toggleCollapse = useCallback((key: string) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] })), [])
 
-  // ── Handler de drop: avança ou reabre etapa ────────────────────────────
   // ── Handler de drop: avança ou reabre etapa ────────────────────────────
   const handleDrop = useCallback((targetStatus: string) => {
     if (!draggingClientId) return
@@ -1761,6 +1777,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [deadlineInput, setDeadlineInput] = useState('')
   const [savingDeadline, setSavingDeadline] = useState(false)
   const [chatEnabled, setChatEnabled] = useState(true)
+  const [cleaningFiles, setCleaningFiles] = useState(false)
+  const [filesCleanedUp, setFilesCleanedUp] = useState(false)
+  const [showCleanupModal, setShowCleanupModal] = useState(false)
 
   useEffect(() => { load() }, [clientId])
 
@@ -1854,6 +1873,127 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setSavingDeadline(true)
     try { await supabase.from('client_deadlines').update({ deadline_date: deadlineInput }).eq('client_id', clientId!); setEditingDeadline(false); load() }
     catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
+  }
+
+  const handleCleanupFiles = async () => {
+    setCleaningFiles(true)
+    setShowCleanupModal(false)
+    try {
+      // Helper: lista TODOS os arquivos de um prefixo recursivamente
+      // (supabase .list() só retorna um nível; pastas precisam ser percorridas)
+      const listAllFiles = async (bucket: string, prefix: string): Promise<string[]> => {
+        const { data: items } = await supabase.storage
+          .from(bucket)
+          .list(prefix, { limit: 1000 })
+        if (!items || items.length === 0) return []
+        const paths: string[] = []
+        for (const item of items) {
+          const fullPath = `${prefix}/${item.name}`
+          if (item.id) {
+            paths.push(fullPath) // é um arquivo real
+          } else {
+            // é uma sub-pasta — lista recursivamente
+            const sub = await listAllFiles(bucket, fullPath)
+            paths.push(...sub)
+          }
+        }
+        return paths
+      }
+
+      const removePaths = async (bucket: string, paths: string[]) => {
+        for (let i = 0; i < paths.length; i += 100) {
+          const { error } = await supabase.storage.from(bucket).remove(paths.slice(i, i + 100))
+          if (error) console.warn(`Aviso ao remover arquivos de ${bucket}:`, error.message)
+        }
+      }
+
+      // 1. Remove registros e arquivos do bucket client-photos (upload do admin)
+      const { data: photoRecords, error: photoFetchErr } = await supabase
+        .from('client_photos')
+        .select('storage_path')
+        .eq('client_id', clientId)
+
+      if (photoFetchErr) console.warn('Aviso ao buscar fotos:', photoFetchErr.message)
+
+      if (photoRecords && photoRecords.length > 0) {
+        const paths = photoRecords.map((p: any) => p.storage_path).filter(Boolean)
+        await removePaths('client-photos', paths)
+        await supabase.from('client_photos').delete().eq('client_id', clientId)
+      }
+
+      // 1b. Limpeza recursiva de TODA a pasta do cliente no bucket client-photos
+      //     (cobre /form/ e quaisquer subpastas enviadas pelo portal que não estão na tabela client_photos)
+      try {
+        const allClientPhotoPaths = await listAllFiles('client-photos', `${clientId}`)
+        if (allClientPhotoPaths.length > 0) {
+          await removePaths('client-photos', allClientPhotoPaths)
+        }
+      } catch { /* pasta pode não existir */ }
+
+      // 2. Remove imagens de tags do bucket client-tag-images
+      //    (criado na migration client_tag_values — nunca era limpo antes)
+      try {
+        const { data: tagValueRecords } = await supabase
+          .from('client_tag_values')
+          .select('image_storage_path')
+          .eq('client_id', clientId)
+          .not('image_storage_path', 'is', null)
+
+        if (tagValueRecords && tagValueRecords.length > 0) {
+          const tagPaths = tagValueRecords
+            .map((r: any) => r.image_storage_path)
+            .filter(Boolean)
+          if (tagPaths.length > 0) {
+            await removePaths('client-tag-images', tagPaths)
+          }
+        }
+
+        // Limpa também via listAllFiles como fallback (cobre uploads órfãos não rastreados no banco)
+        const listedTagPaths = await listAllFiles('client-tag-images', `${clientId}`)
+        if (listedTagPaths.length > 0) {
+          await removePaths('client-tag-images', listedTagPaths)
+        }
+      } catch { /* bucket pode não existir para este cliente */ }
+
+      // 3. Remove registros de client_tag_values (limpa texto e referências de imagem)
+      try {
+        await supabase.from('client_tag_values').delete().eq('client_id', clientId)
+      } catch { /* tabela pode não existir em instâncias antigas */ }
+
+      // 4. Remove TODOS os arquivos do bucket client-files para este cliente
+      //    (cobre fotos e anexos enviados pelo portal, em qualquer sub-pasta)
+      try {
+        const clientFilePaths = await listAllFiles('client-files', `${clientId}`)
+        if (clientFilePaths.length > 0) {
+          await removePaths('client-files', clientFilePaths)
+        }
+      } catch { /* bucket pode não existir para este cliente */ }
+
+      // 5. Remove registros de anexos da tabela client_attachments
+      const { data: attachRecords } = await supabase
+        .from('client_attachments')
+        .select('id')
+        .eq('client_id', clientId)
+      if (attachRecords && attachRecords.length > 0) {
+        await supabase.from('client_attachments').delete().eq('client_id', clientId)
+      }
+
+      // 6. Remove dados do formulário da tabela client_progress
+      //    (a tabela real do schema — form_submissions não existe)
+      const { error: progressErr } = await supabase
+        .from('client_progress')
+        .delete()
+        .eq('user_id', clientId)
+        .eq('step', 2) // etapa 2 = formulário
+      if (progressErr) console.warn('Aviso ao limpar progresso do formulário:', progressErr.message)
+
+      setFilesCleanedUp(true)
+      await load()
+    } catch (e: any) {
+      alert(`Erro ao limpar arquivos: ${e.message}`)
+    } finally {
+      setCleaningFiles(false)
+    }
   }
 
   const copyLink = () => { const link = `${window.location.origin}/c/${data.client.token}`; navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000) }
@@ -2057,6 +2197,29 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           {tab === 'overview' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
+              {/* Limpeza de arquivos — aviso no overview para concluídos com fotos */}
+              {client.status === 'completed' && photos.length > 0 && !filesCleanedUp && (
+                <div className="md:col-span-2 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+                  style={{ background: '#fff5f5', border: '1px solid #fecaca' }}>
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-9 h-9 bg-red-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <Trash2 className="h-4 w-4 text-red-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-red-900">
+                        {photos.length} foto{photos.length !== 1 ? 's' : ''} ainda no storage
+                      </p>
+                      <p className="text-xs text-red-600 mt-0.5">
+                        Cliente concluída. Você pode liberar espaço removendo os arquivos do servidor.
+                      </p>
+                    </div>
+                  </div>
+                  <Btn variant="danger" size="sm" onClick={() => setTab('photos' as any)} className="flex-shrink-0">
+                    <Trash2 className="h-3.5 w-3.5" /> Ir para Fotos e Limpar
+                  </Btn>
+                </div>
+              )}
+
               {/* Approve banner */}
               {client.status === 'photos_submitted' && (
                 <div className="md:col-span-2 bg-gradient-to-r from-pink-50 to-rose-50 border border-rose-200 rounded-xl p-5 flex items-center justify-between gap-4 flex-wrap">
@@ -2197,7 +2360,68 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             </div>
           )}
 
-          {tab === 'photos' && <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} />}
+          {tab === 'photos' && (
+            <div className="space-y-4">
+              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} />
+
+              {/* Zona de limpeza — visível apenas para clientes concluídos */}
+              {client.status === 'completed' && (
+                <div className="flex items-center justify-between py-3 px-4 rounded-xl" style={{ background: '#fff5f5', border: '1px solid #fecaca' }}>
+                  <div className="flex items-center gap-2">
+                    <Trash2 className="h-4 w-4 text-red-400 flex-shrink-0" />
+                    <span className="text-sm text-red-700 font-medium">Limpar arquivos do storage</span>
+                  </div>
+                  <div className="flex-shrink-0">
+                    {filesCleanedUp || (photos.length === 0 && !formSubmission) ? (
+                      <span className="flex items-center gap-1.5 text-xs text-green-700 font-medium">
+                        <CheckCircle className="h-3.5 w-3.5" />
+                        {filesCleanedUp ? 'Removidos' : 'Nenhum arquivo'}
+                      </span>
+                    ) : (
+                      <Btn variant="danger" size="sm" onClick={() => setShowCleanupModal(true)} loading={cleaningFiles}>
+                        <Trash2 className="h-3.5 w-3.5" /> Limpar
+                      </Btn>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Modal de confirmação de limpeza */}
+              {showCleanupModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)' }}>
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <Trash2 className="h-5 w-5 text-red-500" />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900 text-sm">Limpar arquivos?</p>
+                        <p className="text-xs text-gray-500 mt-0.5">{data?.client?.full_name}</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-600 leading-relaxed">
+                      Fotos, anexos e dados do formulário serão removidos permanentemente do servidor.
+                      Contrato, resultado e análise <span className="font-medium text-gray-800">são preservados</span>.
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={() => setShowCleanupModal(false)}
+                        className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-gray-600 border border-gray-200 hover:bg-gray-50 transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        onClick={handleCleanupFiles}
+                        className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-white bg-red-500 hover:bg-red-600 transition-colors"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {tab === 'documents' && <ClientDocumentsTab clientId={clientId!} />}
 
