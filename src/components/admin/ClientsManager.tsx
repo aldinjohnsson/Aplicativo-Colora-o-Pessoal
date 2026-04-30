@@ -1549,7 +1549,9 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
   const [downloadingAll, setDownloadingAll] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
-  const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(null)
+  const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(
+    photoCategories.length > 0 ? photoCategories[0].id : null
+  )
 
   const loadPhotos = useCallback(async () => {
     const p = await adminService.getClientPhotosWithUrls(clientId)
@@ -1559,9 +1561,9 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
 
   useEffect(() => { loadPhotos() }, [loadPhotos])
 
-  const handleAdminUpload = async (categoryId: string, files: FileList | null) => {
+  const handleAdminUpload = async (categoryId: string | null, files: FileList | null) => {
     if (!files || files.length === 0) return
-    setUploadingToCategory(categoryId)
+    setUploadingToCategory(categoryId ?? 'uploading')
     try {
       for (const file of Array.from(files)) {
         const uniqueName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
@@ -1590,7 +1592,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
       alert(`Erro ao fazer upload: ${e.message}`)
     } finally {
       setUploadingToCategory(null)
-      setSelectedCategoryForUpload(null)
+      setSelectedCategoryForUpload(photoCategories.length > 0 ? photoCategories[0].id : null)
       if (uploadInputRef.current) uploadInputRef.current.value = ''
     }
   }
@@ -1702,14 +1704,13 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
                 onChange={e => setSelectedCategoryForUpload(e.target.value || null)}
                 className="flex-1 sm:flex-none px-3 py-2 border border-violet-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white min-w-0"
               >
-                <option value="">Sem categoria</option>
                 {photoCategories.map(cat => (
                   <option key={cat.id} value={cat.id}>{cat.title}</option>
                 ))}
               </select>
             )}
             <input ref={uploadInputRef} type="file" multiple accept="image/*" className="hidden"
-              onChange={e => handleAdminUpload(selectedCategoryForUpload || '__none__', e.target.files)} />
+              onChange={e => handleAdminUpload(selectedCategoryForUpload ?? null, e.target.files)} />
             <Btn variant="primary" size="sm" onClick={() => uploadInputRef.current?.click()} loading={uploadingToCategory !== null} className="whitespace-nowrap">
               <Upload className="h-3.5 w-3.5" /> Adicionar Fotos
             </Btn>
@@ -2483,7 +2484,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <div className="flex items-center justify-between py-3 px-4 rounded-xl" style={{ background: '#fff5f5', border: '1px solid #fecaca' }}>
                   <div className="flex items-center gap-2">
                     <Trash2 className="h-4 w-4 text-red-400 flex-shrink-0" />
-                    <span className="text-sm text-red-700 font-medium">Limpar arquivos do storage</span>
+                    <span className="text-sm text-red-700 font-medium">Limpar arquivos</span>
                   </div>
                   <div className="flex-shrink-0">
                     {filesCleanedUp || (photos.length === 0 && !formSubmission) ? (

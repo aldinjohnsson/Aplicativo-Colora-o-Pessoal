@@ -740,8 +740,12 @@ export const adminService = {
     }
 
     if (step === 'analysis') {
-      // Volta pra análise: remove o prazo (será recalculado ao aprovar fotos de novo)
-      await supabase.from('client_deadlines').delete().eq('client_id', clientId)
+      // Volta pra análise: PRESERVA o prazo já atribuído — ele foi calculado
+      // quando as fotos foram aprovadas e não deve ser removido só porque
+      // a etapa está sendo reaberta internamente. O prazo só é limpo quando
+      // voltamos para 'review' (photos_submitted), pois nesse caso as fotos
+      // serão reavaliadas e o prazo recalculado na próxima aprovação.
+      // Somente a admin pode editar o prazo manualmente após a reabertura.
       const { error } = await supabase
         .from('clients')
         .update({
