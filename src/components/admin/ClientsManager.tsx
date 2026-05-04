@@ -14,6 +14,7 @@ import {
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
   SlidersHorizontal, ChevronDown, Palette, Pencil,
+  Loader2, AlertCircle,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -24,6 +25,205 @@ import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
 import { cleanClientFiles } from '../../services/cleanupService'
+
+// ─── HEIC → JPEG (conversão no navegador) ─────────────────────────────────
+// Cache compartilhado entre todas as instâncias para não reconverter a mesma foto
+const __heicCache = new Map<string, string>()
+const __heicInflight = new Map<string, Promise<string>>()
+
+// Fila com limite de concorrência. libheif (WASM) é single-thread; muitas
+// conversões em paralelo saturam o navegador e dão sensação de travamento.
+type HeicPriority = 'high' | 'normal'
+type HeicQueueItem = { url: string; run: () => void; priority: HeicPriority }
+const __heicQueue: HeicQueueItem[] = []
+let __heicActive = 0
+const HEIC_MAX_CONCURRENT = 2
+const HEIC_TIMEOUT_MS = 45000
+
+function __heicProcessQueue() {
+  while (__heicActive < HEIC_MAX_CONCURRENT) {
+    // Pega primeiro item de prioridade alta; se não tiver, pega normal
+    let idx = __heicQueue.findIndex(it => it.priority === 'high')
+    if (idx < 0) idx = __heicQueue.length > 0 ? 0 : -1
+    if (idx < 0) return
+    const item = __heicQueue.splice(idx, 1)[0]
+    __heicActive++
+    item.run()
+  }
+}
+
+function isLikelyHeic(url?: string, name?: string): boolean {
+  const target = (name || url || '').toLowerCase()
+  return /\.heic(\?|#|$)/.test(target) || /\.heif(\?|#|$)/.test(target)
+}
+
+async function convertHeicFromUrl(url: string, priority: HeicPriority = 'normal'): Promise<string> {
+  const cached = __heicCache.get(url)
+  if (cached) return cached
+
+  const inflight = __heicInflight.get(url)
+  if (inflight) {
+    // Se já está na fila com prioridade normal e agora pediram alta, sobe na fila
+    if (priority === 'high') {
+      const queued = __heicQueue.find(it => it.url === url)
+      if (queued) queued.priority = 'high'
+    }
+    return inflight
+  }
+
+  const promise = new Promise<string>((resolve, reject) => {
+    const run = async () => {
+      const t0 = performance.now()
+      try {
+        console.log('[HEIC] Iniciando:', url.split('/').pop())
+
+        const work = (async () => {
+          // Import dinâmico: heic2any (~700KB) só é baixado quando há HEIC
+          const heic2any = (await import('heic2any')).default
+          const res = await fetch(url)
+          if (!res.ok) throw new Error(`Fetch falhou (${res.status})`)
+          const blob = await res.blob()
+          const result = await heic2any({ blob, toType: 'image/jpeg', quality: 0.85 })
+          const converted = Array.isArray(result) ? result[0] : result
+          return URL.createObjectURL(converted as Blob)
+        })()
+
+        const timeout = new Promise<string>((_, rej) =>
+          setTimeout(() => rej(new Error(`Timeout após ${HEIC_TIMEOUT_MS / 1000}s`)), HEIC_TIMEOUT_MS)
+        )
+
+        const blobUrl = await Promise.race([work, timeout])
+        __heicCache.set(url, blobUrl)
+        console.log(`[HEIC] OK em ${Math.round(performance.now() - t0)}ms:`, url.split('/').pop())
+        resolve(blobUrl)
+      } catch (err) {
+        console.error(`[HEIC] FALHOU em ${Math.round(performance.now() - t0)}ms:`, url.split('/').pop(), err)
+        reject(err)
+      } finally {
+        __heicInflight.delete(url)
+        __heicActive--
+        __heicProcessQueue()
+      }
+    }
+
+    __heicQueue.push({ url, run, priority })
+    __heicProcessQueue()
+  })
+
+  __heicInflight.set(url, promise)
+  return promise
+}
+
+/** Hook que devolve uma URL segura para exibir (converte HEIC quando necessário). */
+function useHeicSafeSrc(originalUrl?: string, fileName?: string, priority: HeicPriority = 'normal') {
+  const [state, setState] = useState<{ src?: string; loading: boolean; error: boolean }>(() => {
+    if (!originalUrl) return { src: undefined, loading: false, error: false }
+    if (!isLikelyHeic(originalUrl, fileName)) return { src: originalUrl, loading: false, error: false }
+    const cached = __heicCache.get(originalUrl)
+    if (cached) return { src: cached, loading: false, error: false }
+    return { src: undefined, loading: true, error: false }
+  })
+
+  useEffect(() => {
+    if (!originalUrl) {
+      setState({ src: undefined, loading: false, error: false })
+      return
+    }
+    if (!isLikelyHeic(originalUrl, fileName)) {
+      setState({ src: originalUrl, loading: false, error: false })
+      return
+    }
+    const cached = __heicCache.get(originalUrl)
+    if (cached) {
+      setState({ src: cached, loading: false, error: false })
+      return
+    }
+
+    setState({ src: undefined, loading: true, error: false })
+    let cancelled = false
+
+    convertHeicFromUrl(originalUrl, priority)
+      .then(blobUrl => {
+        if (!cancelled) setState({ src: blobUrl, loading: false, error: false })
+      })
+      .catch(err => {
+        console.error('Erro ao converter HEIC:', originalUrl, err)
+        if (!cancelled) setState({ src: undefined, loading: false, error: true })
+      })
+
+    return () => { cancelled = true }
+  }, [originalUrl, fileName, priority])
+
+  return state
+}
+
+/** Drop-in replacement para <img> que lida com HEIC automaticamente. */
+function SafeImage({
+  src: originalSrc,
+  fileName,
+  className,
+  style,
+  alt,
+  onLoad,
+  onError,
+  onClick,
+  draggable,
+  loading: imgLoading,
+  decoding,
+}: {
+  src?: string
+  fileName?: string
+  className?: string
+  style?: React.CSSProperties
+  alt?: string
+  onLoad?: React.ReactEventHandler<HTMLImageElement>
+  onError?: React.ReactEventHandler<HTMLImageElement>
+  onClick?: React.MouseEventHandler<HTMLElement>
+  draggable?: boolean
+  loading?: 'lazy' | 'eager'
+  decoding?: 'sync' | 'async' | 'auto'
+}) {
+  const { src, loading, error } = useHeicSafeSrc(originalSrc, fileName)
+
+  if (loading) {
+    return (
+      <div
+        className={className}
+        style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', opacity: 1 }}
+        onClick={onClick}
+      >
+        <Loader2 className="h-5 w-5 text-rose-500 animate-spin" />
+      </div>
+    )
+  }
+
+  if (error || !src) {
+    return (
+      <div
+        className={className}
+        style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e5e7eb', opacity: 1 }}
+        onClick={onClick}
+      >
+        <AlertCircle className="h-5 w-5 text-gray-400" />
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      style={style}
+      onLoad={onLoad}
+      onError={onError}
+      onClick={onClick}
+      draggable={draggable}
+      loading={imgLoading}
+      decoding={decoding}
+    />
+  )
+}
 
 // ─── Status Config ────────────────────────────────────────────────────────
 const STATUSES: Record<string, {
@@ -1223,6 +1423,7 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
   const fieldMap = Object.fromEntries(fields.map((f: any) => [f.id, f]))
   const [generatingPDF, setGeneratingPDF] = useState(false)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+  const lightboxState = useHeicSafeSrc(lightboxUrl ?? undefined)
 
   const isImageUrl = (val: any): boolean =>
     typeof val === 'string' && (val.startsWith('http') || val.startsWith('blob:') || val.startsWith('data:image'))
@@ -1376,7 +1577,20 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
       {lightboxUrl && (
         <div className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4" onClick={() => setLightboxUrl(null)}>
           <button className="absolute top-4 right-4 text-white/70 hover:text-white" onClick={() => setLightboxUrl(null)}><X className="h-7 w-7" /></button>
-          <img src={lightboxUrl} alt="Imagem ampliada" className="max-w-full max-h-full object-contain rounded-lg" onClick={e => e.stopPropagation()} />
+          {lightboxState.loading ? (
+            <div className="text-white text-center" onClick={e => e.stopPropagation()}>
+              <Loader2 className="h-12 w-12 animate-spin mx-auto mb-3" />
+              <p className="text-sm">Convertendo HEIC...</p>
+              <p className="text-xs text-white/60 mt-1">Fotos do iPhone precisam ser convertidas</p>
+            </div>
+          ) : lightboxState.error || !lightboxState.src ? (
+            <div className="text-white text-center" onClick={e => e.stopPropagation()}>
+              <AlertCircle className="h-12 w-12 mx-auto mb-3" />
+              <p className="text-sm">Não foi possível carregar a imagem</p>
+            </div>
+          ) : (
+            <img src={lightboxState.src} alt="Imagem ampliada" className="max-w-full max-h-full object-contain rounded-lg" onClick={e => e.stopPropagation()} />
+          )}
         </div>
       )}
 
@@ -1409,7 +1623,7 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
                       ) : (
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                           {imgUrls.map((url, idx) => (
-                            <img key={idx} src={url} alt={`${label} ${idx + 1}`} className="w-full aspect-square object-cover rounded-lg cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxUrl(url)} />
+                            <SafeImage key={idx} src={url} alt={`${label} ${idx + 1}`} className="w-full aspect-square object-cover rounded-lg cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxUrl(url)} />
                           ))}
                         </div>
                       )
@@ -1441,22 +1655,38 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
   }, [prev, next, onClose])
   const photo = photos[index]
+  const mainImage = useHeicSafeSrc(photo?.url, photo?.photo_name)
+
   const handleDownload = async () => {
-  try {
-    const res = await fetch(photo.url)
-    const blob = await res.blob()
-    const blobUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = blobUrl
-    a.download = photo.photo_name
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(blobUrl)
-  } catch {
-    window.open(photo.url, '_blank')
+    try {
+      // Se for HEIC e já temos a versão JPEG convertida em cache, baixa o JPEG (mais útil)
+      if (photo && isLikelyHeic(photo.url, photo.photo_name)) {
+        const cachedJpeg = __heicCache.get(photo.url)
+        if (cachedJpeg) {
+          const a = document.createElement('a')
+          a.href = cachedJpeg
+          a.download = (photo.photo_name || 'foto').replace(/\.(heic|heif)$/i, '.jpg')
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          return
+        }
+      }
+      // Caso contrário, baixa o original
+      const res = await fetch(photo.url)
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = photo.photo_name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch {
+      window.open(photo.url, '_blank')
+    }
   }
-}
   return (
     <div className="fixed inset-0 bg-black/95 z-50 flex flex-col" onClick={onClose}>
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
@@ -1472,7 +1702,21 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
       </div>
       <div className="flex-1 flex items-center justify-center overflow-hidden relative" onClick={e => e.stopPropagation()}>
         {photos.length > 1 && <button onClick={prev} className="absolute left-2 sm:left-4 z-10 p-3 sm:p-3 bg-black/50 hover:bg-black/70 active:bg-black/80 rounded-full text-white touch-manipulation"><ChevronLeft className="h-6 w-6" /></button>}
-        <img src={photo.url} alt={photo.photo_name} className="max-w-full max-h-full object-contain select-none transition-transform duration-200" style={{ transform: `scale(${zoom})`, cursor: zoom > 1 ? 'move' : 'default' }} draggable={false} />
+        {mainImage.loading ? (
+          <div className="text-white text-center px-6">
+            <Loader2 className="h-12 w-12 animate-spin mx-auto mb-3" />
+            <p className="text-sm font-medium">Convertendo HEIC...</p>
+            <p className="text-xs text-white/60 mt-1">Fotos do iPhone precisam ser convertidas</p>
+          </div>
+        ) : mainImage.error || !mainImage.src ? (
+          <div className="text-white text-center px-6">
+            <AlertCircle className="h-12 w-12 mx-auto mb-3" />
+            <p className="text-sm">Não foi possível carregar a imagem</p>
+            <p className="text-xs text-white/60 mt-1 break-all">{photo.photo_name}</p>
+          </div>
+        ) : (
+          <img src={mainImage.src} alt={photo.photo_name} className="max-w-full max-h-full object-contain select-none transition-transform duration-200" style={{ transform: `scale(${zoom})`, cursor: zoom > 1 ? 'move' : 'default' }} draggable={false} />
+        )}
         {photos.length > 1 && <button onClick={next} className="absolute right-2 sm:right-4 z-10 p-3 sm:p-3 bg-black/50 hover:bg-black/70 active:bg-black/80 rounded-full text-white touch-manipulation"><ChevronRight className="h-6 w-6" /></button>}
       </div>
       {photos.length > 1 && (
@@ -1480,7 +1724,7 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
           <div className="flex gap-1.5 sm:gap-2 justify-center overflow-x-auto pb-1">
             {photos.map((p, i) => (
               <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }} className={`flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden transition-all touch-manipulation ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
-                <img src={p.url} alt={p.photo_name} className="w-full h-full object-cover" />
+                <SafeImage src={p.url} fileName={p.photo_name} alt={p.photo_name} className="w-full h-full object-cover" />
               </button>
             ))}
           </div>
@@ -1522,8 +1766,9 @@ function PhotoThumb({ photo, onClick }: { photo: any; onClick: () => void }) {
           <Camera className="h-6 w-6 text-gray-300" />
         </div>
       ) : visible ? (
-        <img
+        <SafeImage
           src={photo.url}
+          fileName={photo.photo_name}
           alt={photo.photo_name}
           className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
           decoding="async"

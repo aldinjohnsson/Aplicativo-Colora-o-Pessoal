@@ -122,9 +122,15 @@ function getSectionTitle(section: string): string {
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
-const DEFAULT_HEADER_COLOR = '#77304F'
-const DEFAULT_BODY_COLOR   = '#645859'
+// Texto: títulos e corpo em preto por padrão (visual limpo, legível).
+// O accent (vinho) permanece para elementos visuais (barras, separadores).
+const DEFAULT_HEADER_COLOR = '#000000'
+const DEFAULT_BODY_COLOR   = '#000000'
 const DEFAULT_ACCENT_COLOR = '#87485E'
+
+// Tamanhos padrão de fonte (pt)
+const DEFAULT_HEADER_SIZE  = 9.5
+const DEFAULT_BODY_SIZE    = 9
 
 const BG_CREAM = rgb(0.976, 0.965, 0.945)
 
@@ -138,15 +144,35 @@ const HEADER_TEXT_Y = PH - 41
 const CONTENT_TOP   = PH - 72
 const CONTENT_BTM   = PH - 800
 
-const IMG_COL_X  = MG
-const IMG_COL_W  = 192
-const IMG_MAX_H  = CONTENT_TOP - CONTENT_BTM - 24
+const IMG_COL_X     = MG
+const IMG_COL_W     = 192   // largura padrão da foto (pt)
+const IMG_DEFAULT_H = 256   // altura padrão da foto (pt) — combina com o editor (192 × 256)
+const IMG_MAX_H     = CONTENT_TOP - CONTENT_BTM - 24  // teto absoluto
 
 const TXT_COL_X  = IMG_COL_X + IMG_COL_W + 16
 const TXT_COL_W  = PW - TXT_COL_X - MG
 
 const TXT_BLOCK_GAP = 8
 const TXT_INDENT    = 10
+
+// ─── Defaults exportados (úteis para o editor sincronizar com o PDF) ─────────
+
+export const PDF_DEFAULTS = {
+  headerSize:  DEFAULT_HEADER_SIZE,
+  bodySize:    DEFAULT_BODY_SIZE,
+  headerColor: DEFAULT_HEADER_COLOR,
+  bodyColor:   DEFAULT_BODY_COLOR,
+  accentColor: DEFAULT_ACCENT_COLOR,
+  photo: {
+    x: IMG_COL_X,
+    y: 72,
+    w: IMG_COL_W,
+    h: IMG_DEFAULT_H,
+  },
+  blockGap:    TXT_BLOCK_GAP,
+  pageMarginH: MG,
+  page: { w: PW, h: PH },
+} as const
 
 // ─── Estilo resolvido ─────────────────────────────────────────────────────────
 
@@ -164,8 +190,8 @@ interface ResolvedStyle {
 async function resolveStyle(pdf: PDFDocument, cfg?: PdfStyleConfig): Promise<ResolvedStyle> {
   const family     = cfg?.headerFont ?? 'Helvetica'
   const bodyFamily = cfg?.bodyFont   ?? 'Helvetica'
-  const headerSize = clamp(cfg?.headerSize ?? 8.5, 6, 20)
-  const bodySize   = clamp(cfg?.bodySize   ?? 7.5, 5, 18)
+  const headerSize = clamp(cfg?.headerSize ?? DEFAULT_HEADER_SIZE, 6, 20)
+  const bodySize   = clamp(cfg?.bodySize   ?? DEFAULT_BODY_SIZE,   5, 18)
   const lineH      = Math.round(bodySize * 1.47)
 
   return {
@@ -458,7 +484,8 @@ function drawItemLabel(
   // (A página de colagem já fazia isso; agora o label abaixo de cada foto também.)
   const cleanedLabel = label.split(/\s*—\s*/)[0].trim() || label
 
-  const fontSize   = labelCfg?.fontSize   ?? 7
+  // Defaults: tamanho do título (9,5pt), bold, uppercase, cor do header (preto por padrão)
+  const fontSize   = labelCfg?.fontSize   ?? DEFAULT_HEADER_SIZE
   const uppercase  = labelCfg?.uppercase  !== false
   const bold       = labelCfg?.bold       !== false
   const labelText  = uppercase ? cleanedLabel.toUpperCase() : cleanedLabel
@@ -514,16 +541,21 @@ async function renderFlowItem(
   let curPage = await newContentPage()
   let textY   = CONTENT_TOP
 
-  // Foto
-  let photoBottomY = CONTENT_TOP   // pdf bottom-origin Y of the lowest edge of the photo
+  // ── Foto (caixa padrão 192 × 256 pt; honra layout.photo se presente) ─────
+  // Largura/altura da CAIXA da foto. A imagem é "contain" dentro dela
+  // (preserva aspect ratio, sem cortar), e top-aligned.
+  const photoBoxW = clamp(layout?.photo?.w ?? IMG_COL_W,     60, IMG_COL_W)
+  const photoBoxH = clamp(layout?.photo?.h ?? IMG_DEFAULT_H, 60, IMG_MAX_H)
+
+  let photoBottomY = CONTENT_TOP   // pdf bottom-origin Y da borda inferior da foto
   let photoDrawX   = IMG_COL_X
-  let photoDrawW   = IMG_COL_W
+  let photoDrawW   = photoBoxW
 
   if (imgEntry) {
     const { image, width: iw, height: ih } = imgEntry
-    const scale  = Math.min(IMG_COL_W / iw, IMG_MAX_H / ih)
+    const scale  = Math.min(photoBoxW / iw, photoBoxH / ih)
     const rw = iw * scale, rh = ih * scale
-    const imgX = IMG_COL_X + (IMG_COL_W - rw) / 2
+    const imgX = IMG_COL_X + (photoBoxW - rw) / 2
     const imgY = CONTENT_TOP - rh
     curPage.drawImage(image, { x: imgX, y: imgY, width: rw, height: rh })
     photoBottomY = imgY
@@ -534,8 +566,11 @@ async function renderFlowItem(
   // Label below photo
   drawItemLabel(curPage, item.label, photoDrawX, photoDrawW, photoBottomY, layout?.labelConfig, itemStyle)
 
+  // Limite vertical da coluna de foto: a base da CAIXA (não da imagem),
+  // garantindo que o texto à direita só transborde pra largura total
+  // depois que ultrapassar a altura reservada à foto.
   const imgBottomY = imgEntry
-    ? CONTENT_TOP - Math.min(IMG_MAX_H, imgEntry.height * Math.min(IMG_COL_W / imgEntry.width, IMG_MAX_H / imgEntry.height))
+    ? CONTENT_TOP - photoBoxH
     : CONTENT_BTM
 
   // Blocos de texto
@@ -605,7 +640,7 @@ async function renderFlowItem(
       const bottomExtra   = lastLineSize  * 0.15
       const barTopY       = textY + topExtra
       const barBottomY    = textY - (rlines.length - 1) * bStyle.lineH - bottomExtra
-      curPage.drawLine({ start: { x: colX - 4, y: barTopY }, end: { x: colX - 4, y: barBottomY }, thickness: 2, color: bStyle.colorHeader, opacity: 0.55 })
+      curPage.drawLine({ start: { x: colX - 4, y: barTopY }, end: { x: colX - 4, y: barBottomY }, thickness: 2, color: bStyle.colorAccent, opacity: 0.7 })
     }
 
     const forcedColor = variant === 'accent' ? rgb(1, 1, 1) : undefined
@@ -644,7 +679,8 @@ async function renderFreeformItem(
 ) {
   const blocks      = layout.blocks ?? []
   const mgH         = layout.pageMarginH ?? MG
-  const photoConfig = layout.photo ?? { x: MG, y: 72, w: 192, h: 700 }
+  // Foto padrão: 192 × 256 pt (combina com a caixa do editor "Pré-visualização").
+  const photoConfig = layout.photo ?? { x: MG, y: 72, w: IMG_COL_W, h: IMG_DEFAULT_H }
 
   // Ordenar por y crescente (topo → rodapé em coordenadas de page-top).
   // Necessário para calcular a altura disponível de cada bloco sem h explícito,
@@ -772,7 +808,7 @@ async function renderFreeformItem(
         page.drawLine({
           start: { x: bx - 4, y: barTopY },
           end:   { x: bx - 4, y: barBottomY },
-          thickness: 2, color: bStyle.colorHeader, opacity: 0.55,
+          thickness: 2, color: bStyle.colorAccent, opacity: 0.7,
         })
       }
 
@@ -803,6 +839,30 @@ async function renderFreeformItem(
 
 // ─── Parsers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Detecta se uma linha é um "título maiúsculo" — usado como delimitador
+ * de blocos: ao encontrar um, tudo abaixo (até o próximo título maiúsculo)
+ * vira o corpo do mesmo bloco. Ao encontrar OUTRO título maiúsculo, começa
+ * um novo bloco.
+ *
+ * Critérios (todos precisam ser verdadeiros):
+ *  - tem ao menos 3 letras
+ *  - todas as letras são maiúsculas
+ *  - não termina com um caractere típico de frase corrente (.,;)
+ *  - não é uma linha "bullet" (começa com •, -, *, →, >)
+ */
+function isUppercaseTitle(line: string): boolean {
+  const t = line.trim()
+  if (!t) return false
+  if (/^[•*\-→>]/.test(t)) return false
+  // Permite ":" no fim (ex: "RESULTADO ESPERADO:") mas não ponto/vírgula
+  if (/[.,;]$/.test(t)) return false
+  // Conta apenas letras (incluindo acentos comuns)
+  const letters = t.replace(/[^A-Za-zÀ-ÿ]/g, '')
+  if (letters.length < 3) return false
+  return letters === letters.toUpperCase()
+}
+
 function parseCaptionBlocks(caption: string): TextBlock[] {
   if (!caption.trim()) return []
 
@@ -810,9 +870,16 @@ function parseCaptionBlocks(caption: string): TextBlock[] {
   const rawLines = caption.split('\n')
   const normalized: string[] = []
 
+  // Insere uma linha em branco ANTES de cada delimitador (emoji-starter
+  // OU título maiúsculo) que aparece na sequência de uma linha não-vazia.
+  // Isso garante que o split por linhas em branco abaixo separe corretamente
+  // os blocos, mesmo quando a IA não deixou parágrafos em branco no caption.
   for (let i = 0; i < rawLines.length; i++) {
-    const t = rawLines[i].trim(), p = i > 0 ? rawLines[i - 1].trim() : ''
-    if (t && p && BLOCK_STARTER_RE.test(t)) normalized.push('')
+    const t = rawLines[i].trim()
+    const p = i > 0 ? rawLines[i - 1].trim() : ''
+    if (t && p && (BLOCK_STARTER_RE.test(t) || isUppercaseTitle(t))) {
+      normalized.push('')
+    }
     normalized.push(rawLines[i])
   }
 
@@ -821,7 +888,7 @@ function parseCaptionBlocks(caption: string): TextBlock[] {
     if (!lines.length) return null
     const first = lines[0]
     const isSection = EMOJI_RE_TEST.test(first)
-      || (first === first.toUpperCase() && first.replace(/[^A-Za-z]/g, '').length >= 4)
+      || isUppercaseTitle(first)
       || /^(MINI DOSSIÊ|RESUMO|LEITURA|TÉCNICA|ERROS|NUANCES|DISTRIBUI|CORES|BALAYAGE)/i.test(first)
     return { lines, isSection, gapBelow: TXT_BLOCK_GAP }
   }).filter(Boolean) as TextBlock[]

@@ -111,9 +111,20 @@ const DEF_MG         = 39.7
 const DEF_PHOTO_X    = DEF_MG
 const DEF_PHOTO_Y    = 72
 const DEF_PHOTO_W    = 192
-const DEF_PHOTO_H    = 700
+const DEF_PHOTO_H    = 256   // foto padrão 192 × 256 pt (mesmo valor do gerador)
 const DEF_TXT_X      = DEF_PHOTO_X + DEF_PHOTO_W + 16
 const DEF_TXT_W      = PW - DEF_TXT_X - DEF_MG
+
+// ─── Defaults de estilo (mesmos valores do templatePDFGenerator) ─────────────
+// Mantidos aqui pra evitar dependência circular com o gerador.
+
+const DEF_HEADER_SIZE  = 9.5
+const DEF_BODY_SIZE    = 9
+const DEF_HEADER_COLOR = '#000000'
+const DEF_BODY_COLOR   = '#000000'
+const DEF_ACCENT_COLOR = '#87485E'
+const DEF_LABEL_SIZE   = 9.5    // tamanho do label abaixo da foto (= tamanho do título)
+const DEF_BLOCK_GAP    = 8
 
 const SNAP_GRID      = 8   // pts
 const HANDLE_SIZE    = 8   // px
@@ -141,13 +152,37 @@ function cleanLine(text: string): string {
     .replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * Detecta se uma linha é um "título maiúsculo" — usado como delimitador
+ * de blocos: tudo abaixo (até o próximo título maiúsculo) vira o corpo
+ * do mesmo bloco.
+ *
+ * Critérios:
+ *  - 3+ letras
+ *  - todas as letras em maiúsculo
+ *  - não é bullet (•, -, *, →, >)
+ *  - não termina com pontuação de frase corrente (.,;)
+ */
+function isUppercaseTitle(line: string): boolean {
+  const t = line.trim()
+  if (!t) return false
+  if (/^[•*\-→>]/.test(t)) return false
+  if (/[.,;]$/.test(t)) return false
+  const letters = t.replace(/[^A-Za-zÀ-ÿ]/g, '')
+  if (letters.length < 3) return false
+  return letters === letters.toUpperCase()
+}
+
 function parseCaption(caption: string): Array<{ lines: string[]; isSection: boolean }> {
   if (!caption.trim()) return []
   const rawLines = caption.split('\n')
   const normalized: string[] = []
+  // Insere uma linha em branco ANTES de qualquer delimitador (emoji-starter
+  // OU título maiúsculo) que apareça em sequência a uma linha não-vazia.
+  // Isso garante o split correto mesmo quando a IA não deixou parágrafo em branco.
   for (let i = 0; i < rawLines.length; i++) {
     const t = rawLines[i].trim(), p = i > 0 ? rawLines[i - 1].trim() : ''
-    if (t && p && BLOCK_START_RE.test(t)) normalized.push('')
+    if (t && p && (BLOCK_START_RE.test(t) || isUppercaseTitle(t))) normalized.push('')
     normalized.push(rawLines[i])
   }
   return normalized.join('\n').split(/\n[ \t]*\n/).map(raw => {
@@ -155,7 +190,7 @@ function parseCaption(caption: string): Array<{ lines: string[]; isSection: bool
     if (!lines.length) return null
     const first = lines[0]
     const isSection = EMOJI_RE_TEST.test(first)
-      || (first === first.toUpperCase() && first.replace(/[^A-Za-z]/g, '').length >= 4)
+      || isUppercaseTitle(first)
       || /^(MINI DOSSIÊ|RESUMO|LEITURA|TÉCNICA|ERROS|NUANCES|DISTRIBUI|CORES|BALAYAGE)/i.test(first)
     return { lines, isSection }
   }).filter(Boolean) as Array<{ lines: string[]; isSection: boolean }>
@@ -166,13 +201,13 @@ function captionToBlocks(caption: string): EditorBlock[] {
     id: `block-${i}-${Date.now()}`,
     rawLines: b.lines,
     isSection: b.isSection,
-    marginBelow: 8,
+    marginBelow: DEF_BLOCK_GAP,
   }))
 }
 
 function estimateBlockH(block: EditorBlock, wPts: number): number {
-  const hSize = block.headerSize ?? 8.5
-  const bSize = block.bodySize   ?? 7.5
+  const hSize = block.headerSize ?? DEF_HEADER_SIZE
+  const bSize = block.bodySize   ?? DEF_BODY_SIZE
   const charW = 4.2
   const cpl   = Math.max(1, Math.floor(wPts / charW))
   let totalH  = 0
@@ -316,9 +351,9 @@ export function PDFLayoutEditor({
     initialLayout?.blocks?.length ? initialLayout.blocks : captionToBlocks(caption)
   )
   const [style, setStyle] = useState<PdfStyleConfig>(() => ({
-    headerFont: 'Helvetica', headerSize: 8.5, headerColor: '#77304F',
-    bodyFont: 'Helvetica', bodySize: 7.5, bodyColor: '#645859',
-    accentColor: '#87485E',
+    headerFont: 'Helvetica', headerSize: DEF_HEADER_SIZE, headerColor: DEF_HEADER_COLOR,
+    bodyFont:   'Helvetica', bodySize:   DEF_BODY_SIZE,   bodyColor:   DEF_BODY_COLOR,
+    accentColor: DEF_ACCENT_COLOR,
     ...initialStyle,
     ...(initialLayout?.style ?? {}),
   }))
@@ -331,7 +366,7 @@ export function PDFLayoutEditor({
 
   // ── Label state ────────────────────────────────────────────────────────────
   const [labelConfig, setLabelConfig] = useState<LabelConfig>(
-    initialLayout?.labelConfig ?? { visible: true, bold: true, uppercase: true }
+    initialLayout?.labelConfig ?? { visible: true, bold: true, uppercase: true, fontSize: DEF_LABEL_SIZE }
   )
 
   // ── Flow mode state ───────────────────────────────────────────────────────
@@ -386,6 +421,37 @@ export function PDFLayoutEditor({
     setStyle(snap.style)
     setPhoto(snap.photo)
   }, [])
+
+  /**
+   * Restaura o padrão visual da empresa: foto 192 × 256 pt, título 9,5 pt,
+   * corpo 9 pt, cores em preto, label sob a foto em preto. Mantém o conteúdo
+   * dos blocos (rawLines/isSection/blockVariant/blockBgColor) e a posição
+   * em freeform — limpa apenas overrides de fonte/cor/tamanho.
+   */
+  const restoreDefaults = useCallback(() => {
+    pushHistory()
+    setStyle({
+      headerFont:  'Helvetica', headerSize:  DEF_HEADER_SIZE, headerColor: DEF_HEADER_COLOR,
+      bodyFont:    'Helvetica', bodySize:    DEF_BODY_SIZE,   bodyColor:   DEF_BODY_COLOR,
+      accentColor: DEF_ACCENT_COLOR,
+    })
+    setPhoto(p => ({ ...p, w: DEF_PHOTO_W, h: DEF_PHOTO_H }))
+    setBlocks(prev => prev.map(b => ({
+      ...b,
+      // Limpa overrides de estilo (volta a usar o style global)
+      fontFamily:  undefined,
+      headerSize:  undefined,
+      bodySize:    undefined,
+      headerColor: undefined,
+      bodyColor:   undefined,
+      marginBelow: DEF_BLOCK_GAP,
+    })))
+    setLabelConfig(c => ({
+      ...c,
+      fontSize: DEF_LABEL_SIZE,
+      color:    undefined,  // volta a herdar headerColor (preto)
+    }))
+  }, [pushHistory])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -635,11 +701,11 @@ export function PDFLayoutEditor({
   const renderBlockContent = (block: EditorBlock, compact = false, maxHeightPts?: number) => {
     const hFont  = FONT_CSS[block.fontFamily ?? style.headerFont ?? 'Helvetica']
     const bFont  = FONT_CSS[block.fontFamily ?? style.bodyFont   ?? 'Helvetica']
-    const hSize  = (block.headerSize ?? style.headerSize ?? 8.5) * SCALE
-    const bSize  = (block.bodySize   ?? style.bodySize   ?? 7.5) * SCALE
+    const hSize  = (block.headerSize ?? style.headerSize ?? DEF_HEADER_SIZE) * SCALE
+    const bSize  = (block.bodySize   ?? style.bodySize   ?? DEF_BODY_SIZE)   * SCALE
     const variant = block.blockVariant ?? 'plain'
-    const hColor = variant === 'accent' ? '#ffffff' : (block.headerColor ?? style.headerColor ?? '#77304F')
-    const bColor = variant === 'accent' ? '#ffffff' : (block.bodyColor   ?? style.bodyColor   ?? '#645859')
+    const hColor = variant === 'accent' ? '#ffffff' : (block.headerColor ?? style.headerColor ?? DEF_HEADER_COLOR)
+    const bColor = variant === 'accent' ? '#ffffff' : (block.bodyColor   ?? style.bodyColor   ?? DEF_BODY_COLOR)
     const titleAlign = block.titleAlign ?? 'left'
     const textAlign  = block.textAlign  ?? 'left'
     // Cada linha usa lineHeight proporcional ao seu próprio fontSize
@@ -725,10 +791,10 @@ export function PDFLayoutEditor({
     const label = rawLabel.split(/\s*—\s*/)[0].trim() || rawLabel
 
     const displayText = (labelConfig.uppercase !== false) ? label.toUpperCase() : label
-    // Mínimo 9px no preview — o PDF usa o tamanho real (7pt), mas na tela 5px é ilegível
-    const fontSizePts = labelConfig.fontSize ?? 7
+    // Mínimo 9px no preview pra legibilidade na tela
+    const fontSizePts = labelConfig.fontSize ?? DEF_LABEL_SIZE
     const fontSize    = Math.max(9, fontSizePts * SCALE)
-    const color       = labelConfig.color ?? (style.headerColor ?? '#77304F')
+    const color       = labelConfig.color ?? (style.headerColor ?? DEF_HEADER_COLOR)
     const fontFamily  = FONT_CSS[labelConfig.fontFamily ?? 'Helvetica']
     const fontWeight  = labelConfig.bold !== false ? 700 : 400
 
@@ -862,6 +928,22 @@ export function PDFLayoutEditor({
               <Grid size={14} />
             </button>
           )}
+          <button
+            onClick={() => {
+              if (window.confirm('Restaurar o padrão?\n\nIsso vai redefinir foto (192 × 256 pt), tamanhos de fonte (título 9,5pt / corpo 9pt) e cores (preto), preservando o conteúdo e a posição dos blocos.')) {
+                restoreDefaults()
+              }
+            }}
+            style={{
+              height: 34, padding: '0 12px', borderRadius: 8,
+              background: 'transparent', border: '1px solid #3a3a44',
+              cursor: 'pointer', color: '#c4a0b8', fontSize: 11, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}
+            title="Restaura foto 192×256, fonte 9,5/9pt e cores em preto. Mantém posição e conteúdo dos blocos."
+          >
+            <RotateCcw size={12} /> Restaurar padrão
+          </button>
           <button onClick={handleSave} style={{
             height: 34, padding: '0 14px', borderRadius: 8,
             background: saved ? '#16a34a' : accent, border: 'none',
@@ -984,7 +1066,7 @@ export function PDFLayoutEditor({
             {/* Header */}
             <div style={{ position: 'absolute', top: 8, left: S_MG, right: S_MG, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ fontSize: 5.5, fontFamily: FONT_CSS.Helvetica, color: accent, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>{sectionTitle}</span>
-              <span style={{ fontSize: 5.5, fontFamily: FONT_CSS.Helvetica, color: style.bodyColor ?? '#645859' }}>{clientName}</span>
+              <span style={{ fontSize: 5.5, fontFamily: FONT_CSS.Helvetica, color: style.bodyColor ?? DEF_BODY_COLOR }}>{clientName}</span>
             </div>
             <div style={{ position: 'absolute', top: 16, left: S_MG, right: S_MG, height: 0.4, background: accent, opacity: 0.2 }} />
 
@@ -1120,7 +1202,7 @@ export function PDFLayoutEditor({
 
                 <div style={{ position: 'absolute', top: 8, left: S_MG, right: S_MG, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <span style={{ fontSize: 5.5, fontFamily: FONT_CSS.Helvetica, color: accent, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>{sectionTitle}</span>
-                  <span style={{ fontSize: 5.5, fontFamily: FONT_CSS.Helvetica, color: style.bodyColor ?? '#645859' }}>{clientName}</span>
+                  <span style={{ fontSize: 5.5, fontFamily: FONT_CSS.Helvetica, color: style.bodyColor ?? DEF_BODY_COLOR }}>{clientName}</span>
                 </div>
                 <div style={{ position: 'absolute', top: 16, left: S_MG, right: S_MG, height: 0.4, background: accent, opacity: 0.2 }} />
 
@@ -1215,8 +1297,8 @@ export function PDFLayoutEditor({
                         // Barra acompanha o tamanho real do texto.
                         // Mesma lógica do PDF: altura proporcional à primeira linha (título)
                         // + linhas seguintes (body).
-                        const titleSize = block.headerSize ?? style.headerSize ?? 8.5
-                        const bodySize  = block.bodySize  ?? style.bodySize  ?? 7.5
+                        const titleSize = block.headerSize ?? style.headerSize ?? DEF_HEADER_SIZE
+                        const bodySize  = block.bodySize  ?? style.bodySize  ?? DEF_BODY_SIZE
                         const nLines    = block.rawLines.filter(l => cleanLine(l).length > 0).length
                         const contentHpts = titleSize * 1.47 + Math.max(0, nLines - 1) * (bodySize * 1.47)
                         const contentHpx  = Math.min(bh - 6, contentHpts * SCALE)
@@ -1308,8 +1390,9 @@ function GlobalPanel({
   promptLabel?: string
 }) {
   const s: Required<PdfStyleConfig> = {
-    headerFont: 'Helvetica', headerSize: 8.5, headerColor: '#77304F',
-    bodyFont: 'Helvetica', bodySize: 7.5, bodyColor: '#645859', accentColor: '#87485E',
+    headerFont: 'Helvetica', headerSize: DEF_HEADER_SIZE, headerColor: DEF_HEADER_COLOR,
+    bodyFont:   'Helvetica', bodySize:   DEF_BODY_SIZE,   bodyColor:   DEF_BODY_COLOR,
+    accentColor: DEF_ACCENT_COLOR,
     ...style,
   }
   const set = (k: keyof PdfStyleConfig, v: any) => onChange({ ...style, [k]: v })
@@ -1399,7 +1482,7 @@ function GlobalPanel({
           </Section>
 
           <Section label="Cor do nome">
-            <ColorPicker value={labelConfig.color ?? (style.headerColor ?? '#77304F')} onChange={v => setLabel({ color: v })} />
+            <ColorPicker value={labelConfig.color ?? (style.headerColor ?? DEF_HEADER_COLOR)} onChange={v => setLabel({ color: v })} />
           </Section>
 
           <Section label="Negrito">
@@ -1474,8 +1557,10 @@ function BlockPanel({ block, mode, onChange, onDelete, onSplit, onMerge, onMoveU
   style: PdfStyleConfig
 }) {
   const s: Required<PdfStyleConfig> = {
-    headerFont: 'Helvetica', headerSize: 8.5, headerColor: '#77304F',
-    bodyFont: 'Helvetica', bodySize: 7.5, bodyColor: '#645859', accentColor: '#87485E', ...style,
+    headerFont: 'Helvetica', headerSize: DEF_HEADER_SIZE, headerColor: DEF_HEADER_COLOR,
+    bodyFont:   'Helvetica', bodySize:   DEF_BODY_SIZE,   bodyColor:   DEF_BODY_COLOR,
+    accentColor: DEF_ACCENT_COLOR,
+    ...style,
   }
   const hasOverride = !!(block.fontFamily || block.headerSize || block.bodySize || block.headerColor || block.bodyColor)
   const resetStyle = () => onChange({ fontFamily: undefined, headerSize: undefined, bodySize: undefined, headerColor: undefined, bodyColor: undefined })
