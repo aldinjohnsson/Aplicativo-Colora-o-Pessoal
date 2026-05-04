@@ -173,27 +173,46 @@ function isUppercaseTitle(line: string): boolean {
   return letters === letters.toUpperCase()
 }
 
+/**
+ * Quebra a caption em blocos seguindo a regra:
+ *  - Toda linha em CAIXA ALTA (com ou sem emoji prefix) inicia um novo bloco.
+ *  - Tudo que vier abaixo — incluindo linhas em branco — pertence ao bloco
+ *    atual até o próximo título em CAIXA ALTA.
+ *  - Linhas em branco internas ao bloco são preservadas para servir como
+ *    espaçamento visual de subgrupos (ex.: "Base:" / "Luz:" / "Controle:"
+ *    dentro de um mesmo bloco "CORES").
+ */
 function parseCaption(caption: string): Array<{ lines: string[]; isSection: boolean }> {
   if (!caption.trim()) return []
+
   const rawLines = caption.split('\n')
-  const normalized: string[] = []
-  // Insere uma linha em branco ANTES de qualquer delimitador (emoji-starter
-  // OU título maiúsculo) que apareça em sequência a uma linha não-vazia.
-  // Isso garante o split correto mesmo quando a IA não deixou parágrafo em branco.
-  for (let i = 0; i < rawLines.length; i++) {
-    const t = rawLines[i].trim(), p = i > 0 ? rawLines[i - 1].trim() : ''
-    if (t && p && (BLOCK_START_RE.test(t) || isUppercaseTitle(t))) normalized.push('')
-    normalized.push(rawLines[i])
+  const result: Array<{ lines: string[]; isSection: boolean }> = []
+  let currentLines: string[] = []
+  let currentIsSection = false
+
+  const flush = () => {
+    while (currentLines.length && !currentLines[0].trim()) currentLines.shift()
+    while (currentLines.length && !currentLines[currentLines.length - 1].trim()) currentLines.pop()
+    if (currentLines.length) {
+      result.push({ lines: [...currentLines], isSection: currentIsSection })
+    }
+    currentLines = []
+    currentIsSection = false
   }
-  return normalized.join('\n').split(/\n[ \t]*\n/).map(raw => {
-    const lines = raw.trim().split('\n').map(l => l.trim()).filter(Boolean)
-    if (!lines.length) return null
-    const first = lines[0]
-    const isSection = EMOJI_RE_TEST.test(first)
-      || isUppercaseTitle(first)
-      || /^(MINI DOSSIÊ|RESUMO|LEITURA|TÉCNICA|ERROS|NUANCES|DISTRIBUI|CORES|BALAYAGE)/i.test(first)
-    return { lines, isSection }
-  }).filter(Boolean) as Array<{ lines: string[]; isSection: boolean }>
+
+  for (const raw of rawLines) {
+    const trimmed = raw.trim()
+    if (isUppercaseTitle(trimmed)) {
+      flush()
+      currentLines.push(trimmed)
+      currentIsSection = true
+    } else {
+      currentLines.push(trimmed)
+    }
+  }
+  flush()
+
+  return result
 }
 
 function captionToBlocks(caption: string): EditorBlock[] {
@@ -202,6 +221,7 @@ function captionToBlocks(caption: string): EditorBlock[] {
     rawLines: b.lines,
     isSection: b.isSection,
     marginBelow: DEF_BLOCK_GAP,
+    blockVariant: 'soft',
   }))
 }
 
@@ -251,11 +271,35 @@ interface FlowPlacement {
   fullWidth: boolean
 }
 
-function paginateFlow(blocks: EditorBlock[], mgH: number): FlowPlacement[][] {
+function paginateFlow(
+  blocks: EditorBlock[],
+  mgH: number,
+  photo: PhotoConfig,
+  labelConfig: LabelConfig,
+): FlowPlacement[][] {
   const narrowW = DEF_TXT_W
   const narrowX = DEF_TXT_X
   const wideW   = PW - 2 * mgH
   const wideX   = mgH
+
+  // Espaço reservado abaixo da foto para o label do preview (em pts).
+  // O label do EDITOR é renderizado como chip (renderLabelPreview):
+  //   - 4px de gap acima do chip
+  //   - chip = padding (2px total) + borda (2px total) + fontSize com line-height ~1.2
+  //   - fonte mínima de 9px no preview pra legibilidade
+  //   - 4px de respiro abaixo pro próximo bloco não encostar
+  // O cálculo é feito em PIXELS (igual à renderização) e convertido pra pts.
+  const labelVisible    = labelConfig.visible !== false
+  const labelSize       = labelConfig.fontSize ?? DEF_LABEL_SIZE
+  const labelFontPx     = Math.max(9, labelSize * SCALE)
+  const labelChipPx     = labelFontPx * 1.2 + 4   // line-height + padding + borda
+  const labelSpacePx    = 4 + labelChipPx + 4     // gap acima + chip + respiro abaixo
+  const labelSpace      = labelVisible ? labelSpacePx / SCALE : 0
+
+  // Bottom dinâmico: usa a posição/altura real da foto + espaço do label.
+  // Substitui a constante FLOW_PHOTO_BOTTOM_PTS, que era hardcoded em DEF_PHOTO_H
+  // e não acompanhava redimensionamentos nem o label abaixo da foto.
+  const dynamicPhotoBottom = photo.y + photo.h + labelSpace
 
   const pages: FlowPlacement[][] = [[]]
   let pageIdx   = 0
@@ -266,11 +310,28 @@ function paginateFlow(blocks: EditorBlock[], mgH: number): FlowPlacement[][] {
     const block = blocks[i]
     const gap   = block.marginBelow ?? 8
 
-    const photoBottom = pageIdx === 0 ? FLOW_PHOTO_BOTTOM_PTS : FLOW_CONTENT_TOP_PTS
+    const photoBottom = pageIdx === 0 ? dynamicPhotoBottom : FLOW_CONTENT_TOP_PTS
 
+    // Caso 1: yCursor já chegou/passou a linha da foto → troca pra full-width.
+    // Math.max garante que o yCursor NUNCA volta pra cima — se um bloco anterior
+    // em narrow extrapolou a foto, o próximo bloco em full-width começa após
+    // esse extrapolamento, e não em cima dele.
     if (pageIdx === 0 && !fullWidth && yCursor >= photoBottom) {
       fullWidth = true
-      yCursor = photoBottom + 4
+      yCursor = Math.max(yCursor, photoBottom + 4)
+    }
+
+    // Caso 2 (pré-check, mesmo que o gerador de PDF faz): se o bloco couber
+    // PARCIALMENTE em narrow mas seu rodapé extrapolaria a linha da foto,
+    // promove direto pra full-width antes de colocá-lo. Sem isso, o bloco fica
+    // em narrow e estoura por baixo, criando sobreposição com o próximo bloco
+    // (que vai pra full-width na linha da foto).
+    if (pageIdx === 0 && !fullWidth) {
+      const narrowH = estimateBlockH(block, narrowW)
+      if (yCursor + narrowH > photoBottom) {
+        fullWidth = true
+        yCursor = Math.max(yCursor, photoBottom + 4)
+      }
     }
 
     if (pageIdx > 0) fullWidth = true
@@ -283,7 +344,7 @@ function paginateFlow(blocks: EditorBlock[], mgH: number): FlowPlacement[][] {
     if (yCursor + totalH > FLOW_CONTENT_BTM_PTS) {
       if (!fullWidth && pageIdx === 0) {
         fullWidth = true
-        yCursor = photoBottom + 4
+        yCursor = Math.max(yCursor, photoBottom + 4)
         colW = wideW; colX = wideX
         h = estimateBlockH(block, colW); totalH = h + gap
       }
@@ -436,22 +497,17 @@ export function PDFLayoutEditor({
       accentColor: DEF_ACCENT_COLOR,
     })
     setPhoto(p => ({ ...p, w: DEF_PHOTO_W, h: DEF_PHOTO_H }))
-    setBlocks(prev => prev.map(b => ({
-      ...b,
-      // Limpa overrides de estilo (volta a usar o style global)
-      fontFamily:  undefined,
-      headerSize:  undefined,
-      bodySize:    undefined,
-      headerColor: undefined,
-      bodyColor:   undefined,
-      marginBelow: DEF_BLOCK_GAP,
-    })))
+    // Regenera os blocos a partir da caption usando o parser atual
+    // (quebra apenas em caixa alta, blank lines preservadas, variant 'soft' default).
+    // Isso descarta edições manuais de texto/posições/variants — necessário para
+    // aplicar mudanças no parser em layouts antigos já salvos.
+    setBlocks(captionToBlocks(caption))
     setLabelConfig(c => ({
       ...c,
       fontSize: DEF_LABEL_SIZE,
       color:    undefined,  // volta a herdar headerColor (preto)
     }))
-  }, [pushHistory])
+  }, [pushHistory, caption])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -718,7 +774,17 @@ export function PDFLayoutEditor({
 
     let lineCount = 0
     return block.rawLines.map((line, i) => {
-      const raw = cleanLine(line); if (!raw) return null
+      const raw = cleanLine(line)
+      // Linha em branco preservada como espaçador vertical
+      if (!raw) {
+        if (lineCount >= maxLines) return null
+        lineCount++
+        return (
+          <div key={i} style={{
+            fontSize: bSize, lineHeight: `${bLineH}px`, userSelect: 'none',
+          }}>&nbsp;</div>
+        )
+      }
       if (lineCount >= maxLines) return null
       lineCount++
       const isFirst = i === 0, isSub = /^[•*\-→>]/.test(raw)
@@ -930,7 +996,7 @@ export function PDFLayoutEditor({
           )}
           <button
             onClick={() => {
-              if (window.confirm('Restaurar o padrão?\n\nIsso vai redefinir foto (192 × 256 pt), tamanhos de fonte (título 9,5pt / corpo 9pt) e cores (preto), preservando o conteúdo e a posição dos blocos.')) {
+              if (window.confirm('Restaurar o padrão?\n\nIsso vai REGERAR os blocos a partir da caption original (cada texto em CAIXA ALTA inicia um bloco) e redefinir foto (192 × 256 pt), tamanhos de fonte (título 9,5pt / corpo 9pt) e cores (preto).\n\nEdições manuais de texto, posições customizadas e variants serão perdidas.')) {
                 restoreDefaults()
               }
             }}
@@ -940,7 +1006,7 @@ export function PDFLayoutEditor({
               cursor: 'pointer', color: '#c4a0b8', fontSize: 11, fontWeight: 600,
               display: 'flex', alignItems: 'center', gap: 5,
             }}
-            title="Restaura foto 192×256, fonte 9,5/9pt e cores em preto. Mantém posição e conteúdo dos blocos."
+            title="Regenera os blocos a partir da caption (cada texto em CAIXA ALTA inicia um bloco) e restaura foto 192×256, fonte 9,5/9pt e cores em preto."
           >
             <RotateCcw size={12} /> Restaurar padrão
           </button>
@@ -971,7 +1037,7 @@ export function PDFLayoutEditor({
 
         {/* ── Canvas area ──────────────────────────────────────────────── */}
         {(() => {
-          const flowPages = layoutMode === 'flow' ? paginateFlow(blocks, mgH) : null
+          const flowPages = layoutMode === 'flow' ? paginateFlow(blocks, mgH, photo, labelConfig) : null
           const freePageCount = layoutMode === 'freeform' ? paginateFreeformPages(blocks, photo) : 1
           const pageCount = flowPages?.length ?? freePageCount
           const totalH = pageCount * CH + (pageCount - 1) * PAGE_GAP_PX

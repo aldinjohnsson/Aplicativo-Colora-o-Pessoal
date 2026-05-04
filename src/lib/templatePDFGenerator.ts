@@ -566,11 +566,18 @@ async function renderFlowItem(
   // Label below photo
   drawItemLabel(curPage, item.label, photoDrawX, photoDrawW, photoBottomY, layout?.labelConfig, itemStyle)
 
-  // Limite vertical da coluna de foto: a base da CAIXA (não da imagem),
-  // garantindo que o texto à direita só transborde pra largura total
-  // depois que ultrapassar a altura reservada à foto.
+  // Limite vertical da coluna de foto: a base da CAIXA + espaço reservado pro
+  // label desenhado abaixo (mesmo cálculo do drawItemLabel: 6pt gap acima +
+  // fontSize do label + 4pt gap abaixo). Sem isso, o primeiro bloco em
+  // largura cheia abaixo da foto pode sobrepor o label.
+  const labelCfg     = layout?.labelConfig
+  const labelVisible = labelCfg?.visible !== false
+  const labelSize    = labelCfg?.fontSize ?? DEFAULT_HEADER_SIZE
+  const labelSpace   = imgEntry && labelVisible && (item.label?.trim() ?? '') !== ''
+    ? labelSize + 10
+    : 0
   const imgBottomY = imgEntry
-    ? CONTENT_TOP - photoBoxH
+    ? CONTENT_TOP - photoBoxH - labelSpace
     : CONTENT_BTM
 
   // Blocos de texto
@@ -599,7 +606,16 @@ async function renderFlowItem(
     if (!fullWidth && textY > imgBottomY) {
       const testLines  = renderBlockLines(block, TXT_COL_W - hPad.left - hPad.right, bStyle)
       const testBlockH = testLines.length * bStyle.lineH + blockGap + vPad.top + vPad.bottom
-      if (textY - testBlockH < imgBottomY) { fullWidth = true; textY = imgBottomY - 4 }
+      if (textY - testBlockH < imgBottomY) {
+        fullWidth = true
+        // Para variants com fundo visual (soft/card/outline/accent), o topo do fundo do
+        // bloco sobe exatamente `lineH - 2` acima de textY (o vPad.top é subtraído de textY
+        // na linha 632 MAS somado de volta em bgTopY na linha 637, cancelando-se).
+        // Se não compensarmos aqui, esse overhang invade a faixa reservada ao label,
+        // desenhando o fundo sobre o texto abaixo da foto.
+        const bgOverhang = variant !== 'plain' ? bStyle.lineH - 2 : 0
+        textY = imgBottomY - bgOverhang - 4
+      }
     }
 
     let useFullW = fullWidth || textY <= imgBottomY
@@ -863,35 +879,55 @@ function isUppercaseTitle(line: string): boolean {
   return letters === letters.toUpperCase()
 }
 
+/**
+ * Quebra a caption em blocos seguindo a regra:
+ *  - Toda linha em CAIXA ALTA inicia um novo bloco (com ou sem emoji prefix).
+ *  - Tudo o que vier abaixo — incluindo linhas em branco — pertence ao bloco
+ *    atual até o próximo título em CAIXA ALTA.
+ *  - Linhas em branco internas ao bloco são preservadas (renderizadas como
+ *    espaçamento vertical), permitindo separação visual de subgrupos como
+ *    "Base:" / "Luz:" / "Controle:" dentro de um mesmo bloco "CORES".
+ *
+ * Conteúdo que apareça antes do primeiro título (preâmbulo) vira um bloco
+ * sem isSection.
+ */
 function parseCaptionBlocks(caption: string): TextBlock[] {
   if (!caption.trim()) return []
 
-  const BLOCK_STARTER_RE = /^[🎯🎨🥇✨💡❌🧠📌🚫👉]/u
   const rawLines = caption.split('\n')
-  const normalized: string[] = []
+  const blocks: TextBlock[] = []
+  let currentLines: string[] = []
+  let currentIsSection = false
 
-  // Insere uma linha em branco ANTES de cada delimitador (emoji-starter
-  // OU título maiúsculo) que aparece na sequência de uma linha não-vazia.
-  // Isso garante que o split por linhas em branco abaixo separe corretamente
-  // os blocos, mesmo quando a IA não deixou parágrafos em branco no caption.
-  for (let i = 0; i < rawLines.length; i++) {
-    const t = rawLines[i].trim()
-    const p = i > 0 ? rawLines[i - 1].trim() : ''
-    if (t && p && (BLOCK_STARTER_RE.test(t) || isUppercaseTitle(t))) {
-      normalized.push('')
+  const flush = () => {
+    // Remove linhas em branco do início e do fim do bloco — internas mantêm.
+    while (currentLines.length && !currentLines[0].trim()) currentLines.shift()
+    while (currentLines.length && !currentLines[currentLines.length - 1].trim()) currentLines.pop()
+    if (currentLines.length) {
+      blocks.push({
+        lines: [...currentLines],
+        isSection: currentIsSection,
+        gapBelow: TXT_BLOCK_GAP,
+        blockVariant: 'soft',
+      })
     }
-    normalized.push(rawLines[i])
+    currentLines = []
+    currentIsSection = false
   }
 
-  return normalized.join('\n').split(/\n[ \t]*\n/).map(raw => {
-    const lines = raw.trim().split('\n').map(l => l.trim()).filter(Boolean)
-    if (!lines.length) return null
-    const first = lines[0]
-    const isSection = EMOJI_RE_TEST.test(first)
-      || isUppercaseTitle(first)
-      || /^(MINI DOSSIÊ|RESUMO|LEITURA|TÉCNICA|ERROS|NUANCES|DISTRIBUI|CORES|BALAYAGE)/i.test(first)
-    return { lines, isSection, gapBelow: TXT_BLOCK_GAP }
-  }).filter(Boolean) as TextBlock[]
+  for (const raw of rawLines) {
+    const trimmed = raw.trim()
+    if (isUppercaseTitle(trimmed)) {
+      flush()
+      currentLines.push(trimmed)
+      currentIsSection = true
+    } else {
+      currentLines.push(trimmed)
+    }
+  }
+  flush()
+
+  return blocks
 }
 
 // ─── Desenho de fundo do bloco (soft / card / outline / accent) ──────────────
@@ -1060,7 +1096,17 @@ function renderBlockLines(block: TextBlock, maxWidth: number, style: ResolvedSty
   const titleAlign = block.titleAlign ?? 'left'
   const textAlign  = block.textAlign  ?? 'left'
   for (let i = 0; i < block.lines.length; i++) {
-    const raw = cleanLine(block.lines[i]); if (!raw) continue
+    const raw = cleanLine(block.lines[i])
+    if (!raw) {
+      // Linha em branco: preserva como espaçamento vertical (uma linha vazia)
+      // para separar visualmente subgrupos dentro de um mesmo bloco
+      // (ex.: "Base:" / "Luz:" / "Controle:" sob "CORES").
+      result.push({
+        text: '', bold: false, size: style.bodySize, indent: false,
+        color: style.colorBody, align: 'left', isLastWrapped: true,
+      })
+      continue
+    }
     const isFirst = i === 0, isSub = /^[•*\-→>]/.test(raw)
     const bold = isFirst && block.isSection
     const size = bold ? style.headerSize : style.bodySize

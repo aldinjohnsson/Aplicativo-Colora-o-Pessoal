@@ -402,7 +402,20 @@ export function FoldersManager() {
   const updatePrompt = (catId: string, pId: string, u: Partial<Prompt>) => {
     const cat = config.categories.find(c => c.id === catId)
     if (!cat) return
-    updateCat(catId, { prompts: cat.prompts.map(p => p.id === pId ? { ...p, ...u } : p) })
+    updateCat(catId, {
+      prompts: cat.prompts.map(p => {
+        if (p.id !== pId) return p
+        const updated = { ...p, ...u }
+        // Quando o texto de referência muda e já existe um pdfLayout com blocos,
+        // re-sincroniza os rawLines preservando estilos (variant, cores, posição).
+        // Garante que reordenar seções no tintReference reflita imediatamente no PDF.
+        if ((u.tintReference !== undefined || u.reference !== undefined) && updated.pdfLayout?.blocks?.length) {
+          const newText = u.tintReference !== undefined ? (updated.tintReference ?? '') : (updated.reference ?? '')
+          updated.pdfLayout = syncLayoutBlocks(updated.pdfLayout, newText)
+        }
+        return updated
+      }),
+    })
   }
 
   /** Substitui um prompt inteiro (usado ao cancelar edição e restaurar snapshot) */
@@ -564,6 +577,36 @@ export function FoldersManager() {
 
   function blockLinesToText(blocks: Array<{ rawLines: string[] }>): string {
     return blocks.map(b => b.rawLines.join('\n')).join('\n\n')
+  }
+
+  /**
+   * Reconstrói os blocos de um pdfLayout a partir de um novo texto de referência,
+   * preservando os estilos (variant, cor, fonte, posição) de cada bloco correspondente.
+   * Usado para manter o layout sincronizado quando o usuário edita tintReference/reference
+   * após já ter configurado um pdfLayout.
+   */
+  function syncLayoutBlocks(layout: ItemLayout, newText: string): ItemLayout {
+    const newBaseBlocks = parseRefToBlocks(newText)
+    const fallback = layout.blocks[layout.blocks.length - 1] ?? {}
+    const styledBlocks = newBaseBlocks.map((b, i) => {
+      const s = layout.blocks[i] ?? fallback
+      return {
+        ...b,
+        marginBelow:  s.marginBelow  ?? 8,
+        fontFamily:   s.fontFamily,
+        headerSize:   s.headerSize,
+        bodySize:     s.bodySize,
+        headerColor:  s.headerColor,
+        bodyColor:    s.bodyColor,
+        blockVariant: s.blockVariant,
+        blockBgColor: s.blockBgColor,
+        titleAlign:   s.titleAlign,
+        textAlign:    s.textAlign,
+        isSection:    s.isSection    ?? b.isSection,
+        w: s.w, h: s.h, x: s.x, y: s.y,
+      }
+    })
+    return { ...layout, blocks: styledBlocks }
   }
 
   const toggleBlockEditor = (pId: string) => {

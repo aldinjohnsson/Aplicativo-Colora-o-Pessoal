@@ -372,6 +372,35 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     return undefined
   }
 
+  // ── Helpers para sincronizar rawLines com o texto atual antes de gerar o PDF ──
+  // Independente do que está salvo no banco, re-derivamos os blocos a partir do
+  // tintReference/reference atual do prompt. Isso garante que mudanças na ordem
+  // das seções (ex.: NUANCES antes de CORES) sejam refletidas imediatamente,
+  // sem precisar reabrir o editor de layout.
+  const SECTION_RE = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}]/u
+  function pdfParseBlocks(text: string): Array<{ id: string; rawLines: string[]; isSection: boolean }> {
+    if (!text.trim()) return [{ id: 'b0', rawLines: [''], isSection: false }]
+    return text.split(/\n[ \t]*\n/).map((raw, i) => {
+      const lines = raw.trim().split('\n').map(l => l.trim()).filter(Boolean)
+      if (!lines.length) return null
+      const first = lines[0]
+      const isSection = SECTION_RE.test(first) || (first === first.toUpperCase() && first.replace(/[^A-Za-z]/g, '').length >= 4)
+      return { id: `b${i}`, rawLines: lines, isSection }
+    }).filter(Boolean) as any[]
+  }
+  function pdfSyncLayout(layout: ItemLayout, text: string): ItemLayout {
+    if (!layout.blocks?.length) return layout
+    const freshBlocks = pdfParseBlocks(text)
+    const fallback = layout.blocks[layout.blocks.length - 1] ?? {}
+    return {
+      ...layout,
+      blocks: freshBlocks.map((b, i) => {
+        const s = layout.blocks[i] ?? fallback
+        return { ...b, marginBelow: s.marginBelow ?? 8, fontFamily: s.fontFamily, headerSize: s.headerSize, bodySize: s.bodySize, headerColor: s.headerColor, bodyColor: s.bodyColor, blockVariant: s.blockVariant, blockBgColor: s.blockBgColor, titleAlign: s.titleAlign, textAlign: s.textAlign, isSection: s.isSection ?? b.isSection, w: s.w, h: s.h, x: s.x, y: s.y }
+      }),
+    }
+  }
+
   const generatePDF = async () => {
     const selected = imageMsgs.filter(m => pdfSelected.has(m.id))
     if (!selected.length) return
@@ -382,7 +411,17 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         if (folderConfig?.folderName) {
           const { data: rows } = await supabase.from('ai_folders').select('config').eq('name', folderConfig.folderName).limit(1)
           const raw = rows?.[0]?.config; const cfg = typeof raw === 'string' ? JSON.parse(raw) : raw
-          for (const cat of cfg?.categories ?? []) { for (const p of cat?.prompts ?? []) { if (p?.id && p?.pdfLayout) freshLayoutMap.set(p.id, p.pdfLayout) } }
+          for (const cat of cfg?.categories ?? []) {
+            for (const p of cat?.prompts ?? []) {
+              if (p?.id && p?.pdfLayout) {
+                // Re-sincroniza os rawLines com o texto atual do prompt antes de usar.
+                // Evita que a ordem antiga (salva nos rawLines) sobreponha a ordem atual
+                // do tintReference/reference quando o usuário reordena seções.
+                const refText = (cat.type === 'cabelo' ? p.tintReference : p.reference) || ''
+                freshLayoutMap.set(p.id, pdfSyncLayout(p.pdfLayout, refText))
+              }
+            }
+          }
         }
       } catch {}
       const getLayout = (promptId?: string): ItemLayout | undefined => (promptId ? freshLayoutMap.get(promptId) : undefined) ?? findPromptLayout(promptId)
