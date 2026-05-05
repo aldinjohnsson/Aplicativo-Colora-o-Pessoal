@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, useTransition, memo } from 'react'
+import { createPortal } from 'react-dom'
 import {
   X,
   ChevronLeft,
@@ -731,22 +732,31 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
         )}
       </div>
 
-      {/* Modal Fullscreen com Carousel */}
-      {selectedIndex !== null && !imageErrors.has(photos[selectedIndex].id) && (
+      {/* Modal Fullscreen com Carousel — Portal para escapar de overflow/transform no iOS */}
+      {selectedIndex !== null && !imageErrors.has(photos[selectedIndex].id) && createPortal(
         <div
-          className="fixed inset-0 bg-black z-50 flex items-center justify-center"
+          className="fixed inset-0 bg-black flex items-center justify-center"
+          style={{ zIndex: 99999 }}
           onClick={closeFullscreen}
           onTouchEnd={(e) => { if (e.target === e.currentTarget) closeFullscreen() }}
         >
-          {/* Botão fechar — mobile, fixo no topo esquerdo, grande e fácil de tocar */}
+          {/* Botão fechar — mobile, fixo no topo esquerdo com safe area */}
           <button
             onClick={closeFullscreen}
-            className="sm:hidden absolute top-3 left-3 z-20 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/60 active:bg-black/80"
-            style={{ touchAction: 'manipulation' }}
+            className="sm:hidden absolute left-3 z-20 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/70 active:bg-black/90"
+            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)', touchAction: 'manipulation' }}
           >
             <ChevronLeft className="h-5 w-5 text-white" />
-            <span className="text-white text-sm font-medium">Voltar</span>
+            <span className="text-white text-sm font-semibold">Voltar</span>
           </button>
+
+          {/* Contador de fotos — mobile, topo centro */}
+          <div
+            className="sm:hidden absolute z-20 text-white/80 text-sm font-medium pointer-events-none"
+            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 18px)', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}
+          >
+            {selectedIndex + 1} / {photos.length}
+          </div>
           {/* Header */}
           <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 to-transparent p-4 z-10">
             <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -935,11 +945,12 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
             </div>
           )}
 
-          {/* Instruções */}
-          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 text-white/60 text-xs text-center z-10 pointer-events-none">
+          {/* Instruções — só desktop */}
+          <div className="hidden sm:block absolute bottom-20 left-1/2 -translate-x-1/2 text-white/60 text-xs text-center z-10 pointer-events-none">
             <p>Use as setas ← → para navegar · +/- para zoom · Esc para fechar</p>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )
