@@ -398,18 +398,175 @@ function getSeasonTagStyle(value: string): { bg: string; color: string; border: 
   return { bg: 'rgba(107,114,128,0.10)', color: '#374151', border: 'rgba(107,114,128,0.25)' }
 }
 
+// ─── QuickMoveButton ─────────────────────────────────────────────────────────
+function QuickMoveButton({ currentStatus, theme: t, onMove, columnLabels = {} }: {
+  currentStatus: string; theme: Theme; onMove: (targetStatus: string) => void
+  columnLabels?: Record<string, string>
+}) {
+  const [open, setOpen] = useState(false)
+  const [popPos, setPopPos] = useState<{ top: number; left: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+
+  const currentIdx = COL_ORDER.indexOf(currentStatus)
+  const nextStatus = currentIdx < COL_ORDER.length - 1 ? COL_ORDER[currentIdx + 1] : null
+  const nextCfg = nextStatus ? STATUSES[nextStatus] : null
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target as Node) &&
+        (!popRef.current || !popRef.current.contains(e.target as Node))
+      ) setOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  const handleOpen = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (open) { setOpen(false); return }
+    const rect = btnRef.current?.getBoundingClientRect()
+    if (rect) {
+      setPopPos({
+        top: rect.bottom + 4,
+        left: Math.min(rect.right - 218, window.innerWidth - 226),
+      })
+    }
+    setOpen(true)
+  }
+
+  return (
+    <div style={{ position: 'relative', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+      <button
+        ref={btnRef}
+        onClick={handleOpen}
+        title="Avançar etapa"
+        style={{
+          background: 'transparent',
+          border: `1px solid ${open ? 'rgba(99,102,241,0.45)' : 'rgba(99,102,241,0.22)'}`,
+          cursor: 'pointer',
+          padding: '3px 10px',
+          color: open ? '#4338ca' : 'rgba(79,70,229,0.65)',
+          borderRadius: 20,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+          fontSize: 11, fontWeight: 500, letterSpacing: 0.1,
+          transition: 'all 0.15s',
+          lineHeight: 1,
+        }}
+        onMouseEnter={e => {
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.background = 'rgba(99,102,241,0.08)'
+          el.style.borderColor = 'rgba(99,102,241,0.45)'
+          el.style.color = '#4338ca'
+        }}
+        onMouseLeave={e => {
+          if (!open) {
+            const el = e.currentTarget as HTMLButtonElement
+            el.style.background = 'transparent'
+            el.style.borderColor = 'rgba(99,102,241,0.22)'
+            el.style.color = 'rgba(79,70,229,0.65)'
+          }
+        }}
+      >
+        Avançar <ChevronRight size={10} strokeWidth={2} />
+      </button>
+
+      {open && popPos && (
+        <div
+          ref={popRef}
+          style={{
+            position: 'fixed', top: popPos.top, left: popPos.left,
+            background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10,
+            boxShadow: '0 8px 28px rgba(0,0,0,0.20)', zIndex: 9999, width: 218,
+          }}
+        >
+          {/* Header */}
+          <div style={{ padding: '8px 12px 6px', borderBottom: `1px solid ${t.border}` }}>
+            <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: t.text3, textTransform: 'uppercase', letterSpacing: 0.8 }}>
+              Mover etapa
+            </p>
+          </div>
+
+          {/* Próxima etapa — destaque */}
+          {nextStatus && nextCfg && (
+            <div style={{ padding: '8px 10px 4px' }}>
+              <p style={{ margin: '0 0 4px 2px', fontSize: 10, fontWeight: 600, color: t.text3 }}>⚡ Próxima etapa</p>
+              <button
+                onClick={() => { onMove(nextStatus); setOpen(false) }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                  background: `${nextCfg.color}18`, color: nextCfg.textColor,
+                  fontSize: 12, fontWeight: 700, textAlign: 'left', transition: 'filter 0.12s',
+                }}
+                onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.filter = 'brightness(0.93)'}
+                onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.filter = 'none'}
+              >
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: nextCfg.color, flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>{getColLabel(nextStatus!, columnLabels, 'label')}</span>
+                <ChevronRight size={12} />
+              </button>
+            </div>
+          )}
+
+          {/* Lista completa */}
+          <div style={{ padding: '4px 10px', borderTop: nextStatus ? `1px solid ${t.border}` : 'none', marginTop: nextStatus ? 4 : 0 }}>
+            <p style={{ margin: '6px 0 4px 2px', fontSize: 10, fontWeight: 600, color: t.text3 }}>Todas as etapas</p>
+            <div style={{ maxHeight: 220, overflowY: 'auto', paddingRight: 2 }}>
+              {COL_ORDER.map(statusKey => {
+                const cfg = STATUSES[statusKey]
+                const isCurrent = statusKey === currentStatus
+                const isNext = statusKey === nextStatus
+                return (
+                  <button
+                    key={statusKey}
+                    disabled={isCurrent}
+                    onClick={() => { onMove(statusKey); setOpen(false) }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                      padding: '7px 8px', borderRadius: 6, border: 'none',
+                      cursor: isCurrent ? 'default' : 'pointer',
+                      background: isCurrent ? t.surface2 : 'none',
+                      color: isCurrent ? t.text3 : t.text2,
+                      fontSize: 12, fontWeight: isCurrent ? 700 : 400, textAlign: 'left',
+                      opacity: isCurrent ? 0.6 : 1, transition: 'background 0.1s',
+                    }}
+                    onMouseEnter={e => { if (!isCurrent) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
+                    onMouseLeave={e => { if (!isCurrent) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+                  >
+                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
+                    <span style={{ flex: 1 }}>{getColLabel(statusKey, columnLabels, 'label')}</span>
+                    {isCurrent && <span style={{ fontSize: 10, color: t.text3 }}>atual</span>}
+                    {isNext && !isCurrent && <span style={{ fontSize: 10, color: cfg.color, fontWeight: 600 }}>próxima</span>}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div style={{ height: 6 }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
-  onDragStart, isDragging,
+  onDragStart, isDragging, onQuickMove, columnLabels = {},
 }: {
   client: Client; deadline?: DeadlineData | null; theme: Theme
   onView: () => void; onArchive: () => void; onDelete: () => void; onStar: () => void
   compact: boolean; starred: boolean
   onDragStart?: () => void
   isDragging?: boolean
+  onQuickMove?: (targetStatus: string) => void
+  columnLabels?: Record<string, string>
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuPopRef = useRef<HTMLDivElement>(null)
   const dl = getDeadlineInfo(client, deadline)
   const [bgColor, fgColor] = getAvatarColor(client.full_name)
   const needsReview = client.status === 'photos_submitted'
@@ -420,7 +577,10 @@ function KanbanCard({
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+      if (
+        menuRef.current && !menuRef.current.contains(e.target as Node) &&
+        (!menuPopRef.current || !menuPopRef.current.contains(e.target as Node))
+      ) setMenuOpen(false)
     }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
@@ -491,21 +651,36 @@ function KanbanCard({
           )}
         </div>
 
+        {/* Quick-move button */}
+        {onQuickMove && (
+          <QuickMoveButton
+            currentStatus={client.status}
+            theme={t}
+            onMove={onQuickMove}
+            columnLabels={columnLabels}
+          />
+        )}
+
         {/* Context menu */}
         <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
           <button
-            onClick={() => setMenuOpen(v => !v)}
+            onClick={e => {
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setMenuPos({ top: rect.bottom + 4, left: Math.min(rect.right - 160, window.innerWidth - 168) })
+              setMenuOpen(v => !v)
+            }}
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', color: t.text3, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: 0.5 }}
             onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
             onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.5'; (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
           >
             <MoreHorizontal size={14} />
           </button>
-          {menuOpen && (
-            <div style={{
-              position: 'absolute', right: 0, top: 22, background: t.surface,
+          {menuOpen && menuPos && (
+            <div ref={menuPopRef} style={{
+              position: 'fixed', top: menuPos.top, left: menuPos.left,
+              background: t.surface,
               border: `1px solid ${t.border}`, borderRadius: 8,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 100, minWidth: 160, overflow: 'hidden',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 9999, minWidth: 160, overflow: 'hidden',
             }}>
               {[
                 { icon: Eye,     label: 'Abrir cliente',                  action: onView,    color: t.text    },
@@ -577,6 +752,8 @@ function KanbanColumn({
   onDragStart, onDrop, draggingClientId,
   displayLabel,
   onRenameLabel,
+  onQuickMove,
+  columnLabels = {},
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -588,6 +765,8 @@ function KanbanColumn({
   draggingClientId?: string | null
   displayLabel: string
   onRenameLabel: (newName: string) => Promise<void>
+  onQuickMove?: (clientId: string, targetStatus: string) => void
+  columnLabels?: Record<string, string>
 }) {
   const cfg = STATUSES[statusKey]
   const dangerCount = clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length
@@ -648,12 +827,13 @@ function KanbanColumn({
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragOver(false) }}
       onDrop={e => { e.preventDefault(); setIsDragOver(false); onDrop?.(statusKey) }}
       style={{
-        flexShrink: 0, width: 'clamp(240px, 80vw, 380px)',
+        flexShrink: 0,
+        width: 'clamp(240px, calc(100vw - 24px), 310px)',
         background: isDragOver ? cfg.bg : t.colBg,
         borderRadius: 12,
         border: isDragOver ? `2px dashed ${cfg.color}` : `1px solid ${t.border}`,
         display: 'flex', flexDirection: 'column',
-        maxHeight: '100%', overflow: 'hidden',
+        overflow: 'hidden',
         transition: 'background 0.15s, border 0.15s',
       }}
     >
@@ -748,7 +928,7 @@ function KanbanColumn({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6, minHeight: 0 }}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
             <p style={{ fontSize: 12, margin: 0 }}>
@@ -764,6 +944,8 @@ function KanbanColumn({
               isDragging={draggingClientId === client.id}
               onView={() => onView(client.id)} onArchive={() => onArchive(client.id)}
               onDelete={() => onDelete(client.id)} onStar={() => onStar(client.id)}
+              onQuickMove={onQuickMove ? (targetStatus) => onQuickMove(client.id, targetStatus) : undefined}
+              columnLabels={columnLabels}
             />
           ))
         )}
@@ -1071,7 +1253,24 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
   // ── Drag & Drop state ──────────────────────────────────────────────────
   const [draggingClientId, setDraggingClientId] = useState<string | null>(null)
+  // Ref síncrona — atualizada junto com o state, mas lida sem closure stale
+  const draggingClientIdRef = useRef<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
+
+  // ── Board pan (desktop click-to-scroll) + auto-scroll on drag ─────────
+  const boardRef = useRef<HTMLDivElement>(null)
+  const isPanningRef = useRef(false)
+  const [isPanning, setIsPanning] = useState(false)
+  const panStartX = useRef(0)
+  const scrollStartX = useRef(0)
+  const autoScrollAnimRef = useRef<number | null>(null)
+  const autoScrollDirRef = useRef<'left' | 'right' | null>(null)
+  const autoScrollSpeedRef = useRef(0)
+  // inertia
+  const velocityRef = useRef(0)
+  const lastMouseX = useRef(0)
+  const lastMouseTime = useRef(0)
+  const inertiaRef = useRef<number | null>(null)
 
   // ── Labels customizadas das colunas ──────────────────────────────────
   const [columnLabels, setColumnLabels] = useState<Record<string, string>>({})
@@ -1088,9 +1287,147 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
   // Limpa o estado de drag se o usuário soltar fora de qualquer coluna
   useEffect(() => {
-    const h = () => setDraggingClientId(null)
+    const h = () => {
+      setDraggingClientId(null)
+      draggingClientIdRef.current = null
+      if (autoScrollAnimRef.current !== null) {
+        cancelAnimationFrame(autoScrollAnimRef.current)
+        autoScrollAnimRef.current = null
+      }
+      autoScrollDirRef.current = null
+    }
     document.addEventListener('dragend', h)
     return () => document.removeEventListener('dragend', h)
+  }, [])
+
+  // ── Board pan handlers (desktop click-to-scroll via document listeners) ──
+  const stopInertia = useCallback(() => {
+    if (inertiaRef.current !== null) {
+      cancelAnimationFrame(inertiaRef.current)
+      inertiaRef.current = null
+    }
+  }, [])
+
+  const applyInertia = useCallback(() => {
+    if (!boardRef.current || Math.abs(velocityRef.current) < 0.3) {
+      inertiaRef.current = null
+      return
+    }
+    boardRef.current.scrollLeft += velocityRef.current
+    velocityRef.current *= 0.92
+    inertiaRef.current = requestAnimationFrame(applyInertia)
+  }, [])
+
+  const handleBoardMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement
+    if (
+      target.closest('[draggable="true"]') ||
+      target.closest('button') ||
+      target.closest('input') ||
+      target.closest('select') ||
+      target.closest('textarea')
+    ) return
+    if (!boardRef.current) return
+    stopInertia()
+    isPanningRef.current = true
+    setIsPanning(true)
+    panStartX.current = e.clientX
+    scrollStartX.current = boardRef.current.scrollLeft
+    velocityRef.current = 0
+    lastMouseX.current = e.clientX
+    lastMouseTime.current = performance.now()
+    e.preventDefault()
+
+    // Usa rAF para coalescer updates — sem jitter por excesso de mousemove
+    let rafPending = false
+    let pendingX = e.clientX
+
+    const handleGlobalMove = (ev: MouseEvent) => {
+      if (!isPanningRef.current) return
+      pendingX = ev.clientX
+      if (rafPending) return
+      rafPending = true
+      requestAnimationFrame(() => {
+        rafPending = false
+        if (!isPanningRef.current || !boardRef.current) return
+        const dx = pendingX - panStartX.current
+        boardRef.current.scrollLeft = scrollStartX.current - dx
+        const now = performance.now()
+        const dt = now - lastMouseTime.current
+        if (dt > 0) velocityRef.current = (lastMouseX.current - pendingX) / dt * 16
+        lastMouseX.current = pendingX
+        lastMouseTime.current = now
+      })
+    }
+
+    const handleGlobalUp = () => {
+      if (!isPanningRef.current) return
+      isPanningRef.current = false
+      setIsPanning(false)
+      inertiaRef.current = requestAnimationFrame(applyInertia)
+      document.removeEventListener('mousemove', handleGlobalMove)
+      document.removeEventListener('mouseup', handleGlobalUp)
+    }
+
+    document.addEventListener('mousemove', handleGlobalMove)
+    document.addEventListener('mouseup', handleGlobalUp)
+  }, [stopInertia, applyInertia])
+
+  // ── Auto-scroll durante drag ───────────────────────────────────────────
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollAnimRef.current !== null) {
+      cancelAnimationFrame(autoScrollAnimRef.current)
+      autoScrollAnimRef.current = null
+    }
+    autoScrollDirRef.current = null
+    autoScrollSpeedRef.current = 0
+  }, [])
+
+  const startAutoScroll = useCallback((dir: 'left' | 'right', speed: number) => {
+    // Se a direção mudou ou a velocidade aumentou significativamente, reinicia
+    if (autoScrollDirRef.current === dir && Math.abs(autoScrollSpeedRef.current - speed) < 3) return
+    if (autoScrollAnimRef.current !== null) cancelAnimationFrame(autoScrollAnimRef.current)
+    autoScrollDirRef.current = dir
+    autoScrollSpeedRef.current = speed
+    const step = () => {
+      if (!boardRef.current) return
+      boardRef.current.scrollLeft += dir === 'right' ? autoScrollSpeedRef.current : -autoScrollSpeedRef.current
+      autoScrollAnimRef.current = requestAnimationFrame(step)
+    }
+    autoScrollAnimRef.current = requestAnimationFrame(step)
+  }, [])
+
+  // Listener permanente no document — sem delay assíncrono do React.
+  // Usa draggingClientIdRef (síncrona) para checar se drag está ativo.
+  // Usa window.innerWidth para as zonas de borda — independe do tamanho do board.
+  useEffect(() => {
+    const EDGE = 120  // px da borda para ativar o scroll
+    const onDocDragOver = (e: DragEvent) => {
+      if (!draggingClientIdRef.current || !boardRef.current) {
+        stopAutoScroll()
+        return
+      }
+      const x = e.clientX
+      const W = window.innerWidth
+      if (x < EDGE) {
+        // Quanto mais perto da borda esquerda, mais rápido
+        const speed = Math.round(10 + (1 - x / EDGE) * 20)
+        startAutoScroll('left', speed)
+      } else if (x > W - EDGE) {
+        // Quanto mais perto da borda direita, mais rápido
+        const speed = Math.round(10 + ((x - (W - EDGE)) / EDGE) * 20)
+        startAutoScroll('right', speed)
+      } else {
+        stopAutoScroll()
+      }
+    }
+    document.addEventListener('dragover', onDocDragOver)
+    return () => document.removeEventListener('dragover', onDocDragOver)
+  }, [startAutoScroll, stopAutoScroll])
+
+  // handleBoardDragOver só precisa de preventDefault para o cursor de "drop" funcionar
+  const handleBoardDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
   }, [])
 
   const load = async () => {
@@ -1164,6 +1501,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     const client = clients.find(c => c.id === draggingClientId)
     const clientIdSnap = draggingClientId   // captura antes de resetar
     setDraggingClientId(null)
+    draggingClientIdRef.current = null
     if (!client || client.status === targetStatus) return
 
     const fromIdx = COL_ORDER.indexOf(client.status)
@@ -1242,6 +1580,74 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     }
   }, [draggingClientId, clients])
 
+  // ── Handler de quick-move via botão do card ────────────────────────────
+  const handleQuickMove = useCallback((clientId: string, targetStatus: string) => {
+    const client = clients.find(c => c.id === clientId)
+    if (!client || client.status === targetStatus) return
+
+    const fromIdx = COL_ORDER.indexOf(client.status)
+    const toIdx   = COL_ORDER.indexOf(targetStatus)
+    if (fromIdx === -1 || toIdx === -1) return
+
+    const targetLabel = STATUSES[targetStatus]?.label ?? targetStatus
+    const name = client.full_name
+    const previousStatus = client.status
+
+    const applyOptimistic = () =>
+      setClients(prev => prev.map(c =>
+        c.id === clientId ? { ...c, status: targetStatus as any } : c
+      ))
+    const rollback = () =>
+      setClients(prev => prev.map(c =>
+        c.id === clientId ? { ...c, status: previousStatus } : c
+      ))
+
+    if (toIdx > fromIdx) {
+      const steps = toIdx - fromIdx
+      setConfirmState({
+        title: `Mover para "${targetLabel}"?`,
+        body: steps > 1
+          ? `"${name}" vai avançar ${steps} etapas de uma vez.`
+          : `"${name}" será movida para "${targetLabel}".`,
+        confirmLabel: 'Confirmar',
+        onConfirm: async () => {
+          applyOptimistic()
+          try {
+            for (let i = 0; i < steps; i++) await adminService.advanceStep(clientId)
+            silentLoad()
+          } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
+        },
+      })
+    } else {
+      const reopenKey = REOPEN_KEY_MAP[targetStatus]
+      if (!reopenKey) {
+        setConfirmState({
+          title: 'Etapa não disponível',
+          body: `Para retornar para "${targetLabel}", use o Controle de Etapas dentro do cadastro da cliente.`,
+          confirmLabel: 'Entendido',
+          infoOnly: true,
+          onConfirm: () => {},
+        })
+        return
+      }
+      setConfirmState({
+        title: `Voltar para "${targetLabel}"?`,
+        body: targetStatus === 'awaiting_contract'
+          ? `Atenção: voltar "${name}" para o contrato apaga TUDO que ela já enviou (formulário, fotos e prazo).`
+          : `Os dados de "${name}" ficam preservados — a cliente só ajusta o que precisar.`,
+        confirmLabel: 'Voltar etapa',
+        confirmColor: targetStatus === 'awaiting_contract' ? '#dc2626' : '#6366f1',
+        onConfirm: async () => {
+          applyOptimistic()
+          try {
+            await adminService.reopenStep(clientId, reopenKey, 'Movido via kanban')
+            silentLoad()
+          } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
+        },
+      })
+    }
+  }, [clients])
+
   const activeClients = useMemo(() => clients.filter(c => !archivedIds.has(c.id)), [clients, archivedIds])
   const archivedClients = useMemo(() => clients.filter(c => archivedIds.has(c.id)), [clients, archivedIds])
 
@@ -1309,9 +1715,9 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         </div>
         <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3 }}>Clientes</span>
-          <span style={{ fontSize: 12, color: t.text3, marginLeft: 8, fontWeight: 500 }}>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 0, overflow: 'hidden' }}>
+          <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3, flexShrink: 0 }}>Clientes</span>
+          <span style={{ fontSize: 12, color: t.text3, marginLeft: 6, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {activeClients.length} ativa{activeClients.length !== 1 ? 's' : ''}
             {filteredActive.length !== activeClients.length && !isArchiveView &&
               <span style={{ color: t.accent, marginLeft: 4 }}>· {filteredActive.length} filtrada{filteredActive.length !== 1 ? 's' : ''}</span>
@@ -1320,14 +1726,14 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         </div>
 
         {!isArchiveView && viewMode === 'board' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }} className="hidden md:flex">
+          <div style={{ alignItems: 'center', gap: 6, flexShrink: 0 }} className="hidden md:flex">
             {COL_ORDER.map(key => {
               const cfg = STATUSES[key]
               const count = groupedByStatus[key]?.length || 0
               return (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: cfg.color }} />
-                  <span style={{ fontSize: 12, fontWeight: count > 0 ? 700 : 400, color: count > 0 ? t.text : t.text3 }}>{count}</span>
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: cfg.color }} />
+                  <span style={{ fontSize: 11, fontWeight: count > 0 ? 700 : 400, color: count > 0 ? t.text : t.text3 }}>{count}</span>
                 </div>
               )
             })}
@@ -1393,7 +1799,23 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                   <p style={{ fontSize: 12, margin: '4px 0 0', color: t.text3 }}>As clientes aparecerão aqui após o cadastro</p>
                 </div>
               ) : (
-                <div style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden', padding: '16px 20px 20px', display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                <div
+                  ref={boardRef}
+                  onMouseDown={handleBoardMouseDown}
+                  onDragOver={handleBoardDragOver}
+                  style={{
+                    flex: 1,
+                    overflowX: 'auto',
+                    overflowY: 'hidden',
+                    padding: '14px 12px 16px',
+                    display: 'flex',
+                    gap: 10,
+                    alignItems: 'stretch',
+                    cursor: isPanning ? 'grabbing' : 'default',
+                    userSelect: isPanning ? 'none' : undefined,
+                    WebkitOverflowScrolling: 'touch',
+                  } as React.CSSProperties}
+                >
                   {COL_ORDER.map(key => (
                     <KanbanColumn
                       key={key}
@@ -1408,7 +1830,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       onArchive={handleArchive}
                       onDelete={handleDelete}
                       onStar={handleStar}
-                      onDragStart={setDraggingClientId}
+                      onDragStart={id => { setDraggingClientId(id); draggingClientIdRef.current = id }}
                       onDrop={handleDrop}
                       draggingClientId={draggingClientId}
                       displayLabel={getColLabel(key, columnLabels)}
@@ -1416,12 +1838,15 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                         await adminService.upsertColumnLabel(key, newName)
                         setColumnLabels(prev => ({ ...prev, [key]: newName }))
                       }}
+                      onQuickMove={handleQuickMove}
+                      columnLabels={columnLabels}
                     />
                   ))}
                 </div>
               )}
             </>
           )}
+          
 
           {!isArchiveView && viewMode === 'list' && (
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>

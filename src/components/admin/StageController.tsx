@@ -471,11 +471,12 @@ export function StageController({
           <button
             onClick={handleAdvance}
             disabled={advancing}
-            className="inline-flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 max-w-full text-left"
+            style={{ wordBreak: 'break-word' }}
           >
             {advancing
-              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Avançando…</>
-              : <><ArrowRight className="h-3.5 w-3.5" /> Avançar para "{STEPS[currentIdx + 1]?.label}"</>}
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin flex-shrink-0" /> Avançando…</>
+              : <><ArrowRight className="h-3.5 w-3.5 flex-shrink-0" /> <span>Avançar para <strong>"{STEPS[currentIdx + 1]?.label}"</strong></span></>}
           </button>
         )}
       </div>
@@ -512,7 +513,7 @@ export function StageController({
           return (
             <div
               key={step.key}
-              className="flex items-center gap-3 p-3 rounded-lg transition-colors"
+              className="flex items-start gap-3 p-3 rounded-lg transition-colors"
               style={containerStyle}
             >
               {/* Dot */}
@@ -682,7 +683,7 @@ export function StageController({
               {canReopen && (
                 <button
                   onClick={() => setReopenTarget(step)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors flex-shrink-0 mt-0.5"
                   style={{
                     border: '1px solid rgba(245,158,11,0.4)',
                     color: '#b45309',
