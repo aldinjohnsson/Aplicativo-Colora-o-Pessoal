@@ -618,16 +618,8 @@ function KanbanCard({
       onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.06)' }}
       onClick={onView}
     >
-      {/* ── Row 1: Avatar + Name + Star + Menu ── */}
+      {/* ── Row 1: Name + Star + Menu ── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
-        <div style={{
-          width: compact ? 28 : 32, height: compact ? 28 : 32, borderRadius: '50%',
-          background: bgColor, color: fgColor, display: 'flex', alignItems: 'center',
-          justifyContent: 'center', fontSize: compact ? 11 : 12, fontWeight: 700, flexShrink: 0,
-        }}>
-          {getInitials(client.full_name)}
-        </div>
-
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Name */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -650,16 +642,6 @@ function KanbanCard({
             </p>
           )}
         </div>
-
-        {/* Quick-move button */}
-        {onQuickMove && (
-          <QuickMoveButton
-            currentStatus={client.status}
-            theme={t}
-            onMove={onQuickMove}
-            columnLabels={columnLabels}
-          />
-        )}
 
         {/* Context menu */}
         <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
@@ -739,6 +721,18 @@ function KanbanCard({
               </span>
             )
           })()}
+        </div>
+      )}
+
+      {/* ── Row 4: Quick-move button ── */}
+      {onQuickMove && (
+        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
+          <QuickMoveButton
+            currentStatus={client.status}
+            theme={t}
+            onMove={onQuickMove}
+            columnLabels={columnLabels}
+          />
         </div>
       )}
     </div>
