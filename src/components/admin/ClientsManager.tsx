@@ -922,7 +922,7 @@ function KanbanColumn({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6, minHeight: 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6, minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
             <p style={{ fontSize: 12, margin: 0 }}>
@@ -1779,7 +1779,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {isArchiveView && (
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' } as React.CSSProperties}>
               <ArchiveView clients={archivedClients} theme={t} onRestore={handleRestore} onDelete={handleDelete} />
             </div>
           )}
@@ -2964,7 +2964,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       </div>
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
         <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full">
 
           {/* Header */}
