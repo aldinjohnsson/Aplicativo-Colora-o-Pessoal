@@ -10,8 +10,8 @@ import { useTheme } from '../../lib/theme'
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'result'
-type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'result'
+type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'
+type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'
 
 interface StepDef {
   key: StepKey
@@ -32,7 +32,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(245,158,11,0.12)',
     activeBorder: 'rgba(245,158,11,0.35)',
     activeStatus: 'awaiting_contract',
-    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'contract',
   },
   {
@@ -41,7 +41,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(59,130,246,0.12)',
     activeBorder: 'rgba(59,130,246,0.35)',
     activeStatus: 'awaiting_form',
-    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'form',
   },
   {
@@ -50,7 +50,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(168,85,247,0.12)',
     activeBorder: 'rgba(168,85,247,0.35)',
     activeStatus: 'awaiting_photos',
-    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'photos',
   },
   {
@@ -59,7 +59,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(236,72,153,0.12)',
     activeBorder: 'rgba(236,72,153,0.35)',
     activeStatus: 'photos_submitted',
-    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'review',
   },
   {
@@ -68,7 +68,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(249,115,22,0.12)',
     activeBorder: 'rgba(249,115,22,0.35)',
     activeStatus: 'in_analysis',
-    doneStatuses: ['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'analysis',
   },
   {
@@ -77,7 +77,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(20,184,166,0.12)',
     activeBorder: 'rgba(20,184,166,0.35)',
     activeStatus: 'preparing_materials',
-    doneStatuses: ['validating_materials', 'sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'materials',
   },
   {
@@ -86,7 +86,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(99,102,241,0.12)',
     activeBorder: 'rgba(99,102,241,0.35)',
     activeStatus: 'validating_materials',
-    doneStatuses: ['sending_dossier', 'simulating', 'completed'],
+    doneStatuses: ['sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'validate_materials',
   },
   {
@@ -95,7 +95,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(14,165,233,0.12)',
     activeBorder: 'rgba(14,165,233,0.35)',
     activeStatus: 'sending_dossier',
-    doneStatuses: ['simulating', 'completed'],
+    doneStatuses: ['simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'send_dossier',
   },
   {
@@ -104,8 +104,35 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(139,92,246,0.12)',
     activeBorder: 'rgba(139,92,246,0.35)',
     activeStatus: 'simulating',
-    doneStatuses: ['completed'],
+    doneStatuses: ['making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'simulations',
+  },
+  {
+    key: 'make_capillary', label: 'Fazer Dossiê Capilar', icon: FileText,
+    dotColor: '#10b981',
+    activeBg: 'rgba(16,185,129,0.12)',
+    activeBorder: 'rgba(16,185,129,0.35)',
+    activeStatus: 'making_capillary_dossier',
+    doneStatuses: ['validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    reopenKey: 'make_capillary',
+  },
+  {
+    key: 'validate_capillary', label: 'Validar Dossiê Capilar', icon: ClipboardList,
+    dotColor: '#d946ef',
+    activeBg: 'rgba(217,70,239,0.12)',
+    activeBorder: 'rgba(217,70,239,0.35)',
+    activeStatus: 'validating_capillary_dossier',
+    doneStatuses: ['sending_capillary_dossier', 'completed'],
+    reopenKey: 'validate_capillary',
+  },
+  {
+    key: 'send_capillary', label: 'Enviar Dossiê Capilar', icon: Package,
+    dotColor: '#06b6d4',
+    activeBg: 'rgba(6,182,212,0.12)',
+    activeBorder: 'rgba(6,182,212,0.35)',
+    activeStatus: 'sending_capillary_dossier',
+    doneStatuses: ['completed'],
+    reopenKey: 'send_capillary',
   },
   {
     key: 'result', label: 'Resultado', icon: Check,
@@ -352,6 +379,15 @@ export function StageController({
       if (!confirm('Mover para "Simulações"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
     }
     if (client.status === 'simulating') {
+      if (!confirm('Mover para "Fazer Dossiê Capilar"? Esta etapa é interna — a cliente passa a ver "simulações sendo feitas". O resultado AINDA NÃO é liberado.')) return
+    }
+    if (client.status === 'making_capillary_dossier') {
+      if (!confirm('Mover para "Validar Dossiê Capilar"? Esta etapa é interna — a cliente continua vendo "simulações sendo feitas".')) return
+    }
+    if (client.status === 'validating_capillary_dossier') {
+      if (!confirm('Mover para "Enviar Dossiê Capilar"? Esta etapa é interna — a cliente continua vendo "simulações sendo feitas".')) return
+    }
+    if (client.status === 'sending_capillary_dossier') {
       if (!confirm('Liberar o resultado para a cliente? Isso enviará e-mail de notificação.')) return
     }
 
@@ -398,7 +434,7 @@ export function StageController({
   }
 
   const handleRevokeResult = async () => {
-    if (!confirm(`Revogar o resultado de ${client.full_name}?\n\nO resultado deixará de aparecer no portal e a etapa voltará para "Simulações". Os dados (pasta, arquivos e observações) ficam intactos — basta liberar novamente quando estiver pronto.`)) return
+    if (!confirm(`Revogar o resultado de ${client.full_name}?\n\nO resultado deixará de aparecer no portal e a etapa voltará para "Enviar Dossiê Capilar". Os dados (pasta, arquivos e observações) ficam intactos — basta avançar até "Resultado" novamente quando estiver pronto.`)) return
     setRevokingResult(true)
     try {
       await adminService.revokeResult(client.id)
@@ -545,6 +581,30 @@ export function StageController({
                     <span
                       className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
                       style={{ background: 'rgba(139,92,246,0.18)', color: '#8b5cf6', border: '1px solid rgba(139,92,246,0.3)' }}
+                    >
+                      🔒 interno
+                    </span>
+                  )}
+                  {step.key === 'make_capillary' && (
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: 'rgba(16,185,129,0.18)', color: '#059669', border: '1px solid rgba(16,185,129,0.3)' }}
+                    >
+                      🔒 interno
+                    </span>
+                  )}
+                  {step.key === 'validate_capillary' && (
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: 'rgba(217,70,239,0.18)', color: '#a21caf', border: '1px solid rgba(217,70,239,0.3)' }}
+                    >
+                      🔒 interno
+                    </span>
+                  )}
+                  {step.key === 'send_capillary' && (
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: 'rgba(6,182,212,0.18)', color: '#0e7490', border: '1px solid rgba(6,182,212,0.3)' }}
                     >
                       🔒 interno
                     </span>

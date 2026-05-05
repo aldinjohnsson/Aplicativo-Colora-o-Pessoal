@@ -265,3 +265,25 @@ CHECK (status IN (
   'simulating',
   'completed'
 ));
+
+ALTER TABLE clients
+DROP CONSTRAINT clients_status_check;
+ 
+ALTER TABLE clients
+ADD CONSTRAINT clients_status_check
+CHECK (status IN (
+  'awaiting_contract',
+  'awaiting_form',
+  'awaiting_photos',
+  'photos_submitted',
+  'in_analysis',
+  'preparing_materials',
+  'validating_materials',
+  'sending_dossier',
+  'simulating',
+  'making_capillary_dossier',      -- novo
+  'validating_capillary_dossier',  -- novo
+  'sending_capillary_dossier',     -- novo
+  'completed'
+));
+ 

@@ -276,6 +276,21 @@ const STATUSES: Record<string, {
     color: '#8b5cf6', bg: '#ede9fe', textColor: '#5b21b6',
     tailwindColor: 'bg-violet-100 text-violet-700', tailwindBg: 'bg-violet-50',
   },
+  making_capillary_dossier: {
+    label: 'Fazer Dossiê Capilar', short: 'Dossiê Capilar',
+    color: '#10b981', bg: '#d1fae5', textColor: '#065f46',
+    tailwindColor: 'bg-emerald-100 text-emerald-700', tailwindBg: 'bg-emerald-50',
+  },
+  validating_capillary_dossier: {
+    label: 'Validar Dossiê Capilar', short: 'Validar Capilar',
+    color: '#d946ef', bg: '#fae8ff', textColor: '#86198f',
+    tailwindColor: 'bg-fuchsia-100 text-fuchsia-700', tailwindBg: 'bg-fuchsia-50',
+  },
+  sending_capillary_dossier: {
+    label: 'Enviar Dossiê Capilar', short: 'Enviar Capilar',
+    color: '#06b6d4', bg: '#cffafe', textColor: '#155e75',
+    tailwindColor: 'bg-cyan-100 text-cyan-700', tailwindBg: 'bg-cyan-50',
+  },
   completed: {
     label: 'Concluído', short: 'Concluído',
     color: '#22c55e', bg: '#dcfce7', textColor: '#166534',
@@ -283,7 +298,7 @@ const STATUSES: Record<string, {
   },
 }
 // photos_submitted is between awaiting_photos and in_analysis
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed']
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed']
 
 /** Retorna o nome de exibição: customizado > short padrão */
 function getColLabel(
@@ -296,17 +311,20 @@ function getColLabel(
 
 // ─── Drag & Drop: mapa de reopen keys ────────────────────────────────────
 // Mapeia cada coluna destino para a chave usada em reopenStep
-const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result'> = {
-  awaiting_contract:   'contract',
-  awaiting_form:       'form',
-  awaiting_photos:     'photos',
-  photos_submitted:    'review',
-  in_analysis:         'analysis',
-  preparing_materials: 'materials',
-  validating_materials: 'validate_materials',
-  sending_dossier:      'send_dossier',
-  simulating:          'simulations',
-  completed:           'result',
+const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'> = {
+  awaiting_contract:            'contract',
+  awaiting_form:                'form',
+  awaiting_photos:              'photos',
+  photos_submitted:             'review',
+  in_analysis:                  'analysis',
+  preparing_materials:          'materials',
+  validating_materials:         'validate_materials',
+  sending_dossier:              'send_dossier',
+  simulating:                   'simulations',
+  making_capillary_dossier:     'make_capillary',
+  validating_capillary_dossier: 'validate_capillary',
+  sending_capillary_dossier:    'send_capillary',
+  completed:                    'result',
 }
 
 // ─── Avatar Helpers ───────────────────────────────────────────────────────
@@ -2192,6 +2210,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [cleaningFiles, setCleaningFiles] = useState(false)
   const [filesCleanedUp, setFilesCleanedUp] = useState(false)
   const [showCleanupModal, setShowCleanupModal] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput] = useState('')
+  const [savingName, setSavingName] = useState(false)
 
   useEffect(() => { load() }, [clientId])
 
@@ -2236,6 +2257,34 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setSavingNotes(true)
     try { await adminService.updateClient(clientId!, { notes } as any); setNotesSaved(true); setTimeout(() => setNotesSaved(false), 2000) }
     catch (e: any) { alert(e.message) } finally { setSavingNotes(false) }
+  }
+
+  const handleStartEditName = () => {
+    if (!data?.client) return
+    setNameInput(data.client.full_name)
+    setEditingName(true)
+  }
+
+  const handleCancelEditName = () => {
+    setEditingName(false)
+    setNameInput('')
+  }
+
+  const handleSaveName = async () => {
+    const newName = nameInput.trim()
+    if (!newName) { alert('O nome não pode ficar vazio.'); return }
+    if (!data?.client) return
+    if (newName === data.client.full_name) { setEditingName(false); return }
+    setSavingName(true)
+    try {
+      await adminService.updateClient(clientId!, { full_name: newName } as any)
+      await load()
+      setEditingName(false)
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao salvar nome')
+    } finally {
+      setSavingName(false)
+    }
   }
 
   // Approva fotos + formulário e inicia análise
@@ -2507,7 +2556,57 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               </div>
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-xl font-bold" style={{ color: t.text }}>{client.full_name}</h1>
+                  {editingName ? (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={nameInput}
+                        onChange={e => setNameInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { e.preventDefault(); handleSaveName() }
+                          else if (e.key === 'Escape') { e.preventDefault(); handleCancelEditName() }
+                        }}
+                        disabled={savingName}
+                        maxLength={120}
+                        placeholder="Nome completo"
+                        className="text-xl font-bold px-2 py-1 rounded-lg focus:outline-none disabled:opacity-50"
+                        style={{ background: t.surface2, border: `1px solid ${t.accent}`, color: t.text, minWidth: 220 }}
+                      />
+                      <button
+                        onClick={handleSaveName}
+                        disabled={savingName || !nameInput.trim()}
+                        className="p-1.5 rounded-lg disabled:opacity-40 transition-colors"
+                        style={{ background: t.accent, color: t.accentFg }}
+                        title="Salvar (Enter)"
+                      >
+                        {savingName
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Save className="h-4 w-4" />}
+                      </button>
+                      <button
+                        onClick={handleCancelEditName}
+                        disabled={savingName}
+                        className="p-1.5 rounded-lg disabled:opacity-40 transition-colors"
+                        style={{ background: t.surface2, color: t.text2, border: `1px solid ${t.border}` }}
+                        title="Cancelar (Esc)"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <h1 className="text-xl font-bold" style={{ color: t.text }}>{client.full_name}</h1>
+                      <button
+                        onClick={handleStartEditName}
+                        className="p-1 rounded transition-colors hover:opacity-100 opacity-60"
+                        style={{ color: t.text3 }}
+                        title="Editar nome"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
                   {client.plan && <span className="text-xs px-2 py-1 rounded font-medium" style={{ background: t.surface2, color: t.text2 }}>{(client as any).plan.name}</span>}
                 </div>
@@ -2810,10 +2909,15 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0" />
                   <div><p className="text-sm font-medium text-green-800">Resultado liberado</p><p className="text-xs text-green-600">A cliente pode visualizar desde {new Date(result.released_at).toLocaleString('pt-BR')}</p></div>
                 </div>
-              ) : (client.status === 'preparing_materials' || client.status === 'validating_materials') ? (
+              ) : (client.status === 'preparing_materials' || client.status === 'validating_materials' || client.status === 'sending_dossier') ? (
                 <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-teal-600 flex-shrink-0" />
-                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Quando os materiais estiverem prontos, avance até Simulações no Controle de Etapas e libere o resultado por lá</p></div>
+                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Continue avançando as etapas internas no Controle de Etapas. O resultado só é liberado ao avançar de "Enviar Dossiê Capilar" para "Resultado".</p></div>
+                </div>
+              ) : (client.status === 'simulating' || client.status === 'making_capillary_dossier' || client.status === 'validating_capillary_dossier' || client.status === 'sending_capillary_dossier') ? (
+                <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex items-center gap-3">
+                  <CheckCircle className="h-5 w-5 text-violet-600 flex-shrink-0" />
+                  <div><p className="text-sm font-medium text-violet-800">Resultado registrado — finalizando dossiê capilar</p><p className="text-xs text-violet-600">A cliente vê "simulações sendo feitas". O resultado é liberado ao avançar de "Enviar Dossiê Capilar" para "Resultado".</p></div>
                 </div>
               ) : (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">

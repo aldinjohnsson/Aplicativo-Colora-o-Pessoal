@@ -13,9 +13,12 @@ export type ClientStatus =
   | 'photos_submitted'
   | 'in_analysis'
   | 'preparing_materials'
-  | 'validating_materials'   // interno — cliente vê "Preparando Materiais"
-  | 'sending_dossier'        // interno — cliente vê "Preparando Materiais"
-  | 'simulating'             // interno — cliente vê "Preparando Materiais"
+  | 'validating_materials'           // interno — cliente vê "Preparando Materiais"
+  | 'sending_dossier'                // interno — cliente vê "Preparando Materiais"
+  | 'simulating'                     // interno — cliente vê "Preparando Materiais"
+  | 'making_capillary_dossier'       // interno — cliente vê "Simulações sendo feitas"
+  | 'validating_capillary_dossier'   // interno — cliente vê "Simulações sendo feitas"
+  | 'sending_capillary_dossier'      // interno — cliente vê "Simulações sendo feitas"
   | 'completed'
 
 export interface Plan {
@@ -620,7 +623,7 @@ export const adminService = {
    */
   async reopenStep(
     clientId: string,
-    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'result',
+    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result',
     reason?: string
   ): Promise<void> {
     const now = new Date().toISOString()
@@ -814,9 +817,41 @@ export const adminService = {
       return
     }
 
+    if (step === 'make_capillary') {
+      // Volta para "Fazer Dossiê Capilar" — etapa interna, cliente continua vendo
+      // a mesma mensagem de simulações sendo feitas. Não mexe em is_released:
+      // se a admin já liberou prévia em Simulações, ela continua visível.
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'making_capillary_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+
+    if (step === 'validate_capillary') {
+      // Volta para "Validar Dossiê Capilar" — etapa interna
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'validating_capillary_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+
+    if (step === 'send_capillary') {
+      // Volta para "Enviar Dossiê Capilar" — etapa interna
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'sending_capillary_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+
     if (step === 'result') {
-      // "Reabrir resultado" volta para 'simulating' (etapa imediatamente anterior
-      // a 'completed') e oculta o resultado no portal.
+      // "Reabrir resultado" volta para 'sending_capillary_dossier' (etapa
+      // imediatamente anterior a 'completed') e oculta o resultado no portal.
       // Reseta is_released para garantir que não apareça enquanto ainda está em revisão.
       await supabase
         .from('client_results')
@@ -824,7 +859,7 @@ export const adminService = {
         .eq('client_id', clientId)
       const { error } = await supabase
         .from('clients')
-        .update({ status: 'simulating', updated_at: now })
+        .update({ status: 'sending_capillary_dossier', updated_at: now })
         .eq('id', clientId)
       if (error) throw error
       return
@@ -867,11 +902,18 @@ export const adminService = {
    * por e-mail, formulário preenchido por ligação, etc).
    *
    * Transições:
-   *   awaiting_contract → awaiting_form       (cria registro de assinatura)
-   *   awaiting_form     → awaiting_photos     (limpa rejeição se houver)
-   *   awaiting_photos   → photos_submitted    (envia para revisão)
-   *   photos_submitted  → in_analysis         (delega para approvePhotos)
-   *   in_analysis       → completed           (delega para releaseResult)
+   *   awaiting_contract             → awaiting_form               (cria registro de assinatura)
+   *   awaiting_form                 → awaiting_photos             (limpa rejeição se houver)
+   *   awaiting_photos               → photos_submitted            (envia para revisão)
+   *   photos_submitted              → in_analysis                 (delega para approvePhotos)
+   *   in_analysis                   → preparing_materials
+   *   preparing_materials           → validating_materials        (interna)
+   *   validating_materials          → sending_dossier             (interna)
+   *   sending_dossier               → simulating                  (interna)
+   *   simulating                    → making_capillary_dossier    (interna — cliente passa a ver "simulações sendo feitas")
+   *   making_capillary_dossier      → validating_capillary_dossier (interna)
+   *   validating_capillary_dossier  → sending_capillary_dossier   (interna)
+   *   sending_capillary_dossier     → completed                   (delega para releaseResult — libera resultado e envia e-mail)
    *
    * Em `completed` não há pra onde avançar — lança erro.
    */
@@ -929,6 +971,36 @@ export const adminService = {
       return
     }
     if (currentStatus === 'simulating') {
+      // Avança para "Fazer Dossiê Capilar" — etapa interna, cliente passa a ver
+      // "simulações sendo feitas". Resultado NÃO é liberado aqui — só ao final
+      // de "Enviar Dossiê Capilar".
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'making_capillary_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'making_capillary_dossier') {
+      // Avança para "Validar Dossiê Capilar" — etapa interna
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'validating_capillary_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'validating_capillary_dossier') {
+      // Avança para "Enviar Dossiê Capilar" — etapa interna
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'sending_capillary_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'sending_capillary_dossier') {
+      // Avança para "Resultado" — libera o resultado pra cliente e dispara e-mail
       return this.releaseResult(clientId)
     }
     if (currentStatus === 'completed') {
@@ -1107,13 +1179,13 @@ export const adminService = {
    * Revoga o resultado já liberado (completed).
    *
    * Diferente de cancelPartialResult (que só oculta sem mexer no status),
-   * aqui também volta o status para 'simulating' — porque o resultado estava
-   * totalmente liberado e a admin quer reabrir o ciclo para corrigir/refazer
+   * aqui também volta o status para 'sending_capillary_dossier' — porque o resultado
+   * estava totalmente liberado e a admin quer reabrir o ciclo para corrigir/refazer
    * antes de liberar novamente.
    *
    * O que NÃO muda:
    *   - folder_url, observações e arquivos de resultado ficam intactos
-   *   - ao liberar de novo (advanceStep de simulating), tudo reaparece
+   *   - ao liberar de novo (advanceStep de sending_capillary_dossier), tudo reaparece
    */
   async revokeResult(clientId: string): Promise<void> {
     const now = new Date().toISOString()
@@ -1126,7 +1198,7 @@ export const adminService = {
 
     const { error: clientErr } = await supabase
       .from('clients')
-      .update({ status: 'simulating', updated_at: now })
+      .update({ status: 'sending_capillary_dossier', updated_at: now })
       .eq('id', clientId)
     if (clientErr) throw clientErr
   },
