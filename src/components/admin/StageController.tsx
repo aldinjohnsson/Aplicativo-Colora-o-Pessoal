@@ -2,30 +2,26 @@
 import React, { useState } from 'react'
 import {
   Check, FileText, ClipboardList, Camera, Eye, Sparkles, Package,
-  ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2, Unlock, Lock,
+  ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2, Unlock, Lock, Calendar,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
+import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result'
-type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result'
+type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'result'
+type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'result'
 
 interface StepDef {
   key: StepKey
   label: string
   icon: React.ElementType
-  /** cor hex do ponto quando a etapa está ATUAL */
   dotColor: string
-  /** cor rgba para o container quando a etapa está ATUAL */
   activeBg: string
   activeBorder: string
-  /** a partir de qual status da cliente esta etapa está "ativa" */
   activeStatus: string
-  /** quais statuses significam que esta etapa JÁ está concluída */
   doneStatuses: string[]
-  /** chave usada no reopenStep */
   reopenKey: ReopenKey
 }
 
@@ -36,7 +32,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(245,158,11,0.12)',
     activeBorder: 'rgba(245,158,11,0.35)',
     activeStatus: 'awaiting_contract',
-    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
+    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
     reopenKey: 'contract',
   },
   {
@@ -45,7 +41,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(59,130,246,0.12)',
     activeBorder: 'rgba(59,130,246,0.35)',
     activeStatus: 'awaiting_form',
-    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
+    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
     reopenKey: 'form',
   },
   {
@@ -54,7 +50,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(168,85,247,0.12)',
     activeBorder: 'rgba(168,85,247,0.35)',
     activeStatus: 'awaiting_photos',
-    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
+    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
     reopenKey: 'photos',
   },
   {
@@ -63,7 +59,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(236,72,153,0.12)',
     activeBorder: 'rgba(236,72,153,0.35)',
     activeStatus: 'photos_submitted',
-    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed'],
+    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
     reopenKey: 'review',
   },
   {
@@ -72,7 +68,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(249,115,22,0.12)',
     activeBorder: 'rgba(249,115,22,0.35)',
     activeStatus: 'in_analysis',
-    doneStatuses: ['preparing_materials', 'validating_materials', 'simulating', 'completed'],
+    doneStatuses: ['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed'],
     reopenKey: 'analysis',
   },
   {
@@ -81,17 +77,26 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(20,184,166,0.12)',
     activeBorder: 'rgba(20,184,166,0.35)',
     activeStatus: 'preparing_materials',
-    doneStatuses: ['validating_materials', 'simulating', 'completed'],
+    doneStatuses: ['validating_materials', 'sending_dossier', 'simulating', 'completed'],
     reopenKey: 'materials',
   },
   {
-    key: 'validate_materials', label: 'Validar Materiais', icon: ClipboardList,
+    key: 'validate_materials', label: 'Validar Dossiê', icon: ClipboardList,
     dotColor: '#6366f1',
     activeBg: 'rgba(99,102,241,0.12)',
     activeBorder: 'rgba(99,102,241,0.35)',
     activeStatus: 'validating_materials',
-    doneStatuses: ['simulating', 'completed'],
+    doneStatuses: ['sending_dossier', 'simulating', 'completed'],
     reopenKey: 'validate_materials',
+  },
+  {
+    key: 'send_dossier', label: 'Enviar Dossiê', icon: Package,
+    dotColor: '#0ea5e9',
+    activeBg: 'rgba(14,165,233,0.12)',
+    activeBorder: 'rgba(14,165,233,0.35)',
+    activeStatus: 'sending_dossier',
+    doneStatuses: ['simulating', 'completed'],
+    reopenKey: 'send_dossier',
   },
   {
     key: 'simulations', label: 'Simulações', icon: Sparkles,
@@ -112,6 +117,35 @@ const STEPS: StepDef[] = [
     reopenKey: 'result',
   },
 ]
+
+// ─── Helpers de data ────────────────────────────────────────────────────────
+
+function fmtDate(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  try {
+    return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  } catch { return null }
+}
+
+/**
+ * Retorna a data de conclusão de uma etapa:
+ *  - contract  → contract.signed_at
+ *  - form      → formSubmission.submitted_at
+ *  - photos    → deadline.photos_sent_at (data que a cliente enviou as fotos)
+ *  - demais    → stage_timestamps[stepKey] (gravado automaticamente ao avançar)
+ */
+function getStepDate(
+  stepKey: StepKey,
+  contract: any,
+  formSubmission: any,
+  deadline: any,
+  stageTimestamps: Record<string, string>,
+): string | null {
+  if (stepKey === 'contract') return contract?.signed_at ?? null
+  if (stepKey === 'form') return formSubmission?.submitted_at ?? null
+  if (stepKey === 'photos') return deadline?.photos_sent_at ?? null
+  return stageTimestamps[stepKey] ?? null
+}
 
 // ─── Modal de confirmação de reabertura ────────────────────────────────────
 
@@ -237,29 +271,58 @@ function ReopenModal({
 // ─── Main component ────────────────────────────────────────────────────────
 
 interface StageControllerProps {
-  client: { id: string; status: string; full_name: string }
+  client: {
+    id: string
+    status: string
+    full_name: string
+    /** JSONB gravado automaticamente pelo StageController ao avançar etapas */
+    stage_timestamps?: Record<string, string>
+  }
   contract: any
   formSubmission: any
   photos: any[]
   result: any
+  /** Dados de prazo — usado para exibir a data de envio de fotos */
+  deadline?: { photos_sent_at?: string; deadline_date?: string } | null
   onChange: () => void | Promise<void>
 }
 
 export function StageController({
-  client, contract, formSubmission, photos, result, onChange,
+  client, contract, formSubmission, photos, result, deadline, onChange,
 }: StageControllerProps) {
   const { theme: t } = useTheme()
   const [reopenTarget, setReopenTarget] = useState<StepDef | null>(null)
   const [advancing, setAdvancing] = useState(false)
   const [releasingPartial, setReleasingPartial] = useState(false)
   const [cancelingPartial, setCancelingPartial] = useState(false)
+  const [revokingResult, setRevokingResult] = useState(false)
 
   const currentIdx = STEPS.findIndex(s => s.activeStatus === client.status)
   const fromCompleted = client.status === 'completed'
+  const stageTimestamps: Record<string, string> = client.stage_timestamps || {}
+
+  // ─── Grava timestamp no Supabase para a etapa recém-concluída ────────────
+  const recordTimestamp = async (stepKey: StepKey) => {
+    // contract/form/photos têm datas próprias — não precisam de registro manual
+    if (stepKey === 'contract' || stepKey === 'form' || stepKey === 'photos') return
+    const updated = { ...stageTimestamps, [stepKey]: new Date().toISOString() }
+    await supabase.from('clients').update({ stage_timestamps: updated }).eq('id', client.id)
+  }
+
+  // ─── Remove timestamps da etapa reaberta em diante ──────────────────────
+  const clearTimestampsFrom = async (stepKey: StepKey) => {
+    const fromIdx = STEPS.findIndex(s => s.key === stepKey)
+    if (fromIdx < 0) return
+    const keysToRemove = STEPS.slice(fromIdx).map(s => s.key)
+    const updated = { ...stageTimestamps }
+    keysToRemove.forEach(k => delete updated[k])
+    await supabase.from('clients').update({ stage_timestamps: updated }).eq('id', client.id)
+  }
 
   const handleReopen = async (reason: string) => {
     if (!reopenTarget) return
     await adminService.reopenStep(client.id, reopenTarget.reopenKey, reason || undefined)
+    await clearTimestampsFrom(reopenTarget.key)
     setReopenTarget(null)
     await onChange()
   }
@@ -283,6 +346,9 @@ export function StageController({
       if (!confirm('Mover para "Validar Materiais"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
     }
     if (client.status === 'validating_materials') {
+      if (!confirm('Mover para "Enviar Dossiê"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
+    }
+    if (client.status === 'sending_dossier') {
       if (!confirm('Mover para "Simulações"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
     }
     if (client.status === 'simulating') {
@@ -291,6 +357,9 @@ export function StageController({
 
     setAdvancing(true)
     try {
+      // Grava a data de conclusão da etapa atual antes de avançar
+      const currentStep = STEPS[currentIdx]
+      await recordTimestamp(currentStep.key)
       await adminService.advanceStep(client.id)
       await onChange()
     } catch (e: any) {
@@ -325,6 +394,19 @@ export function StageController({
       alert(e?.message || 'Erro ao cancelar resultado parcial')
     } finally {
       setCancelingPartial(false)
+    }
+  }
+
+  const handleRevokeResult = async () => {
+    if (!confirm(`Revogar o resultado de ${client.full_name}?\n\nO resultado deixará de aparecer no portal e a etapa voltará para "Simulações". Os dados (pasta, arquivos e observações) ficam intactos — basta liberar novamente quando estiver pronto.`)) return
+    setRevokingResult(true)
+    try {
+      await adminService.revokeResult(client.id)
+      await onChange()
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao revogar resultado')
+    } finally {
+      setRevokingResult(false)
     }
   }
 
@@ -368,15 +450,14 @@ export function StageController({
           const isDone = step.doneStatuses.includes(client.status)
           const isCurrent = step.activeStatus === client.status
           const isFuture = !isDone && !isCurrent
-          // Reabrir só faz sentido em etapas CONCLUÍDAS — voltar o cliente
-          // para refazer aquela etapa. A única exceção é "Resultado" (status
-          // completed), pois reabrir nesse caso tira a liberação do resultado
-          // e volta pra preparing_materials. Reabrir uma etapa que já é a
-          // atual em outros casos (ex: preparing_materials clicar em Reabrir
-          // Preparando Materiais) seria UPDATE pro mesmo status — não faria
-          // nada visível pra cliente, então o botão é escondido.
           const canReopen = isDone || (isCurrent && step.key === 'result')
           const Icon = step.icon
+
+          // Data de conclusão desta etapa
+          const stepDateIso = isDone
+            ? getStepDate(step.key, contract, formSubmission, deadline, stageTimestamps)
+            : null
+          const stepDateFmt = fmtDate(stepDateIso)
 
           // Dot styles
           const dotStyle: React.CSSProperties = isDone
@@ -408,7 +489,7 @@ export function StageController({
                   : <Icon className="h-4 w-4" />}
               </div>
 
-              {/* Label */}
+              {/* Label + badges + data */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <p
@@ -417,6 +498,7 @@ export function StageController({
                   >
                     {idx + 1}. {step.label}
                   </p>
+
                   {isCurrent && (
                     <span
                       className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
@@ -425,15 +507,36 @@ export function StageController({
                       atual
                     </span>
                   )}
+
                   {isDone && (
                     <span className="text-[10px] font-medium" style={{ color: '#16a34a' }}>
                       concluída
                     </span>
                   )}
+
+                  {/* Data de conclusão — exibida inline para etapas concluídas */}
+                  {isDone && stepDateFmt && (
+                    <span
+                      className="text-[10px] flex items-center gap-0.5"
+                      style={{ color: t.text3 }}
+                    >
+                      <Calendar className="h-2.5 w-2.5" />
+                      {stepDateFmt}
+                    </span>
+                  )}
+
                   {step.key === 'validate_materials' && (
                     <span
                       className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
                       style={{ background: 'rgba(99,102,241,0.18)', color: '#6366f1', border: '1px solid rgba(99,102,241,0.3)' }}
+                    >
+                      🔒 interno
+                    </span>
+                  )}
+                  {step.key === 'send_dossier' && (
+                    <span
+                      className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ background: 'rgba(14,165,233,0.18)', color: '#0369a1', border: '1px solid rgba(14,165,233,0.3)' }}
                     >
                       🔒 interno
                     </span>
@@ -448,7 +551,7 @@ export function StageController({
                   )}
                 </div>
 
-                {/* Botão de liberação/cancelamento parcial — linha própria, visível só quando atual */}
+                {/* Botão de liberação/cancelamento parcial */}
                 {step.key === 'simulations' && isCurrent && (
                   <div className="mt-2">
                     {result?.is_released ? (
@@ -490,9 +593,32 @@ export function StageController({
                     )}
                   </div>
                 )}
+
+                {/* Botão de revogação */}
+                {step.key === 'result' && isCurrent && (
+                  <div className="mt-2">
+                    <button
+                      onClick={handleRevokeResult}
+                      disabled={revokingResult}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+                      style={{
+                        border: '1px solid rgba(239,68,68,0.4)',
+                        color: '#b91c1c',
+                        background: 'rgba(239,68,68,0.08)',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.15)')}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
+                      title="Oculta o resultado do portal e volta para Simulações. Dados ficam intactos."
+                    >
+                      {revokingResult
+                        ? <><Loader2 className="h-3 w-3 animate-spin" /> Revogando…</>
+                        : <><Lock className="h-3 w-3" /> Revogar resultado</>}
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Reabrir button — disponível para qualquer etapa concluída ou atual */}
+              {/* Reabrir */}
               {canReopen && (
                 <button
                   onClick={() => setReopenTarget(step)}

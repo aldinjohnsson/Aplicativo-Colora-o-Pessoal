@@ -266,6 +266,11 @@ const STATUSES: Record<string, {
     color: '#6366f1', bg: '#e0e7ff', textColor: '#3730a3',
     tailwindColor: 'bg-indigo-100 text-indigo-700', tailwindBg: 'bg-indigo-50',
   },
+  sending_dossier: {
+    label: 'Enviar Dossiê', short: 'Enviar Dossiê',
+    color: '#0ea5e9', bg: '#e0f2fe', textColor: '#075985',
+    tailwindColor: 'bg-sky-100 text-sky-700', tailwindBg: 'bg-sky-50',
+  },
   simulating: {
     label: 'Simulações', short: 'Simulações',
     color: '#8b5cf6', bg: '#ede9fe', textColor: '#5b21b6',
@@ -278,7 +283,7 @@ const STATUSES: Record<string, {
   },
 }
 // photos_submitted is between awaiting_photos and in_analysis
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'simulating', 'completed']
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'completed']
 
 /** Retorna o nome de exibição: customizado > short padrão */
 function getColLabel(
@@ -299,6 +304,7 @@ const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' |
   in_analysis:         'analysis',
   preparing_materials: 'materials',
   validating_materials: 'validate_materials',
+  sending_dossier:      'send_dossier',
   simulating:          'simulations',
   completed:           'result',
 }
@@ -322,8 +328,11 @@ interface DeadlineData {
 }
 interface DeadlineInfo {
   label: string
+  dateFormatted: string
   urgency: 'danger' | 'warning' | 'ok'
   color: string
+  bgColor: string
+  textColor: string
 }
 function getDeadlineInfo(client: Client, deadline?: DeadlineData | null): DeadlineInfo | null {
   if (!deadline?.deadline_date || client.status === 'completed' || client.status === 'photos_submitted') return null
@@ -332,11 +341,12 @@ function getDeadlineInfo(client: Client, deadline?: DeadlineData | null): Deadli
   // CORRIGIDO: parseLocalDate evita bug de timezone (new Date("YYYY-MM-DD") = UTC = dia errado no Brasil)
   const dl = parseLocalDate(deadline.deadline_date)
   const days = Math.round((dl.getTime() - today.getTime()) / 86400000)
+  const dateFormatted = dl.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
  
-  if (days < 0) return { label: `${Math.abs(days)}d atrasado`, urgency: 'danger', color: '#ef4444' }
-  if (days === 0) return { label: 'Vence hoje', urgency: 'danger', color: '#ef4444' }
-  if (days <= 2) return { label: `${days}d restante`, urgency: 'warning', color: '#f59e0b' }
-  return { label: `${days}d restante`, urgency: 'ok', color: '#6b7280' }
+  if (days < 0) return { label: `${Math.abs(days)}d atrasado`, dateFormatted, urgency: 'danger', color: '#ef4444', bgColor: '#fee2e2', textColor: '#991b1b' }
+  if (days === 0) return { label: 'Vence hoje', dateFormatted, urgency: 'danger', color: '#ef4444', bgColor: '#fee2e2', textColor: '#991b1b' }
+  if (days <= 2) return { label: `${days}d restantes`, dateFormatted, urgency: 'warning', color: '#f59e0b', bgColor: '#fef3c7', textColor: '#92400e' }
+  return { label: `${days}d restantes`, dateFormatted, urgency: 'ok', color: '#6b7280', bgColor: '#f3f4f6', textColor: '#4b5563' }
 }
 
 // ─── Tiny UI ──────────────────────────────────────────────────────────────
@@ -360,6 +370,16 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 }
 
 // ─── Kanban Card ──────────────────────────────────────────────────────────
+// ─── Coloração Pessoal tag style ─────────────────────────────────────────────
+function getSeasonTagStyle(value: string): { bg: string; color: string; border: string } {
+  const v = value.toLowerCase()
+  if (v.includes('outono'))    return { bg: 'rgba(180,83,9,0.12)',   color: '#92400e', border: 'rgba(180,83,9,0.3)'   }
+  if (v.includes('primavera')) return { bg: 'rgba(234,88,12,0.12)',  color: '#9a3412', border: 'rgba(234,88,12,0.3)'  }
+  if (v.includes('verão'))     return { bg: 'rgba(190,18,60,0.10)',  color: '#9f1239', border: 'rgba(190,18,60,0.28)' }
+  if (v.includes('inverno'))   return { bg: 'rgba(67,56,202,0.10)', color: '#3730a3', border: 'rgba(67,56,202,0.28)' }
+  return { bg: 'rgba(107,114,128,0.10)', color: '#374151', border: 'rgba(107,114,128,0.25)' }
+}
+
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
   onDragStart, isDragging,
@@ -375,6 +395,10 @@ function KanbanCard({
   const dl = getDeadlineInfo(client, deadline)
   const [bgColor, fgColor] = getAvatarColor(client.full_name)
   const needsReview = client.status === 'photos_submitted'
+  const aiTags: { templateId: string; name: string; value: string }[] = (client as any).ai_info_tags || []
+  const personalColorTag = aiTags.find(tag => tag.name.toLowerCase().includes('coloração pessoal') || tag.name.toLowerCase().includes('coloracao pessoal'))
+  const personalColor = personalColorTag?.value?.trim() || null
+  const planName: string | null = (client as any).plan?.name ?? null
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -383,6 +407,15 @@ function KanbanCard({
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [])
+
+  // Border color based on urgency / review state
+  const borderColor = dl?.urgency === 'danger'
+    ? '#fca5a5'
+    : dl?.urgency === 'warning'
+      ? '#fcd34d'
+      : needsReview
+        ? '#fbcfe8'
+        : t.cardBorder
 
   return (
     <div
@@ -393,9 +426,12 @@ function KanbanCard({
       }}
       style={{
         background: t.cardBg,
-        border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : dl?.urgency === 'warning' ? '#fcd34d' : needsReview ? '#fbcfe8' : t.cardBorder}`,
-        borderRadius: 10, padding: compact ? '9px 12px' : '12px 14px',
-        marginBottom: 8, cursor: isDragging ? 'grabbing' : 'grab', position: 'relative',
+        border: `1px solid ${borderColor}`,
+        borderRadius: 10,
+        padding: compact ? '9px 12px' : '11px 13px',
+        marginBottom: 8,
+        cursor: isDragging ? 'grabbing' : 'grab',
+        position: 'relative',
         opacity: isDragging ? 0.45 : 1,
         transition: 'box-shadow 0.15s, opacity 0.15s',
         boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
@@ -404,34 +440,43 @@ function KanbanCard({
       onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.06)' }}
       onClick={onView}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+      {/* ── Row 1: Avatar + Name + Star + Menu ── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
         <div style={{
-          width: compact ? 28 : 34, height: compact ? 28 : 34, borderRadius: '50%',
+          width: compact ? 28 : 32, height: compact ? 28 : 32, borderRadius: '50%',
           background: bgColor, color: fgColor, display: 'flex', alignItems: 'center',
-          justifyContent: 'center', fontSize: compact ? 11 : 13, fontWeight: 700, flexShrink: 0,
+          justifyContent: 'center', fontSize: compact ? 11 : 12, fontWeight: 700, flexShrink: 0,
         }}>
           {getInitials(client.full_name)}
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          {/* Name */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <p style={{
-              margin: 0, fontSize: compact ? 12 : 13, fontWeight: 600, color: t.text,
+              margin: 0, fontSize: compact ? 12 : 13, fontWeight: 700, color: t.text,
               lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {client.full_name}
             </p>
-            {starred && <span style={{ fontSize: 10, color: '#f59e0b', flexShrink: 0 }}>★</span>}
+            {starred && <span style={{ fontSize: 11, color: '#f59e0b', flexShrink: 0, lineHeight: 1 }}>★</span>}
           </div>
-          {!compact && client.plan && (
-            <p style={{ margin: '2px 0 0', fontSize: 11, color: t.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {(client as any).plan.name}
+
+          {/* Plan — always visible, more prominent */}
+          {planName && (
+            <p style={{
+              margin: '3px 0 0', fontSize: 11, fontWeight: 500,
+              color: t.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {planName}
             </p>
           )}
         </div>
 
+        {/* Context menu */}
         <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-          <button onClick={() => setMenuOpen(v => !v)}
+          <button
+            onClick={() => setMenuOpen(v => !v)}
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', color: t.text3, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: 0.5 }}
             onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
             onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.5'; (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
@@ -445,10 +490,10 @@ function KanbanCard({
               boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 100, minWidth: 160, overflow: 'hidden',
             }}>
               {[
-                { icon: Eye, label: 'Abrir cliente', action: onView, color: t.text },
-                { icon: Star, label: starred ? 'Remover estrela' : 'Destacar', action: onStar, color: '#f59e0b' },
-                { icon: Archive, label: 'Arquivar', action: onArchive, color: '#6b7280' },
-                { icon: Trash2, label: 'Excluir', action: onDelete, color: '#ef4444' },
+                { icon: Eye,     label: 'Abrir cliente',                  action: onView,    color: t.text    },
+                { icon: Star,    label: starred ? 'Remover estrela' : 'Destacar', action: onStar, color: '#f59e0b' },
+                { icon: Archive, label: 'Arquivar',                       action: onArchive, color: '#6b7280' },
+                { icon: Trash2,  label: 'Excluir',                        action: onDelete,  color: '#ef4444' },
               ].map(({ icon: Icon, label, action, color }) => (
                 <button key={label} onClick={() => { action(); setMenuOpen(false) }}
                   style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color, textAlign: 'left' }}
@@ -463,36 +508,44 @@ function KanbanCard({
         </div>
       </div>
 
-      {!compact && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
-            <Mail size={11} color={t.text3} />
-            <span style={{ fontSize: 11, color: t.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{client.email}</span>
-          </div>
-          {client.phone && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <Phone size={11} color={t.text3} />
-              <span style={{ fontSize: 11, color: t.text2 }}>{client.phone}</span>
-            </div>
-          )}
+      {/* ── Row 2: Deadline (days remaining + date) ── */}
+      {dl && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Urgency badge: "7d restantes" */}
+          <span style={{
+            fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 700,
+            background: dl.bgColor, color: dl.textColor,
+            display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0,
+          }}>
+            <Clock size={10} strokeWidth={2.5} /> {dl.label}
+          </span>
+          {/* Actual date: "01/01/2026" */}
+          <span style={{ fontSize: 11, color: t.text3, fontWeight: 500, whiteSpace: 'nowrap' }}>
+            {dl.dateFormatted}
+          </span>
+        </div>
+      )}
+
+      {/* ── Row 3: Tags (always shown regardless of stage) ── */}
+      {(personalColor || needsReview) && (
+        <div style={{ marginTop: 7, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
           {needsReview && (
-            <div style={{ marginTop: 6 }}>
-              <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 700, background: '#fce7f3', color: '#9d174d' }}>
-                📸 Aguardando aprovação
-              </span>
-            </div>
+            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 700, background: '#fce7f3', color: '#9d174d', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              📸 Aguardando aprovação
+            </span>
           )}
-          {dl && (
-            <div style={{ marginTop: 6 }}>
+          {personalColor && (() => {
+            const s = getSeasonTagStyle(personalColor)
+            return (
               <span style={{
-                fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
-                background: dl.urgency === 'danger' ? '#fee2e2' : dl.urgency === 'warning' ? '#fef3c7' : t.surface2,
-                color: dl.urgency === 'danger' ? '#991b1b' : dl.urgency === 'warning' ? '#92400e' : t.text3,
+                fontSize: 10, padding: '2px 9px', borderRadius: 20, fontWeight: 700,
+                background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+                letterSpacing: 0.3, display: 'inline-flex', alignItems: 'center', gap: 3,
               }}>
-                📅 {dl.label}
+                🎨 {personalColor}
               </span>
-            </div>
-          )}
+            )
+          })()}
         </div>
       )}
     </div>
@@ -2117,7 +2170,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [showFormModal, setShowFormModal] = useState(false)
   const [resultForm, setResultForm] = useState({ observations: '' })
   const [savingResult, setSavingResult] = useState(false)
-  const [releasingResult, setReleasingResult] = useState(false)
   const [uploadingFile, setUploadingFile] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [aiFolders, setAiFolders] = useState<any[]>([])
@@ -2367,11 +2419,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       }
     } catch (e: any) { alert(e.message) } finally { setSavingResult(false) }
   }
-  const handleReleaseResult = async () => {
-    const hasContent = resultForm.observations.trim() || resultFiles?.length > 0 || linkedFolderId
-    if (!hasContent) { if (!confirm('⚠️ Nenhum conteúdo adicionado.\n\nDeseja liberar mesmo assim?')) return } else { if (!confirm('Liberar o resultado para a cliente?')) return }
-    setReleasingResult(true); try { await adminService.releaseResult(clientId!, { chatEnabled }); load() } catch (e: any) { alert(e.message) } finally { setReleasingResult(false) }
-  }
   const handleSaveChatEnabled = async () => {
     const { error } = await supabase.from('client_results').upsert(
       { client_id: clientId!, chat_enabled: chatEnabled, updated_at: new Date().toISOString() },
@@ -2608,38 +2655,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 formSubmission={formSubmission}
                 photos={photos}
                 result={result}
+                deadline={deadline}
                 onChange={load}
               />
-
-              {/* Progresso */}
-              <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
-                <h3 className="font-semibold mb-4" style={{ color: t.text }}>Progresso</h3>
-                <div className="space-y-3">
-                  {[
-                    { label: 'Contrato assinado', done: !!contract, date: contract?.signed_at },
-                    { label: 'Formulário enviado', done: !!formSubmission, date: formSubmission?.submitted_at },
-                    { label: `Fotos enviadas (${photos.length})`, done: photos.length > 0 && !['awaiting_contract', 'awaiting_form', 'awaiting_photos'].includes(client.status) },
-                    {
-                      label: 'Fotos aprovadas (revisão concluída)',
-                      done: ['in_analysis', 'completed'].includes(client.status),
-                      badge: client.status === 'photos_submitted' ? { text: 'Aguardando aprovação', color: 'text-pink-700 bg-pink-50 border border-pink-200' } : undefined,
-                    },
-                    { label: 'Análise em andamento', done: ['in_analysis', 'preparing_materials', 'completed'].includes(client.status) },
-                    { label: 'Preparando materiais', done: ['preparing_materials', 'completed'].includes(client.status) },
-                    { label: 'Resultado liberado', done: result?.is_released },
-                  ].map(({ label, done, date, badge }: any) => (
-                    <div key={label} className="flex items-center gap-3">
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: done ? 'rgba(34,197,94,0.15)' : t.surface2 }}>
-                        {done ? <Check className="h-3.5 w-3.5 text-green-500" /> : <div className="w-2 h-2 rounded-full" style={{ background: t.text3 }} />}
-                      </div>
-                      <div className="flex-1 flex items-center gap-2 flex-wrap">
-                        <span className="text-sm" style={{ color: done ? t.text : t.text3, fontWeight: done ? 500 : 400 }}>{label}</span>
-                        {date && <span className="text-xs" style={{ color: t.text3 }}>{new Date(date).toLocaleDateString('pt-BR')}</span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
 
               {/* Prazo */}
               <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
@@ -2795,12 +2813,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               ) : (client.status === 'preparing_materials' || client.status === 'validating_materials') ? (
                 <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-teal-600 flex-shrink-0" />
-                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Quando os materiais estiverem prontos, libere pela aba ✨ IA</p></div>
+                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Quando os materiais estiverem prontos, avance até Simulações no Controle de Etapas e libere o resultado por lá</p></div>
                 </div>
               ) : (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
                   <Lock className="h-5 w-5 text-amber-500 flex-shrink-0" />
-                  <div><p className="text-sm font-medium text-amber-800">Resultado ainda não liberado</p><p className="text-xs text-amber-600">Preencha abaixo e libere pela aba ✨ IA quando estiver pronto</p></div>
+                  <div><p className="text-sm font-medium text-amber-800">Resultado ainda não liberado</p><p className="text-xs text-amber-600">Preencha abaixo e salve. O resultado é liberado ao avançar para Concluído no Controle de Etapas</p></div>
                 </div>
               )}
 
@@ -2891,7 +2909,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <Save className="h-4 w-4" /> Salvar
               </Btn>
               {aiSaveStatus === 'saved' && <span className="text-sm text-green-600 flex items-center gap-1"><CheckCircle className="h-4 w-4" /> Salvo!</span>}
-              <span className="text-xs ml-auto flex items-center gap-1" style={{ color: t.text3 }}><Lock className="h-3 w-3" /> Liberação somente na aba ✨ IA</span>
+              <span className="text-xs ml-auto flex items-center gap-1" style={{ color: t.text3 }}><Lock className="h-3 w-3" /> Liberação via Controle de Etapas</span>
             </div>
           </div>
         </div>
@@ -2904,8 +2922,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               clientId={clientId!}
               clientName={client.full_name}
               isReleased={result?.is_released || false}
-              onRelease={handleReleaseResult}
-              releasingResult={releasingResult}
               chatEnabled={chatEnabled}
               onChatEnabledChange={setChatEnabled}
               onSaveChatEnabled={handleSaveChatEnabled}

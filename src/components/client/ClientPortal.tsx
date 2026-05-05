@@ -114,11 +114,11 @@ export function ClientPortal() {
         {data.client.status === 'in_analysis' && (
           <AnalysisScreen data={data} />
         )}
-        {/* preparing_materials, validating_materials e simulating são internos.
+        {/* preparing_materials, validating_materials, sending_dossier e simulating são internos.
             O RPC pode retornar qualquer um dos três. Se houver resultado
             parcial liberado (!!data.result), mostra o ResultScreen em modo
             prévia. Caso contrário, mostra a tela de análise em andamento. */}
-        {['preparing_materials', 'validating_materials', 'simulating'].includes(data.client.status) && (
+        {['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating'].includes(data.client.status) && (
           !!data.result
             ? <ResultScreen token={token!} data={data} simulatingMode />
             : <AnalysisScreen data={data} materialsBeingPrepared />

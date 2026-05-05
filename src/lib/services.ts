@@ -14,6 +14,7 @@ export type ClientStatus =
   | 'in_analysis'
   | 'preparing_materials'
   | 'validating_materials'   // interno — cliente vê "Preparando Materiais"
+  | 'sending_dossier'        // interno — cliente vê "Preparando Materiais"
   | 'simulating'             // interno — cliente vê "Preparando Materiais"
   | 'completed'
 
@@ -619,7 +620,7 @@ export const adminService = {
    */
   async reopenStep(
     clientId: string,
-    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'simulations' | 'result',
+    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'result',
     reason?: string
   ): Promise<void> {
     const now = new Date().toISOString()
@@ -787,6 +788,16 @@ export const adminService = {
       return
     }
 
+    if (step === 'send_dossier') {
+      // Volta para envio de dossiê — etapa interna, cliente não vê mudança
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'sending_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+
     if (step === 'simulations') {
       // Volta para simulações — etapa interna, cliente não vê mudança
       // IMPORTANTE: reseta is_released para evitar que resultado parcial
@@ -804,15 +815,16 @@ export const adminService = {
     }
 
     if (step === 'result') {
-      // "Reabrir resultado" volta pra preparing_materials e oculta o resultado
-      // no portal — reseta is_released para garantir que não apareça em nenhum status intermediário
+      // "Reabrir resultado" volta para 'simulating' (etapa imediatamente anterior
+      // a 'completed') e oculta o resultado no portal.
+      // Reseta is_released para garantir que não apareça enquanto ainda está em revisão.
       await supabase
         .from('client_results')
         .update({ is_released: false, updated_at: now })
         .eq('client_id', clientId)
       const { error } = await supabase
         .from('clients')
-        .update({ status: 'preparing_materials', updated_at: now })
+        .update({ status: 'simulating', updated_at: now })
         .eq('id', clientId)
       if (error) throw error
       return
@@ -899,6 +911,15 @@ export const adminService = {
       return
     }
     if (currentStatus === 'validating_materials') {
+      // Avança para "Enviar Dossiê" — etapa interna, cliente ainda vê "Preparando Materiais"
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'sending_dossier', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'sending_dossier') {
       // Avança para "Simulações" — etapa interna, cliente ainda vê "Preparando Materiais"
       const { error } = await supabase
         .from('clients')
@@ -1080,6 +1101,34 @@ export const adminService = {
       .update({ is_released: false, updated_at: new Date().toISOString() })
       .eq('client_id', clientId)
     if (error) throw error
+  },
+
+  /**
+   * Revoga o resultado já liberado (completed).
+   *
+   * Diferente de cancelPartialResult (que só oculta sem mexer no status),
+   * aqui também volta o status para 'simulating' — porque o resultado estava
+   * totalmente liberado e a admin quer reabrir o ciclo para corrigir/refazer
+   * antes de liberar novamente.
+   *
+   * O que NÃO muda:
+   *   - folder_url, observações e arquivos de resultado ficam intactos
+   *   - ao liberar de novo (advanceStep de simulating), tudo reaparece
+   */
+  async revokeResult(clientId: string): Promise<void> {
+    const now = new Date().toISOString()
+
+    const { error: resultErr } = await supabase
+      .from('client_results')
+      .update({ is_released: false, updated_at: now })
+      .eq('client_id', clientId)
+    if (resultErr) throw resultErr
+
+    const { error: clientErr } = await supabase
+      .from('clients')
+      .update({ status: 'simulating', updated_at: now })
+      .eq('id', clientId)
+    if (clientErr) throw clientErr
   },
 
   async uploadResultFile(clientId: string, file: File): Promise<void> {

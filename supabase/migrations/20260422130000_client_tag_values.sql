@@ -247,3 +247,21 @@ alter table kanban_column_labels enable row level security;
 create policy "Admin full access"
   on kanban_column_labels for all
   using (true) with check (true);
+
+  ALTER TABLE clients
+DROP CONSTRAINT clients_status_check;
+
+ALTER TABLE clients
+ADD CONSTRAINT clients_status_check
+CHECK (status IN (
+  'awaiting_contract',
+  'awaiting_form',
+  'awaiting_photos',
+  'photos_submitted',
+  'in_analysis',
+  'preparing_materials',
+  'validating_materials',
+  'sending_dossier',
+  'simulating',
+  'completed'
+));
