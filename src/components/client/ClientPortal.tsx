@@ -118,7 +118,7 @@ export function ClientPortal() {
             O RPC pode retornar qualquer um dos três. Se houver resultado
             parcial liberado (!!data.result), mostra o ResultScreen em modo
             prévia. Caso contrário, mostra a tela de análise em andamento. */}
-        {['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating'].includes(data.client.status) && (
+        {['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier'].includes(data.client.status) && (
           !!data.result
             ? <ResultScreen token={token!} data={data} simulatingMode />
             : <AnalysisScreen data={data} materialsBeingPrepared />
