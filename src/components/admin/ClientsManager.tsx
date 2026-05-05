@@ -2971,18 +2971,17 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
-        <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full">
+        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full">
 
           {/* Header */}
-          <div className="flex items-start justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center flex-shrink-0">
-                <span className="text-rose-600 font-bold text-lg">{client.full_name[0].toUpperCase()}</span>
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-start gap-3">
+            <div className="w-11 h-11 sm:w-12 sm:h-12 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <span className="text-rose-600 font-bold text-base sm:text-lg">{client.full_name[0].toUpperCase()}</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
                   {editingName ? (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 w-full">
                       <input
                         autoFocus
                         type="text"
@@ -2995,13 +2994,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         disabled={savingName}
                         maxLength={120}
                         placeholder="Nome completo"
-                        className="text-xl font-bold px-2 py-1 rounded-lg focus:outline-none disabled:opacity-50"
-                        style={{ background: t.surface2, border: `1px solid ${t.accent}`, color: t.text, minWidth: 220 }}
+                        className="text-lg sm:text-xl font-bold px-2 py-1 rounded-lg focus:outline-none disabled:opacity-50 flex-1 min-w-0"
+                        style={{ background: t.surface2, border: `1px solid ${t.accent}`, color: t.text }}
                       />
                       <button
                         onClick={handleSaveName}
                         disabled={savingName || !nameInput.trim()}
-                        className="p-1.5 rounded-lg disabled:opacity-40 transition-colors"
+                        className="p-1.5 rounded-lg disabled:opacity-40 transition-colors flex-shrink-0"
                         style={{ background: t.accent, color: t.accentFg }}
                         title="Salvar (Enter)"
                       >
@@ -3012,7 +3011,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       <button
                         onClick={handleCancelEditName}
                         disabled={savingName}
-                        className="p-1.5 rounded-lg disabled:opacity-40 transition-colors"
+                        className="p-1.5 rounded-lg disabled:opacity-40 transition-colors flex-shrink-0"
                         style={{ background: t.surface2, color: t.text2, border: `1px solid ${t.border}` }}
                         title="Cancelar (Esc)"
                       >
@@ -3020,11 +3019,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1">
-                      <h1 className="text-xl font-bold" style={{ color: t.text }}>{client.full_name}</h1>
+                    <div className="flex items-center gap-1 min-w-0">
+                      <h1 className="text-lg sm:text-xl font-bold truncate" style={{ color: t.text }}>{client.full_name}</h1>
                       <button
                         onClick={handleStartEditName}
-                        className="p-1 rounded transition-colors hover:opacity-100 opacity-60"
+                        className="p-1 rounded transition-colors hover:opacity-100 opacity-60 flex-shrink-0"
                         style={{ color: t.text3 }}
                         title="Editar nome"
                       >
@@ -3032,14 +3031,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       </button>
                     </div>
                   )}
-                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
-                  {client.plan && <span className="text-xs px-2 py-1 rounded font-medium" style={{ background: t.surface2, color: t.text2 }}>{(client as any).plan.name}</span>}
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
+                  {client.plan && <span className="text-xs px-2 py-1 rounded font-medium flex-shrink-0" style={{ background: t.surface2, color: t.text2 }}>{(client as any).plan.name}</span>}
                 </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm mt-0.5" style={{ color: t.text3 }}>
-                  <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" /><span className="truncate max-w-[180px] sm:max-w-none">{client.email}</span></span>
+                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-3 gap-y-0.5 text-xs sm:text-sm mt-1" style={{ color: t.text3 }}>
+                  <span className="flex items-center gap-1 min-w-0"><Mail className="h-3 w-3 sm:h-3.5 sm:w-3.5 flex-shrink-0" /><span className="truncate">{client.email}</span></span>
                   {client.phone && (
-                    <span className="flex items-center gap-1.5">
-                      <Phone className="h-3.5 w-3.5" />
+                    <span className="flex items-center gap-1">
+                      <Phone className="h-3 w-3 sm:h-3.5 sm:w-3.5 flex-shrink-0" />
                       {client.phone}
                       <a 
                         href={`https://wa.me/55${client.phone.replace(/\D/g, '')}`} 
@@ -3048,18 +3047,17 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         className="ml-0.5 text-green-600 hover:text-green-700"
                         title="Enviar mensagem no WhatsApp"
                       >
-                        <MessageSquare className="h-3.5 w-3.5" />
+                        <MessageSquare className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                       </a>
                     </span>
                   )}
                 </div>
               </div>
             </div>
-          </div>
 
           {/* Portal link */}
           <div className="bg-gradient-to-br from-violet-50 to-purple-50 border border-violet-200 rounded-xl p-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
                   <Link2 className="h-5 w-5 text-white" />
@@ -3069,33 +3067,33 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   <p className="text-xs text-gray-500">Compartilhe este link para o cliente acessar o portal</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-center gap-2 flex-shrink-0 self-end sm:self-auto">
                 <Btn 
                   variant="outline" 
                   size="sm" 
                   onClick={copyLink}
-                  className="bg-white hover:bg-violet-50 border-violet-300"
+                  className="bg-white hover:bg-violet-50 border-violet-300 flex-1 sm:flex-none justify-center"
                 >
                   {copied ? (
                     <>
                       <Check className="h-3.5 w-3.5 text-green-600" />
-                      <span className="hidden sm:inline">Copiado!</span>
+                      <span>Copiado!</span>
                     </>
                   ) : (
                     <>
                       <Copy className="h-3.5 w-3.5" />
-                      <span className="hidden sm:inline">Copiar Link</span>
+                      <span>Copiar Link</span>
                     </>
                   )}
                 </Btn>
-                <a href={portalLink} target="_blank" rel="noopener noreferrer">
+                <a href={portalLink} target="_blank" rel="noopener noreferrer" className="flex-1 sm:flex-none">
                   <Btn 
                     variant="outline" 
                     size="sm"
-                    className="bg-white hover:bg-violet-50 border-violet-300"
+                    className="bg-white hover:bg-violet-50 border-violet-300 w-full justify-center"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline">Abrir Portal</span>
+                    <span>Abrir Portal</span>
                   </Btn>
                 </a>
               </div>
@@ -3103,7 +3101,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 p-1 rounded-xl overflow-x-auto scrollbar-hide -mx-3 sm:mx-0 px-3 sm:px-1 w-auto sm:w-fit" style={{ background: t.surface2 }}>
+          <div className="sticky top-0 z-10 -mx-3 sm:mx-0 px-3 sm:px-0 py-2 sm:py-0 sm:static" style={{ background: t.bg }}>
+            <div className="flex gap-1 p-1 rounded-xl overflow-x-auto scrollbar-hide w-full sm:w-fit" style={{ background: t.surface2 }}>
             {[
               { id: 'overview', label: 'Visão Geral' },
               { id: 'photos', label: `Fotos (${photos.length})` },
@@ -3114,7 +3113,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               <button
                 key={id}
                 onClick={() => setTab(id as any)}
-                className="px-3 sm:px-4 py-2.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors touch-manipulation"
+                className="px-3 sm:px-4 py-2.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-colors touch-manipulation active:opacity-80"
                 style={tab === id
                   ? { background: t.surface, color: t.text, boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }
                   : { background: 'transparent', color: t.text3 }}
@@ -3122,6 +3121,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 {label}
               </button>
             ))}
+            </div>
           </div>
 
           {/* Overview Tab */}
@@ -3153,8 +3153,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
               {/* Approve banner */}
               {client.status === 'photos_submitted' && (
-                <div className="md:col-span-2 bg-gradient-to-r from-pink-50 to-rose-50 border border-rose-200 rounded-xl p-5 flex items-center justify-between gap-4 flex-wrap">
-                  <div className="flex items-center gap-3">
+                <div className="md:col-span-2 bg-gradient-to-r from-pink-50 to-rose-50 border border-rose-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                  <div className="flex items-center gap-3 flex-1">
                     <div className="w-10 h-10 bg-pink-100 rounded-full flex items-center justify-center flex-shrink-0">
                       <Camera className="h-5 w-5 text-pink-500" />
                     </div>
@@ -3163,12 +3163,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       <p className="text-xs text-rose-600 mt-0.5">Revise as fotos na aba <strong>Fotos</strong> e, quando estiver pronto, aprove para iniciar a análise e notificar a cliente.</p>
                     </div>
                   </div>
-                  <Btn variant="outline" size="md" onClick={() => setShowRejection(true)} className="flex-shrink-0 border-amber-300 text-amber-700 hover:bg-amber-50">
-                    <AlertTriangle className="h-4 w-4" /> Solicitar Ajustes
-                  </Btn>
-                  <Btn variant="pink" size="md" onClick={handleApprovePhotos} loading={approvingPhotos} className="flex-shrink-0">
-                    <CheckCircle className="h-4 w-4" /> Aprovar Fotos
-                  </Btn>
+                  <div className="flex gap-2 flex-shrink-0">
+                    <Btn variant="outline" size="sm" onClick={() => setShowRejection(true)} className="flex-1 sm:flex-none justify-center border-amber-300 text-amber-700 hover:bg-amber-50">
+                      <AlertTriangle className="h-4 w-4" /> <span className="sm:inline">Solicitar Ajustes</span>
+                    </Btn>
+                    <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos} className="flex-1 sm:flex-none justify-center">
+                      <CheckCircle className="h-4 w-4" /> <span className="sm:inline">Aprovar Fotos</span>
+                    </Btn>
+                  </div>
                 </div>
               )}
 

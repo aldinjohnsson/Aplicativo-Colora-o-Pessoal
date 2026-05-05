@@ -456,13 +456,13 @@ export function StageController({
       }}
     >
       {/* Header row */}
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
+        <div className="min-w-0">
           <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
-            <ChevronRight className="h-4 w-4" style={{ color: t.text2 }} />
+            <ChevronRight className="h-4 w-4 flex-shrink-0" style={{ color: t.text2 }} />
             Controle de etapas
           </h3>
-          <p className="text-xs mt-0.5" style={{ color: t.text2 }}>
+          <p className="text-xs mt-0.5 leading-snug" style={{ color: t.text2 }}>
             Avance ou volte etapas manualmente. Ao voltar, os dados ficam preservados — a cliente só ajusta o que precisar.
           </p>
         </div>
@@ -471,7 +471,7 @@ export function StageController({
           <button
             onClick={handleAdvance}
             disabled={advancing}
-            className="inline-flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 max-w-full text-left"
+            className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 text-left flex-shrink-0"
             style={{ wordBreak: 'break-word' }}
           >
             {advancing
@@ -518,17 +518,17 @@ export function StageController({
             >
               {/* Dot */}
               <div
-                className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
                 style={dotStyle}
               >
                 {isDone
-                  ? <Check className="h-4 w-4" />
-                  : <Icon className="h-4 w-4" />}
+                  ? <Check className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                  : <Icon className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
               </div>
 
-              {/* Label + badges + data */}
+              {/* Label + badges + data — stacks on mobile */}
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <p
                     className="text-sm font-medium"
                     style={{ color: isFuture ? t.text3 : t.text }}
@@ -681,9 +681,10 @@ export function StageController({
 
               {/* Reabrir */}
               {canReopen && (
+                <div className="mt-2 sm:mt-0 sm:ml-auto sm:flex-shrink-0">
                 <button
                   onClick={() => setReopenTarget(step)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors flex-shrink-0 mt-0.5"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors"
                   style={{
                     border: '1px solid rgba(245,158,11,0.4)',
                     color: '#b45309',
@@ -696,6 +697,7 @@ export function StageController({
                   <RotateCcw className="h-3 w-3" />
                   Reabrir
                 </button>
+                </div>
               )}
             </div>
           )
