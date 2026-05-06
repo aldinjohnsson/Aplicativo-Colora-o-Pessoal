@@ -929,7 +929,7 @@ function KanbanColumn({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)', minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)', minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
             <p style={{ fontSize: 12, margin: 0 }}>
@@ -1799,7 +1799,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {isArchiveView && (
-            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', paddingBottom: 'env(safe-area-inset-bottom)' } as React.CSSProperties}>
+            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)' } as React.CSSProperties}>
               <ArchiveView clients={archivedClients} theme={t} onRestore={handleRestore} onDelete={handleDelete} />
             </div>
           )}
@@ -1863,7 +1863,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           
 
           {!isArchiveView && viewMode === 'list' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)' }}>
               {filteredActive.length === 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 200, color: t.text3 }}>
                   <User size={36} style={{ marginBottom: 10, opacity: 0.4 }} />
@@ -3051,7 +3051,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 24px)' }}>
+        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)' }}>
 
           {/* Header */}
           <div className="flex items-start gap-3">
@@ -3627,7 +3627,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   )
 }
 
-// ─── Routers ───────────────────────────────────────────────────────────────
+// ─── Router ───────────────────────────────────────────────────────────────
 export function ClientsManager({ onOpenNav }: { onOpenNav?: () => void }) {
   return (
     <Routes>
