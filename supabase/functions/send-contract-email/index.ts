@@ -628,6 +628,28 @@ serve(async (req) => {
       return jsonResponse({ success: true, type: 'photos_submitted' })
     }
 
+    // ============================================================
+    // TIPO 12: FOTO PARA SIMULAÇÃO (IA) ENVIADA
+    // Cliente enviou a foto extra na etapa "Aguardando Foto IA".
+    // Apenas a consultora recebe — precisa validar a foto antes
+    // de avançar para "Simulações".
+    // ============================================================
+    if (emailType === 'ai_photo_submitted') {
+      const { clientName, clientEmail, planName } = payload
+
+      const adminHtml = buildEmail(
+        '✨ Foto para simulação enviada',
+        `<strong>${clientName}</strong> enviou a foto para a simulação. A consultora deve validar antes de avançar para "Simulações".`,
+        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
+      )
+
+      const results = await Promise.allSettled([
+        send(ADMIN_EMAIL, `[MS Color] ✨ Foto IA para validar: ${clientName}`, adminHtml),
+      ])
+      logResults(results, 'ai_photo_submitted')
+      return jsonResponse({ success: true, type: 'ai_photo_submitted' })
+    }
+
     return jsonResponse({ error: 'Tipo de e-mail desconhecido: ' + emailType }, 400)
 
   } catch (error: any) {

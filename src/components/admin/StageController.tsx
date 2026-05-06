@@ -10,8 +10,8 @@ import { useTheme } from '../../lib/theme'
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'
-type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'
+type StepKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'ai_photo' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'
+type ReopenKey = 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'ai_photo' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'
 
 interface StepDef {
   key: StepKey
@@ -32,7 +32,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(245,158,11,0.12)',
     activeBorder: 'rgba(245,158,11,0.35)',
     activeStatus: 'awaiting_contract',
-    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'contract',
   },
   {
@@ -41,7 +41,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(59,130,246,0.12)',
     activeBorder: 'rgba(59,130,246,0.35)',
     activeStatus: 'awaiting_form',
-    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'form',
   },
   {
@@ -50,7 +50,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(168,85,247,0.12)',
     activeBorder: 'rgba(168,85,247,0.35)',
     activeStatus: 'awaiting_photos',
-    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'photos',
   },
   {
@@ -59,7 +59,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(236,72,153,0.12)',
     activeBorder: 'rgba(236,72,153,0.35)',
     activeStatus: 'photos_submitted',
-    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'review',
   },
   {
@@ -68,7 +68,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(249,115,22,0.12)',
     activeBorder: 'rgba(249,115,22,0.35)',
     activeStatus: 'in_analysis',
-    doneStatuses: ['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'analysis',
   },
   {
@@ -77,7 +77,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(20,184,166,0.12)',
     activeBorder: 'rgba(20,184,166,0.35)',
     activeStatus: 'preparing_materials',
-    doneStatuses: ['validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'materials',
   },
   {
@@ -86,7 +86,7 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(99,102,241,0.12)',
     activeBorder: 'rgba(99,102,241,0.35)',
     activeStatus: 'validating_materials',
-    doneStatuses: ['sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'validate_materials',
   },
   {
@@ -95,8 +95,26 @@ const STEPS: StepDef[] = [
     activeBg: 'rgba(14,165,233,0.12)',
     activeBorder: 'rgba(14,165,233,0.35)',
     activeStatus: 'sending_dossier',
-    doneStatuses: ['simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    doneStatuses: ['awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
     reopenKey: 'send_dossier',
+  },
+  {
+    // ETAPA CONDICIONAL — só aparece como ativa se o plano tem categoria
+    // de foto com is_ai_simulation=true. Se não tem, advanceStep do backend
+    // pula direto pra 'simulating'. A coluna existe sempre no kanban; o
+    // bloqueio é feito no front (handleDrop / handleAdvance).
+    //
+    // É AQUI que a admin libera o resultado parcial pra cliente — porque é
+    // a etapa em que a cliente passa a ver o parcial no portal e ela própria
+    // envia a foto adicional. Quando o plano não tem IA, a liberação acontece
+    // no step 'simulations' (caminho equivalente).
+    key: 'ai_photo', label: 'Aguardando Foto IA', icon: Camera,
+    dotColor: '#a855f7',
+    activeBg: 'rgba(168,85,247,0.12)',
+    activeBorder: 'rgba(168,85,247,0.35)',
+    activeStatus: 'awaiting_ai_photo',
+    doneStatuses: ['simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed'],
+    reopenKey: 'ai_photo',
   },
   {
     key: 'simulations', label: 'Simulações', icon: Sparkles,
@@ -311,11 +329,15 @@ interface StageControllerProps {
   result: any
   /** Dados de prazo — usado para exibir a data de envio de fotos */
   deadline?: { photos_sent_at?: string; deadline_date?: string } | null
+  /** True se o plano da cliente tem categoria de foto com is_ai_simulation=true.
+   *  Quando true, a etapa "Aguardando Foto IA" é onde o parcial é liberado.
+   *  Quando false, a etapa é pulada e o parcial é liberado em "Simulações". */
+  planHasAiPhoto?: boolean
   onChange: () => void | Promise<void>
 }
 
 export function StageController({
-  client, contract, formSubmission, photos, result, deadline, onChange,
+  client, contract, formSubmission, photos, result, deadline, planHasAiPhoto = false, onChange,
 }: StageControllerProps) {
   const { theme: t } = useTheme()
   const [reopenTarget, setReopenTarget] = useState<StepDef | null>(null)
@@ -376,7 +398,19 @@ export function StageController({
       if (!confirm('Mover para "Enviar Dossiê"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
     }
     if (client.status === 'sending_dossier') {
-      if (!confirm('Mover para "Simulações"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".')) return
+      if (planHasAiPhoto) {
+        if (!confirm('Mover para "Aguardando Foto IA"? A cliente passa a ver o resultado parcial (se já liberado) e pode enviar a foto pra simulação. Esta etapa só existe porque o plano dela inclui Foto IA.')) return
+      } else {
+        if (!confirm('Mover para "Simulações"? Esta etapa é interna — a cliente continua vendo "Preparando Materiais".\n\n(O plano desta cliente não tem etapa de Foto IA, então ela é pulada automaticamente.)')) return
+      }
+    }
+    if (client.status === 'awaiting_ai_photo') {
+      const aiPhotoSent = photos?.length > 0
+      if (!aiPhotoSent) {
+        if (!confirm('A cliente ainda não enviou a foto para simulação.\n\nTem certeza que quer avançar mesmo assim?')) return
+      } else {
+        if (!confirm('Mover para "Simulações"? A cliente passa a ver "simulações em andamento". Use isso depois de validar a foto enviada.')) return
+      }
     }
     if (client.status === 'simulating') {
       if (!confirm('Mover para "Fazer Dossiê Capilar"? Esta etapa é interna — a cliente passa a ver "simulações sendo feitas". O resultado AINDA NÃO é liberado.')) return
@@ -578,6 +612,23 @@ export function StageController({
                       🔒 interno
                     </span>
                   )}
+                  {step.key === 'ai_photo' && (
+                    planHasAiPhoto ? (
+                      <span
+                        className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                        style={{ background: 'rgba(168,85,247,0.18)', color: '#7e22ce', border: '1px solid rgba(168,85,247,0.3)' }}
+                      >
+                        ✨ condicional
+                      </span>
+                    ) : (
+                      <span
+                        className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                        style={{ background: 'rgba(156,163,175,0.18)', color: '#6b7280', border: '1px solid rgba(156,163,175,0.3)' }}
+                      >
+                        ⏭ pulada (plano sem IA)
+                      </span>
+                    )
+                  )}
                   {step.key === 'simulations' && (
                     <span
                       className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
@@ -612,8 +663,13 @@ export function StageController({
                   )}
                 </div>
 
-                {/* Botão de liberação/cancelamento parcial */}
-                {step.key === 'simulations' && isCurrent && (
+                {/* Botão de liberação/cancelamento parcial.
+                    Aparece em 'ai_photo' quando o plano tem Foto IA, ou em
+                    'simulations' quando o plano NÃO tem (caminho equivalente). */}
+                {(
+                  (step.key === 'ai_photo' && isCurrent && planHasAiPhoto) ||
+                  (step.key === 'simulations' && isCurrent && !planHasAiPhoto)
+                ) && (
                   <div className="mt-2">
                     {result?.is_released ? (
                       <button

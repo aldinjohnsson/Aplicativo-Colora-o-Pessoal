@@ -672,7 +672,7 @@ function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMove
 
 // ── Photos Tab ───────────────────────────────────────────────
 
-const EMPTY_CAT = { title: '', description: '', max_photos: 10, instruction_items: [] as InstructionItem[] }
+const EMPTY_CAT = { title: '', description: '', max_photos: 10, is_ai_simulation: false, instruction_items: [] as InstructionItem[] }
 
 function PhotosTab({ planId }: { planId: string }) {
   const [categories, setCategories] = useState<PhotoCategory[]>([])
@@ -692,14 +692,20 @@ function PhotosTab({ planId }: { planId: string }) {
 
   const handleAdd = async () => {
     if (!newCat.title.trim()) return
+    // Se está marcando como IA, valida que não existe outra categoria IA neste plano
+    if (newCat.is_ai_simulation && categories.some(c => (c as any).is_ai_simulation)) {
+      alert('Este plano já possui uma categoria de Foto para Simulação (IA). Edite a existente ou desmarque a outra antes.')
+      return
+    }
     await adminService.savePhotoCategory({
       plan_id: planId,
       title: newCat.title,
       description: newCat.description || null,
       instruction_items: newCat.instruction_items,
       max_photos: newCat.max_photos,
+      is_ai_simulation: newCat.is_ai_simulation,
       order_index: categories.length
-    })
+    } as any)
     setAdding(false)
     setNewCat(EMPTY_CAT)
     load()
@@ -711,6 +717,7 @@ function PhotosTab({ planId }: { planId: string }) {
       title: cat.title,
       description: cat.description || '',
       max_photos: cat.max_photos,
+      is_ai_simulation: !!(cat as any).is_ai_simulation,
       instruction_items: migrateToInstructionItems(
         (cat as any).video_url,
         (cat as any).instructions,
@@ -721,12 +728,18 @@ function PhotosTab({ planId }: { planId: string }) {
 
   const handleSaveEdit = async () => {
     if (!editCat.title.trim() || !editingId) return
+    // Se está marcando como IA agora, valida que não existe outra categoria IA neste plano
+    if (editCat.is_ai_simulation && categories.some(c => c.id !== editingId && (c as any).is_ai_simulation)) {
+      alert('Este plano já possui outra categoria de Foto para Simulação (IA). Desmarque a outra antes.')
+      return
+    }
     await adminService.updatePhotoCategory(editingId, {
       title: editCat.title,
       description: editCat.description || null,
       instruction_items: editCat.instruction_items,
       max_photos: editCat.max_photos,
-    })
+      is_ai_simulation: editCat.is_ai_simulation,
+    } as any)
     setEditingId(null)
     setEditCat(null)
     load()
@@ -775,7 +788,14 @@ function PhotosTab({ planId }: { planId: string }) {
             <div className="p-5">
               <div className="flex items-start justify-between">
                 <div className="flex-1">
-                  <h4 className="font-semibold text-gray-900">{cat.title}</h4>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="font-semibold text-gray-900">{cat.title}</h4>
+                    {(cat as any).is_ai_simulation && (
+                      <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 border border-violet-200">
+                        ✨ Foto p/ Simulação (IA)
+                      </span>
+                    )}
+                  </div>
                   {cat.description && <p className="text-sm text-gray-500 mt-0.5">{cat.description}</p>}
                   {(() => {
                     const items = migrateToInstructionItems(
@@ -873,6 +893,26 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
           placeholder="Breve descrição desta categoria"
           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
       </div>
+
+      {/* Toggle: categoria IA (etapa condicional após Enviar Dossiê) */}
+      <label className="flex items-start gap-3 p-3 rounded-lg border border-violet-200 bg-violet-50/40 cursor-pointer hover:bg-violet-50 transition-colors">
+        <input
+          type="checkbox"
+          checked={!!data.is_ai_simulation}
+          onChange={e => onChange({ ...data, is_ai_simulation: e.target.checked })}
+          className="mt-0.5 h-4 w-4 rounded border-violet-300 text-violet-600 focus:ring-violet-500"
+        />
+        <div className="flex-1">
+          <p className="text-sm font-medium text-gray-900">
+            ✨ Esta é a etapa de <strong>Foto para Simulação (IA)</strong>
+          </p>
+          <p className="text-xs text-gray-500 mt-0.5 leading-snug">
+            Quando marcada, esta categoria vira uma etapa condicional do fluxo —
+            a cliente envia esta foto entre "Enviar Dossiê" e "Simulações". Se desmarcado,
+            é só uma categoria normal de fotos. Apenas <strong>uma</strong> categoria por plano pode ter esta marcação.
+          </p>
+        </div>
+      </label>
 
       {/* ── Editor unificado: texto + vídeo YouTube + imagem ── */}
       <PhotoCategoryInstructionsEditor

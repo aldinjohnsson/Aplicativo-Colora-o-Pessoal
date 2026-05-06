@@ -271,6 +271,11 @@ const STATUSES: Record<string, {
     color: '#0ea5e9', bg: '#e0f2fe', textColor: '#075985',
     tailwindColor: 'bg-sky-100 text-sky-700', tailwindBg: 'bg-sky-50',
   },
+  awaiting_ai_photo: {
+    label: 'Aguardando Foto IA', short: 'Foto IA',
+    color: '#a855f7', bg: '#f3e8ff', textColor: '#6b21a8',
+    tailwindColor: 'bg-purple-100 text-purple-700', tailwindBg: 'bg-purple-50',
+  },
   simulating: {
     label: 'Simulações', short: 'Simulações',
     color: '#8b5cf6', bg: '#ede9fe', textColor: '#5b21b6',
@@ -298,7 +303,7 @@ const STATUSES: Record<string, {
   },
 }
 // photos_submitted is between awaiting_photos and in_analysis
-const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed']
+const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed']
 
 /** Retorna o nome de exibição: customizado > short padrão */
 function getColLabel(
@@ -311,7 +316,7 @@ function getColLabel(
 
 // ─── Drag & Drop: mapa de reopen keys ────────────────────────────────────
 // Mapeia cada coluna destino para a chave usada em reopenStep
-const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'> = {
+const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'ai_photo' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'> = {
   awaiting_contract:            'contract',
   awaiting_form:                'form',
   awaiting_photos:              'photos',
@@ -320,6 +325,7 @@ const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' |
   preparing_materials:          'materials',
   validating_materials:         'validate_materials',
   sending_dossier:              'send_dossier',
+  awaiting_ai_photo:            'ai_photo',
   simulating:                   'simulations',
   making_capillary_dossier:     'make_capillary',
   validating_capillary_dossier: 'validate_capillary',
@@ -1530,8 +1536,15 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         onConfirm: async () => {
           applyOptimistic()
           try {
-            for (let i = 0; i < steps; i++) {
-              await adminService.advanceStep(clientIdSnap)
+            // advanceStep de sending_dossier decide o destino pelo plano (pode ir para
+            // simulating em vez de awaiting_ai_photo). Se o usuário arrastou
+            // explicitamente para awaiting_ai_photo, forçamos esse destino.
+            if (client.status === 'sending_dossier' && targetStatus === 'awaiting_ai_photo') {
+              await adminService.reopenStep(clientIdSnap, 'ai_photo', 'Movido via kanban')
+            } else {
+              for (let i = 0; i < steps; i++) {
+                await adminService.advanceStep(clientIdSnap)
+              }
             }
             silentLoad()  // sincroniza em segundo plano sem spinner
           } catch (e: any) {
@@ -1607,7 +1620,13 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         onConfirm: async () => {
           applyOptimistic()
           try {
-            for (let i = 0; i < steps; i++) await adminService.advanceStep(clientId)
+            // Mesmo fix do handleDrop: advanceStep de sending_dossier pode ir para
+            // simulating em vez de awaiting_ai_photo dependendo do plano.
+            if (client.status === 'sending_dossier' && targetStatus === 'awaiting_ai_photo') {
+              await adminService.reopenStep(clientId, 'ai_photo', 'Movido via kanban')
+            } else {
+              for (let i = 0; i < steps; i++) await adminService.advanceStep(clientId)
+            }
             silentLoad()
           } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
         },
@@ -2619,9 +2638,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
-  const [approvingPhotos, setApprovingPhotos] = useState(false)   // NEW
+  const [approvingPhotos, setApprovingPhotos] = useState(false)
   const [showRejection, setShowRejection] = useState(false)
   const [rejectingPhotos, setRejectingPhotos] = useState(false)
+  const [approvingAiPhoto, setApprovingAiPhoto] = useState(false)
+  const [showAiPhotoRejectionModal, setShowAiPhotoRejectionModal] = useState(false)
+  const [rejectingAiPhoto, setRejectingAiPhoto] = useState(false)
+  const [aiPhotoRejectionReason, setAiPhotoRejectionReason] = useState('')
   const [editingDeadline, setEditingDeadline] = useState(false)
   const [deadlineInput, setDeadlineInput] = useState('')
   const [savingDeadline, setSavingDeadline] = useState(false)
@@ -2731,6 +2754,39 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       await adminService.approvePhotos(clientId!, deadlineDays)
       load()
     } catch (e: any) { alert(e.message) } finally { setApprovingPhotos(false) }
+  }
+
+  // Aprova foto IA → avança para Simulações
+  const handleApproveAiPhoto = async () => {
+    setApprovingAiPhoto(true)
+    try {
+      await adminService.advanceStep(clientId!) // awaiting_ai_photo → simulating
+      load()
+    } catch (e: any) { alert(e?.message || 'Erro ao aprovar foto IA') } finally { setApprovingAiPhoto(false) }
+  }
+
+  // Rejeita foto IA: apaga a foto e mantém status awaiting_ai_photo para cliente reenviar
+  const handleRejectAiPhoto = async () => {
+    if (!aiPhotoRejectionReason.trim()) { alert('Por favor, informe o motivo.'); return }
+    setRejectingAiPhoto(true)
+    try {
+      const aiPhotosToDelete = (data?.photos || []).filter((p: any) => p.category_id === aiCat?.id)
+      for (const photo of aiPhotosToDelete) {
+        if (photo.storage_path) {
+          await supabase.storage.from('client-photos').remove([photo.storage_path])
+        }
+        await supabase.from('client_photos').delete().eq('id', photo.id)
+      }
+      // Guarda o motivo para o portal exibir ao cliente (reutilizamos o campo de rejeição de fotos)
+      await supabase.from('clients').update({
+        photos_rejection_reason: aiPhotoRejectionReason.trim(),
+        photos_rejected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq('id', clientId!)
+      setShowAiPhotoRejectionModal(false)
+      setAiPhotoRejectionReason('')
+      load()
+    } catch (e: any) { alert(e?.message || 'Erro ao rejeitar foto IA') } finally { setRejectingAiPhoto(false) }
   }
 
   const handleReject = async (payload: {
@@ -2914,6 +2970,10 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const { client, contract, formSubmission, photos, deadline, result, resultFiles, photoCategories, planForm } = data
   const status = STATUSES[client.status]
   const portalLink = `${window.location.origin}/c/${client.token}`
+  // Foto IA: detecta categoria de simulação IA e se já foi enviada
+  const aiCat = (photoCategories || []).find((c: any) => c.is_ai_simulation)
+  const aiPhotoSent = !!aiCat && (photos || []).some((p: any) => p.category_id === aiCat.id)
+  const hasAiPhotoToReview = client.status === 'awaiting_ai_photo' && aiPhotoSent
 
   return (
     <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: t.bg }}>
@@ -2948,6 +3008,17 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               </Btn>
             </div>
           )}
+          {/* Botões Foto IA — desktop */}
+          {hasAiPhotoToReview && (
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexShrink: 0 }} className="hidden sm:flex">
+              <Btn variant="outline" size="sm" onClick={() => setShowAiPhotoRejectionModal(true)} className="border-amber-300 text-amber-700 hover:bg-amber-50">
+                <AlertTriangle className="h-3.5 w-3.5" /> Solicitar Nova Foto
+              </Btn>
+              <Btn variant="pink" size="sm" onClick={handleApproveAiPhoto} loading={approvingAiPhoto}>
+                <CheckCircle className="h-3.5 w-3.5" /> Aprovar Foto IA → Simulações
+              </Btn>
+            </div>
+          )}
         </div>
 
         {/* Linha de aprovação — mobile only */}
@@ -2958,6 +3029,17 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             </Btn>
             <Btn variant="pink" size="sm" onClick={handleApprovePhotos} loading={approvingPhotos} className="flex-1 justify-center">
               <CheckCircle className="h-3.5 w-3.5" /> Aprovar Análise
+            </Btn>
+          </div>
+        )}
+        {/* Linha Foto IA — mobile only */}
+        {hasAiPhotoToReview && (
+          <div className="sm:hidden flex gap-2 px-3 pb-2.5">
+            <Btn variant="outline" size="sm" onClick={() => setShowAiPhotoRejectionModal(true)} className="flex-1 justify-center border-amber-300 text-amber-700 hover:bg-amber-50">
+              <AlertTriangle className="h-3.5 w-3.5" /> Nova Foto
+            </Btn>
+            <Btn variant="pink" size="sm" onClick={handleApproveAiPhoto} loading={approvingAiPhoto} className="flex-1 justify-center">
+              <CheckCircle className="h-3.5 w-3.5" /> Aprovar Foto IA
             </Btn>
           </div>
         )}
@@ -3168,6 +3250,29 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 </div>
               )}
 
+              {/* Banner Foto IA — aguardando aprovação */}
+              {hasAiPhotoToReview && (
+                <div className="md:col-span-2 bg-gradient-to-r from-violet-50 to-purple-50 border border-violet-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-10 h-10 bg-violet-100 rounded-full flex items-center justify-center flex-shrink-0">
+                      <Image className="h-5 w-5 text-violet-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-violet-900">Foto IA recebida — aguardando sua revisão</p>
+                      <p className="text-xs text-violet-600 mt-0.5">Revise a foto na aba <strong>Fotos</strong>. Se estiver boa, aprove para iniciar as simulações. Se não estiver, solicite uma nova foto.</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 flex-shrink-0">
+                    <Btn variant="outline" size="sm" onClick={() => setShowAiPhotoRejectionModal(true)} className="flex-1 sm:flex-none justify-center border-amber-300 text-amber-700 hover:bg-amber-50">
+                      <AlertTriangle className="h-4 w-4" /> <span className="sm:inline">Solicitar Nova Foto</span>
+                    </Btn>
+                    <Btn variant="pink" size="sm" onClick={handleApproveAiPhoto} loading={approvingAiPhoto} className="flex-1 sm:flex-none justify-center">
+                      <CheckCircle className="h-4 w-4" /> <span className="sm:inline">Aprovar → Simulações</span>
+                    </Btn>
+                  </div>
+                </div>
+              )}
+
               {/* Controle de Etapas */}
               <StageController
                 client={client}
@@ -3176,6 +3281,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 photos={photos}
                 result={result}
                 deadline={deadline}
+                planHasAiPhoto={photoCategories.some((c: any) => c.is_ai_simulation)}
                 onChange={load}
               />
 
@@ -3457,6 +3563,50 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {showFormModal && formSubmission && (
         <FormResponseModal formSubmission={formSubmission} planForm={planForm} onClose={() => setShowFormModal(false)} />
+      )}
+      {/* Modal de rejeição de Foto IA */}
+      {showAiPhotoRejectionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={e => { if (e.target === e.currentTarget && !rejectingAiPhoto) setShowAiPhotoRejectionModal(false) }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-5">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="h-5 w-5 text-amber-600" />
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">Solicitar nova foto IA</p>
+                <p className="text-xs text-gray-500 mt-0.5">{data?.client?.full_name}</p>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Motivo / orientação para a cliente</label>
+              <textarea
+                value={aiPhotoRejectionReason}
+                onChange={e => setAiPhotoRejectionReason(e.target.value)}
+                rows={3}
+                placeholder="Ex: A foto precisa ser com o rosto mais iluminado, sem filtros..."
+                className="w-full px-3 py-2 rounded-lg text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+                autoFocus
+              />
+              <p className="text-xs text-gray-500 mt-1.5">A foto atual será removida e a cliente poderá enviar uma nova.</p>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => { setShowAiPhotoRejectionModal(false); setAiPhotoRejectionReason('') }}
+                disabled={rejectingAiPhoto}
+                className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 border border-gray-200 hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >Cancelar</button>
+              <button
+                onClick={handleRejectAiPhoto}
+                disabled={rejectingAiPhoto || !aiPhotoRejectionReason.trim()}
+                className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium text-white bg-amber-500 hover:bg-amber-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {rejectingAiPhoto && <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />}
+                Solicitar Nova Foto
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <RejectionModal
         open={showRejection}

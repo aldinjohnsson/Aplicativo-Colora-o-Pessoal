@@ -114,11 +114,20 @@ export function ClientPortal() {
         {data.client.status === 'in_analysis' && (
           <AnalysisScreen data={data} />
         )}
-        {/* preparing_materials, validating_materials, sending_dossier e simulating são internos.
-            O RPC pode retornar qualquer um dos três. Se houver resultado
-            parcial liberado (!!data.result), mostra o ResultScreen em modo
-            prévia. Caso contrário, mostra a tela de análise em andamento. */}
-        {['preparing_materials', 'validating_materials', 'sending_dossier', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier'].includes(data.client.status) && (
+        {/* Etapas internas anteriores ao parcial — cliente vê "Análise em andamento". */}
+        {['preparing_materials', 'validating_materials', 'sending_dossier'].includes(data.client.status) && (
+          <AnalysisScreen data={data} materialsBeingPrepared />
+        )}
+        {/* AGUARDANDO FOTO IA — etapa condicional. Aqui o resultado parcial
+            já foi liberado pela admin e a cliente precisa enviar a foto pra
+            simulação. Após enviar, vê tela de "verificando". */}
+        {data.client.status === 'awaiting_ai_photo' && (
+          <AiPhotoStep token={token!} data={data} onDone={reload} />
+        )}
+        {/* Etapas internas pós-foto-IA — cliente vê "Simulações em andamento"
+            com o parcial liberado. O resultado FINAL só é liberado em
+            'completed'. */}
+        {['simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier'].includes(data.client.status) && (
           !!data.result
             ? <ResultScreen token={token!} data={data} simulatingMode />
             : <AnalysisScreen data={data} materialsBeingPrepared />
@@ -809,6 +818,7 @@ interface PhotoCategory {
   description?: string
   max_photos: number
   instruction_items?: InstructionItem[]
+  is_ai_simulation?: boolean
   // legacy fields
   video_url?: string
   instructions?: string[]
@@ -1155,7 +1165,10 @@ function PhotoStepContent({
   showBackButton?: boolean
   onBack?: () => void
 }) {
-  const categories: PhotoCategory[] = data.photo_categories || []
+  // Filtra a categoria de Foto IA — ela é enviada em outra etapa do fluxo
+  // (status 'awaiting_ai_photo'), pelo componente AiPhotoStep. Não deve
+  // aparecer junto das fotos iniciais.
+  const categories: PhotoCategory[] = (data.photo_categories || []).filter(c => !c.is_ai_simulation)
   const [uploads, setUploads]       = useState<Record<string, File[]>>({})
   const [existingByCat, setExistingByCat] = useState<Record<string, ExistingPhoto[]>>({})
   const [removingExisting, setRemovingExisting] = useState<Set<string>>(new Set())
@@ -1517,6 +1530,152 @@ function AnalysisScreen({
   )
 }
 
+// ── AI photo step ─────────────────────────────────────────────────────────────
+// Etapa "Aguardando Foto IA". Aqui o resultado parcial JÁ foi liberado pela
+// admin e a cliente precisa enviar a foto adicional para a simulação.
+// Após enviar, vê tela de "consultora verificando".
+function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const aiCat = (data.photo_categories || []).find(c => (c as any).is_ai_simulation) as PhotoCategory | undefined
+
+  // Foto já enviada nessa categoria? (status "verificando")
+  const aiPhotoSent = !!aiCat && (data.photos || []).some(p => p.category_id === aiCat.id)
+
+  // upload local (apenas durante o envio, não persiste após reload)
+  const [uploads, setUploads] = useState<File[]>([])
+  const [processing, setProcessing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  // Defesa: se por algum motivo o plano não tem categoria IA mas o status
+  // está em awaiting_ai_photo (admin moveu manualmente), mostra fallback.
+  if (!aiCat) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
+        <AlertCircle className="h-10 w-10 text-amber-500 mx-auto mb-3" />
+        <h2 className="font-semibold text-amber-900">Aguardando consultora</h2>
+        <p className="text-sm text-amber-700 mt-2">Estamos preparando a próxima etapa do seu atendimento. Em breve daremos novidades.</p>
+      </div>
+    )
+  }
+
+  const addFiles = async (files: File[]) => {
+    const remaining = aiCat.max_photos - uploads.length - (aiPhotoSent ? 1 : 0)
+    const toAdd = Array.from(files).slice(0, remaining)
+    if (toAdd.length === 0) {
+      setError(`Limite de ${aiCat.max_photos} foto${aiCat.max_photos !== 1 ? 's' : ''} atingido`)
+      return
+    }
+    setError('')
+    setProcessing(true)
+    try {
+      const processed = await Promise.all(toAdd.map(f => processImage(f)))
+      setUploads(u => [...u, ...(processed.filter(Boolean) as File[])])
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const removeFile = (idx: number) => setUploads(u => u.filter((_, i) => i !== idx))
+
+  const handleSubmit = async () => {
+    if (uploads.length === 0) return
+    setSubmitting(true)
+    setError('')
+    try {
+      // Envia uma a uma (a função apaga as antigas dessa categoria no primeiro envio)
+      for (const file of uploads) {
+        await clientService.submitAiPhoto(token, data.client.id, aiCat.id, file)
+      }
+      setUploads([])
+      onDone()
+    } catch (e: any) {
+      setError(e?.message || 'Erro ao enviar foto')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 1. Resultado parcial com banner adaptado para esta etapa.
+            Quando a foto JÁ FOI enviada, troca o banner para "verificando". */}
+      {data.result ? (
+        aiPhotoSent
+          ? <ResultScreen token={token} data={data} simulatingMode />
+          : <ResultScreen token={token} data={data} aiPhotoMode />
+      ) : (
+        // Caso raro: admin moveu pra ai_photo sem liberar parcial.
+        <div className="bg-gradient-to-br from-violet-500 via-purple-500 to-violet-600 rounded-2xl p-6 text-white shadow-lg">
+          <div className="inline-flex items-center justify-center w-12 h-12 bg-white/20 rounded-xl mb-3 backdrop-blur-sm">
+            <Camera className="h-6 w-6 text-white" />
+          </div>
+          <h2 className="text-xl font-bold">Envie sua foto para a simulação</h2>
+          <p className="text-violet-100 text-sm mt-1">
+            Sua consultora precisa de uma foto adicional pra gerar suas simulações personalizadas.
+          </p>
+        </div>
+      )}
+
+      {/* 2. Card da etapa de foto IA */}
+      {aiPhotoSent ? (
+        // ── Foto já enviada — aguardando validação da consultora ──────────
+        <div className="bg-white rounded-2xl border border-violet-200 shadow-sm overflow-hidden">
+          <div className="bg-gradient-to-r from-violet-50 to-purple-50 px-5 py-4 border-b border-violet-100">
+            <div className="flex items-center gap-3">
+              <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-violet-500 text-white flex-shrink-0">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900">Foto recebida — consultora verificando</h3>
+                <p className="text-xs text-gray-600 mt-0.5">Recebemos sua foto. Sua consultora vai conferir e em breve as simulações estarão disponíveis.</p>
+              </div>
+            </div>
+          </div>
+          <div className="px-5 py-4 flex items-center gap-3 text-sm text-gray-700">
+            <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+            <span>Você não precisa fazer mais nada por enquanto.</span>
+          </div>
+        </div>
+      ) : (
+        // ── Tela de upload — banner já está acima, sem card intermediário
+        <>
+          {/* Reaproveita o CategoryCard com o estado local */}
+          <CategoryCard
+            cat={aiCat}
+            index={0}
+            uploads={uploads}
+            existingPhotos={[]}
+            processing={processing}
+            error={error}
+            onAdd={addFiles}
+            onRemove={removeFile}
+            onRemoveExisting={() => {}}
+            removingExisting={new Set()}
+          />
+
+          <button
+            onClick={handleSubmit}
+            disabled={uploads.length === 0 || submitting || processing}
+            className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold py-3.5 px-6 rounded-2xl shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Enviando...
+              </>
+            ) : (
+              <>
+                Enviar foto
+                <ArrowRight className="h-4 w-4" />
+              </>
+            )}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ── Result screen ────────────────────────────────────────────────────────────
 
 interface RefPhoto {
@@ -1526,7 +1685,16 @@ interface RefPhoto {
   url: string
 }
 
-function ResultScreen({ token, data, simulatingMode = false }: { token: string; data: ClientPortalData; simulatingMode?: boolean }) {
+function ResultScreen({
+  token, data,
+  simulatingMode = false,
+  aiPhotoMode = false,
+}: {
+  token: string
+  data: ClientPortalData
+  simulatingMode?: boolean
+  aiPhotoMode?: boolean
+}) {
   const result = data.result
 
   const [aiPrompt, setAiPrompt] = useState<string | null>(null)
@@ -1593,7 +1761,25 @@ function ResultScreen({ token, data, simulatingMode = false }: { token: string; 
   return (
     <div className="space-y-4">
       {/* Banner — muda conforme o modo */}
-      {simulatingMode ? (
+      {aiPhotoMode ? (
+        <>
+          <div className="bg-gradient-to-br from-violet-500 via-purple-500 to-violet-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
+            <div
+              className="absolute inset-0 opacity-10"
+              style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
+            />
+            <div className="relative">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
+                <Camera className="h-9 w-9 text-white" />
+              </div>
+              <h2 className="text-2xl font-bold tracking-tight">Envie sua foto para a simulação</h2>
+              <p className="text-violet-100 text-sm mt-1.5">
+                Confira seu resultado parcial abaixo e, em seguida, envie a foto pedida pela sua consultora para gerar suas simulações personalizadas.
+              </p>
+            </div>
+          </div>
+        </>
+      ) : simulatingMode ? (
         <>
           <div className="bg-gradient-to-br from-violet-500 via-purple-500 to-violet-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
             <div

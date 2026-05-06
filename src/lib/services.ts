@@ -15,10 +15,11 @@ export type ClientStatus =
   | 'preparing_materials'
   | 'validating_materials'           // interno — cliente vê "Preparando Materiais"
   | 'sending_dossier'                // interno — cliente vê "Preparando Materiais"
-  | 'simulating'                     // interno — cliente vê "Preparando Materiais"
-  | 'making_capillary_dossier'       // interno — cliente vê "Simulações sendo feitas"
-  | 'validating_capillary_dossier'   // interno — cliente vê "Simulações sendo feitas"
-  | 'sending_capillary_dossier'      // interno — cliente vê "Simulações sendo feitas"
+  | 'awaiting_ai_photo'              // condicional (só se plano tem categoria IA). Cliente vê parcial + upload de foto
+  | 'simulating'                     // interno — cliente vê "Simulações em andamento"
+  | 'making_capillary_dossier'       // interno — cliente vê "Simulações em andamento"
+  | 'validating_capillary_dossier'   // interno — cliente vê "Simulações em andamento"
+  | 'sending_capillary_dossier'      // interno — cliente vê "Simulações em andamento"
   | 'completed'
 
 export interface Plan {
@@ -60,6 +61,8 @@ export interface PhotoCategory {
   video_url: string | null
   max_photos: number
   order_index: number
+  /** Marca esta categoria como a etapa condicional "Foto IA" do fluxo. */
+  is_ai_simulation?: boolean
 }
 
 export interface Client {
@@ -623,7 +626,7 @@ export const adminService = {
    */
   async reopenStep(
     clientId: string,
-    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result',
+    step: 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'ai_photo' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result',
     reason?: string
   ): Promise<void> {
     const now = new Date().toISOString()
@@ -801,14 +804,22 @@ export const adminService = {
       return
     }
 
+    if (step === 'ai_photo') {
+      // Volta para "Aguardando Foto IA" — cliente vê o resultado parcial
+      // (se já liberado) + instruções + upload da foto.
+      // NÃO reseta is_released — o parcial fica visível pra cliente.
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: 'awaiting_ai_photo', updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+
     if (step === 'simulations') {
-      // Volta para simulações — etapa interna, cliente não vê mudança
-      // IMPORTANTE: reseta is_released para evitar que resultado parcial
-      // anterior reapareça automaticamente no portal
-      await supabase
-        .from('client_results')
-        .update({ is_released: false, updated_at: now })
-        .eq('client_id', clientId)
+      // Volta para 'simulating' (etapa interna; cliente vê "simulações em andamento").
+      // NÃO reseta is_released — o parcial JÁ foi liberado em ai_photo (ou no
+      // próprio simulations quando o plano não tem IA) e deve continuar visível.
       const { error } = await supabase
         .from('clients')
         .update({ status: 'simulating', updated_at: now })
@@ -818,9 +829,6 @@ export const adminService = {
     }
 
     if (step === 'make_capillary') {
-      // Volta para "Fazer Dossiê Capilar" — etapa interna, cliente continua vendo
-      // a mesma mensagem de simulações sendo feitas. Não mexe em is_released:
-      // se a admin já liberou prévia em Simulações, ela continua visível.
       const { error } = await supabase
         .from('clients')
         .update({ status: 'making_capillary_dossier', updated_at: now })
@@ -830,7 +838,6 @@ export const adminService = {
     }
 
     if (step === 'validate_capillary') {
-      // Volta para "Validar Dossiê Capilar" — etapa interna
       const { error } = await supabase
         .from('clients')
         .update({ status: 'validating_capillary_dossier', updated_at: now })
@@ -840,7 +847,6 @@ export const adminService = {
     }
 
     if (step === 'send_capillary') {
-      // Volta para "Enviar Dossiê Capilar" — etapa interna
       const { error } = await supabase
         .from('clients')
         .update({ status: 'sending_capillary_dossier', updated_at: now })
@@ -851,8 +857,8 @@ export const adminService = {
 
     if (step === 'result') {
       // "Reabrir resultado" volta para 'sending_capillary_dossier' (etapa
-      // imediatamente anterior a 'completed') e oculta o resultado no portal.
-      // Reseta is_released para garantir que não apareça enquanto ainda está em revisão.
+      // imediatamente anterior a 'completed') e oculta o resultado FINAL.
+      // Reseta is_released — admin reabre pra refazer/corrigir.
       await supabase
         .from('client_results')
         .update({ is_released: false, updated_at: now })
@@ -902,18 +908,11 @@ export const adminService = {
    * por e-mail, formulário preenchido por ligação, etc).
    *
    * Transições:
-   *   awaiting_contract             → awaiting_form               (cria registro de assinatura)
-   *   awaiting_form                 → awaiting_photos             (limpa rejeição se houver)
-   *   awaiting_photos               → photos_submitted            (envia para revisão)
-   *   photos_submitted              → in_analysis                 (delega para approvePhotos)
-   *   in_analysis                   → preparing_materials
-   *   preparing_materials           → validating_materials        (interna)
-   *   validating_materials          → sending_dossier             (interna)
-   *   sending_dossier               → simulating                  (interna)
-   *   simulating                    → making_capillary_dossier    (interna — cliente passa a ver "simulações sendo feitas")
-   *   making_capillary_dossier      → validating_capillary_dossier (interna)
-   *   validating_capillary_dossier  → sending_capillary_dossier   (interna)
-   *   sending_capillary_dossier     → completed                   (delega para releaseResult — libera resultado e envia e-mail)
+   *   awaiting_contract → awaiting_form       (cria registro de assinatura)
+   *   awaiting_form     → awaiting_photos     (limpa rejeição se houver)
+   *   awaiting_photos   → photos_submitted    (envia para revisão)
+   *   photos_submitted  → in_analysis         (delega para approvePhotos)
+   *   in_analysis       → completed           (delega para releaseResult)
    *
    * Em `completed` não há pra onde avançar — lança erro.
    */
@@ -962,7 +961,36 @@ export const adminService = {
       return
     }
     if (currentStatus === 'sending_dossier') {
-      // Avança para "Simulações" — etapa interna, cliente ainda vê "Preparando Materiais"
+      // Decide o próximo status baseado no plano:
+      //   - Plano tem categoria com is_ai_simulation=true → 'awaiting_ai_photo'
+      //   - Caso contrário                                → 'simulating' (pula a etapa)
+      const planId = (client as any).plan_id
+      let goesToAi = false
+      if (planId) {
+        const { data: aiCats, error: catErr } = await supabase
+          .from('plan_photo_categories')
+          .select('id')
+          .eq('plan_id', planId)
+          .eq('is_ai_simulation', true)
+          .limit(1)
+        if (catErr) {
+          // Se a coluna is_ai_simulation não existe (migration não aplicada),
+          // o erro vem aqui. Seguimos como se o plano não tivesse IA, mas
+          // logamos pra investigação.
+          console.warn('[advanceStep] erro consultando is_ai_simulation:', catErr.message)
+        }
+        goesToAi = !!aiCats && aiCats.length > 0
+      }
+      const nextStatus = goesToAi ? 'awaiting_ai_photo' : 'simulating'
+      const { error } = await supabase
+        .from('clients')
+        .update({ status: nextStatus, updated_at: now })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
+    if (currentStatus === 'awaiting_ai_photo') {
+      // Admin validou a foto IA — avança pra 'simulating'.
       const { error } = await supabase
         .from('clients')
         .update({ status: 'simulating', updated_at: now })
@@ -971,9 +999,8 @@ export const adminService = {
       return
     }
     if (currentStatus === 'simulating') {
-      // Avança para "Fazer Dossiê Capilar" — etapa interna, cliente passa a ver
-      // "simulações sendo feitas". Resultado NÃO é liberado aqui — só ao final
-      // de "Enviar Dossiê Capilar".
+      // Avança pra "Fazer Dossiê Capilar" — etapa interna; cliente continua
+      // vendo "simulações em andamento". Resultado FINAL ainda não liberado.
       const { error } = await supabase
         .from('clients')
         .update({ status: 'making_capillary_dossier', updated_at: now })
@@ -982,7 +1009,6 @@ export const adminService = {
       return
     }
     if (currentStatus === 'making_capillary_dossier') {
-      // Avança para "Validar Dossiê Capilar" — etapa interna
       const { error } = await supabase
         .from('clients')
         .update({ status: 'validating_capillary_dossier', updated_at: now })
@@ -991,7 +1017,6 @@ export const adminService = {
       return
     }
     if (currentStatus === 'validating_capillary_dossier') {
-      // Avança para "Enviar Dossiê Capilar" — etapa interna
       const { error } = await supabase
         .from('clients')
         .update({ status: 'sending_capillary_dossier', updated_at: now })
@@ -1000,7 +1025,7 @@ export const adminService = {
       return
     }
     if (currentStatus === 'sending_capillary_dossier') {
-      // Avança para "Resultado" — libera o resultado pra cliente e dispara e-mail
+      // Avança pra "Resultado" — libera resultado FINAL e dispara e-mail.
       return this.releaseResult(clientId)
     }
     if (currentStatus === 'completed') {
@@ -1179,13 +1204,13 @@ export const adminService = {
    * Revoga o resultado já liberado (completed).
    *
    * Diferente de cancelPartialResult (que só oculta sem mexer no status),
-   * aqui também volta o status para 'sending_capillary_dossier' — porque o resultado
-   * estava totalmente liberado e a admin quer reabrir o ciclo para corrigir/refazer
+   * aqui também volta o status para 'simulating' — porque o resultado estava
+   * totalmente liberado e a admin quer reabrir o ciclo para corrigir/refazer
    * antes de liberar novamente.
    *
    * O que NÃO muda:
    *   - folder_url, observações e arquivos de resultado ficam intactos
-   *   - ao liberar de novo (advanceStep de sending_capillary_dossier), tudo reaparece
+   *   - ao liberar de novo (advanceStep de simulating), tudo reaparece
    */
   async revokeResult(clientId: string): Promise<void> {
     const now = new Date().toISOString()
@@ -1652,6 +1677,93 @@ export const clientService = {
       }
     } catch (e) {
       console.warn('Erro ao enviar notificação de fotos enviadas:', e)
+    }
+  },
+
+  /**
+   * Cliente envia a foto para a etapa "Aguardando Foto IA".
+   *
+   * FLUXO:
+   *   - Apaga foto IA antiga da mesma categoria (caso reenvio)
+   *   - Faz upload no bucket client-photos
+   *   - Chama RPC `save_ai_photo` (que valida status + categoria IA)
+   *   - NÃO muda o status — admin valida e avança via StageController
+   *   - Dispara e-mail 'ai_photo_submitted' pra consultora
+   */
+  async submitAiPhoto(
+    token: string,
+    clientId: string,
+    categoryId: string,
+    file: File
+  ): Promise<void> {
+    // 1. Apaga fotos antigas dessa categoria IA (caso seja reenvio)
+    const { data: existing } = await supabase
+      .from('client_photos')
+      .select('id, storage_path')
+      .eq('client_id', clientId)
+      .eq('category_id', categoryId)
+
+    if (existing && existing.length > 0) {
+      const paths = existing.map(p => p.storage_path).filter(Boolean)
+      if (paths.length) {
+        try { await supabase.storage.from('client-photos').remove(paths) } catch (e) {
+          console.warn('Erro ao limpar fotos IA antigas do storage:', e)
+        }
+      }
+      await supabase.from('client_photos').delete().in('id', existing.map(p => p.id))
+    }
+
+    // 2. Upload da nova foto
+    const uniqueName = `${Date.now()}_ai_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    const path = `${clientId}/${uniqueName}`
+
+    const { error: uploadError } = await supabase.storage
+      .from('client-photos')
+      .upload(path, file, { contentType: file.type, upsert: false })
+    if (uploadError) throw uploadError
+
+    // 3. Registro no banco — RPC dedicado que aceita awaiting_ai_photo
+    const { data, error } = await supabase.rpc('save_ai_photo', {
+      p_token: token,
+      p_photo_name: uniqueName,
+      p_photo_type: file.type,
+      p_photo_size: file.size,
+      p_storage_path: path,
+      p_category_id: categoryId,
+    })
+    if (error) {
+      try { await supabase.storage.from('client-photos').remove([path]) } catch {}
+      throw error
+    }
+    if (data?.error) {
+      try { await supabase.storage.from('client-photos').remove([path]) } catch {}
+      throw new Error(data.error)
+    }
+
+    // 4. E-mail pra consultora
+    try {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('full_name, email, token, plan:plans(name)')
+        .eq('token', token)
+        .single()
+
+      if (client) {
+        const portalUrl = `${window.location.origin}/c/${client.token}`
+        const planName = (client as any).plan?.name || ''
+
+        await supabase.functions.invoke('send-contract-email', {
+          body: {
+            type: 'ai_photo_submitted',
+            clientName: client.full_name,
+            clientEmail: client.email,
+            planName,
+            portalUrl,
+          }
+        })
+      }
+    } catch (e) {
+      console.warn('Erro ao enviar notificação de foto IA enviada:', e)
     }
   },
 
