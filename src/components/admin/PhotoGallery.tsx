@@ -196,13 +196,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   const dragImageRef = useRef<HTMLImageElement>(null)
   const dragContainerRef = useRef<HTMLDivElement>(null)
 
-  // ─── PORTAL iOS FIX ──────────────────────────────────────────────────────
-  // Container dedicado appended como último filho do body → garante ficar acima
-  // de qualquer header/nav com z-index alto, independente de stacking contexts.
-  const portalContainerRef = useRef<HTMLDivElement | null>(null)
-  // Salva scrollY para restaurar corretamente após fechar (iOS scroll lock)
-  const savedScrollYRef = useRef(0)
-
   // ─── CACHE DE THUMBNAILS ─────────────────────────────────────────────────
   // Armazena as miniaturas comprimidas (200x200px ~10KB cada)
   const thumbnailCacheRef = useRef<Map<string, string>>(new Map())
@@ -418,13 +411,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   // Liberar URLs ao desmontar
   useEffect(() => {
     return () => {
-      // Remove portal container se ainda existir (ex: unmount com modal aberto)
-      if (portalContainerRef.current) {
-        try { document.body.removeChild(portalContainerRef.current) } catch { /* ignora */ }
-        portalContainerRef.current = null
-      }
-      // Restaura overflow do body caso o componente desmonte com modal aberto
-      document.body.style.cssText = ''
       urlsToCleanupRef.current.forEach(url => {
         try { URL.revokeObjectURL(url) } catch { /* ignora */ }
       })
@@ -532,49 +518,32 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     startTransition(() => {
       setSelectedIndex(index)
     })
-
-    // ★ FIX iOS: cria container dedicado e o appenda como último filho do body.
-    // Isso garante que o modal pinte por cima de qualquer header/nav com z-index
-    // alto (inclusive os que usam position:fixed com z-index igual ou próximo ao nosso),
-    // pois o DOM order desempata quando z-index são iguais.
-    if (!portalContainerRef.current) {
-      const el = document.createElement('div')
-      el.id = 'photo-gallery-portal'
-      document.body.appendChild(el)
-      portalContainerRef.current = el
-    } else {
-      // Move para o final do body caso já exista (garante ser o último na ordem)
-      document.body.appendChild(portalContainerRef.current)
-    }
-
-    // ★ FIX iOS Safari: overflow:hidden no body NÃO impede scroll no iOS.
-    // A solução correta é position:fixed no body com top negativo igual ao scrollY.
-    savedScrollYRef.current = window.scrollY
     document.body.style.overflow = 'hidden'
-    document.body.style.position = 'fixed'
-    document.body.style.top = `-${savedScrollYRef.current}px`
-    document.body.style.width = '100%'
+
+    // ★ FIX SAFARI: elementos fixed/sticky do app (header, nav) ficam acima do portal
+    // no Safari pois criam stacking contexts independentes. Guardamos o z-index original
+    // e zeramos temporariamente para garantir que o modal fique no topo.
+    document.querySelectorAll<HTMLElement>('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"], [class*="nav-bar"]').forEach(el => {
+      const computed = window.getComputedStyle(el).zIndex
+      if (computed !== 'auto' && parseInt(computed) > 100) {
+        el.dataset.galleryOriginalZ = el.style.zIndex
+        el.style.setProperty('z-index', '0', 'important')
+      }
+    })
   }
 
   // Retomar fila de thumbnails ao fechar o modal
   const closeFullscreen = () => {
     setSelectedIndex(null)
-
-    // Remove portal container do DOM
-    if (portalContainerRef.current) {
-      try { document.body.removeChild(portalContainerRef.current) } catch { /* ignora */ }
-      portalContainerRef.current = null
-    }
-
-    // ★ FIX iOS Safari: restaura scroll na posição exata onde estava
-    document.body.style.overflow = ''
-    document.body.style.position = ''
-    document.body.style.top = ''
-    document.body.style.width = ''
-    window.scrollTo(0, savedScrollYRef.current)
-
+    document.body.style.overflow = 'auto'
     // Retoma o processamento que foi pausado durante o modal
     setTimeout(() => processQueueRef.current(), 300)
+
+    // ★ FIX SAFARI: restaurar z-index original dos elementos do app
+    document.querySelectorAll<HTMLElement>('[data-gallery-original-z]').forEach(el => {
+      el.style.zIndex = el.dataset.galleryOriginalZ || ''
+      delete el.dataset.galleryOriginalZ
+    })
   }
 
   const handlePrevious = () => {
@@ -781,17 +750,17 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
       </div>
 
       {/* Modal Fullscreen com Carousel — Portal para escapar de overflow/transform no iOS */}
-      {selectedIndex !== null && !imageErrors.has(photos[selectedIndex].id) && portalContainerRef.current && createPortal(
+      {selectedIndex !== null && !imageErrors.has(photos[selectedIndex].id) && createPortal(
         <div
           className="fixed inset-0 bg-black flex items-center justify-center"
-          style={{ zIndex: 2147483647 }}
+          style={{ zIndex: 99999 }}
           onClick={closeFullscreen}
           onTouchEnd={(e) => { if (e.target === e.currentTarget) closeFullscreen() }}
         >
           {/* Botão fechar — mobile, fixo no topo esquerdo com safe area */}
           <button
             onClick={closeFullscreen}
-            className="sm:hidden absolute left-3 z-20 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/70 active:bg-black/90"
+            className="sm:hidden absolute left-3 z-[99998] flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/70 active:bg-black/90"
             style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)', touchAction: 'manipulation' }}
           >
             <ChevronLeft className="h-5 w-5 text-white" />
@@ -800,13 +769,17 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
 
           {/* Contador de fotos — mobile, topo centro */}
           <div
-            className="sm:hidden absolute z-20 text-white/80 text-sm font-medium pointer-events-none"
+            className="sm:hidden absolute z-[99998] text-white/80 text-sm font-medium pointer-events-none"
             style={{ top: 'calc(env(safe-area-inset-top, 0px) + 18px)', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}
           >
             {selectedIndex + 1} / {photos.length}
           </div>
-          {/* Header */}
-          <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 to-transparent p-4 z-10">
+          {/* Header — z-[99998] garante que fica acima de qualquer elemento do app
+               que possa ter vazado no Safari. paddingTop respeita safe-area (notch). */}
+          <div
+            className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 to-transparent z-[99998]"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 16px)', paddingLeft: '16px', paddingRight: '16px', paddingBottom: '16px' }}
+          >
             <div className="max-w-7xl mx-auto flex items-center justify-between">
               <div className="text-white">
                 <p className="text-sm font-medium">{photos[selectedIndex].name}</p>
@@ -854,7 +827,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
           {photos.length > 1 && (
             <button
               onClick={(e) => { e.stopPropagation(); handlePrevious() }}
-              className="absolute left-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-10"
+              className="absolute left-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-[99997]"
               title="Foto anterior (←)"
             >
               <ChevronLeft className="h-8 w-8 text-white" />
@@ -911,7 +884,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
           {photos.length > 1 && (
             <button
               onClick={(e) => { e.stopPropagation(); handleNext() }}
-              className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-10"
+              className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-[99997]"
               title="Próxima foto (→)"
             >
               <ChevronRight className="h-8 w-8 text-white" />
@@ -920,7 +893,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
 
           {/* Thumbnails na parte inferior — virtualizado */}
           {photos.length > 1 && (
-            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 z-10">
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent z-[99998]" style={{ paddingTop: '16px', paddingLeft: '16px', paddingRight: '16px', paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)' }}>
               <div className="max-w-7xl mx-auto overflow-x-auto">
                 <div className="flex space-x-2 justify-center">
                   {/* Indicador numérico para fotos antes da janela */}
@@ -998,7 +971,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
             <p>Use as setas ← → para navegar · +/- para zoom · Esc para fechar</p>
           </div>
         </div>,
-        portalContainerRef.current!
+        document.body
       )}
     </>
   )
