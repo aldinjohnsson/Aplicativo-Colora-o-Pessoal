@@ -669,94 +669,238 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          MODAL FULLSCREEN — Layout em flex-column para evitar sobreposição
-          de elementos em mobile. NENHUMA barra usa position:absolute.
-          Estrutura:
-            [TOP BAR]  ← botões Fechar / Baixar / Zoom / Contador
-            [IMAGEM ]  ← flex-1, setas ← → absolutas DENTRO deste bloco
-            [THUMBS ]  ← strip de miniaturas
-          Assim os botões nunca ficam atrás de nada.
+          MODAL FULLSCREEN — Solução mobile definitiva.
+
+          PROBLEMA RAIZ: elementos do header do ClientDetail criavam um
+          stacking context que obscurecia a top bar da galeria, mesmo com
+          z-index: MAX_INT no overlay, porque o header era um flex item
+          re-renderizado depois do portal.
+
+          SOLUÇÃO: A TOP BAR é agora um elemento `position: fixed`
+          INDEPENDENTE dentro do portal — um nó irmão do backdrop, não filho.
+          Assim ela é sempre posicionada relativa ao viewport diretamente,
+          sem depender do stacking context do overlay pai.
+
+          Estrutura no DOM (ambos dentro do mesmo createPortal → body):
+            Fragment
+              ├─ <div backdrop>   position:fixed inset:0   z:MAX   background:#000
+              │    └─ <div area>  position:absolute top:56px..bottom:0
+              │         └─ setas, imagem
+              └─ <div topbar>     position:fixed top:0 left:0 right:0 z:MAX  ← nunca fica atrás de nada
+                   └─ botões Voltar / Contador / ZoomOut / % / ZoomIn / Download / X
+
+          Safe-area: removida por solicitação.
+          Thumbnails: removidas por solicitação.
          ══════════════════════════════════════════════════════════════════════ */}
       {selectedIndex !== null && !imageErrors.has(photos[selectedIndex].id) && createPortal(
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            // Máximo z-index possível — sobrepõe qualquer nav/sidebar/drawer externo
-            zIndex: 2147483647,
-            display: 'flex',
-            flexDirection: 'column',
-            background: '#000',
-            // Força camada de composição própria no Safari/WebKit mobile.
-            // Sem isso, elementos externos com transform ou isolation podem
-            // aparecer na frente mesmo com z-index menor.
-            transform: 'translateZ(0)',
-            WebkitTransform: 'translateZ(0)',
-            isolation: 'isolate',
-            // Garante que o modal ocupe a área segura do iOS
-            paddingLeft: 'env(safe-area-inset-left)',
-            paddingRight: 'env(safe-area-inset-right)',
-          }}
-        >
-          {/* ── TOP BAR ─────────────────────────────────────────────────── */}
-          {/* Não é absolute — é um flex item real. Nunca fica atrás de nada. */}
+        <>
+          {/* ── BACKDROP + ÁREA DE IMAGEM ──────────────────────────────── */}
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 2147483647,
+              background: '#000',
+              // Força camada de composição isolada no Safari/WebKit
+              transform: 'translateZ(0)',
+              WebkitTransform: 'translateZ(0)',
+            }}
+          >
+            {/* Área clicável para fechar (clique fora da imagem) */}
+            <div
+              ref={dragContainerRef}
+              onClick={closeFullscreen}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              style={{
+                position: 'absolute',
+                top: 56,   // reserva espaço da top bar
+                left: 0,
+                right: 0,
+                bottom: 0,
+                overflow: 'hidden',
+                cursor: zoom > 1 ? 'grab' : 'default',
+              }}
+            >
+              {/* Seta — Anterior */}
+              {photos.length > 1 && (
+                <button
+                  onClick={e => { e.stopPropagation(); handlePrevious() }}
+                  style={{
+                    ...btnStyle,
+                    position: 'absolute',
+                    left: 12,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    zIndex: 10,
+                    width: 48,
+                    height: 48,
+                    borderRadius: '50%',
+                    background: 'rgba(0,0,0,0.6)',
+                  }}
+                  title="Foto anterior (←)"
+                >
+                  <ChevronLeft style={{ width: 28, height: 28, color: '#fff' }} />
+                </button>
+              )}
+
+              {/* Imagem / Loader de conversão */}
+              <div
+                onClick={e => e.stopPropagation()}
+                style={{
+                  width: '100%', height: '100%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 16, boxSizing: 'border-box',
+                }}
+              >
+                {isConverting(photos[selectedIndex]) ? (
+                  <div style={{ textAlign: 'center', color: '#fff' }}>
+                    <Loader2 style={{ width: 56, height: 56, margin: '0 auto 16px' }} className="animate-spin" />
+                    <p style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Convertendo HEIC...</p>
+                    <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.55)', marginTop: 8 }}>
+                      Aguarde, fotos do iPhone precisam ser convertidas para visualização.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {isMainImageLoading && (
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 5, pointerEvents: 'none',
+                      }}>
+                        <Loader2 style={{ width: 44, height: 44, color: 'rgba(255,255,255,0.5)' }} className="animate-spin" />
+                      </div>
+                    )}
+                    <img
+                      ref={dragImageRef}
+                      src={getPhotoUrl(photos[selectedIndex])}
+                      alt={photos[selectedIndex].name}
+                      style={{
+                        maxWidth: '100%',
+                        maxHeight: '100%',
+                        objectFit: 'contain',
+                        userSelect: 'none',
+                        transform: `scale(${zoom}) translate(${positionRef.current.x / zoom}px, ${positionRef.current.y / zoom}px)`,
+                        opacity: isMainImageLoading ? 0 : 1,
+                        transition: isMainImageLoading ? 'none' : 'opacity 0.2s ease-in, transform 0.2s ease-out',
+                      }}
+                      draggable={false}
+                      decoding="async"
+                      onLoad={() => setIsMainImageLoading(false)}
+                      onError={() => { handleImageError(photos[selectedIndex].id); setIsMainImageLoading(false) }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Seta — Próximo */}
+              {photos.length > 1 && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleNext() }}
+                  style={{
+                    ...btnStyle,
+                    position: 'absolute',
+                    right: 12,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    zIndex: 10,
+                    width: 48,
+                    height: 48,
+                    borderRadius: '50%',
+                    background: 'rgba(0,0,0,0.6)',
+                  }}
+                  title="Próxima foto (→)"
+                >
+                  <ChevronRight style={{ width: 28, height: 28, color: '#fff' }} />
+                </button>
+              )}
+
+              {/* Dica teclado — só desktop */}
+              <div style={{
+                position: 'absolute',
+                bottom: 16, left: '50%', transform: 'translateX(-50%)',
+                color: 'rgba(255,255,255,0.35)', fontSize: 11,
+                pointerEvents: 'none', whiteSpace: 'nowrap',
+              }} className="hidden sm:block">
+                ← → navegar · +/− zoom · Esc fechar
+              </div>
+            </div>
+          </div>
+
+          {/* ── TOP BAR — elemento fixed INDEPENDENTE ──────────────────── */}
+          {/*
+              Este div é IRMÃO do backdrop no portal, não filho.
+              position:fixed aqui é relativo ao viewport diretamente —
+              nenhum ancestral pode criar um stacking context que o obscureça.
+              É a única forma 100% confiável em mobile Safari/WebKit.
+          */}
           <div
             onClick={e => e.stopPropagation()}
             style={{
-              flexShrink: 0,
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 56,
+              zIndex: 2147483647,
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
-              padding: '8px 12px',
-              paddingTop: 'max(env(safe-area-inset-top, 0px), 8px)',
-              background: 'rgba(0,0,0,0.85)',
-              backdropFilter: 'blur(12px)',
-              WebkitBackdropFilter: 'blur(12px)',
+              gap: 4,
+              padding: '0 8px',
+              background: 'rgba(0,0,0,0.92)',
+              backdropFilter: 'blur(16px)',
+              WebkitBackdropFilter: 'blur(16px)',
               borderBottom: '1px solid rgba(255,255,255,0.08)',
-              minHeight: 56,
+              boxSizing: 'border-box',
+              // Força camada própria — sem isso WebKit pode compor atrás de outros layers
+              transform: 'translateZ(0)',
+              WebkitTransform: 'translateZ(0)',
             }}
           >
-            {/* Botão Voltar */}
+            {/* Botão Voltar / Fechar */}
             <button
               onClick={closeFullscreen}
-              style={{ ...btnStyle, gap: 4, padding: '8px 12px', paddingRight: 14 }}
+              style={{ ...btnStyle, gap: 4, padding: '8px 10px', paddingRight: 12, height: 40 }}
+              title="Fechar (Esc)"
             >
-              <ChevronLeft style={{ width: 18, height: 18, color: '#fff', flexShrink: 0 }} />
+              <ChevronLeft style={{ width: 20, height: 20, color: '#fff', flexShrink: 0 }} />
               <span style={{ color: '#fff', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}>
                 Voltar
               </span>
             </button>
 
-            {/* Contador + Nome (flex-1 centralizado) */}
+            {/* Contador centralizado */}
             <div style={{ flex: 1, minWidth: 0, textAlign: 'center', overflow: 'hidden' }}>
-              <p style={{ margin: 0, color: '#fff', fontSize: 13, fontWeight: 700, lineHeight: 1.2 }}>
+              <p style={{ margin: 0, color: '#fff', fontSize: 14, fontWeight: 700, lineHeight: 1.2 }}>
                 {selectedIndex + 1} / {photos.length}
               </p>
               <p style={{
-                margin: 0, color: 'rgba(255,255,255,0.45)', fontSize: 11,
+                margin: 0, color: 'rgba(255,255,255,0.4)', fontSize: 10,
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 lineHeight: 1.3, marginTop: 1,
               }}>
-                {photos[selectedIndex].name} · {formatFileSize(photos[selectedIndex].size)}
+                {photos[selectedIndex].name}
               </p>
             </div>
 
-            {/* Grupo de ações à direita */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            {/* Ações à direita */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
               {/* Zoom Out */}
               <button
                 onClick={e => { e.stopPropagation(); handleZoomOut() }}
-                style={{ ...btnStyle, width: 36, height: 36 }}
-                title="Diminuir zoom"
+                style={{ ...btnStyle, width: 38, height: 38 }}
+                title="Diminuir zoom (−)"
               >
-                <ZoomOut style={{ width: 16, height: 16, color: '#fff' }} />
+                <ZoomOut style={{ width: 17, height: 17, color: '#fff' }} />
               </button>
 
-              {/* Percentual zoom */}
+              {/* % zoom */}
               <span style={{
-                color: '#fff', fontSize: 12, fontWeight: 600,
-                minWidth: 36, textAlign: 'center',
-                fontVariantNumeric: 'tabular-nums',
+                color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: 600,
+                minWidth: 32, textAlign: 'center', fontVariantNumeric: 'tabular-nums',
               }}>
                 {Math.round(zoom * 100)}%
               </span>
@@ -764,278 +908,32 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
               {/* Zoom In */}
               <button
                 onClick={e => { e.stopPropagation(); handleZoomIn() }}
-                style={{ ...btnStyle, width: 36, height: 36 }}
-                title="Aumentar zoom"
+                style={{ ...btnStyle, width: 38, height: 38 }}
+                title="Aumentar zoom (+)"
               >
-                <ZoomIn style={{ width: 16, height: 16, color: '#fff' }} />
+                <ZoomIn style={{ width: 17, height: 17, color: '#fff' }} />
               </button>
 
               {/* Baixar */}
               <button
                 onClick={e => { e.stopPropagation(); handleDownload(photos[selectedIndex]) }}
-                style={{ ...btnStyle, width: 36, height: 36, marginLeft: 4 }}
+                style={{ ...btnStyle, width: 38, height: 38, marginLeft: 2 }}
                 title="Baixar foto"
               >
-                <Download style={{ width: 16, height: 16, color: '#fff' }} />
+                <Download style={{ width: 17, height: 17, color: '#fff' }} />
               </button>
 
-              {/* Fechar */}
+              {/* X */}
               <button
                 onClick={e => { e.stopPropagation(); closeFullscreen() }}
-                style={{ ...btnStyle, width: 36, height: 36 }}
+                style={{ ...btnStyle, width: 38, height: 38 }}
                 title="Fechar (Esc)"
               >
-                <X style={{ width: 16, height: 16, color: '#fff' }} />
+                <X style={{ width: 17, height: 17, color: '#fff' }} />
               </button>
             </div>
           </div>
-
-          {/* ── ÁREA DA IMAGEM ───────────────────────────────────────────── */}
-          {/* flex-1 — ocupa TODO o espaço restante entre top e bottom bars   */}
-          <div
-            ref={dragContainerRef}
-            onClick={closeFullscreen}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            style={{
-              flex: 1,
-              position: 'relative',
-              overflow: 'hidden',
-              cursor: zoom > 1 ? 'grab' : 'default',
-              minHeight: 0, // necessário para flex-1 funcionar em coluna
-            }}
-          >
-            {/* Seta — Anterior */}
-            {photos.length > 1 && (
-              <button
-                onClick={e => { e.stopPropagation(); handlePrevious() }}
-                style={{
-                  ...btnStyle,
-                  position: 'absolute',
-                  left: 12,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  zIndex: 10,
-                  width: 44,
-                  height: 44,
-                  borderRadius: '50%',
-                  background: 'rgba(0,0,0,0.55)',
-                }}
-                title="Foto anterior (←)"
-              >
-                <ChevronLeft style={{ width: 26, height: 26, color: '#fff' }} />
-              </button>
-            )}
-
-            {/* Imagem / Loader de conversão */}
-            <div
-              onClick={e => e.stopPropagation()}
-              style={{
-                width: '100%', height: '100%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                padding: 16, boxSizing: 'border-box',
-              }}
-            >
-              {isConverting(photos[selectedIndex]) ? (
-                <div style={{ textAlign: 'center', color: '#fff' }}>
-                  <Loader2 style={{ width: 56, height: 56, margin: '0 auto 16px' }} className="animate-spin" />
-                  <p style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Convertendo HEIC...</p>
-                  <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.55)', marginTop: 8 }}>
-                    Aguarde, fotos do iPhone precisam ser convertidas para visualização.
-                  </p>
-                </div>
-              ) : (
-                <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {isMainImageLoading && (
-                    <div style={{
-                      position: 'absolute', inset: 0,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      zIndex: 5, pointerEvents: 'none',
-                    }}>
-                      <Loader2 style={{ width: 44, height: 44, color: 'rgba(255,255,255,0.5)' }} className="animate-spin" />
-                    </div>
-                  )}
-                  <img
-                    ref={dragImageRef}
-                    src={getPhotoUrl(photos[selectedIndex])}
-                    alt={photos[selectedIndex].name}
-                    style={{
-                      maxWidth: '100%',
-                      maxHeight: '100%',
-                      objectFit: 'contain',
-                      userSelect: 'none',
-                      transform: `scale(${zoom}) translate(${positionRef.current.x / zoom}px, ${positionRef.current.y / zoom}px)`,
-                      opacity: isMainImageLoading ? 0 : 1,
-                      transition: isMainImageLoading ? 'none' : 'opacity 0.2s ease-in, transform 0.2s ease-out',
-                    }}
-                    draggable={false}
-                    decoding="async"
-                    onLoad={() => setIsMainImageLoading(false)}
-                    onError={() => { handleImageError(photos[selectedIndex].id); setIsMainImageLoading(false) }}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Seta — Próximo */}
-            {photos.length > 1 && (
-              <button
-                onClick={e => { e.stopPropagation(); handleNext() }}
-                style={{
-                  ...btnStyle,
-                  position: 'absolute',
-                  right: 12,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  zIndex: 10,
-                  width: 44,
-                  height: 44,
-                  borderRadius: '50%',
-                  background: 'rgba(0,0,0,0.55)',
-                }}
-                title="Próxima foto (→)"
-              >
-                <ChevronRight style={{ width: 26, height: 26, color: '#fff' }} />
-              </button>
-            )}
-
-            {/* Dica teclado — só desktop */}
-            <div style={{
-              position: 'absolute',
-              bottom: 12, left: '50%', transform: 'translateX(-50%)',
-              color: 'rgba(255,255,255,0.4)', fontSize: 11,
-              pointerEvents: 'none', whiteSpace: 'nowrap',
-              display: 'none', // hidden on mobile via className
-            }} className="hidden sm:block">
-              ← → navegar · +/− zoom · Esc fechar
-            </div>
-          </div>
-
-          {/* ── BARRA DE THUMBNAILS ──────────────────────────────────────── */}
-          {/* Não é absolute — é um flex item real. Sempre visível abaixo da imagem. */}
-          {photos.length > 1 && (
-            <div
-              onClick={e => e.stopPropagation()}
-              style={{
-                flexShrink: 0,
-                background: 'rgba(0,0,0,0.85)',
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
-                borderTop: '1px solid rgba(255,255,255,0.08)',
-                paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 10px)',
-                padding: '10px 12px',
-                paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 10px)',
-              }}
-            >
-              <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-                <div style={{
-                  display: 'flex',
-                  gap: 6,
-                  justifyContent: 'center',
-                  minWidth: 'max-content',
-                  margin: '0 auto',
-                }}>
-                  {/* Indicador: fotos antes da janela */}
-                  {visibleThumbnailIndices[0] > 0 && (
-                    <button
-                      onClick={e => {
-                        e.stopPropagation()
-                        setSelectedIndex(visibleThumbnailIndices[0] - 1)
-                      }}
-                      style={{
-                        ...btnStyle,
-                        width: 56, height: 56,
-                        borderRadius: 8,
-                        fontSize: 11,
-                        color: 'rgba(255,255,255,0.6)',
-                        flexDirection: 'column',
-                        gap: 2,
-                      }}
-                    >
-                      <ChevronLeft style={{ width: 14, height: 14 }} />
-                      <span>+{visibleThumbnailIndices[0]}</span>
-                    </button>
-                  )}
-
-                  {visibleThumbnailIndices.map((index) => {
-                    const photo = photos[index]
-                    const thumbnailUrl = getThumbnailUrl(photo)
-                    const hasError = imageErrors.has(photo.id)
-                    const converting = isConverting(photo)
-
-                    return (
-                      <button
-                        key={photo.id}
-                        onClick={e => {
-                          e.stopPropagation()
-                          if (!hasError && !converting) setSelectedIndex(index)
-                        }}
-                        style={{
-                          flexShrink: 0,
-                          width: 56, height: 56,
-                          borderRadius: 8,
-                          overflow: 'hidden',
-                          border: index === selectedIndex
-                            ? '2px solid #fff'
-                            : '2px solid transparent',
-                          opacity: index === selectedIndex ? 1 : 0.55,
-                          transform: index === selectedIndex ? 'scale(1.1)' : 'scale(1)',
-                          transition: 'all 0.15s ease',
-                          background: 'transparent',
-                          cursor: hasError || converting ? 'not-allowed' : 'pointer',
-                          padding: 0,
-                          touchAction: 'manipulation',
-                        }}
-                        disabled={hasError || converting}
-                      >
-                        {converting ? (
-                          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(88,28,135,0.4)' }}>
-                            <Loader2 style={{ width: 18, height: 18, color: '#fff' }} className="animate-spin" />
-                          </div>
-                        ) : !hasError && thumbnailUrl ? (
-                          <img
-                            src={thumbnailUrl}
-                            alt={photo.name}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                            onError={() => handleImageError(photo.id)}
-                          />
-                        ) : (
-                          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(55,65,81,1)' }}>
-                            <AlertCircle style={{ width: 20, height: 20, color: '#9ca3af' }} />
-                          </div>
-                        )}
-                      </button>
-                    )
-                  })}
-
-                  {/* Indicador: fotos depois da janela */}
-                  {visibleThumbnailIndices[visibleThumbnailIndices.length - 1] < photos.length - 1 && (
-                    <button
-                      onClick={e => {
-                        e.stopPropagation()
-                        setSelectedIndex(visibleThumbnailIndices[visibleThumbnailIndices.length - 1] + 1)
-                      }}
-                      style={{
-                        ...btnStyle,
-                        width: 56, height: 56,
-                        borderRadius: 8,
-                        fontSize: 11,
-                        color: 'rgba(255,255,255,0.6)',
-                        flexDirection: 'column',
-                        gap: 2,
-                      }}
-                    >
-                      <ChevronRight style={{ width: 14, height: 14 }} />
-                      <span>+{photos.length - 1 - visibleThumbnailIndices[visibleThumbnailIndices.length - 1]}</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>,
+        </>,
         document.body
       )}
     </>

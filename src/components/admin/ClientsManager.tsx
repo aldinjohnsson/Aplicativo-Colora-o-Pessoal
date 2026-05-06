@@ -2978,7 +2978,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   return (
     <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: t.bg }}>
       {/* Topbar */}
-      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0 }}>
+      {/* position:relative + zIndex:1 cria stacking context explícito e baixo,
+          garantindo que o portal da PhotoGallery (z-index: MAX_INT) sempre vença */}
+      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0, position: 'relative', zIndex: 1 }}>
         {/* Linha principal */}
         <div style={{ padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, height: 52 }}>
           <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
@@ -3177,7 +3179,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           </div>
 
           {/* Tabs */}
-          <div className="sticky top-0 z-10 -mx-3 sm:mx-0 px-3 sm:px-0 py-2 sm:py-0 sm:static" style={{ background: t.bg }}>
+          {/* z-[1]: stacking context baixo; nunca deve competir com portal da galeria */}
+          <div className="sticky top-0 z-[1] -mx-3 sm:mx-0 px-3 sm:px-0 py-2 sm:py-0 sm:static" style={{ background: t.bg }}>
             <div className="flex gap-1 p-1 rounded-xl overflow-x-auto scrollbar-hide w-full sm:w-fit" style={{ background: t.surface2 }}>
             {[
               { id: 'overview', label: 'Visão Geral' },
