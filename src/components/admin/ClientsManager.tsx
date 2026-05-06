@@ -929,7 +929,7 @@ function KanbanColumn({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 6, minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)', minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
             <p style={{ fontSize: 12, margin: 0 }}>
@@ -1799,7 +1799,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {isArchiveView && (
-            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' } as React.CSSProperties}>
+            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', paddingBottom: 'env(safe-area-inset-bottom)' } as React.CSSProperties}>
               <ArchiveView clients={archivedClients} theme={t} onRestore={handleRestore} onDelete={handleDelete} />
             </div>
           )}
@@ -1863,7 +1863,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           
 
           {!isArchiveView && viewMode === 'list' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }}>
               {filteredActive.length === 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 200, color: t.text3 }}>
                   <User size={36} style={{ marginBottom: 10, opacity: 0.4 }} />
@@ -2982,7 +2982,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       {/* Topbar */}
       {/* position:relative + zIndex:1 cria stacking context explícito e baixo,
           garantindo que o portal da PhotoGallery (z-index: MAX_INT) sempre vença */}
-      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0, position: 'relative', zIndex: 1 }}>
+      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0, position: 'relative', zIndex: 1, paddingTop: 'env(safe-area-inset-top)' }}>
         {/* Linha principal */}
         <div style={{ padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, height: 52 }}>
           <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
@@ -3051,7 +3051,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
-        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full">
+        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 24px)' }}>
 
           {/* Header */}
           <div className="flex items-start gap-3">
@@ -3627,7 +3627,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   )
 }
 
-// ───Router───────────────────────────────────────────────────────────────
+// ─── Router ───────────────────────────────────────────────────────────────
 export function ClientsManager({ onOpenNav }: { onOpenNav?: () => void }) {
   return (
     <Routes>
