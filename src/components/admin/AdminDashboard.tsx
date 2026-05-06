@@ -74,7 +74,17 @@ function AdminDashboardInner({ onLogout }: Props) {
     <NavContext.Provider value={{ openNav: () => setNavOpen(true) }}>
       <div
         className={`${isClientsRoute ? 'h-screen overflow-hidden' : 'min-h-screen'} flex flex-col`}
-        style={{ background: t.bg, color: t.text, transition: 'background 0.25s ease, color 0.25s ease' }}
+        style={{
+          background: t.bg,
+          color: t.text,
+          transition: 'background 0.25s ease, color 0.25s ease',
+          // CORREÇÃO CRÍTICA: cria stacking context explícito no z-index:0 relativo ao <body>.
+          // O portal da PhotoGallery (z-index:2147483647 em body) sempre vence sobre qualquer
+          // elemento dentro deste contexto. Sem isso, o WebKit mobile pode recompor o Nav Drawer
+          // (position:fixed + transform animado = GPU layer próprio) acima do portal da galeria.
+          position: 'relative',
+          zIndex: 0,
+        }}
       >
 
         {/* ── Global Nav Drawer Overlay ── */}
