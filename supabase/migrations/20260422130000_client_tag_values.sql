@@ -287,3 +287,124 @@ CHECK (status IN (
   'completed'
 ));
  
+
+ -- ════════════════════════════════════════════════════════════════════════
+-- Etapa condicional "Aguardando Foto IA" (foto da cliente p/ simulação)
+--
+-- Modelagem:
+--   • A etapa de upload é representada como uma categoria especial em
+--     plan_photo_categories — flag is_ai_simulation = true.
+--   • No máximo UMA categoria IA por plano (índice único parcial).
+--   • Status novo no fluxo: 'awaiting_ai_photo', entre 'sending_dossier'
+--     e 'simulating'. Só é usado se o plano da cliente tem categoria com
+--     is_ai_simulation = true.
+-- ════════════════════════════════════════════════════════════════════════
+
+-- ─── 1. Flag na categoria de foto ──────────────────────────────────────
+ALTER TABLE plan_photo_categories
+  ADD COLUMN IF NOT EXISTS is_ai_simulation boolean NOT NULL DEFAULT false;
+
+-- Garantir no máximo 1 categoria IA por plano
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plan_photo_categories_ai_per_plan
+  ON plan_photo_categories(plan_id)
+  WHERE is_ai_simulation = true;
+
+-- ─── 2. Novo status na tabela clients ──────────────────────────────────
+ALTER TABLE clients
+DROP CONSTRAINT clients_status_check;
+
+ALTER TABLE clients
+ADD CONSTRAINT clients_status_check
+CHECK (status IN (
+  'awaiting_contract',
+  'awaiting_form',
+  'awaiting_photos',
+  'photos_submitted',
+  'in_analysis',
+  'preparing_materials',
+  'validating_materials',
+  'sending_dossier',
+  'awaiting_ai_photo',              -- novo (entre sending_dossier e simulating, condicional ao plano)
+  'simulating',
+  'making_capillary_dossier',
+  'validating_capillary_dossier',
+  'sending_capillary_dossier',
+  'completed'
+));
+
+NOTIFY pgrst, 'reload schema';
+
+ -- ════════════════════════════════════════════════════════════════════════
+-- RPC dedicado pra envio de Foto IA pelo portal da cliente
+--
+-- O RPC `save_client_photo` existente bloqueia status fora de
+-- 'awaiting_photos'/'photos_submitted'. Esse novo RPC é específico pra
+-- etapa "Aguardando Foto IA" — aceita apenas status 'awaiting_ai_photo'
+-- e exige que a categoria de destino tenha is_ai_simulation = true.
+--
+-- O status NÃO é alterado pelo RPC. A admin valida manualmente no
+-- StageController e avança pra 'simulating'.
+-- ════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION save_ai_photo(
+  p_token        text,
+  p_photo_name   text,
+  p_photo_type   text,
+  p_photo_size   bigint,
+  p_storage_path text,
+  p_category_id  uuid
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_client   clients%ROWTYPE;
+  v_photo_id uuid;
+BEGIN
+  -- 1. Busca cliente
+  SELECT * INTO v_client
+  FROM clients
+  WHERE token = p_token
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    RETURN json_build_object('error', 'Cliente não encontrado');
+  END IF;
+
+  -- 2. Valida status
+  IF v_client.status <> 'awaiting_ai_photo' THEN
+    RETURN json_build_object(
+      'error', 'Status inválido para envio de foto de simulação. Status atual: ' || v_client.status
+    );
+  END IF;
+
+  -- 3. Valida que category_id pertence ao plano da cliente E é categoria IA
+  IF NOT EXISTS (
+    SELECT 1 FROM plan_photo_categories
+    WHERE id = p_category_id
+      AND plan_id = v_client.plan_id
+      AND COALESCE(is_ai_simulation, false) = true
+  ) THEN
+    RETURN json_build_object(
+      'error', 'Categoria inválida — não é uma categoria de Foto IA do plano'
+    );
+  END IF;
+
+  -- 4. Insere a foto
+  INSERT INTO client_photos (
+    client_id, photo_name, photo_type, photo_size, storage_path, category_id, uploaded_at
+  )
+  VALUES (
+    v_client.id, p_photo_name, p_photo_type, p_photo_size, p_storage_path, p_category_id, now()
+  )
+  RETURNING id INTO v_photo_id;
+
+  RETURN json_build_object('success', true, 'photo_id', v_photo_id);
+END;
+$$;
+
+-- Acesso anônimo (portal usa token, não auth)
+GRANT EXECUTE ON FUNCTION save_ai_photo(text, text, text, bigint, text, uuid) TO anon;
+
+NOTIFY pgrst, 'reload schema';
