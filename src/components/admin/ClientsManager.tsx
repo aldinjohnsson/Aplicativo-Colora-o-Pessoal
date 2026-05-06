@@ -2,6 +2,7 @@
 // KanbanBoard integrado com dados reais do Supabase
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { Routes, Route, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Search, Eye, Trash2, ArrowLeft, Copy, CheckCircle,
@@ -2196,8 +2197,8 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
       window.open(photo.url, '_blank')
     }
   }
-  return (
-    <div className="fixed inset-0 bg-black/95 z-50 flex flex-col" onClick={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 bg-black/95 flex flex-col" style={{ zIndex: 2147483647 }} onClick={onClose}>
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
         <p className="text-white text-xs sm:text-sm font-medium truncate max-w-[40vw] sm:max-w-xs">{photo.photo_name}</p>
         <div className="flex items-center gap-1 sm:gap-2">
@@ -2239,7 +2240,8 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   )
 }
 
