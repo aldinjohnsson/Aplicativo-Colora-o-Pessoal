@@ -2648,7 +2648,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [editingDeadline, setEditingDeadline] = useState(false)
   const [deadlineInput, setDeadlineInput] = useState('')
   const [savingDeadline, setSavingDeadline] = useState(false)
-  const [chatEnabled, setChatEnabled] = useState(true)
+  const [chatEnabled, setChatEnabled] = useState(false)
   const [cleaningFiles, setCleaningFiles] = useState(false)
   const [filesCleanedUp, setFilesCleanedUp] = useState(false)
   const [showCleanupModal, setShowCleanupModal] = useState(false)
@@ -2682,7 +2682,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setData(detail)
     setNotes(detail.client.notes || '')
     if (detail.result) setResultForm({ observations: detail.result.observations || '' })
-    if (detail.result) setChatEnabled(detail.result.chat_enabled ?? true)
+    if (detail.result) setChatEnabled(detail.result.chat_enabled ?? false)
     const folders = foldersRes.data || []
     setAiFolders(folders)
     const tpls = (templatesRes.data || []).map((t: any) => ({ ...t, options: Array.isArray(t.options) ? t.options : [] }))
