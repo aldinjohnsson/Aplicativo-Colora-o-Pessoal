@@ -3627,7 +3627,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   )
 }
 
-// ─── Router ───────────────────────────────────────────────────────────────
+// ───Router───────────────────────────────────────────────────────────────
 export function ClientsManager({ onOpenNav }: { onOpenNav?: () => void }) {
   return (
     <Routes>
