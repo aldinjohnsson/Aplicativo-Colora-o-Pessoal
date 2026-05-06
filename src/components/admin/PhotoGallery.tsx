@@ -7,7 +7,6 @@ import {
   ZoomIn,
   ZoomOut,
   Download,
-  Maximize2,
   Camera,
   Package,
   AlertCircle,
@@ -29,15 +28,12 @@ interface PhotoGalleryProps {
 }
 
 // ─── CONFIGURAÇÃO DE THUMBNAILS ───────────────────────────────────────────
-const THUMBNAIL_SIZE = 200     // tamanho da miniatura (200x200px)
-const THUMBNAIL_QUALITY = 0.7  // qualidade JPEG das miniaturas (70%)
-const THUMBNAIL_WINDOW = 5     // quantas thumbnails carregar no carrossel (±5 = 11 max)
-const THUMBNAIL_CONCURRENCY = 2 // máximo de gerações simultâneas
+const THUMBNAIL_SIZE = 200
+const THUMBNAIL_QUALITY = 0.7
+const THUMBNAIL_WINDOW = 5
+const THUMBNAIL_CONCURRENCY = 2
 
 // ─── GERADOR DE THUMBNAILS ───────────────────────────────────────────────
-// Reduz a foto original para uma miniatura comprimida usando Canvas.
-// FIX: img.src = '' logo após drawImage libera o bitmap decodificado
-// (~48MB por foto iPhone 12MP) antes do canvas.toBlob ser executado.
 const generateThumbnail = async (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     let img: HTMLImageElement | null = new Image()
@@ -46,7 +42,6 @@ const generateThumbnail = async (blob: Blob): Promise<string> => {
     img.onload = () => {
       URL.revokeObjectURL(url)
 
-      // Calcular dimensões mantendo proporção
       let width = img!.width
       let height = img!.height
       const maxSize = THUMBNAIL_SIZE
@@ -57,7 +52,6 @@ const generateThumbnail = async (blob: Blob): Promise<string> => {
         if (height > maxSize) { width = (width * maxSize) / height; height = maxSize }
       }
 
-      // Criar canvas e desenhar imagem redimensionada
       const canvas = document.createElement('canvas')
       canvas.width = width
       canvas.height = height
@@ -70,14 +64,9 @@ const generateThumbnail = async (blob: Blob): Promise<string> => {
       }
 
       ctx.drawImage(img!, 0, 0, width, height)
-
-      // ★ FIX CRÍTICO: libera o bitmap completo (~48MB) da memória AGORA,
-      // antes do canvas.toBlob (que é assíncrono). Sem isso, todas as
-      // imagens decodificadas ficam acumuladas até o GC rodar.
       img!.src = ''
       img = null
 
-      // Converter canvas para blob JPEG comprimido
       canvas.toBlob(
         (thumbnailBlob) => {
           if (!thumbnailBlob) { reject(new Error('Falha ao criar thumbnail')); return }
@@ -98,7 +87,6 @@ const generateThumbnail = async (blob: Blob): Promise<string> => {
   })
 }
 
-// Detecta se a foto é HEIC/HEIF (formato padrão do iPhone)
 const isHeicPhoto = (photo: Photo): boolean => {
   const name = photo.name.toLowerCase()
   return (
@@ -116,9 +104,6 @@ const formatFileSize = (bytes: number): string => {
 }
 
 // ─── GRID ITEM MEMOIZADO ──────────────────────────────────────────────────────
-// ★ FIX CRÍTICO: sem memo, TODOS os N itens re-renderizam a cada thumbnail que
-// carrega, pois thumbnailsLoading é estado compartilhado. Com memo + comparador
-// customizado, apenas o item cujo dado mudou re-renderiza.
 interface PhotoGridItemProps {
   photo: Photo
   index: number
@@ -185,11 +170,9 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   const [, startTransition] = useTransition()
   const [zoom, setZoom] = useState(1)
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set())
-  // ★ FIX PERFORMANCE: controla spinner enquanto foto full-size decodifica (async)
   const [isMainImageLoading, setIsMainImageLoading] = useState(false)
 
-  // ★ FIX DRAG PERFORMANCE: drag fora do ciclo React — sem setPosition a cada mousemove.
-  // Refs não causam re-render; o transform é aplicado direto no DOM.
+  // Drag refs — sem setState durante mousemove
   const positionRef = useRef({ x: 0, y: 0 })
   const isDraggingRef = useRef(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
@@ -197,19 +180,13 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   const dragContainerRef = useRef<HTMLDivElement>(null)
 
   // ─── CACHE DE THUMBNAILS ─────────────────────────────────────────────────
-  // Armazena as miniaturas comprimidas (200x200px ~10KB cada)
   const thumbnailCacheRef = useRef<Map<string, string>>(new Map())
   const [thumbnailsLoading, setThumbnailsLoading] = useState<Set<string>>(new Set())
   const thumbnailGenerationQueue = useRef<Set<string>>(new Set())
 
-  // ★ FIX: fila priorizada (visíveis na frente) + semáforo de concorrência
-  const priorityQueueRef = useRef<string[]>([])     // IDs a processar (frente = maior prioridade)
-  const activeCountRef = useRef<number>(0)           // gerações em andamento
+  const priorityQueueRef = useRef<string[]>([])
+  const activeCountRef = useRef<number>(0)
 
-  // ★ FIX BATCH: acumula completions e faz UM único setState por frame de animação.
-  // Antes: cada thumbnail que terminava chamava setThumbnailsLoading() individualmente
-  // → N thumbnails prontos = N re-renders seguidos, causando jank visível.
-  // Agora: todas as completions dentro do mesmo frame são agrupadas em 1 setState.
   const pendingCompletedRef = useRef<string[]>([])
   const pendingErrorsRef = useRef<string[]>([])
   const flushRafRef = useRef<number | null>(null)
@@ -244,26 +221,24 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cache de URLs originais (apenas criadas quando necessário)
   const blobUrlCacheRef = useRef<Map<string, string>>(new Map())
   const urlsToCleanupRef = useRef<string[]>([])
 
-  // Conversão de HEIC -> JPEG
   const [convertedUrls, setConvertedUrls] = useState<Map<string, string>>(new Map())
   const [convertingIds, setConvertingIds] = useState<Set<string>>(new Set())
   const queueRef = useRef<Set<string>>(new Set())
 
-  // Ref para acessar `photos` dentro de callbacks sem capturar closure stale
   const photosRef = useRef(photos)
   useEffect(() => { photosRef.current = photos }, [photos])
 
+  const isModalOpenRef = useRef(false)
+  useEffect(() => {
+    isModalOpenRef.current = selectedIndex !== null
+  }, [selectedIndex])
+
   // ─── FILA COM CONCORRÊNCIA LIMITADA ──────────────────────────────────────
-  // Processa até THUMBNAIL_CONCURRENCY gerações simultâneas.
-  // Quando uma termina, puxa a próxima da fila automaticamente.
   const processQueueRef = useRef<() => void>(() => {})
   processQueueRef.current = () => {
-    // ★ FIX PERFORMANCE: Pausa novas gerações enquanto modal está aberto e ocupado.
-    // Evita que processamento em background concorra com decodificação da foto principal.
     if (isModalOpenRef.current && activeCountRef.current >= THUMBNAIL_CONCURRENCY) return
 
     while (
@@ -272,7 +247,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     ) {
       const photoId = priorityQueueRef.current.shift()!
 
-      // Já foi gerado ou é HEIC (tratado separadamente)
       if (thumbnailCacheRef.current.has(photoId)) continue
 
       const photo = photosRef.current.find(p => p.id === photoId)
@@ -287,12 +261,10 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
         .then(url => {
           thumbnailCacheRef.current.set(photoId, url)
           urlsToCleanupRef.current.push(url)
-          // ★ FIX BATCH: acumula no buffer em vez de disparar setState agora
           pendingCompletedRef.current.push(photoId)
           scheduleFlush()
         })
         .catch(() => {
-          // ★ FIX BATCH: acumula erros no buffer
           pendingErrorsRef.current.push(photoId)
           scheduleFlush()
         })
@@ -304,7 +276,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     }
   }
 
-  // ─── ENFILEIRAR THUMBNAIL (visíveis têm prioridade) ──────────────────────
   const enqueueThumbnail = useCallback((photoId: string, priority: 'high' | 'low' = 'low') => {
     if (
       thumbnailCacheRef.current.has(photoId) ||
@@ -318,19 +289,15 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     setThumbnailsLoading(prev => new Set(prev).add(photoId))
 
     if (priority === 'high') {
-      // Visível: vai para a frente da fila
       priorityQueueRef.current.unshift(photoId)
     } else {
-      // Fora da tela: vai para o fim
       priorityQueueRef.current.push(photoId)
     }
 
     processQueueRef.current()
   }, [imageErrors]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── INTERSECTIONOBSERVER: dispara apenas fotos visíveis na tela ─────────
-  // ★ FIX: ao invés de gerar todas as 30 thumbnails no mount,
-  //   observamos cada célula do grid e geramos só quando ela entra na viewport.
+  // ─── INTERSECTIONOBSERVER ─────────────────────────────────────────────────
   const gridItemRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const observerRef = useRef<IntersectionObserver | null>(null)
 
@@ -344,25 +311,14 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
           }
         })
       },
-      { rootMargin: '100px' } // pré-carrega 100px antes de aparecer
+      { rootMargin: '100px' }
     )
 
-    // Registra todos os itens do grid no observer
     gridItemRefs.current.forEach(el => observerRef.current?.observe(el))
 
     return () => observerRef.current?.disconnect()
   }, [photos, enqueueThumbnail])
 
-  // ★ FIX PERFORMANCE: Removido o pre-enqueue em massa ('low') de TODAS as fotos.
-  // Antes, 30+ thumbnails eram enfileiradas de uma vez no mount, gerando em background
-  // e competindo com a decodificação da foto principal no modal.
-  // Agora apenas o IntersectionObserver (grid visível) e o modal (carrossel) disparam geração.
-
-  // Ref para saber se o modal está aberto (sem causar re-render na fila)
-  const isModalOpenRef = useRef(false)
-  useEffect(() => {
-    isModalOpenRef.current = selectedIndex !== null
-  }, [selectedIndex])
   const getCachedBlobUrl = useCallback((photo: Photo): string => {
     if (blobUrlCacheRef.current.has(photo.id)) {
       return blobUrlCacheRef.current.get(photo.id)!
@@ -378,25 +334,14 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   }, [])
 
   const getThumbnailUrl = (photo: Photo): string => {
-    // Para fotos HEIC convertidas, usar a URL convertida
-    if (convertedUrls.has(photo.id)) {
-      return convertedUrls.get(photo.id)!
-    }
-    // Usar thumbnail se disponível
-    if (thumbnailCacheRef.current.has(photo.id)) {
-      return thumbnailCacheRef.current.get(photo.id)!
-    }
+    if (convertedUrls.has(photo.id)) return convertedUrls.get(photo.id)!
+    if (thumbnailCacheRef.current.has(photo.id)) return thumbnailCacheRef.current.get(photo.id)!
     return ''
   }
 
   const getPhotoUrl = (photo: Photo): string => {
-    // Para modal: usar foto em resolução completa
-    if (convertedUrls.has(photo.id)) {
-      return convertedUrls.get(photo.id)!
-    }
-    if (!isHeicPhoto(photo)) {
-      return getCachedBlobUrl(photo)
-    }
+    if (convertedUrls.has(photo.id)) return convertedUrls.get(photo.id)!
+    if (!isHeicPhoto(photo)) return getCachedBlobUrl(photo)
     return ''
   }
 
@@ -423,14 +368,12 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   // Resetar zoom e posição ao mudar foto
   useEffect(() => {
     setZoom(1)
-    // ★ FIX DRAG: reset via ref, sem re-render
     positionRef.current = { x: 0, y: 0 }
     isDraggingRef.current = false
     if (dragImageRef.current) {
       dragImageRef.current.style.transform = 'scale(1) translate(0px, 0px)'
       dragImageRef.current.style.transition = 'transform 0.2s ease-out'
     }
-    // ★ FIX PERFORMANCE: ativa spinner enquanto a nova foto full-size carrega/decodifica
     if (selectedIndex !== null) setIsMainImageLoading(true)
   }, [selectedIndex])
 
@@ -512,38 +455,16 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   }, [selectedIndex]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const openFullscreen = (index: number) => {
-    // ★ FIX PERFORMANCE: startTransition marca a abertura do modal como atualização
-    // de baixa prioridade — o browser pode finalizar eventos de input/paint pendentes
-    // antes de commitar o re-render pesado do modal.
     startTransition(() => {
       setSelectedIndex(index)
     })
     document.body.style.overflow = 'hidden'
-
-    // ★ FIX SAFARI: elementos fixed/sticky do app (header, nav) ficam acima do portal
-    // no Safari pois criam stacking contexts independentes. Guardamos o z-index original
-    // e zeramos temporariamente para garantir que o modal fique no topo.
-    document.querySelectorAll<HTMLElement>('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"], [class*="nav-bar"]').forEach(el => {
-      const computed = window.getComputedStyle(el).zIndex
-      if (computed !== 'auto' && parseInt(computed) > 100) {
-        el.dataset.galleryOriginalZ = el.style.zIndex
-        el.style.setProperty('z-index', '0', 'important')
-      }
-    })
   }
 
-  // Retomar fila de thumbnails ao fechar o modal
   const closeFullscreen = () => {
     setSelectedIndex(null)
     document.body.style.overflow = 'auto'
-    // Retoma o processamento que foi pausado durante o modal
     setTimeout(() => processQueueRef.current(), 300)
-
-    // ★ FIX SAFARI: restaurar z-index original dos elementos do app
-    document.querySelectorAll<HTMLElement>('[data-gallery-original-z]').forEach(el => {
-      el.style.zIndex = el.dataset.galleryOriginalZ || ''
-      delete el.dataset.galleryOriginalZ
-    })
   }
 
   const handlePrevious = () => {
@@ -556,7 +477,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     setSelectedIndex((selectedIndex + 1) % photos.length)
   }
 
-  // ★ FIX DRAG: aplica transform direto no DOM — zero re-renders durante drag
   const applyDragTransform = (z: number) => {
     if (!dragImageRef.current) return
     const { x, y } = positionRef.current
@@ -590,12 +510,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     }
   }
 
-  // ─── CONTROLES DE ARRASTAR IMAGEM COM ZOOM ────────────────────────────────
-  // ★ FIX DRAG PERFORMANCE: nenhum setState aqui — cada mousemove antes causava
-  // re-render completo do componente (grid inteiro + modal). Agora:
-  // 1. isDragging / position / dragStart → refs (sem re-render)
-  // 2. transform aplicado diretamente no <img> via dragImageRef
-  // 3. cursor atualizado diretamente no container via dragContainerRef
+  // ─── DRAG COM ZOOM ────────────────────────────────────────────────────────
   const handleMouseDown = (e: React.MouseEvent) => {
     if (zoom <= 1) return
     isDraggingRef.current = true
@@ -631,11 +546,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
     return Array.from({ length: end - start + 1 }, (_, i) => start + i)
   }, [selectedIndex, photos.length])
 
-  // ★ FIX PERFORMANCE: defer + batching.
-  // Antes: enqueueThumbnail chamado 11x em loop → 11x setThumbnailsLoading → 11 re-renders
-  //   concorrendo com a decodificação da imagem principal.
-  // Agora: aguarda 80ms (modal já renderizou), coleta todos os IDs de uma vez e
-  //   faz UM único setThumbnailsLoading com todos os IDs.
   useEffect(() => {
     if (selectedIndex === null) return
     const timer = setTimeout(() => {
@@ -654,7 +564,6 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
         }
       })
       if (toLoad.length > 0) {
-        // ★ UM único update de estado para todos os thumbnails visíveis
         setThumbnailsLoading(prev => {
           const n = new Set(prev)
           toLoad.forEach(id => n.add(id))
@@ -670,9 +579,23 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
   const totalSize = useMemo(() => photos.reduce((sum, p) => sum + p.size, 0), [photos])
   const heicCount = useMemo(() => photos.filter(isHeicPhoto).length, [photos])
 
+  // ─── ESTILOS INLINE DOS BOTÕES DO MODAL ──────────────────────────────────
+  const btnStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(255,255,255,0.12)',
+    border: 'none',
+    borderRadius: 10,
+    cursor: 'pointer',
+    flexShrink: 0,
+    touchAction: 'manipulation',
+    WebkitTapHighlightColor: 'transparent',
+  }
+
   return (
     <>
-      {/* Header com estatísticas */}
+      {/* ── Header com estatísticas ── */}
       <div className="sticky top-0 z-10 bg-white border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
@@ -696,7 +619,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
         </div>
       </div>
 
-      {/* Grid de fotos */}
+      {/* ── Grid de fotos ── */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {photos.length === 0 ? (
           <div className="text-center py-16">
@@ -712,12 +635,8 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
               const converting = isConverting(photo)
 
               return (
-                // Wrapper div mantém o ref do IntersectionObserver separado do item memoizado
                 <div
                   key={photo.id}
-                  // ★ FIX: observe() era chamado em TODA re-render (thumbnail carregando,
-                  // estado mudando, etc.) → IntersectionObserver recebia 30+ registros
-                  // duplicados por re-render. Agora só registra quando o elemento é novo.
                   ref={el => {
                     if (el) {
                       if (!gridItemRefs.current.has(photo.id)) {
@@ -749,163 +668,287 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
         )}
       </div>
 
-      {/* Modal Fullscreen com Carousel — Portal para escapar de overflow/transform no iOS */}
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL FULLSCREEN — Layout em flex-column para evitar sobreposição
+          de elementos em mobile. NENHUMA barra usa position:absolute.
+          Estrutura:
+            [TOP BAR]  ← botões Fechar / Baixar / Zoom / Contador
+            [IMAGEM ]  ← flex-1, setas ← → absolutas DENTRO deste bloco
+            [THUMBS ]  ← strip de miniaturas
+          Assim os botões nunca ficam atrás de nada.
+         ══════════════════════════════════════════════════════════════════════ */}
       {selectedIndex !== null && !imageErrors.has(photos[selectedIndex].id) && createPortal(
         <div
-          className="fixed inset-0 bg-black flex items-center justify-center"
-          style={{ zIndex: 99999 }}
-          onClick={closeFullscreen}
-          onTouchEnd={(e) => { if (e.target === e.currentTarget) closeFullscreen() }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            display: 'flex',
+            flexDirection: 'column',
+            background: '#000',
+            // Garante que o modal ocupe a área segura do iOS
+            paddingLeft: 'env(safe-area-inset-left)',
+            paddingRight: 'env(safe-area-inset-right)',
+          }}
         >
-          {/* Botão fechar — mobile, fixo no topo esquerdo com safe area */}
-          <button
-            onClick={closeFullscreen}
-            className="sm:hidden absolute left-3 z-[99998] flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/70 active:bg-black/90"
-            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)', touchAction: 'manipulation' }}
+          {/* ── TOP BAR ─────────────────────────────────────────────────── */}
+          {/* Não é absolute — é um flex item real. Nunca fica atrás de nada. */}
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '8px 12px',
+              paddingTop: 'max(env(safe-area-inset-top, 0px), 8px)',
+              background: 'rgba(0,0,0,0.85)',
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
+              borderBottom: '1px solid rgba(255,255,255,0.08)',
+              minHeight: 56,
+            }}
           >
-            <ChevronLeft className="h-5 w-5 text-white" />
-            <span className="text-white text-sm font-semibold">Voltar</span>
-          </button>
+            {/* Botão Voltar */}
+            <button
+              onClick={closeFullscreen}
+              style={{ ...btnStyle, gap: 4, padding: '8px 12px', paddingRight: 14 }}
+            >
+              <ChevronLeft style={{ width: 18, height: 18, color: '#fff', flexShrink: 0 }} />
+              <span style={{ color: '#fff', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                Voltar
+              </span>
+            </button>
 
-          {/* Contador de fotos — mobile, topo centro */}
-          <div
-            className="sm:hidden absolute z-[99998] text-white/80 text-sm font-medium pointer-events-none"
-            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 18px)', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}
-          >
-            {selectedIndex + 1} / {photos.length}
-          </div>
-          {/* Header — z-[99998] garante que fica acima de qualquer elemento do app
-               que possa ter vazado no Safari. paddingTop respeita safe-area (notch). */}
-          <div
-            className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 to-transparent z-[99998]"
-            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 16px)', paddingLeft: '16px', paddingRight: '16px', paddingBottom: '16px' }}
-          >
-            <div className="max-w-7xl mx-auto flex items-center justify-between">
-              <div className="text-white">
-                <p className="text-sm font-medium">{photos[selectedIndex].name}</p>
-                <p className="text-xs text-white/70">
-                  {selectedIndex + 1} de {photos.length} · {formatFileSize(photos[selectedIndex].size)}
-                </p>
-              </div>
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleZoomOut() }}
-                  className="p-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
-                  title="Diminuir zoom (-)"
-                >
-                  <ZoomOut className="h-5 w-5 text-white" />
-                </button>
-                <span className="text-white text-sm font-medium min-w-[4rem] text-center">
-                  {Math.round(zoom * 100)}%
-                </span>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleZoomIn() }}
-                  className="p-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
-                  title="Aumentar zoom (+)"
-                >
-                  <ZoomIn className="h-5 w-5 text-white" />
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDownload(photos[selectedIndex]) }}
-                  className="p-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
-                  title="Baixar foto"
-                >
-                  <Download className="h-5 w-5 text-white" />
-                </button>
-                <button
-                  onClick={closeFullscreen}
-                  className="p-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
-                  title="Fechar (Esc)"
-                >
-                  <X className="h-5 w-5 text-white" />
-                </button>
-              </div>
+            {/* Contador + Nome (flex-1 centralizado) */}
+            <div style={{ flex: 1, minWidth: 0, textAlign: 'center', overflow: 'hidden' }}>
+              <p style={{ margin: 0, color: '#fff', fontSize: 13, fontWeight: 700, lineHeight: 1.2 }}>
+                {selectedIndex + 1} / {photos.length}
+              </p>
+              <p style={{
+                margin: 0, color: 'rgba(255,255,255,0.45)', fontSize: 11,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                lineHeight: 1.3, marginTop: 1,
+              }}>
+                {photos[selectedIndex].name} · {formatFileSize(photos[selectedIndex].size)}
+              </p>
+            </div>
+
+            {/* Grupo de ações à direita */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              {/* Zoom Out */}
+              <button
+                onClick={e => { e.stopPropagation(); handleZoomOut() }}
+                style={{ ...btnStyle, width: 36, height: 36 }}
+                title="Diminuir zoom"
+              >
+                <ZoomOut style={{ width: 16, height: 16, color: '#fff' }} />
+              </button>
+
+              {/* Percentual zoom */}
+              <span style={{
+                color: '#fff', fontSize: 12, fontWeight: 600,
+                minWidth: 36, textAlign: 'center',
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                {Math.round(zoom * 100)}%
+              </span>
+
+              {/* Zoom In */}
+              <button
+                onClick={e => { e.stopPropagation(); handleZoomIn() }}
+                style={{ ...btnStyle, width: 36, height: 36 }}
+                title="Aumentar zoom"
+              >
+                <ZoomIn style={{ width: 16, height: 16, color: '#fff' }} />
+              </button>
+
+              {/* Baixar */}
+              <button
+                onClick={e => { e.stopPropagation(); handleDownload(photos[selectedIndex]) }}
+                style={{ ...btnStyle, width: 36, height: 36, marginLeft: 4 }}
+                title="Baixar foto"
+              >
+                <Download style={{ width: 16, height: 16, color: '#fff' }} />
+              </button>
+
+              {/* Fechar */}
+              <button
+                onClick={e => { e.stopPropagation(); closeFullscreen() }}
+                style={{ ...btnStyle, width: 36, height: 36 }}
+                title="Fechar (Esc)"
+              >
+                <X style={{ width: 16, height: 16, color: '#fff' }} />
+              </button>
             </div>
           </div>
 
-          {/* Navegação - Anterior */}
-          {photos.length > 1 && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handlePrevious() }}
-              className="absolute left-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-[99997]"
-              title="Foto anterior (←)"
-            >
-              <ChevronLeft className="h-8 w-8 text-white" />
-            </button>
-          )}
-
-          {/* Imagem Principal */}
+          {/* ── ÁREA DA IMAGEM ───────────────────────────────────────────── */}
+          {/* flex-1 — ocupa TODO o espaço restante entre top e bottom bars   */}
           <div
-            className="relative w-full h-full flex items-center justify-center p-16 sm:p-20"
-            onClick={(e) => e.stopPropagation()}
+            ref={dragContainerRef}
+            onClick={closeFullscreen}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
-            style={{ cursor: zoom > 1 ? (isDraggingRef.current ? 'grabbing' : 'grab') : 'default' }}
+            style={{
+              flex: 1,
+              position: 'relative',
+              overflow: 'hidden',
+              cursor: zoom > 1 ? 'grab' : 'default',
+              minHeight: 0, // necessário para flex-1 funcionar em coluna
+            }}
           >
-            {isConverting(photos[selectedIndex]) ? (
-              <div className="text-white text-center">
-                <Loader2 className="h-16 w-16 mx-auto mb-4 animate-spin" />
-                <p className="text-lg font-medium">Convertendo HEIC...</p>
-                <p className="text-sm text-white/70 mt-2">
-                  Aguarde, fotos do iPhone precisam ser convertidas para visualização.
-                </p>
-              </div>
-            ) : (
-              <div className="relative w-full h-full flex items-center justify-center">
-                {/* ★ FIX PERFORMANCE: spinner visível enquanto foto full-size decodifica com decoding="async" */}
-                {isMainImageLoading && (
-                  <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-                    <Loader2 className="h-12 w-12 text-white/60 animate-spin" />
-                  </div>
-                )}
-                <img
-                  src={getPhotoUrl(photos[selectedIndex])}
-                  alt={photos[selectedIndex].name}
-                  className="max-w-full max-h-full object-contain select-none"
-                  style={{
-                    transform: `scale(${zoom}) translate(${positionRef.current.x / zoom}px, ${positionRef.current.y / zoom}px)`,
-                    opacity: isMainImageLoading ? 0 : 1,
-                    // ★ FIX: havia duas chaves 'transition' duplicadas (JS object sobrescreve a primeira).
-                    // Também removido 'isDragging' que era undefined — o cursor já é gerenciado via dragContainerRef.
-                    transition: isMainImageLoading ? 'none' : 'opacity 0.2s ease-in, transform 0.2s ease-out',
-                  }}
-                  draggable={false}
-                  decoding="async"
-                  onLoad={() => setIsMainImageLoading(false)}
-                  onError={() => { handleImageError(photos[selectedIndex].id); setIsMainImageLoading(false) }}
-                />
-              </div>
+            {/* Seta — Anterior */}
+            {photos.length > 1 && (
+              <button
+                onClick={e => { e.stopPropagation(); handlePrevious() }}
+                style={{
+                  ...btnStyle,
+                  position: 'absolute',
+                  left: 12,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 10,
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: 'rgba(0,0,0,0.55)',
+                }}
+                title="Foto anterior (←)"
+              >
+                <ChevronLeft style={{ width: 26, height: 26, color: '#fff' }} />
+              </button>
             )}
+
+            {/* Imagem / Loader de conversão */}
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                width: '100%', height: '100%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 16, boxSizing: 'border-box',
+              }}
+            >
+              {isConverting(photos[selectedIndex]) ? (
+                <div style={{ textAlign: 'center', color: '#fff' }}>
+                  <Loader2 style={{ width: 56, height: 56, margin: '0 auto 16px' }} className="animate-spin" />
+                  <p style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Convertendo HEIC...</p>
+                  <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.55)', marginTop: 8 }}>
+                    Aguarde, fotos do iPhone precisam ser convertidas para visualização.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {isMainImageLoading && (
+                    <div style={{
+                      position: 'absolute', inset: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      zIndex: 5, pointerEvents: 'none',
+                    }}>
+                      <Loader2 style={{ width: 44, height: 44, color: 'rgba(255,255,255,0.5)' }} className="animate-spin" />
+                    </div>
+                  )}
+                  <img
+                    ref={dragImageRef}
+                    src={getPhotoUrl(photos[selectedIndex])}
+                    alt={photos[selectedIndex].name}
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      objectFit: 'contain',
+                      userSelect: 'none',
+                      transform: `scale(${zoom}) translate(${positionRef.current.x / zoom}px, ${positionRef.current.y / zoom}px)`,
+                      opacity: isMainImageLoading ? 0 : 1,
+                      transition: isMainImageLoading ? 'none' : 'opacity 0.2s ease-in, transform 0.2s ease-out',
+                    }}
+                    draggable={false}
+                    decoding="async"
+                    onLoad={() => setIsMainImageLoading(false)}
+                    onError={() => { handleImageError(photos[selectedIndex].id); setIsMainImageLoading(false) }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Seta — Próximo */}
+            {photos.length > 1 && (
+              <button
+                onClick={e => { e.stopPropagation(); handleNext() }}
+                style={{
+                  ...btnStyle,
+                  position: 'absolute',
+                  right: 12,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 10,
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: 'rgba(0,0,0,0.55)',
+                }}
+                title="Próxima foto (→)"
+              >
+                <ChevronRight style={{ width: 26, height: 26, color: '#fff' }} />
+              </button>
+            )}
+
+            {/* Dica teclado — só desktop */}
+            <div style={{
+              position: 'absolute',
+              bottom: 12, left: '50%', transform: 'translateX(-50%)',
+              color: 'rgba(255,255,255,0.4)', fontSize: 11,
+              pointerEvents: 'none', whiteSpace: 'nowrap',
+              display: 'none', // hidden on mobile via className
+            }} className="hidden sm:block">
+              ← → navegar · +/− zoom · Esc fechar
+            </div>
           </div>
 
-          {/* Navegação - Próximo */}
+          {/* ── BARRA DE THUMBNAILS ──────────────────────────────────────── */}
+          {/* Não é absolute — é um flex item real. Sempre visível abaixo da imagem. */}
           {photos.length > 1 && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handleNext() }}
-              className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-[99997]"
-              title="Próxima foto (→)"
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                flexShrink: 0,
+                background: 'rgba(0,0,0,0.85)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                borderTop: '1px solid rgba(255,255,255,0.08)',
+                paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 10px)',
+                padding: '10px 12px',
+                paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 10px)',
+              }}
             >
-              <ChevronRight className="h-8 w-8 text-white" />
-            </button>
-          )}
-
-          {/* Thumbnails na parte inferior — virtualizado */}
-          {photos.length > 1 && (
-            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent z-[99998]" style={{ paddingTop: '16px', paddingLeft: '16px', paddingRight: '16px', paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)' }}>
-              <div className="max-w-7xl mx-auto overflow-x-auto">
-                <div className="flex space-x-2 justify-center">
-                  {/* Indicador numérico para fotos antes da janela */}
+              <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                <div style={{
+                  display: 'flex',
+                  gap: 6,
+                  justifyContent: 'center',
+                  minWidth: 'max-content',
+                  margin: '0 auto',
+                }}>
+                  {/* Indicador: fotos antes da janela */}
                   {visibleThumbnailIndices[0] > 0 && (
                     <button
-                      onClick={(e) => {
+                      onClick={e => {
                         e.stopPropagation()
                         setSelectedIndex(visibleThumbnailIndices[0] - 1)
                       }}
-                      className="flex-shrink-0 w-16 h-16 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 text-xs"
+                      style={{
+                        ...btnStyle,
+                        width: 56, height: 56,
+                        borderRadius: 8,
+                        fontSize: 11,
+                        color: 'rgba(255,255,255,0.6)',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}
                     >
-                      +{visibleThumbnailIndices[0]}
+                      <ChevronLeft style={{ width: 14, height: 14 }} />
+                      <span>+{visibleThumbnailIndices[0]}</span>
                     </button>
                   )}
 
@@ -918,58 +961,73 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
                     return (
                       <button
                         key={photo.id}
-                        onClick={(e) => {
+                        onClick={e => {
                           e.stopPropagation()
                           if (!hasError && !converting) setSelectedIndex(index)
                         }}
-                        className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden transition-all ${
-                          index === selectedIndex
-                            ? 'ring-2 ring-white scale-110'
-                            : 'opacity-60 hover:opacity-100'
-                        }`}
+                        style={{
+                          flexShrink: 0,
+                          width: 56, height: 56,
+                          borderRadius: 8,
+                          overflow: 'hidden',
+                          border: index === selectedIndex
+                            ? '2px solid #fff'
+                            : '2px solid transparent',
+                          opacity: index === selectedIndex ? 1 : 0.55,
+                          transform: index === selectedIndex ? 'scale(1.1)' : 'scale(1)',
+                          transition: 'all 0.15s ease',
+                          background: 'transparent',
+                          cursor: hasError || converting ? 'not-allowed' : 'pointer',
+                          padding: 0,
+                          touchAction: 'manipulation',
+                        }}
                         disabled={hasError || converting}
                       >
                         {converting ? (
-                          <div className="w-full h-full flex items-center justify-center bg-purple-900/40">
-                            <Loader2 className="h-5 w-5 text-white animate-spin" />
+                          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(88,28,135,0.4)' }}>
+                            <Loader2 style={{ width: 18, height: 18, color: '#fff' }} className="animate-spin" />
                           </div>
                         ) : !hasError && thumbnailUrl ? (
                           <img
                             src={thumbnailUrl}
                             alt={photo.name}
-                            className="w-full h-full object-cover"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                             onError={() => handleImageError(photo.id)}
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-gray-700">
-                            <AlertCircle className="h-6 w-6 text-gray-400" />
+                          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(55,65,81,1)' }}>
+                            <AlertCircle style={{ width: 20, height: 20, color: '#9ca3af' }} />
                           </div>
                         )}
                       </button>
                     )
                   })}
 
-                  {/* Indicador numérico para fotos depois da janela */}
+                  {/* Indicador: fotos depois da janela */}
                   {visibleThumbnailIndices[visibleThumbnailIndices.length - 1] < photos.length - 1 && (
                     <button
-                      onClick={(e) => {
+                      onClick={e => {
                         e.stopPropagation()
                         setSelectedIndex(visibleThumbnailIndices[visibleThumbnailIndices.length - 1] + 1)
                       }}
-                      className="flex-shrink-0 w-16 h-16 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 text-xs"
+                      style={{
+                        ...btnStyle,
+                        width: 56, height: 56,
+                        borderRadius: 8,
+                        fontSize: 11,
+                        color: 'rgba(255,255,255,0.6)',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}
                     >
-                      +{photos.length - 1 - visibleThumbnailIndices[visibleThumbnailIndices.length - 1]}
+                      <ChevronRight style={{ width: 14, height: 14 }} />
+                      <span>+{photos.length - 1 - visibleThumbnailIndices[visibleThumbnailIndices.length - 1]}</span>
                     </button>
                   )}
                 </div>
               </div>
             </div>
           )}
-
-          {/* Instruções — só desktop */}
-          <div className="hidden sm:block absolute bottom-20 left-1/2 -translate-x-1/2 text-white/60 text-xs text-center z-10 pointer-events-none">
-            <p>Use as setas ← → para navegar · +/- para zoom · Esc para fechar</p>
-          </div>
         </div>,
         document.body
       )}
