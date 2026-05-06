@@ -2982,7 +2982,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       {/* Topbar */}
       {/* position:relative + zIndex:1 cria stacking context explícito e baixo,
           garantindo que o portal da PhotoGallery (z-index: MAX_INT) sempre vença */}
-      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0, position: 'relative', zIndex: 1, paddingTop: 'env(safe-area-inset-top)' }}>
+      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, flexShrink: 0, position: 'relative', zIndex: 1 }}>
         {/* Linha principal */}
         <div style={{ padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, height: 52 }}>
           <button onClick={onOpenNav} title="Menu" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
