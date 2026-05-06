@@ -3051,7 +3051,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'none', minHeight: 0 }}>
-        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)' }}>
+        <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 120px)' }}>
 
           {/* Header */}
           <div className="flex items-start gap-3">
