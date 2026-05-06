@@ -682,10 +682,17 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 99999,
+            // Máximo z-index possível — sobrepõe qualquer nav/sidebar/drawer externo
+            zIndex: 2147483647,
             display: 'flex',
             flexDirection: 'column',
             background: '#000',
+            // Força camada de composição própria no Safari/WebKit mobile.
+            // Sem isso, elementos externos com transform ou isolation podem
+            // aparecer na frente mesmo com z-index menor.
+            transform: 'translateZ(0)',
+            WebkitTransform: 'translateZ(0)',
+            isolation: 'isolate',
             // Garante que o modal ocupe a área segura do iOS
             paddingLeft: 'env(safe-area-inset-left)',
             paddingRight: 'env(safe-area-inset-right)',
