@@ -2152,9 +2152,11 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
 }
 
 // ─── Photo Lightbox ───────────────────────────────────────────────────────
-function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initialIndex: number; onClose: () => void }) {
+function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete }: { photos: any[]; initialIndex: number; onClose: () => void; onDelete?: (photo: any) => Promise<void> }) {
+  const [photos, setPhotos] = useState(initialPhotos)
   const [index, setIndex] = useState(initialIndex)
   const [zoom, setZoom] = useState(1)
+  const [deleting, setDeleting] = useState(false)
   const prev = useCallback(() => { setIndex(i => (i - 1 + photos.length) % photos.length); setZoom(1) }, [photos.length])
   const next = useCallback(() => { setIndex(i => (i + 1) % photos.length); setZoom(1) }, [photos.length])
   useEffect(() => {
@@ -2197,6 +2199,24 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
       window.open(photo.url, '_blank')
     }
   }
+  const handleDelete = async () => {
+    if (!onDelete || deleting) return
+    if (!confirm(`Excluir a foto "${photo.photo_name}"? Esta ação não pode ser desfeita.`)) return
+    setDeleting(true)
+    try {
+      await onDelete(photo)
+      const newPhotos = photos.filter((_, i) => i !== index)
+      if (newPhotos.length === 0) { onClose(); return }
+      setPhotos(newPhotos)
+      setIndex(i => Math.min(i, newPhotos.length - 1))
+      setZoom(1)
+    } catch (e: any) {
+      alert(`Erro ao excluir: ${e.message}`)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return createPortal(
     <div className="fixed inset-0 bg-black/95 flex flex-col" style={{ zIndex: 2147483647 }} onClick={onClose}>
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
@@ -2206,6 +2226,16 @@ function PhotoLightbox({ photos, initialIndex, onClose }: { photos: any[]; initi
           <span className="text-white/70 text-xs w-10 text-center hidden sm:block">{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom(z => Math.min(z + 0.5, 4))} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomIn className="h-5 w-5 sm:h-4 sm:w-4" /></button>
           <button onClick={handleDownload} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><Download className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          {onDelete && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="p-2.5 sm:p-2 text-red-400 hover:text-red-300 active:bg-red-500/20 hover:bg-red-500/10 rounded-lg touch-manipulation disabled:opacity-40"
+              title="Excluir foto"
+            >
+              {deleting ? <Loader2 className="h-5 w-5 sm:h-4 sm:w-4 animate-spin" /> : <Trash2 className="h-5 w-5 sm:h-4 sm:w-4" />}
+            </button>
+          )}
           <span className="text-white/40 text-xs px-1">{index + 1}/{photos.length}</span>
           <button onClick={onClose} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation ml-1"><X className="h-5 w-5" /></button>
         </div>
@@ -2305,6 +2335,21 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
   const [downloadingAll, setDownloadingAll] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
+
+  const handleDeletePhoto = async (photo: any) => {
+    const { error: storageError } = await supabase.storage
+      .from('client-photos')
+      .remove([photo.storage_path])
+    if (storageError) throw storageError
+
+    const { error: dbError } = await supabase
+      .from('client_photos')
+      .delete()
+      .eq('id', photo.id)
+    if (dbError) throw dbError
+
+    setPhotosWithUrls(prev => prev.filter(p => p.id !== photo.id))
+  }
   const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(
     photoCategories.length > 0 ? photoCategories[0].id : null
   )
@@ -2491,7 +2536,7 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
           </div>
         )}
       </div>
-      {lightbox && <PhotoLightbox photos={lightbox.photos} initialIndex={lightbox.index} onClose={() => setLightbox(null)} />}
+      {lightbox && <PhotoLightbox photos={lightbox.photos} initialIndex={lightbox.index} onClose={() => setLightbox(null)} onDelete={handleDeletePhoto} />}
     </>
   )
 }
