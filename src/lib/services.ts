@@ -1661,49 +1661,49 @@ export const clientService = {
     // É chamado em TODA assinatura (inclusive re-assinatura após reabertura),
     // já que cada assinatura é um evento de negócio que merece registro.
     try {
+      // Tenta carregar dados do cliente (pode retornar null em contexto anon por RLS).
+      // O invoke é feito independentemente — clientToken garante que a Edge Function
+      // resolve adminId e dados do cliente via service role quando necessário.
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, plan_id, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
+        .select('full_name, email, plan_id, admin_id, plan:plans(name)')
         .eq('token', token)
-        .single()
+        .maybeSingle()
 
-      if (client) {
-        // Busca o conteúdo do contrato pra gerar o PDF na Edge Function
-        let contractTitle: string | undefined
-        let sections: any[] = []
-        if ((client as any).plan_id) {
-          const { data: planContract } = await supabase
-            .from('plan_contracts')
-            .select('title, sections')
-            .eq('plan_id', (client as any).plan_id)
-            .maybeSingle()
-          if (planContract) {
-            contractTitle = planContract.title
-            sections = Array.isArray(planContract.sections) ? planContract.sections : []
-          }
+      // Busca conteúdo do contrato para gerar o PDF (só se temos plan_id)
+      let contractTitle: string | undefined
+      let sections: any[] = []
+      if ((client as any)?.plan_id) {
+        const { data: planContract } = await supabase
+          .from('plan_contracts')
+          .select('title, sections')
+          .eq('plan_id', (client as any).plan_id)
+          .maybeSingle()
+        if (planContract) {
+          contractTitle = planContract.title
+          sections = Array.isArray(planContract.sections) ? planContract.sections : []
         }
-
-        const portalUrl = `${window.location.origin}/c/${token}`
-        const planName  = (client as any).plan?.name || ''
-
-        await supabase.functions.invoke('send-contract-email', {
-          body: {
-            type: 'contract_signed',
-            adminId: (client as any).admin_id || null,  // FIX: isola settings por tenant na Edge Function
-            // Fix 1: clientToken como fallback — quando contexto anon bloqueia
-            // a leitura de admin_id por RLS, a Edge Function resolve via
-            // service role usando este token.
-            clientToken: token,
-            clientName: client.full_name,
-            clientEmail: client.email,
-            planName,
-            signedAt,
-            contractTitle,
-            sections,
-            portalUrl,
-          },
-        })
       }
+
+      const portalUrl = `${window.location.origin}/c/${token}`
+
+      // Sempre invoca — clientToken é o fallback obrigatório.
+      // Se admin_id veio null (RLS bloqueou a query anon), a Edge Function
+      // resolve o adminId sozinha via service role usando o token.
+      await supabase.functions.invoke('send-contract-email', {
+        body: {
+          type: 'contract_signed',
+          adminId: (client as any)?.admin_id || null,
+          clientToken: token,
+          clientName: client?.full_name || '',
+          clientEmail: client?.email || '',
+          planName: (client as any)?.plan?.name || '',
+          signedAt,
+          contractTitle,
+          sections,
+          portalUrl,
+        },
+      })
     } catch (e) {
       console.warn('Erro ao enviar e-mail de contrato assinado:', e)
     }
