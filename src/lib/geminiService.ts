@@ -34,30 +34,56 @@ export interface GeminiResponse { parts: GeminiResponsePart[]; raw: any; imageGe
 export interface MaterialData { base64: string; mimeType: string }
 
 // ──────────────────────────────────────────────────────────────
-// 1. CACHE DA API KEY
+// 1. CACHE DA API KEY (per-admin)
 // ──────────────────────────────────────────────────────────────
+//
+// IMPORTANTE: Em sistema multi-tenant, a chave depende do admin.
+//
+// CONTEXTO ADMIN (autenticado):
+//   - Não passar argumento. RLS retorna automaticamente as settings
+//     do admin logado.
+//
+// CONTEXTO CLIENTE (anon, no portal /c/:token):
+//   - Passar o token do cliente. Usa RPC SECURITY DEFINER que
+//     resolve o admin dono via clients.admin_id.
+//
+// O cache é segmentado por chave (admin atual ou token de cliente)
+// para que diferentes admins/clientes não compartilhem keys.
 
-let _cachedApiKey: string | null = null
-let _cacheTime = 0
+const _keyCache: Record<string, { key: string; time: number }> = {}
 const CACHE_TTL = 5 * 60 * 1000
+const ADMIN_CACHE_KEY = '__admin__'
 
-export async function getGeminiApiKey(): Promise<string> {
-  if (_cachedApiKey !== null && Date.now() - _cacheTime < CACHE_TTL) return _cachedApiKey
+export async function getGeminiApiKey(clientToken?: string): Promise<string> {
+  const cacheKey = clientToken || ADMIN_CACHE_KEY
+  const cached = _keyCache[cacheKey]
+  if (cached && Date.now() - cached.time < CACHE_TTL) return cached.key
+
+  let key = ''
 
   try {
-    const { data } = await supabase.from('admin_content').select('content').eq('type', 'settings').maybeSingle()
-    const key = (data?.content as any)?.geminiApiKey || ''
-    if (key) { _cachedApiKey = key; _cacheTime = Date.now(); return key }
+    if (clientToken) {
+      // Contexto cliente: busca settings via RPC SECURITY DEFINER
+      const { data } = await supabase.rpc('get_admin_settings_for_client', { p_token: clientToken })
+      key = (data as any)?.geminiApiKey || ''
+    } else {
+      // Contexto admin: lê admin_content direto, RLS auto-filtra
+      const { data } = await supabase.from('admin_content').select('content').eq('type', 'settings').maybeSingle()
+      key = (data?.content as any)?.geminiApiKey || ''
+    }
   } catch {}
 
-  try {
-    const key = JSON.parse(localStorage.getItem('app-settings') || '{}')?.geminiApiKey || ''
-    _cachedApiKey = key; _cacheTime = Date.now()
-    return key
-  } catch { return '' }
+  // ⚠️ localStorage removido — sem fallback cross-tenant.
+  // Se o admin não configurou a chave Gemini, o chat exibe erro claro
+  // em vez de silenciosamente usar a chave de outro admin do navegador.
+
+  _keyCache[cacheKey] = { key, time: Date.now() }
+  return key
 }
 
-export function invalidateGeminiKeyCache() { _cachedApiKey = null; _cacheTime = 0 }
+export function invalidateGeminiKeyCache() {
+  Object.keys(_keyCache).forEach(k => delete _keyCache[k])
+}
 
 // ──────────────────────────────────────────────────────────────
 // 2. HELPERS DE ARQUIVO

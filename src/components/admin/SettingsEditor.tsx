@@ -64,62 +64,39 @@ const settingsStorageService = {
       // QuotaExceededError — ignora; Supabase é a fonte de verdade
     }
 
-    // ── 2. Supabase: separar o template em linha própria p/ não estourar payload
+    // ── 2. Obter usuário atual explicitamente
+    // IMPORTANTE: nunca omitir este filtro. Sem ele, o super_admin (que enxerga
+    // todas as linhas via RLS) pode encontrar a linha de OUTRO admin e sobrescrevê-la.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+
+    // ── 3. Supabase: separar o template em linha própria p/ não estourar payload
     const { pdfTemplateBase64, ...settingsWithoutTemplate } = data
 
-    // 2a. Salvar configurações (sem base64)
-    const { data: existing, error: selError } = await supabase
+    // 3a. Salvar configurações (sem base64) — upsert sempre pelo par (admin_id, type)
+    // O admin_id é preenchido pelo DEFAULT auth.uid() no INSERT e já está presente
+    // no UPDATE (filtro explícito abaixo garante que só tocamos na linha deste admin).
+    const { error: settingsError } = await supabase
       .from('admin_content')
-      .select('id')
-      .eq('type', 'settings')
-      .maybeSingle()
+      .upsert(
+        { type: 'settings', content: settingsWithoutTemplate as any },
+        { onConflict: 'admin_id,type' }
+      )
+    if (settingsError) throw new Error(settingsError.message)
 
-    if (selError) throw new Error(selError.message)
-
-    if (existing?.id) {
-      const { error } = await supabase
-        .from('admin_content')
-        .update({ content: settingsWithoutTemplate as any })
-        .eq('id', existing.id)
-      if (error) throw new Error(error.message)
-    } else {
-      const { error } = await supabase
-        .from('admin_content')
-        .upsert(
-          { type: 'settings', content: settingsWithoutTemplate as any },
-          { onConflict: 'type' }
-        )
-      if (error) throw new Error(error.message)
-    }
-
-    // 2b. Salvar template PDF em linha separada (só quando há base64)
+    // 3b. Salvar template PDF em linha separada (só quando há base64)
     if (pdfTemplateBase64) {
-      const { data: existingTpl } = await supabase
-        .from('admin_content')
-        .select('id')
-        .eq('type', 'pdf_template')
-        .maybeSingle()
-
       const tplPayload = {
         pdfTemplateBase64,
         pdfTemplateFileName: data.pdfTemplateFileName ?? '',
       }
-
-      if (existingTpl?.id) {
-        const { error } = await supabase
-          .from('admin_content')
-          .update({ content: tplPayload as any })
-          .eq('id', existingTpl.id)
-        if (error) throw new Error(error.message)
-      } else {
-        const { error } = await supabase
-          .from('admin_content')
-          .upsert(
-            { type: 'pdf_template', content: tplPayload as any },
-            { onConflict: 'type' }
-          )
-        if (error) throw new Error(error.message)
-      }
+      const { error: tplError } = await supabase
+        .from('admin_content')
+        .upsert(
+          { type: 'pdf_template', content: tplPayload as any },
+          { onConflict: 'admin_id,type' }
+        )
+      if (tplError) throw new Error(tplError.message)
     }
 
     return { success: true }
@@ -147,11 +124,18 @@ const settingsStorageService = {
     }
 
     try {
+      // Obter usuário atual — filtro explícito obrigatório para isolar por admin.
+      // Sem isso, o super_admin (USING true via is_super_admin) enxerga todas as
+      // linhas e .maybeSingle() pode retornar a linha de outro admin.
+      const { data: { user } } = await supabase.auth.getUser()
+      const adminId = user?.id
+
       // Carregar configurações principais
       const { data: settingsRow } = await supabase
         .from('admin_content')
         .select('content')
         .eq('type', 'settings')
+        .eq('admin_id', adminId ?? '')
         .maybeSingle()
 
       // Carregar template PDF (linha separada)
@@ -159,6 +143,7 @@ const settingsStorageService = {
         .from('admin_content')
         .select('content')
         .eq('type', 'pdf_template')
+        .eq('admin_id', adminId ?? '')
         .maybeSingle()
 
       const tplContent = tplRow?.content as { pdfTemplateBase64?: string; pdfTemplateFileName?: string } | null

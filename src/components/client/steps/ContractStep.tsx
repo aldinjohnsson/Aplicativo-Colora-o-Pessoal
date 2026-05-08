@@ -143,7 +143,10 @@ const Input = ({ label, icon: Icon, error, ...props }: any) => (
   </div>
 )
 
-export function ContractStep({ onComplete }: { onComplete: (data: any) => void }) {
+// Fix 1 — aceita clientToken opcional para repassar à Edge Function via services.ts.
+// Quando contexto anon bloqueia a leitura de admin_id por RLS, a Edge Function
+// resolve o adminId sozinha via service role usando este token como fallback.
+export function ContractStep({ onComplete, clientToken }: { onComplete: (data: any) => void; clientToken?: string }) {
   const [contractTitle, setContractTitle] = useState('')
   const [contractSections, setContractSections] = useState<ContractSection[]>([])
   const [agreed, setAgreed] = useState(false)
@@ -221,6 +224,10 @@ export function ContractStep({ onComplete }: { onComplete: (data: any) => void }
         sections: contractSections,
         accepted: true,
         timestamp: new Date().toISOString(),
+        // Fix 1: clientToken é repassado ao services.ts para que a Edge Function
+        // possa resolver adminId via service role quando o contexto anon bloquear
+        // a leitura direta por RLS (query anon em signContract retornava null).
+        clientToken: clientToken || null,
         clientInfo: {
           fullName: clientInfo.fullName.trim(),
           email: clientInfo.email.trim().toLowerCase(),

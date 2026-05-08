@@ -84,6 +84,18 @@ export interface Client {
   photos_rejected_at?: string | null
 }
 
+
+export interface AdminUser {
+  id: string
+  email: string
+  nome: string | null
+  role: 'super_admin' | 'admin'
+  license_active: boolean
+  license_expires_at: string | null
+  observacoes: string | null
+  created_at?: string
+}
+
 export interface ClientPortalData {
   client: {
     id: string
@@ -141,13 +153,25 @@ export const adminService = {
 
     const { data: adminData } = await supabase
       .from('admin_users')
-      .select('id')
+      .select('id, role, license_active, license_expires_at')
       .eq('id', data.user.id)
       .single()
 
     if (!adminData) {
       await supabase.auth.signOut()
       throw new Error('Acesso não autorizado. Usuário não é administrador.')
+    }
+
+    // Checagem de licença — super_admin sempre passa
+    if (adminData.role !== 'super_admin') {
+      if (!adminData.license_active) {
+        await supabase.auth.signOut()
+        throw new Error('Sua licença está inativa. Entre em contato com o suporte.')
+      }
+      if (adminData.license_expires_at && new Date(adminData.license_expires_at) < new Date()) {
+        await supabase.auth.signOut()
+        throw new Error('Sua licença está vencida. Entre em contato com o suporte para renovar.')
+      }
     }
 
     return data.user
@@ -163,11 +187,40 @@ export const adminService = {
 
     const { data: adminData } = await supabase
       .from('admin_users')
-      .select('id')
+      .select('id, role, license_active, license_expires_at')
       .eq('id', data.session.user.id)
       .single()
 
-    return adminData ? data.session.user : null
+    if (!adminData) {
+      await supabase.auth.signOut()
+      return null
+    }
+
+    // Se a licença expirou/foi desativada durante a sessão, desloga silenciosamente
+    if (adminData.role !== 'super_admin') {
+      const inactive = !adminData.license_active
+      const expired = adminData.license_expires_at && new Date(adminData.license_expires_at) < new Date()
+      if (inactive || expired) {
+        await supabase.auth.signOut()
+        return null
+      }
+    }
+
+    return data.session.user
+  },
+
+  // ---- Admin atual (com role e licença) ----
+  async getCurrentAdmin(): Promise<AdminUser | null> {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return null
+
+    const { data } = await supabase
+      .from('admin_users')
+      .select('id, email, nome, role, license_active, license_expires_at, observacoes, created_at')
+      .eq('id', user.id)
+      .single()
+
+    return (data as AdminUser | null) ?? null
   },
 
   // ---- Plans ----
@@ -428,7 +481,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
 
@@ -439,6 +492,7 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'photos_approved',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -479,7 +533,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
 
@@ -490,6 +544,7 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'form_rejected',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -527,7 +582,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
 
@@ -538,6 +593,7 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'photos_rejected',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -577,7 +633,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
 
@@ -588,6 +644,7 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'both_rejected',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -881,7 +938,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
       if (!client) return
@@ -889,6 +946,7 @@ export const adminService = {
       await supabase.functions.invoke('send-contract-email', {
         body: {
           type,
+          adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
           clientName: client.full_name,
           clientEmail: client.email,
           planName: (client as any).plan?.name || '',
@@ -1118,7 +1176,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
 
@@ -1129,6 +1187,7 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'result_released',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -1165,7 +1224,7 @@ export const adminService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('id', clientId)
         .single()
 
@@ -1176,6 +1235,7 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'partial_result_released',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -1276,11 +1336,16 @@ export const adminService = {
     return map
   },
 
-  /** Salva ou atualiza o nome de exibição de uma coluna */
+  /** Salva ou atualiza o nome de exibição de uma coluna (per-admin) */
   async upsertColumnLabel(statusKey: string, displayName: string): Promise<void> {
+    // admin_id auto-preenche via DEFAULT auth.uid() na tabela.
+    // onConflict alvo é a unique constraint composta (admin_id, status_key).
     const { error } = await supabase
       .from('kanban_column_labels')
-      .upsert({ status_key: statusKey, display_name: displayName }, { onConflict: 'status_key' })
+      .upsert(
+        { status_key: statusKey, display_name: displayName },
+        { onConflict: 'admin_id,status_key' }
+      )
     if (error) throw error
   },
 
@@ -1290,6 +1355,133 @@ export const adminService = {
       .from('kanban_column_labels')
       .delete()
       .eq('status_key', statusKey)
+    if (error) throw error
+  },
+
+  // ---- Super Admin: gestão de admins ----
+  // Todos esses métodos são só pra super_admin. As policies de RLS
+  // (Phase 3, opcional) garantem isso a nível de banco. Por enquanto
+  // proteja na UI.
+
+  async listAdmins(): Promise<AdminUser[]> {
+    const { data, error } = await supabase
+      .from('admin_users')
+      .select('id, email, nome, role, license_active, license_expires_at, observacoes, created_at')
+      .order('role', { ascending: true })  // super_admin vem primeiro
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return (data || []) as AdminUser[]
+  },
+
+  async toggleAdminLicense(adminId: string, active: boolean): Promise<void> {
+    const { error } = await supabase
+      .from('admin_users')
+      .update({ license_active: active })
+      .eq('id', adminId)
+    if (error) throw error
+  },
+
+  async renewAdminLicense(adminId: string, daysToAdd: number): Promise<void> {
+    const { data: current } = await supabase
+      .from('admin_users')
+      .select('license_expires_at')
+      .eq('id', adminId)
+      .single()
+
+    const baseDate = current?.license_expires_at && new Date(current.license_expires_at) > new Date()
+      ? new Date(current.license_expires_at)
+      : new Date()
+    baseDate.setDate(baseDate.getDate() + daysToAdd)
+
+    const { error } = await supabase
+      .from('admin_users')
+      .update({
+        license_expires_at: baseDate.toISOString(),
+        license_active: true,
+      })
+      .eq('id', adminId)
+    if (error) throw error
+  },
+
+  async setAdminLicenseExpiry(adminId: string, expiresAt: string | null): Promise<void> {
+    const { error } = await supabase
+      .from('admin_users')
+      .update({ license_expires_at: expiresAt })
+      .eq('id', adminId)
+    if (error) throw error
+  },
+
+  async updateAdminInfo(
+    adminId: string,
+    updates: { nome?: string; observacoes?: string }
+  ): Promise<void> {
+    const { error } = await supabase
+      .from('admin_users')
+      .update(updates)
+      .eq('id', adminId)
+    if (error) throw error
+  },
+
+  async createAdmin(input: {
+    email: string
+    password: string
+    nome: string
+    license_active?: boolean
+    license_expires_at?: string | null
+    observacoes?: string
+  }): Promise<AdminUser> {
+    // Cliente Supabase TEMPORÁRIO sem persistência, pra não substituir
+    // a sessão do super admin atual ao criar o usuário.
+    const { createClient } = await import('@supabase/supabase-js')
+    const tempClient = createClient(
+      import.meta.env.VITE_SUPABASE_URL,
+      import.meta.env.VITE_SUPABASE_ANON_KEY,
+      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+    )
+
+    // 1) Cria no Supabase Auth (cliente temporário)
+    const { data: signUpData, error: signUpError } = await tempClient.auth.signUp({
+      email: input.email,
+      password: input.password,
+    })
+    if (signUpError) throw signUpError
+    if (!signUpData.user) throw new Error('Falha ao criar usuário no Auth.')
+
+    // 2) Insere registro em admin_users (no cliente principal, com sua sessão de super_admin)
+    const { data: adminData, error: adminError } = await supabase
+      .from('admin_users')
+      .insert({
+        id: signUpData.user.id,
+        email: input.email,
+        nome: input.nome,
+        role: 'admin',
+        license_active: input.license_active ?? true,
+        license_expires_at: input.license_expires_at ?? null,
+        observacoes: input.observacoes ?? null,
+      })
+      .select()
+      .single()
+
+    if (adminError) {
+      // Rollback parcial: o user em auth.users ficou órfão. Idealmente, expor
+      // isso pra você limpar manualmente no Dashboard > Authentication > Users.
+      throw new Error(
+        `Erro ao salvar admin (${adminError.message}). ` +
+        `O usuário foi criado em Auth mas não foi vinculado. ` +
+        `Verifique em Authentication > Users no Supabase.`
+      )
+    }
+
+    return adminData as AdminUser
+  },
+
+  async deleteAdmin(adminId: string): Promise<void> {
+    // ATENÇÃO: isso só remove de admin_users. O auth.users continua existindo
+    // (precisa ser removido manualmente no Dashboard ou via Edge Function).
+    const { error } = await supabase
+      .from('admin_users')
+      .delete()
+      .eq('id', adminId)
     if (error) throw error
   },
 }
@@ -1471,7 +1663,7 @@ export const clientService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, plan_id, plan:plans(name)')
+        .select('full_name, email, plan_id, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('token', token)
         .single()
 
@@ -1497,6 +1689,11 @@ export const clientService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'contract_signed',
+            adminId: (client as any).admin_id || null,  // FIX: isola settings por tenant na Edge Function
+            // Fix 1: clientToken como fallback — quando contexto anon bloqueia
+            // a leitura de admin_id por RLS, a Edge Function resolve via
+            // service role usando este token.
+            clientToken: token,
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -1657,7 +1854,7 @@ export const clientService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('token', token)
         .single()
 
@@ -1668,6 +1865,7 @@ export const clientService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'photos_submitted',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -1744,7 +1942,7 @@ export const clientService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, plan:plans(name)')
+        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
         .eq('token', token)
         .single()
 
@@ -1755,6 +1953,7 @@ export const clientService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'ai_photo_submitted',
+            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
             clientName: client.full_name,
             clientEmail: client.email,
             planName,

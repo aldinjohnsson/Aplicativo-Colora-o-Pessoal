@@ -30,10 +30,14 @@ export interface FormContent {
 
 class AdminContentService {
   async getContract(): Promise<ContractContent> {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return this.getDefaultContract()
+
     const { data, error } = await supabase
       .from('admin_content')
       .select('content')
       .eq('type', 'contract')
+      .eq('admin_id', user.id)   // ← filtro explícito (já estava correto)
       .single()
 
     if (error || !data) {
@@ -44,13 +48,24 @@ class AdminContentService {
   }
 
   async saveContract(content: ContractContent): Promise<void> {
+    // FIX: busca o usuário e passa admin_id explicitamente.
+    // Sem isso, em upsert o Postgres usa DEFAULT auth.uid() apenas no INSERT;
+    // no UPDATE (conflito) o campo não é reatribuído e pode apontar para outra
+    // linha se o super_admin estiver logado e a RLS enxergar outra linha.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+
     const { error } = await supabase
       .from('admin_content')
-      .upsert({
-        type: 'contract',
-        content: content,
-        updated_at: new Date().toISOString()
-      })
+      .upsert(
+        {
+          admin_id: user.id,          // ← explícito
+          type: 'contract',
+          content: content,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'admin_id,type' }
+      )
 
     if (error) throw error
   }
@@ -94,10 +109,14 @@ class AdminContentService {
   }
 
   async getForm(): Promise<FormContent> {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return this.getDefaultForm()
+
     const { data, error } = await supabase
       .from('admin_content')
       .select('content')
       .eq('type', 'form')
+      .eq('admin_id', user.id)   // ← filtro explícito (já estava correto)
       .single()
 
     if (error || !data) {
@@ -108,13 +127,21 @@ class AdminContentService {
   }
 
   async saveForm(content: FormContent): Promise<void> {
+    // FIX: mesmo motivo de saveContract — admin_id explícito no upsert.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+
     const { error } = await supabase
       .from('admin_content')
-      .upsert({
-        type: 'form',
-        content: content,
-        updated_at: new Date().toISOString()
-      })
+      .upsert(
+        {
+          admin_id: user.id,          // ← explícito
+          type: 'form',
+          content: content,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'admin_id,type' }
+      )
 
     if (error) throw error
   }

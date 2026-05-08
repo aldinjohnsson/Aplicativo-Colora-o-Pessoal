@@ -1,25 +1,33 @@
 // src/components/admin/AdminDashboard.tsx
 import React, { useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom'
-import { Users, Layers, LogOut, Palette, Settings, FolderOpen, Menu, X, ChevronRight, FileText } from 'lucide-react'
-import { adminService } from '../../lib/services'
+import { Users, Layers, LogOut, Palette, Settings, FolderOpen, Menu, X, ChevronRight, FileText, Shield } from 'lucide-react'
+import { adminService, AdminUser } from '../../lib/services'
 import { ClientsManager } from './ClientsManager'
 import { PlansManager } from './PlansManager'
 import { FoldersManager } from './FoldersManager'
 import SettingsEditor from './SettingsEditor'
 import { DocumentsHub } from './documents/DocumentsHub'
+import { SuperAdminPanel } from './SuperAdminPanel'
 import { ThemeProvider, useTheme, THEMES, ThemeName, Theme } from '../../lib/theme'
 
 interface Props {
   onLogout: () => void
 }
 
-const NAV_ITEMS = [
+const NAV_ITEMS: Array<{
+  to: string
+  label: string
+  icon: typeof Users
+  description: string
+  superOnly?: boolean
+}> = [
   { to: '/admin/clients', label: 'Clientes', icon: Users, description: 'Gerenciar clientes' },
   { to: '/admin/plans', label: 'Planos', icon: Layers, description: 'Planos e pacotes' },
   { to: '/admin/documents', label: 'Documentos', icon: FileText, description: 'Tags e templates de PDF' },
-  { to: '/admin/folders', label: 'Pastas IA', icon: FolderOpen, description: 'Pastas de análise IA' },
+  { to: '/admin/folders', label: 'Pastas IA', icon: FolderOpen, description: 'Pastas de análise IA', superOnly: true },
   { to: '/admin/settings', label: 'Configurações', icon: Settings, description: 'Ajustes do sistema' },
+  { to: '/admin/super', label: 'Administradores', icon: Shield, description: 'Licenças e contas', superOnly: true },
 ]
 
 // Global nav context so ClientsManager can trigger the drawer
@@ -38,9 +46,18 @@ export function AdminDashboard({ onLogout }: Props) {
 function AdminDashboardInner({ onLogout }: Props) {
   const { theme: t, themeName, setThemeName } = useTheme()
   const [navOpen, setNavOpen] = useState(false)
+  const [currentAdmin, setCurrentAdmin] = useState<AdminUser | null>(null)
   const navigate = useNavigate()
   const location = useLocation()
   const drawerRef = useRef<HTMLDivElement>(null)
+
+  // Carrega o admin atual pra saber a role e filtrar o menu
+  useEffect(() => {
+    adminService.getCurrentAdmin().then(setCurrentAdmin)
+  }, [])
+
+  const isSuperAdmin = currentAdmin?.role === 'super_admin'
+  const visibleNavItems = NAV_ITEMS.filter(item => !item.superOnly || isSuperAdmin)
 
   // Close on route change
   useEffect(() => { setNavOpen(false) }, [location.pathname])
@@ -141,7 +158,7 @@ function AdminDashboardInner({ onLogout }: Props) {
 
           {/* Nav items */}
           <nav style={{ flex: 1, padding: '12px 12px 0', overflowY: 'auto' }}>
-            {NAV_ITEMS.map(({ to, label, icon: Icon, description }) => (
+            {visibleNavItems.map(({ to, label, icon: Icon, description }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -264,7 +281,7 @@ function AdminDashboardInner({ onLogout }: Props) {
 
             {/* Inline nav for non-kanban pages */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 8 }}>
-              {NAV_ITEMS.map(({ to, label }) => (
+              {visibleNavItems.map(({ to, label }) => (
                 <NavLink
                   key={to}
                   to={to}
@@ -297,15 +314,30 @@ function AdminDashboardInner({ onLogout }: Props) {
                 <DocumentsHub />
               </div>
             } />
+            {/* Pastas IA: apenas super_admin */}
             <Route path="folders" element={
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-                <FoldersManager />
-              </div>
+              isSuperAdmin ? (
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+                  <FoldersManager />
+                </div>
+              ) : (
+                <Navigate to="/admin/clients" replace />
+              )
             } />
             <Route path="settings" element={
               <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
                 <SettingsEditor />
               </div>
+            } />
+            {/* Painel Super Admin: apenas super_admin */}
+            <Route path="super" element={
+              isSuperAdmin ? (
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+                  <SuperAdminPanel />
+                </div>
+              ) : (
+                <Navigate to="/admin/clients" replace />
+              )
             } />
             <Route index element={<Navigate to="clients" replace />} />
           </Routes>
