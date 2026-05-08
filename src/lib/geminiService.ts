@@ -101,6 +101,13 @@ export async function getGeminiApiKey(clientToken?: string): Promise<string> {
   // em vez de silenciosamente usar a chave de outro admin do navegador.
 
   _keyCache[cacheKey] = { key, time: Date.now() }
+
+  // 🔍 DEBUG TEMPORÁRIO — remove após validar qual chave está sendo usada
+  if (DEBUG) console.log(
+    '[GeminiKey] cacheKey:', cacheKey,
+    '| key preview:', key ? key.slice(0, 10) + '...' : '❌ não encontrada'
+  )
+
   return key
 }
 
