@@ -52,10 +52,22 @@ export interface MaterialData { base64: string; mimeType: string }
 
 const _keyCache: Record<string, { key: string; time: number }> = {}
 const CACHE_TTL = 5 * 60 * 1000
-const ADMIN_CACHE_KEY = '__admin__'
 
 export async function getGeminiApiKey(clientToken?: string): Promise<string> {
-  const cacheKey = clientToken || ADMIN_CACHE_KEY
+  // Cache segmentado por identidade:
+  //   • Contexto cliente → usa o token do cliente
+  //   • Contexto admin   → usa o user.id do admin logado
+  // Isso evita que dois admins diferentes compartilhem cache na mesma sessão
+  // e que o super_admin (USING true) leia a chave de outro admin.
+  let cacheKey: string
+
+  if (clientToken) {
+    cacheKey = clientToken
+  } else {
+    const { data: { user } } = await supabase.auth.getUser()
+    cacheKey = user?.id ?? '__anon__'
+  }
+
   const cached = _keyCache[cacheKey]
   if (cached && Date.now() - cached.time < CACHE_TTL) return cached.key
 
@@ -63,13 +75,24 @@ export async function getGeminiApiKey(clientToken?: string): Promise<string> {
 
   try {
     if (clientToken) {
-      // Contexto cliente: busca settings via RPC SECURITY DEFINER
+      // Contexto cliente: busca settings via RPC SECURITY DEFINER que
+      // resolve o admin dono via clients.admin_id.
       const { data } = await supabase.rpc('get_admin_settings_for_client', { p_token: clientToken })
       key = (data as any)?.geminiApiKey || ''
     } else {
-      // Contexto admin: lê admin_content direto, RLS auto-filtra
-      const { data } = await supabase.from('admin_content').select('content').eq('type', 'settings').maybeSingle()
-      key = (data?.content as any)?.geminiApiKey || ''
+      // Contexto admin: filtra EXPLICITAMENTE por admin_id.
+      // Sem esse filtro o super_admin (policy USING true) enxerga todas as
+      // linhas e .maybeSingle() pode retornar a chave de outro admin.
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user?.id) {
+        const { data } = await supabase
+          .from('admin_content')
+          .select('content')
+          .eq('type', 'settings')
+          .eq('admin_id', user.id)
+          .maybeSingle()
+        key = (data?.content as any)?.geminiApiKey || ''
+      }
     }
   } catch {}
 
