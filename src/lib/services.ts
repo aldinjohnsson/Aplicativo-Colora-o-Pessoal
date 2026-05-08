@@ -400,9 +400,15 @@ export const adminService = {
     plan_id: string
     notes?: string
   }): Promise<Client> {
+    // FIX: passa admin_id explicitamente em vez de confiar no DEFAULT auth.uid()
+    // da coluna. Mesmo padrão de adminContent.ts — protege contra mudanças
+    // futuras na coluna e deixa a intenção explícita no código.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+
     const { data: client, error } = await supabase
       .from('clients')
-      .insert({ ...data, status: 'awaiting_contract' })
+      .insert({ ...data, admin_id: user.id, status: 'awaiting_contract' })
       .select()
       .single()
     if (error) throw error
@@ -492,7 +498,8 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'photos_approved',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+            adminId: (client as any).admin_id,
+            clientToken: client.token,           // ← rede de segurança
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -544,7 +551,8 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'form_rejected',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+            adminId: (client as any).admin_id,
+            clientToken: client.token,
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -593,7 +601,8 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'photos_rejected',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+            adminId: (client as any).admin_id,
+            clientToken: client.token,
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -644,7 +653,8 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'both_rejected',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+            adminId: (client as any).admin_id,
+            clientToken: client.token,
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -946,7 +956,8 @@ export const adminService = {
       await supabase.functions.invoke('send-contract-email', {
         body: {
           type,
-          adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+          adminId: (client as any).admin_id,
+          clientToken: client.token,
           clientName: client.full_name,
           clientEmail: client.email,
           planName: (client as any).plan?.name || '',
@@ -1187,7 +1198,8 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'result_released',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+            adminId: (client as any).admin_id,
+            clientToken: client.token,
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -1235,7 +1247,8 @@ export const adminService = {
         await supabase.functions.invoke('send-contract-email', {
           body: {
             type: 'partial_result_released',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
+            adminId: (client as any).admin_id,
+            clientToken: client.token,
             clientName: client.full_name,
             clientEmail: client.email,
             planName,
@@ -1852,27 +1865,29 @@ export const clientService = {
 
     // Notificação para a admin
     try {
+      // .maybeSingle() em vez de .single() — RLS no portal anon pode bloquear
+      // a leitura. Se voltar null, ainda invocamos a Edge Function passando
+      // clientToken; ela hidrata os campos via service role.
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
+        .select('full_name, email, token, admin_id, plan:plans(name)')
         .eq('token', token)
-        .single()
+        .maybeSingle()
 
-      if (client) {
-        const portalUrl = `${window.location.origin}/c/${client.token}`
-        const planName = (client as any).plan?.name || ''
+      const portalUrl = `${window.location.origin}/c/${token}`
+      const planName = (client as any)?.plan?.name || ''
 
-        await supabase.functions.invoke('send-contract-email', {
-          body: {
-            type: 'photos_submitted',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
-            clientName: client.full_name,
-            clientEmail: client.email,
-            planName,
-            portalUrl,
-          }
-        })
-      }
+      await supabase.functions.invoke('send-contract-email', {
+        body: {
+          type: 'photos_submitted',
+          adminId: (client as any)?.admin_id ?? null,
+          clientToken: token,                       // ← fallback obrigatório
+          clientName: client?.full_name ?? '',
+          clientEmail: client?.email ?? '',
+          planName,
+          portalUrl,
+        }
+      })
     } catch (e) {
       console.warn('Erro ao enviar notificação de fotos enviadas:', e)
     }
@@ -1940,27 +1955,28 @@ export const clientService = {
 
     // 4. E-mail pra consultora
     try {
+      // .maybeSingle() + clientToken: mesmo padrão de finalizePhotos para
+      // tolerar RLS bloqueando a leitura no portal anon.
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, admin_id, plan:plans(name)')  // FIX: admin_id para multi-tenant
+        .select('full_name, email, token, admin_id, plan:plans(name)')
         .eq('token', token)
-        .single()
+        .maybeSingle()
 
-      if (client) {
-        const portalUrl = `${window.location.origin}/c/${client.token}`
-        const planName = (client as any).plan?.name || ''
+      const portalUrl = `${window.location.origin}/c/${token}`
+      const planName = (client as any)?.plan?.name || ''
 
-        await supabase.functions.invoke('send-contract-email', {
-          body: {
-            type: 'ai_photo_submitted',
-            adminId: (client as any).admin_id,  // FIX: isola settings por tenant na Edge Function
-            clientName: client.full_name,
-            clientEmail: client.email,
-            planName,
-            portalUrl,
-          }
-        })
-      }
+      await supabase.functions.invoke('send-contract-email', {
+        body: {
+          type: 'ai_photo_submitted',
+          adminId: (client as any)?.admin_id ?? null,
+          clientToken: token,
+          clientName: client?.full_name ?? '',
+          clientEmail: client?.email ?? '',
+          planName,
+          portalUrl,
+        }
+      })
     } catch (e) {
       console.warn('Erro ao enviar notificação de foto IA enviada:', e)
     }

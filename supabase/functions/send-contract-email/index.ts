@@ -212,49 +212,61 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // ── FIX MULTI-TENANT: resolver adminId antes de carregar as settings ────
+    // ── FIX MULTI-TENANT + HIDRATAÇÃO ANON ──────────────────────────────────
     //
-    // O supabaseClient usa service role (bypassa RLS), então sem filtro por
-    // admin_id a query retorna a linha de qualquer admin — quebrando o
-    // isolamento de tenant.
+    // O supabaseClient usa service role (bypassa RLS), então conseguimos ler
+    // a linha do cliente e do admin sem depender de auth.uid().
     //
-    // ESTRATÉGIA:
-    //   • payload.adminId   → vem de chamadas admin-side (adminService).
-    //     O services.ts lê admin_id diretamente da linha do cliente já
-    //     carregada na mesma função, sem precisar de auth.getUser().
+    // Por que hidratar AQUI:
+    //   • signContract() roda no portal anon — a RLS bloqueia o SELECT em
+    //     `clients` no frontend, e o payload chega com clientName/clientEmail/
+    //     planName vazios. Sem hidratar, o Resend devolve 422 ("Invalid `to`")
+    //     no e-mail do cliente e o e-mail do admin sai com Cliente/Plano em
+    //     branco.
+    //   • Para chamadas admin-side, os campos do payload têm prioridade
+    //     (já vêm preenchidos), e o DB serve só de fallback se algum vier
+    //     vazio.
     //
-    //   • payload.clientToken → fallback para contexto anon (portal do cliente).
-    //     Quando a query de RLS bloqueia a leitura de admin_id no services.ts,
-    //     o frontend passa o token e a Edge Function resolve via service role.
-    //
-    //   • Nenhum dos dois → não é possível identificar o tenant.
-    //     Pulamos o envio com skipped:true para não enviar pelo admin errado.
+    // Identificação do tenant (adminId):
+    //   1. payload.adminId        → chamadas admin-side passam direto.
+    //   2. clientFromDb.admin_id  → resolvido via clientToken (portal anon).
+    //   3. DEFAULT_ADMIN_ID (env) → clientes legados sem admin_id e webhooks.
+    //   Sem nenhum dos três, pulamos o envio com skipped:true.
     // ────────────────────────────────────────────────────────────────────────
-    // DEBUG: loga o que chegou no payload para diagnóstico
+
     console.log(`[DEBUG payload] type=${emailType} | adminId=${payload.adminId ?? 'NULL'} | clientToken=${payload.clientToken ?? 'NULL'}`)
 
-    let adminId: string | null = payload.adminId || null
+    // Hidrata o cliente via service role quando o token vier no payload.
+    let clientFromDb: {
+      full_name?: string
+      email?: string
+      admin_id?: string | null
+      plan_name?: string
+    } | null = null
 
-    // Fallback 1: resolve adminId via clientToken usando service role (bypassa RLS).
-    // Cobre o cenário do portal anon onde a query de admin_id é bloqueada por RLS.
-    if (!adminId && payload.clientToken) {
-      const { data: clientRow } = await supabaseClient
+    if (payload.clientToken) {
+      const { data: row } = await supabaseClient
         .from('clients')
-        .select('admin_id')
+        .select('full_name, email, admin_id, plan:plans(name)')
         .eq('token', payload.clientToken)
-        .single()
-      adminId = clientRow?.admin_id || null
+        .maybeSingle()
 
-      if (adminId) {
-        console.log(`[${emailType}] adminId resolvido via clientToken: ${adminId}`)
+      if (row) {
+        clientFromDb = {
+          full_name: (row as any).full_name ?? '',
+          email:     (row as any).email     ?? '',
+          admin_id:  (row as any).admin_id  ?? null,
+          plan_name: (row as any).plan?.name ?? '',
+        }
+        console.log(`[${emailType}] cliente hidratado via clientToken: email=${clientFromDb.email} admin_id=${clientFromDb.admin_id ?? 'NULL'}`)
+      } else {
+        console.warn(`[${emailType}] clientToken nao encontrado em clients`)
       }
     }
 
-    // Fallback 2: DEFAULT_ADMIN_ID via variável de ambiente.
-    // Cobre clientes antigos onde admin_id ainda é null no banco, e chamadas
-    // de fontes externas (Database Webhooks) que não passam token nem adminId.
-    // Configure em: Supabase → Edge Functions → send-contract-email → Secrets
-    //   DEFAULT_ADMIN_ID=<uuid do admin padrão>
+    // Resolve adminId em cascata
+    let adminId: string | null = payload.adminId || clientFromDb?.admin_id || null
+
     if (!adminId) {
       adminId = Deno.env.get('DEFAULT_ADMIN_ID') || null
       if (adminId) {
@@ -263,16 +275,23 @@ serve(async (req) => {
     }
 
     if (!adminId) {
-      console.warn(`[${emailType}] adminId não resolvido por nenhum caminho (payload.adminId | clientToken | DEFAULT_ADMIN_ID). Pulando envio.`)
-      return jsonResponse({ skipped: true, reason: 'adminId não resolvido' })
+      console.warn(`[${emailType}] adminId nao resolvido (payload.adminId | clientToken | DEFAULT_ADMIN_ID). Pulando envio.`)
+      return jsonResponse({ skipped: true, reason: 'adminId nao resolvido' })
     }
+
+    // Resolve campos do cliente: payload tem prioridade, DB é fallback.
+    // Estes são VARS DE TOP-LEVEL — os handlers abaixo NÃO devem
+    // re-desestruturar clientName/clientEmail/planName do payload.
+    const clientName  = (payload.clientName  || clientFromDb?.full_name || '').trim()
+    const clientEmail = (payload.clientEmail || clientFromDb?.email     || '').trim()
+    const planName    = (payload.planName    || clientFromDb?.plan_name || '').trim()
 
     // Carrega APENAS as settings do admin dono deste evento
     const { data: settingsRow } = await supabaseClient
       .from('admin_content')
       .select('content')
       .eq('type', 'settings')
-      .eq('admin_id', adminId)   // ← FIX: isolamento por tenant
+      .eq('admin_id', adminId)   // ← isolamento por tenant
       .maybeSingle()
 
     const cfg = settingsRow?.content as any
@@ -299,12 +318,23 @@ serve(async (req) => {
       }
     }
 
+    // Wrapper: só chama Resend se o destinatário for válido.
+    // Evita erro 422 quando, mesmo após hidratação, clientEmail veio vazio.
+    const sendToClient = async (subject: string, html: string, attachments: any[] = []) => {
+      if (!clientEmail) {
+        console.warn(`[${emailType}] clientEmail vazio mesmo apos hidratacao — envio pro cliente pulado. token=${payload.clientToken ?? 'NULL'}`)
+        return
+      }
+      await send(clientEmail, subject, html, attachments)
+    }
+
     // ============================================================
     // TIPO 1: CONTRATO ASSINADO
     // Envia PDF do contrato para cliente e admin
     // ============================================================
     if (emailType === 'contract_signed') {
-      const { clientName, clientEmail, planName, signedAt, contractTitle, sections } = payload
+      // clientName/clientEmail/planName vêm do escopo superior (já hidratados)
+      const { signedAt, contractTitle, sections } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDate = new Date(signedAt).toLocaleString('pt-BR', {
@@ -341,7 +371,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml, attachments),
+        sendToClient(subject, clientHtml, attachments),
         send(ADMIN_EMAIL, `[MS Color] Nova assinatura: ${clientName} - ${planName}`, adminHtml, attachments),
       ])
       logResults(results, 'contract_signed')
@@ -353,7 +383,7 @@ serve(async (req) => {
     // Cliente recebe confirmação + prazo; admin recebe aviso para revisar
     // ============================================================
     if (emailType === 'photos_finalized') {
-      const { clientName, clientEmail, planName } = payload
+      // clientName/clientEmail/planName vêm do escopo superior
 
       // Somente a consultora recebe — cliente nao precisa de confirmacao neste momento
       const adminHtml = buildEmail(
@@ -374,7 +404,7 @@ serve(async (req) => {
     // Somente cliente recebe — admin ja sabe que acabou de aprovar
     // ============================================================
     if (emailType === 'analysis_approved') {
-      const { clientName, clientEmail, planName, deadlineDate } = payload
+      const { deadlineDate } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDeadline = deadlineDate
@@ -402,7 +432,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'analysis_approved')
       return jsonResponse({ success: true, type: 'analysis_approved' })
@@ -413,7 +443,7 @@ serve(async (req) => {
     // Somente cliente recebe — admin acabou de solicitar
     // ============================================================
     if (emailType === 'analysis_rejected') {
-      const { clientName, clientEmail, planName, rejectPhotos, photosReason, rejectForm, formReason } = payload
+      const { rejectPhotos, photosReason, rejectForm, formReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const subject = `Ajuste necessario na sua analise - MS Color`
@@ -445,7 +475,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'analysis_rejected')
       return jsonResponse({ success: true, type: 'analysis_rejected' })
@@ -457,7 +487,7 @@ serve(async (req) => {
     // Mensagem diferenciada: avisa que as simulações ainda continuam
     // ============================================================
     if (emailType === 'partial_result_released') {
-      const { clientName, clientEmail, planName } = payload
+      // clientName/clientEmail/planName vêm do escopo superior
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const subject = `Prévia do seu resultado disponível - MS Color`
@@ -479,7 +509,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'partial_result_released')
       return jsonResponse({ success: true, type: 'partial_result_released' })
@@ -490,7 +520,7 @@ serve(async (req) => {
     // Somente a cliente recebe — admin nao precisa de notificacao
     // ============================================================
     if (emailType === 'result_released') {
-      const { clientName, clientEmail, planName } = payload
+      // clientName/clientEmail/planName vêm do escopo superior
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const subject = `Sua analise ${planName} esta pronta! - MS Color`
@@ -511,7 +541,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'result_released')
       return jsonResponse({ success: true, type: 'result_released' })
@@ -522,7 +552,7 @@ serve(async (req) => {
     // Cliente recebe confirmação + botão para acompanhar a análise
     // ============================================================
     if (emailType === 'photos_approved') {
-      const { clientName, clientEmail, planName, deadlineDate } = payload
+      const { deadlineDate } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDeadline = deadlineDate
@@ -552,7 +582,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'photos_approved')
       return jsonResponse({ success: true, type: 'photos_approved' })
@@ -563,7 +593,7 @@ serve(async (req) => {
     // Cliente recebe motivo + botão para entrar no portal
     // ============================================================
     if (emailType === 'photos_rejected') {
-      const { clientName, clientEmail, planName, reason } = payload
+      const { reason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const subject = `Suas fotos precisam de um ajuste - MS Color`
@@ -585,7 +615,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'photos_rejected')
       return jsonResponse({ success: true, type: 'photos_rejected' })
@@ -596,7 +626,7 @@ serve(async (req) => {
     // Cliente recebe motivo + botão para entrar no portal
     // ============================================================
     if (emailType === 'form_rejected') {
-      const { clientName, clientEmail, planName, reason } = payload
+      const { reason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const subject = `Seu formulario precisa de um ajuste - MS Color`
@@ -618,7 +648,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'form_rejected')
       return jsonResponse({ success: true, type: 'form_rejected' })
@@ -629,7 +659,7 @@ serve(async (req) => {
     // Cliente recebe os dois motivos + botão para entrar no portal
     // ============================================================
     if (emailType === 'both_rejected') {
-      const { clientName, clientEmail, planName, formReason, photosReason } = payload
+      const { formReason, photosReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const subject = `Ajustes necessarios na sua analise - MS Color`
@@ -657,7 +687,7 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        send(clientEmail, subject, clientHtml),
+        sendToClient(subject, clientHtml),
       ])
       logResults(results, 'both_rejected')
       return jsonResponse({ success: true, type: 'both_rejected' })
@@ -669,7 +699,7 @@ serve(async (req) => {
     // usa 'photos_finalized'. Suportamos os dois para compatibilidade.
     // ============================================================
     if (emailType === 'photos_submitted') {
-      const { clientName, clientEmail, planName } = payload
+      // clientName/clientEmail/planName vêm do escopo superior
 
       // Somente a consultora recebe — cliente nao precisa de confirmacao neste momento
       const adminHtml = buildEmail(
@@ -692,7 +722,7 @@ serve(async (req) => {
     // de avançar para "Simulações".
     // ============================================================
     if (emailType === 'ai_photo_submitted') {
-      const { clientName, clientEmail, planName } = payload
+      // clientName/clientEmail/planName vêm do escopo superior
 
       const adminHtml = buildEmail(
         '✨ Foto para simulação enviada',
