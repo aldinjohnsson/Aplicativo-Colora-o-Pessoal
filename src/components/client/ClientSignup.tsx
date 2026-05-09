@@ -1,13 +1,14 @@
 // src/components/client/ClientSignup.tsx
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Palette, User, Mail, Phone, Calendar, CheckCircle,
-  AlertCircle, Loader2, ChevronRight, PenTool, ArrowLeft,
-  RefreshCw, Lock, Download, Sparkles, Heart, Globe
+  AlertCircle, Loader2, ChevronRight, ArrowLeft,
+  RefreshCw, Lock, Sparkles, Heart, Globe,
+  Check, ChevronDown, ChevronUp, Download,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
-import { generateContractPDF } from '../../lib/contractPDFGenerator'
+import { clientService } from '../../lib/services'
 
 // ── Lista de países (Brasil primeiro) ────────────────────────────────────────
 const COUNTRIES = [
@@ -56,6 +57,7 @@ interface PlanData {
   photo_categories: any
 }
 
+// Fluxo completo: welcome → info (dados) → contract (assinatura) → done (confirmação)
 type Step = 'welcome' | 'info' | 'contract' | 'done'
 
 export function ClientSignup() {
@@ -67,45 +69,57 @@ export function ClientSignup() {
   const [pageError, setPageError] = useState('')
   const [step, setStep] = useState<Step>('welcome')
 
-  // Step 2 fields
+  // ── Step: Dados ───────────────────────────────────────────
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [birthDate, setBirthDate] = useState('')
   const [country, setCountry] = useState('Brasil')
   const [clientIp, setClientIp] = useState('Obtendo...')
-  const [signTime] = useState(() => new Date())
-
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
   const [resultToken, setResultToken] = useState('')
-  const [downloadingPDF, setDownloadingPDF] = useState(false)
 
-  // Contract
-  const [agreed, setAgreed] = useState(false)
-  const [hasScrolled, setHasScrolled] = useState(false)
-  const contractRef = useRef<HTMLDivElement>(null)
+  // ── Step: Contrato ────────────────────────────────────────
+  const [contractRead, setContractRead] = useState(false)
+  const [contractAgreed, setContractAgreed] = useState(false)
+  const [contractSigning, setContractSigning] = useState(false)
+  const [contractScrollProgress, setContractScrollProgress] = useState(0)
+  const [contractCountry, setContractCountry] = useState('Brasil')
+  const [contractSignTime, setContractSignTime] = useState<Date | null>(null)
+  const contractScrollRef = useRef<HTMLDivElement>(null)
 
-  // Signature canvas
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [isDrawing, setIsDrawing] = useState(false)
-  const [hasSigned, setHasSigned] = useState(false)
-  const lastPos = useRef<{ x: number; y: number } | null>(null)
+  // ── Step: Done ────────────────────────────────────────────
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
 
   // ── Load plan ──────────────────────────────────────────────
-
   useEffect(() => {
     if (!shareToken) { setPageError('Link inválido.'); setLoading(false); return }
     loadPlan()
   }, [shareToken])
 
-  // Busca o IP real do cliente ao montar o componente
+  // Busca o IP real do cliente
   useEffect(() => {
     fetch('https://api.ipify.org?format=json')
       .then(r => r.json())
       .then(d => setClientIp(d.ip || 'Não disponível'))
       .catch(() => setClientIp('Não disponível'))
   }, [])
+
+  // Verifica contratos curtos (sem scroll necessário) ao entrar na etapa de contrato
+  useEffect(() => {
+    if (step !== 'contract') return
+    // Aguarda o DOM renderizar antes de checar o scrollHeight
+    const timer = setTimeout(() => {
+      const el = contractScrollRef.current
+      if (!el) return
+      if (el.scrollHeight <= el.clientHeight + 10) {
+        setContractRead(true)
+        setContractScrollProgress(100)
+      }
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [step])
 
   const loadPlan = async () => {
     setLoading(true)
@@ -115,134 +129,28 @@ export function ClientSignup() {
       if (error) throw error
       if (data?.error) { setPageError(data.error); return }
       setPlan(data)
-    } catch (e: any) {
+    } catch {
       setPageError('Não foi possível carregar o plano. Verifique o link ou tente novamente.')
     } finally {
       setLoading(false)
     }
   }
 
-  // ── Canvas setup ───────────────────────────────────────────
-
-  const setupCanvas = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    const rect = canvas.getBoundingClientRect()
-    if (rect.width === 0) return
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    canvas.width = rect.width * window.devicePixelRatio
-    canvas.height = rect.height * window.devicePixelRatio
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio)
-    ctx.strokeStyle = '#be185d'
-    ctx.lineWidth = 2.5
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    ctx.putImageData(imageData, 0, 0)
-  }, [])
-
-  useEffect(() => {
-    if (step !== 'contract') return
-    const timer = setTimeout(setupCanvas, 150)
-    return () => clearTimeout(timer)
-  }, [step, setupCanvas])
-
-  // ── Signature drawing ──────────────────────────────────────
-
-  const getCanvasPos = (e: React.TouchEvent | React.MouseEvent) => {
-    const canvas = canvasRef.current!
-    const rect = canvas.getBoundingClientRect()
-    if ('touches' in e) {
-      return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top }
-    }
-    return { x: (e as React.MouseEvent).clientX - rect.left, y: (e as React.MouseEvent).clientY - rect.top }
-  }
-
-  const startDraw = (e: React.TouchEvent | React.MouseEvent) => {
-    e.preventDefault()
-    const ctx = canvasRef.current?.getContext('2d')
-    if (!ctx) return
-    setIsDrawing(true)
-    const pos = getCanvasPos(e)
-    lastPos.current = pos
-    ctx.beginPath()
-    ctx.moveTo(pos.x, pos.y)
-  }
-
-  const draw = (e: React.TouchEvent | React.MouseEvent) => {
-    e.preventDefault()
-    if (!isDrawing) return
-    const ctx = canvasRef.current?.getContext('2d')
-    if (!ctx || !lastPos.current) return
-    const pos = getCanvasPos(e)
-    ctx.beginPath()
-    ctx.moveTo(lastPos.current.x, lastPos.current.y)
-    ctx.lineTo(pos.x, pos.y)
-    ctx.stroke()
-    lastPos.current = pos
-    if (!hasSigned) setHasSigned(true)
-  }
-
-  const stopDraw = () => { setIsDrawing(false); lastPos.current = null }
-
-  const clearSignature = () => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    setHasSigned(false)
-  }
-
-  // ── Scroll detection ───────────────────────────────────────
-
-  const handleContractScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) setHasScrolled(true)
-  }
-
-  useEffect(() => {
-    if (step === 'contract') {
-      const el = contractRef.current
-      if (!el) return
-      if (el.scrollHeight <= el.clientHeight + 60) setHasScrolled(true)
-    }
-  }, [step])
-
-  // ── Submit info ────────────────────────────────────────────
-
-  const handleInfoSubmit = (e: React.FormEvent) => {
+  // ── Submit dados (Step 1 → 2) ──────────────────────────────
+  const handleInfoSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!fullName.trim() || !email.trim() || !birthDate) {
       setFormError('Preencha todos os campos obrigatórios.')
       return
     }
-    setFormError('')
-    setStep('contract')
-  }
-
-  // ── Submit contract ────────────────────────────────────────
-
-  const hasContract = !!(plan?.contract?.sections && plan.contract.sections.length > 0)
-  const canSign = agreed && (hasSigned || !hasContract) && (hasScrolled || !hasContract)
-
-  const handleSign = async () => {
-    if (!agreed) { setFormError('Aceite os termos para continuar.'); return }
-    if (hasContract && !hasSigned) { setFormError('Por favor, assine no campo de assinatura.'); return }
-    if (hasContract && !hasScrolled) { setFormError('Role o contrato até o final antes de assinar.'); return }
 
     setSubmitting(true)
     setFormError('')
 
     try {
-      const signedAt = new Date().toISOString()
-      const signatureDataUrl = hasContract ? (canvasRef.current?.toDataURL('image/png') || '') : ''
       const contractData = {
         clientInfo: { fullName, email, phone, birthDate, country, ip: clientIp },
-        signature: signatureDataUrl,
-        signedAt,
-        agreed: true,
+        registeredAt: new Date().toISOString(),
         planName: plan?.name,
       }
 
@@ -258,28 +166,10 @@ export function ClientSignup() {
       if (error) throw error
       if (data?.error) { setFormError(data.error); return }
 
+      // Salva o token e vai pro contrato (não pra tela de done)
       setResultToken(data.token)
-
-      // Enviar e-mail com o token diretamente (não depender do state)
-      try {
-        const portalUrl = `${window.location.origin}/c/${data.token}`
-        await supabase.functions.invoke('send-contract-email', {
-          body: {
-            type: 'contract_signed',
-            clientName: fullName.trim(),
-            clientEmail: email.trim().toLowerCase(),
-            planName: plan?.name,
-            signedAt,
-            contractTitle: plan?.contract?.title,
-            sections: plan?.contract?.sections,
-            portalUrl,
-          }
-        })
-      } catch (e) {
-        console.warn('Erro ao enviar e-mail do contrato:', e)
-      }
-
-      setStep('done')
+      setContractSignTime(new Date())
+      setStep('contract')
     } catch (e: any) {
       setFormError(e.message || 'Erro ao criar conta. Tente novamente.')
     } finally {
@@ -287,28 +177,59 @@ export function ClientSignup() {
     }
   }
 
-  // ── Download PDF ───────────────────────────────────────────
+  // ── Scroll do contrato ─────────────────────────────────────
+  const handleContractScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    const total = el.scrollHeight - el.clientHeight
+    if (total <= 0) { setContractRead(true); setContractScrollProgress(100); return }
+    const pct = Math.round((el.scrollTop / total) * 100)
+    setContractScrollProgress(pct)
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 50) setContractRead(true)
+  }
 
-  const handleDownloadPDF = async () => {
-    if (!plan?.contract) return
-    setDownloadingPDF(true)
+  // ── Assinar contrato (Step 2 → 3) ─────────────────────────
+  const handleContractSign = async () => {
+    if (!contractAgreed || !resultToken) return
+    setContractSigning(true)
     try {
-      const { downloadContractPDF } = await import('../../lib/contractPDFGenerator')
-      await downloadContractPDF(
-        plan.contract.title || 'Contrato',
-        plan.contract.sections || [],
-        { fullName, email, phone: phone || '', country, ip: clientIp },
-        new Date().toISOString()
-      )
-    } catch (e) {
-      console.error('Erro ao gerar PDF:', e)
+      await clientService.signContract(resultToken, {
+        country: contractCountry,
+        ip: clientIp,
+        signedAt: new Date().toISOString(),
+      })
+      setStep('done')
+    } catch (e: any) {
+      alert(e.message || 'Erro ao assinar contrato. Tente novamente.')
     } finally {
-      setDownloadingPDF(false)
+      setContractSigning(false)
+    }
+  }
+
+  // ── Download do PDF ────────────────────────────────────────
+  const handleDownloadPdf = async () => {
+    if (!resultToken) return
+    setDownloadingPdf(true)
+    try {
+      const { data } = await supabase.functions.invoke('send-contract-email', {
+        body: { type: 'download_contract', clientToken: resultToken },
+      })
+      if (data?.downloadUrl) {
+        const a = document.createElement('a')
+        a.href = data.downloadUrl
+        a.target = '_blank'
+        a.rel = 'noopener noreferrer'
+        a.click()
+      } else {
+        alert('O PDF foi enviado para o seu e-mail cadastrado.')
+      }
+    } catch {
+      alert('O PDF foi enviado para o seu e-mail cadastrado.')
+    } finally {
+      setDownloadingPdf(false)
     }
   }
 
   // ── Loading / Error ────────────────────────────────────────
-
   if (loading) return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-purple-50 flex items-center justify-center">
       <div className="text-center">
@@ -335,16 +256,24 @@ export function ClientSignup() {
 
   const inp = "w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white transition-all"
 
+  // Etapas do progresso (excluindo 'welcome')
   const steps = [
-    { key: 'info', label: 'Seus Dados' },
-    { key: 'contract', label: 'Contrato' },
-    { key: 'done', label: 'Concluído' },
+    { key: 'info',     label: 'Seus Dados' },
+    { key: 'contract', label: 'Contrato'   },
+    { key: 'done',     label: 'Concluído'  },
   ] as const
 
   const stepIndex = steps.findIndex(s => s.key === step)
 
-  // ── Render ─────────────────────────────────────────────────
+  // Formatação da data/hora de registro do contrato
+  const formattedContractDate = contractSignTime?.toLocaleDateString('pt-BR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  }) ?? ''
+  const formattedContractTime = contractSignTime?.toLocaleTimeString('pt-BR', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }) ?? ''
 
+  // ── Render ─────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-purple-50">
 
@@ -367,13 +296,9 @@ export function ClientSignup() {
         {/* ── Welcome ─────────────────────────────────────── */}
         {step === 'welcome' && (
           <div className="space-y-5">
-            {/* Card de boas-vindas */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              {/* Faixa decorativa */}
               <div className="h-2 bg-gradient-to-r from-rose-400 via-pink-400 to-purple-400" />
-
               <div className="px-8 py-10 text-center space-y-6">
-                {/* Ícone */}
                 <div className="relative inline-flex">
                   <div className="w-20 h-20 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center">
                     <Sparkles className="h-9 w-9 text-rose-400" />
@@ -383,29 +308,25 @@ export function ClientSignup() {
                   </div>
                 </div>
 
-                {/* Mensagem de boas-vindas */}
                 <div className="space-y-3">
-                  <h1 className="text-2xl font-bold text-gray-900 leading-snug">
-                    Bem-vindo(a)!
-                  </h1>
+                  <h1 className="text-2xl font-bold text-gray-900 leading-snug">Bem-vindo(a)!</h1>
                   <p className="text-gray-600 leading-relaxed text-base">
                     Estou muito feliz em ter você aqui para começarmos essa{' '}
                     <span className="text-rose-500 font-semibold">jornada de autoconhecimento</span>{' '}
                     através das cores.
                   </p>
                   <p className="text-gray-500 text-sm leading-relaxed">
-                    Para prosseguir, preencha seus dados abaixo e, em seguida, realize a assinatura do contrato.
+                    Preencha seus dados, leia e assine o contrato — tudo aqui mesmo — e em seguida
+                    acesse seu portal para continuar o atendimento.
                   </p>
                 </div>
 
-                {/* Plano */}
                 <div className="bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 rounded-xl px-4 py-3 text-left">
                   <p className="text-xs text-rose-400 font-semibold uppercase tracking-wider mb-0.5">Seu plano</p>
                   <p className="text-sm font-semibold text-gray-900">{plan.name}</p>
                   {plan.description && <p className="text-xs text-gray-500 mt-0.5">{plan.description}</p>}
                 </div>
 
-                {/* Botão */}
                 <button
                   onClick={() => setStep('info')}
                   className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
@@ -416,14 +337,13 @@ export function ClientSignup() {
               </div>
             </div>
 
-            {/* Etapas do processo */}
             <div className="bg-white/70 rounded-2xl border border-gray-100 px-5 py-4">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Como funciona</p>
               <div className="space-y-3">
                 {[
                   { n: '1', label: 'Preencha seus dados', desc: 'Nome, e-mail e informações básicas' },
-                  { n: '2', label: 'Assine o contrato', desc: 'Leia e assine digitalmente' },
-                  { n: '3', label: 'Acesse seu portal', desc: 'Formulário e envio de fotos' },
+                  { n: '2', label: 'Leia e assine o contrato', desc: 'Confirme a assinatura digital' },
+                  { n: '3', label: 'Continue o atendimento', desc: 'Formulário e envio de fotos no portal' },
                 ].map(item => (
                   <div key={item.n} className="flex items-start gap-3">
                     <div className="w-6 h-6 bg-rose-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -440,19 +360,19 @@ export function ClientSignup() {
           </div>
         )}
 
-        {/* ── Steps info/contract/done ─────────────────────── */}
+        {/* ── Barra de progresso (info / contract / done) ─── */}
         {step !== 'welcome' && (
           <div className="flex items-center gap-0">
             {steps.map(({ key, label }, i) => {
-              const done = i < stepIndex
+              const done   = i < stepIndex
               const active = i === stepIndex
               return (
                 <React.Fragment key={key}>
                   <div className="flex flex-col items-center gap-1 flex-shrink-0">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
-                      done ? 'bg-rose-400 text-white shadow-sm' :
+                      done   ? 'bg-rose-400 text-white shadow-sm' :
                       active ? 'bg-white text-rose-500 ring-2 ring-rose-400 shadow-sm' :
-                      'bg-gray-100 text-gray-400'
+                               'bg-gray-100 text-gray-400'
                     }`}>
                       {done ? <CheckCircle className="h-4 w-4" /> : i + 1}
                     </div>
@@ -536,24 +456,21 @@ export function ClientSignup() {
                 </label>
                 <div className="relative">
                   <Globe className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                  <select
-                    value={country}
-                    onChange={e => setCountry(e.target.value)}
-                    className={`${inp} pl-10`}
-                  >
-                    {COUNTRIES.map(c => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
+                  <select value={country} onChange={e => setCountry(e.target.value)} className={`${inp} pl-10`}>
+                    {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
               </div>
 
               {formError && <ErrorBox message={formError} />}
 
-              <button type="submit"
+              <button type="submit" disabled={submitting}
                 className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
-                  hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2">
-                Continuar para o Contrato <ChevronRight className="h-4 w-4" />
+                  hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2
+                  disabled:opacity-60 disabled:cursor-not-allowed">
+                {submitting
+                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Cadastrando...</>
+                  : <>Continuar para o contrato <ChevronRight className="h-4 w-4" /></>}
               </button>
             </form>
           </div>
@@ -561,156 +478,178 @@ export function ClientSignup() {
 
         {/* ── Step 2: Contrato ────────────────────────────── */}
         {step === 'contract' && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="px-6 py-5 bg-gradient-to-r from-rose-50 to-pink-50 border-b border-gray-100">
-              <div className="flex items-center gap-3">
-                <button onClick={() => { setStep('info'); setFormError('') }}
-                  className="text-gray-400 hover:text-gray-600 transition-colors">
-                  <ArrowLeft className="h-5 w-5" />
-                </button>
-                <div>
-                  <h2 className="text-lg font-bold text-gray-900">Contrato de Serviço</h2>
-                  <p className="text-sm text-gray-500 mt-0.5">
-                    {hasContract ? 'Leia, assine e aceite os termos' : 'Confirme para criar sua conta'}
-                  </p>
-                </div>
+          <div className="space-y-4">
+
+            {/* Banner de metadados (IP / Data / Hora) */}
+            <div className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 space-y-1.5">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                Registro de acesso
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs text-gray-700">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+                  <span><strong>IP:</strong> {clientIp}</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+                  <span><strong>Data:</strong> {formattedContractDate}</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+                  <span><strong>Hora:</strong> {formattedContractTime}</span>
+                </span>
               </div>
+              <p className="text-[10px] text-gray-400 pt-0.5">
+                Esses dados serão registrados junto à assinatura digital no PDF do contrato.
+              </p>
             </div>
 
-            <div className="p-6 space-y-5">
-              {/* Contratante */}
-              <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3.5">
-                <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1.5">Contratante</p>
-                <p className="text-sm font-medium text-blue-900">{fullName}</p>
-                <p className="text-sm text-blue-600">{email}</p>
-                {phone && <p className="text-sm text-blue-600">{phone}</p>}
+            {/* Card do contrato */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+
+              {/* Header com barra de leitura */}
+              <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="font-semibold text-gray-900">Leia o contrato</h2>
+                  {!contractRead ? (
+                    <span className="text-xs font-bold text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-full">
+                      {contractScrollProgress}% lido
+                    </span>
+                  ) : (
+                    <span className="text-xs font-semibold text-green-600 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <Check className="h-3 w-3" /> Lido
+                    </span>
+                  )}
+                </div>
+
+                {/* Barra de progresso */}
+                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${contractRead ? 'bg-green-400' : 'bg-amber-400'}`}
+                    style={{ width: `${contractScrollProgress}%` }}
+                  />
+                </div>
+
+                {/* Aviso de leitura obrigatória */}
+                {!contractRead && (
+                  <div className="mt-3 flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                    <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-900 leading-snug">
+                      <span className="font-semibold">Role até o final do contrato</span> abaixo para liberar a assinatura.
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {/* Texto do contrato */}
-              {hasContract ? (
-                <div>
-                  <p className="text-xs font-medium text-gray-500 mb-2">
-                    Role até o final para continuar
-                    {!hasScrolled && <span className="ml-1 text-amber-500">▼</span>}
-                  </p>
-                  <div
-                    ref={contractRef}
-                    onScroll={handleContractScroll}
-                    className={`bg-gray-50 border rounded-xl p-5 max-h-56 overflow-y-auto text-sm text-gray-700 leading-relaxed space-y-3 transition-colors ${
-                      hasScrolled ? 'border-green-200' : 'border-gray-200'
-                    }`}
-                  >
-                    {plan.contract!.title && (
-                      <p className="font-bold text-center text-gray-900 text-base">{plan.contract!.title}</p>
-                    )}
-                    {plan.contract!.sections!
-                      .sort((a, b) => a.order - b.order)
-                      .map((s, i) => (
-                        <div key={s.id || i}>
-                          {s.title && <p className="font-semibold text-gray-900">{s.title}</p>}
-                          <p className="whitespace-pre-wrap">{s.content}</p>
-                        </div>
-                      ))}
-                    <div className="h-2" />
-                  </div>
-                  {hasScrolled && (
-                    <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
-                      <CheckCircle className="h-3 w-3" /> Contrato lido
-                    </p>
+              {/* Conteúdo do contrato (scrollável) */}
+              <div className="relative">
+                <div
+                  ref={contractScrollRef}
+                  className="px-4 sm:px-6 py-4 sm:py-5 max-h-72 overflow-y-auto text-sm text-gray-700 space-y-4 leading-relaxed"
+                  onScroll={handleContractScroll}
+                >
+                  <h3 className="font-bold text-base text-gray-800">
+                    {plan.contract?.title || 'Contrato de Prestação de Serviços'}
+                  </h3>
+                  {(!plan.contract?.sections || plan.contract.sections.length === 0) && (
+                    <p className="text-gray-400 text-center py-8">Nenhuma cláusula configurada</p>
                   )}
+                  {plan.contract?.sections?.map(s => (
+                    <div key={s.id}>
+                      <h4 className="font-semibold text-gray-800 mb-1.5">{s.title}</h4>
+                      <p className="whitespace-pre-wrap">{s.content}</p>
+                    </div>
+                  ))}
                 </div>
-              ) : (
-                <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-4 text-center">
-                  <p className="text-sm text-amber-700">
-                    Nenhum contrato foi configurado para este plano. Prossiga para confirmar seu cadastro.
+
+                {/* Gradiente inferior — enquanto não terminou de ler */}
+                {!contractRead && contractScrollProgress < 80 && (
+                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white to-transparent" />
+                )}
+              </div>
+
+              {/* Indicador "continue rolando" */}
+              {!contractRead && (
+                <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-50 border-t border-amber-100">
+                  <div className="flex flex-col items-center animate-bounce">
+                    <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
+                    <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
+                  </div>
+                  <p className="text-xs font-semibold text-amber-700">
+                    Continue rolando para ler o contrato completo
                   </p>
+                  <div className="flex flex-col items-center animate-bounce">
+                    <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
+                    <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
+                  </div>
                 </div>
               )}
 
-              {/* Assinatura */}
-              {hasContract && (
+              {/* Ações de assinatura */}
+              <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-4">
+
+                {/* País de residência */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
-                    <PenTool className="h-4 w-4 text-gray-400" />
-                    Assinatura <span className="text-rose-400">*</span>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    País de residência
                   </label>
-                  <div className={`border-2 rounded-xl overflow-hidden bg-white relative transition-colors ${
-                    hasSigned ? 'border-rose-300' : 'border-dashed border-gray-200'
-                  }`}>
-                    <canvas
-                      ref={canvasRef}
-                      className="w-full touch-none cursor-crosshair block"
-                      style={{ height: '130px' }}
-                      onMouseDown={startDraw}
-                      onMouseMove={draw}
-                      onMouseUp={stopDraw}
-                      onMouseLeave={stopDraw}
-                      onTouchStart={startDraw}
-                      onTouchMove={draw}
-                      onTouchEnd={stopDraw}
-                    />
-                    {!hasSigned && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                        <PenTool className="h-6 w-6 text-gray-200 mb-1" />
-                        <p className="text-gray-300 text-sm">Assine aqui com o dedo ou mouse</p>
-                      </div>
-                    )}
+                  <select
+                    value={contractCountry}
+                    onChange={e => setContractCountry(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
+                  >
+                    {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+
+                {/* Checkbox — bloqueado até ler */}
+                <label className={`flex items-start gap-2.5 ${contractRead ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                  <input
+                    type="checkbox"
+                    checked={contractAgreed}
+                    onChange={e => contractRead && setContractAgreed(e.target.checked)}
+                    disabled={!contractRead}
+                    className="mt-0.5 w-4 h-4 accent-rose-500"
+                  />
+                  <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>
+                </label>
+
+                {/* Botão de assinatura */}
+                {!contractRead ? (
+                  <div className="w-full flex flex-col items-center justify-center gap-1 py-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-800 cursor-not-allowed select-none">
+                    <div className="flex items-center gap-2">
+                      <Lock className="h-4 w-4" />
+                      <span className="font-semibold text-sm">Assinatura bloqueada</span>
+                    </div>
+                    <p className="text-xs text-amber-700">
+                      Role até o final do contrato ({contractScrollProgress}% lido)
+                    </p>
                   </div>
-                  {hasSigned && (
-                    <button onClick={clearSignature}
-                      className="text-xs text-gray-400 hover:text-red-500 mt-1.5 transition-colors">
-                      Limpar e assinar novamente
-                    </button>
-                  )}
-                </div>
-              )}
+                ) : (
+                  <button
+                    onClick={handleContractSign}
+                    disabled={!contractAgreed || contractSigning}
+                    className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-rose-400 to-pink-500
+                      text-white py-3.5 rounded-xl font-semibold hover:from-rose-500 hover:to-pink-600
+                      transition-all shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {contractSigning
+                      ? <><Loader2 className="h-4 w-4 animate-spin" /> Assinando...</>
+                      : <><Check className="h-4 w-4" /> Assinar Contrato</>}
+                  </button>
+                )}
 
-              {/* Checkbox */}
-              <label className="flex items-start gap-3 cursor-pointer group">
-                <div className="relative mt-0.5">
-                  <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} className="sr-only" />
-                  <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${
-                    agreed ? 'bg-rose-400 border-rose-400' : 'border-gray-300 group-hover:border-rose-300'
-                  }`}>
-                    {agreed && <CheckCircle className="h-3.5 w-3.5 text-white" />}
-                  </div>
-                </div>
-                <span className="text-sm text-gray-700 leading-relaxed">
-                  {hasContract
-                    ? 'Li e concordo com todos os termos do contrato de prestação de serviços.'
-                    : 'Confirmo que desejo criar minha conta e prosseguir com a análise de coloração pessoal.'}
-                </span>
-              </label>
-
-              {hasContract && !hasScrolled && agreed && (
-                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-                  <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-                  <p className="text-sm text-amber-700">Role o contrato até o final antes de assinar.</p>
-                </div>
-              )}
-
-              {formError && <ErrorBox message={formError} />}
-
-              <button
-                onClick={handleSign}
-                disabled={submitting || !canSign}
-                className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
-                  hover:from-rose-500 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed
-                  flex items-center justify-center gap-2 shadow-sm"
-              >
-                {submitting
-                  ? <><Loader2 className="h-5 w-5 animate-spin" /> Enviando contrato...</>
-                  : <><CheckCircle className="h-4 w-4" /> Assinar e enviar</>}
-              </button>
-
-              <p className="text-center text-xs text-gray-400">
-                Uma cópia do contrato será enviada para o seu e-mail.
-              </p>
+                {contractRead && !contractAgreed && (
+                  <p className="text-xs text-gray-400 text-center">
+                    Marque a caixa acima para confirmar que leu e concordou
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
 
-        {/* ── Step 3: Concluído ───────────────────────────── */}
+        {/* ── Step 3: Concluído ────────────────────────────── */}
         {step === 'done' && (
           <div className="space-y-4">
 
@@ -728,8 +667,9 @@ export function ClientSignup() {
                 <div className="space-y-2">
                   <h2 className="text-2xl font-bold text-gray-900">Contrato assinado!</h2>
                   <p className="text-gray-500 text-sm leading-relaxed">
-                    Uma cópia foi enviada para <span className="font-medium text-gray-700">{email}</span>
-                    {' '}e para a consultora. Você também pode baixar agora.
+                    Uma cópia foi enviada para{' '}
+                    <span className="font-semibold text-gray-700">{email}</span>{' '}
+                    e para a consultora. Você também pode baixar agora.
                   </p>
                 </div>
 
@@ -755,21 +695,20 @@ export function ClientSignup() {
                   </div>
                 </div>
 
-                {/* Botão download */}
-                {hasContract && (
-                  <button
-                    onClick={handleDownloadPDF}
-                    disabled={downloadingPDF}
-                    className="w-full border-2 border-rose-200 text-rose-500 hover:bg-rose-50 py-3 rounded-xl font-semibold
-                      transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {downloadingPDF
-                      ? <><Loader2 className="h-4 w-4 animate-spin" /> Gerando PDF...</>
-                      : <><Download className="h-4 w-4" /> Baixar contrato em PDF</>}
-                  </button>
-                )}
+                {/* Baixar PDF */}
+                <button
+                  onClick={handleDownloadPdf}
+                  disabled={downloadingPdf}
+                  className="w-full border border-rose-300 text-rose-500 py-3.5 rounded-xl font-semibold
+                    hover:bg-rose-50 transition-all flex items-center justify-center gap-2
+                    disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {downloadingPdf
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Gerando PDF...</>
+                    : <><Download className="h-4 w-4" /> Baixar contrato em PDF</>}
+                </button>
 
-                {/* Botão prosseguir */}
+                {/* Prosseguir para o portal */}
                 <button
                   onClick={() => navigate(`/c/${resultToken}`)}
                   className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
