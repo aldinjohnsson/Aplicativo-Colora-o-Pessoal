@@ -792,7 +792,7 @@ export function StageController({
             Controle de etapas
           </h3>
           <p className="text-xs mt-0.5 leading-snug" style={{ color: t.text2 }}>
-            Avance ou volte etapas manualmente. Ao voltar, os dados ficam preservados — a cliente só ajusta o que precisar.
+            Avance ou volte etapas manualmente. Ao voltar, os dados ficam preservados, a cliente só ajusta o que precisar.
           </p>
         </div>
 

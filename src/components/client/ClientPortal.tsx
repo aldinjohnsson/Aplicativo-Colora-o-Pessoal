@@ -558,6 +558,19 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
       if (f.type === 'image') return !(Array.isArray(formData[f.id]) && formData[f.id].length > 0)
       return !formData[f.id]
     }).map(f => f.label)
+
+    // Valida campos de observação condicional obrigatórios
+    fields.forEach(f => {
+      if (
+        (f as any).conditionalTrigger &&
+        (f as any).conditionalRequired &&
+        formData[f.id] === (f as any).conditionalTrigger &&
+        !String(formData[`${f.id}__obs`] || '').trim()
+      ) {
+        missing.push((f as any).conditionalLabel || 'Observação')
+      }
+    })
+
     if (missing.length > 0) {
       alert(`Preencha os campos obrigatórios:\n• ${missing.join('\n• ')}`)
       return
@@ -605,6 +618,22 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                       <span className="text-sm text-gray-700">{opt}</span>
                     </label>
                   ))}
+                  {/* Campo condicional de observação */}
+                  {(f as any).conditionalTrigger && formData[f.id] === (f as any).conditionalTrigger && (
+                    <div className="mt-2 pl-5 border-l-2 border-rose-300">
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {(f as any).conditionalLabel || 'Observação'}
+                        {(f as any).conditionalRequired && <span className="text-red-500 ml-1">*</span>}
+                      </label>
+                      <textarea
+                        value={formData[`${f.id}__obs`] || ''}
+                        onChange={e => handleChange(`${f.id}__obs`, e.target.value)}
+                        placeholder="Digite aqui..."
+                        rows={3}
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none"
+                      />
+                    </div>
+                  )}
                 </div>
               )}
               {f.type === 'checkbox' && (
@@ -1558,9 +1587,15 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
     if (data.result) {
       return <ResultScreen token={token} data={data} aiPhotoMode />
     }
-    // Plano sem categoria de Foto IA, mas admin moveu pra esta etapa manualmente.
-    // Exibe a mesma tela das demais etapas internas — sem campo de upload.
-    return <AnalysisScreen data={data} materialsBeingPrepared />
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
+        <AlertCircle className="h-10 w-10 text-amber-500 mx-auto mb-3" />
+        <h2 className="font-semibold text-amber-900">Aguardando consultora</h2>
+        <p className="text-sm text-amber-700 mt-2">
+          Sua consultora está preparando a próxima etapa do seu atendimento. Em breve daremos novidades por e-mail.
+        </p>
+      </div>
+    )
   }
 
   const addFiles = async (files: File[]) => {

@@ -11,6 +11,12 @@ interface FormField {
   order: number
   maxImages?: number
   imageInstructions?: string
+  // ── Campo condicional (apenas para tipo radio) ─────────────────────────
+  // Quando o cliente seleciona a opção em `conditionalTrigger`, aparece
+  // uma textarea adicional com o label `conditionalLabel`.
+  conditionalTrigger?: string    // ex: "Sim"
+  conditionalLabel?: string      // ex: "Em qual salão você está marcado?"
+  conditionalRequired?: boolean  // se a observação é obrigatória
 }
 
 const FIELD_TYPES = [
@@ -496,6 +502,54 @@ export function FormEditor() {
                             </div>
                           ))}
                         </div>
+                      </div>
+                    )}
+
+                    {/* ── Campo condicional de observação (só para Múltipla Escolha) ── */}
+                    {field.type === 'radio' && (
+                      <div className="space-y-2 border-t border-gray-100 pt-3 mt-1">
+                        <label className="flex items-center cursor-pointer gap-2">
+                          <input
+                            type="checkbox"
+                            checked={!!field.conditionalTrigger}
+                            onChange={e => updateField(field.id, e.target.checked
+                              ? { conditionalTrigger: field.options?.[0] || '', conditionalLabel: 'Observação', conditionalRequired: false }
+                              : { conditionalTrigger: undefined, conditionalLabel: undefined, conditionalRequired: undefined }
+                            )}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <span className="text-sm font-medium text-gray-700">Ativar campo de observação condicional</span>
+                        </label>
+
+                        {!!field.conditionalTrigger && (
+                          <div className="space-y-3 pl-5 border-l-2 border-blue-200 ml-2">
+                            <div className="space-y-1">
+                              <label className="block text-xs font-medium text-gray-600">Mostrar observação quando selecionado:</label>
+                              <select
+                                value={field.conditionalTrigger}
+                                onChange={e => updateField(field.id, { conditionalTrigger: e.target.value })}
+                                className="block w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                {field.options?.map((opt, i) => <option key={i} value={opt}>{opt}</option>)}
+                              </select>
+                            </div>
+                            <Input
+                              value={field.conditionalLabel || ''}
+                              onChange={(e: any) => updateField(field.id, { conditionalLabel: e.target.value })}
+                              placeholder="Ex: Em qual salão você está marcado?"
+                              label="Pergunta do campo de observação"
+                            />
+                            <label className="flex items-center cursor-pointer gap-2">
+                              <input
+                                type="checkbox"
+                                checked={!!field.conditionalRequired}
+                                onChange={e => updateField(field.id, { conditionalRequired: e.target.checked })}
+                                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                              />
+                              <span className="text-sm text-gray-700">Observação obrigatória</span>
+                            </label>
+                          </div>
+                        )}
                       </div>
                     )}
 

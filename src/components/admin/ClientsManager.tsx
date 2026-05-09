@@ -15,7 +15,7 @@ import {
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
   SlidersHorizontal, ChevronDown, Palette, Pencil,
-  Loader2, AlertCircle,
+  Loader2, AlertCircle, Bell,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -541,7 +541,7 @@ function QuickMoveButton({ currentStatus, theme: t, onMove, columnLabels = {} }:
 
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
-  onDragStart, isDragging, onQuickMove, columnLabels = {},
+  onDragStart, isDragging, onQuickMove, columnLabels = {}, hasConditionalObs,
 }: {
   client: Client; deadline?: DeadlineData | null; theme: Theme
   onView: () => void; onArchive: () => void; onDelete: () => void; onStar: () => void
@@ -550,6 +550,7 @@ function KanbanCard({
   isDragging?: boolean
   onQuickMove?: (targetStatus: string) => void
   columnLabels?: Record<string, string>
+  hasConditionalObs?: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
@@ -618,6 +619,11 @@ function KanbanCard({
               {client.full_name}
             </p>
             {starred && <span style={{ fontSize: 11, color: '#f59e0b', flexShrink: 0, lineHeight: 1 }}>★</span>}
+            {hasConditionalObs && (
+              <span title="Possui observação condicional no formulário" style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
+                <Bell size={10} strokeWidth={2} style={{ color: '#f97316', opacity: 0.75 }} />
+              </span>
+            )}
           </div>
 
           {/* Plan — always visible, more prominent */}
@@ -736,6 +742,7 @@ function KanbanColumn({
   onRenameLabel,
   onQuickMove,
   columnLabels = {},
+  formObsIds,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -749,7 +756,9 @@ function KanbanColumn({
   onRenameLabel: (newName: string) => Promise<void>
   onQuickMove?: (clientId: string, targetStatus: string) => void
   columnLabels?: Record<string, string>
+  formObsIds?: Set<string>
 }) {
+  const obsIds: Set<string> = formObsIds ?? new Set<string>()
   const cfg = STATUSES[statusKey]
   const dangerCount = clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length
   const reviewCount = statusKey === 'photos_submitted' ? clients.length : 0
@@ -928,6 +937,7 @@ function KanbanColumn({
               onDelete={() => onDelete(client.id)} onStar={() => onStar(client.id)}
               onQuickMove={onQuickMove ? (targetStatus) => onQuickMove(client.id, targetStatus) : undefined}
               columnLabels={columnLabels}
+              hasConditionalObs={formObsIds.has(client.id)}
             />
           ))
         )}
@@ -1218,6 +1228,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [clients, setClients] = useState<Client[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [deadlines, setDeadlines] = useState<Record<string, DeadlineData>>({})
+  const [formObsIds, setFormObsIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const { theme: t, themeName, setThemeName } = useTheme()
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768)
@@ -1414,29 +1425,47 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
   const load = async () => {
     setLoading(true)
-    const [c, p, dl] = await Promise.all([
+    const [c, p, dl, fs] = await Promise.all([
       adminService.getClients(),
       adminService.getPlans(),
       supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
+      supabase.from('client_form_submissions').select('client_id, form_data'),
     ])
     setClients(c)
     setPlans(p.filter((pl: any) => pl.is_active))
     const dlMap: Record<string, DeadlineData> = {}
     ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at } })
     setDeadlines(dlMap)
+    const obsSet = new Set<string>()
+    ;(fs.data || []).forEach((row: any) => {
+      const fd = row.form_data || {}
+      if (Object.keys(fd).some(k => k.endsWith('__obs') && String(fd[k] || '').trim())) {
+        obsSet.add(row.client_id)
+      }
+    })
+    setFormObsIds(obsSet)
     setLoading(false)
   }
 
   // Sincroniza dados em segundo plano sem mostrar spinner (usado após optimistic updates)
   const silentLoad = async () => {
-    const [c, dl] = await Promise.all([
+    const [c, dl, fs] = await Promise.all([
       adminService.getClients(),
       supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
+      supabase.from('client_form_submissions').select('client_id, form_data'),
     ])
     setClients(c)
     const dlMap: Record<string, DeadlineData> = {}
     ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at } })
     setDeadlines(dlMap)
+    const obsSet = new Set<string>()
+    ;(fs.data || []).forEach((row: any) => {
+      const fd = row.form_data || {}
+      if (Object.keys(fd).some(k => k.endsWith('__obs') && String(fd[k] || '').trim())) {
+        obsSet.add(row.client_id)
+      }
+    })
+    setFormObsIds(obsSet)
   }
 
   const handleCreate = async () => {
@@ -1809,6 +1838,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       }}
                       onQuickMove={handleQuickMove}
                       columnLabels={columnLabels}
+                      formObsIds={formObsIds}
                     />
                   ))}
                 </div>
@@ -1847,6 +1877,9 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                           <div style={{ minWidth: 0 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const }}>
                               <span style={{ fontSize: 14, fontWeight: 600, color: t.text }}>{client.full_name}</span>
+                              {formObsIds.has(client.id) && (
+                                <Bell size={11} strokeWidth={2} style={{ color: '#f97316', opacity: 0.75, flexShrink: 0 }} title="Possui observação condicional no formulário" />
+                              )}
                               <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: cfg?.bg, color: cfg?.textColor, fontWeight: 600 }}>{cfg?.label}</span>
                               {starredIds.has(client.id) && <span style={{ fontSize: 11, color: '#f59e0b' }}>★</span>}
                               {dl && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: dl.urgency === 'danger' ? '#fee2e2' : '#fef3c7', color: dl.urgency === 'danger' ? '#991b1b' : '#92400e' }}>📅 {dl.label}</span>}
@@ -1889,6 +1922,20 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
   const [generatingPDF, setGeneratingPDF] = useState(false)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const lightboxState = useHeicSafeSrc(lightboxUrl ?? undefined)
+
+  const downloadFormPhoto = async (url: string, name: string) => {
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = name.replace(/[^a-zA-Z0-9._-]/g, '_') + '.jpg'
+      document.body.appendChild(a); a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch { window.open(url, '_blank') }
+  }
 
   const isImageUrl = (val: any): boolean =>
     typeof val === 'string' && (val.startsWith('http') || val.startsWith('blob:') || val.startsWith('data:image'))

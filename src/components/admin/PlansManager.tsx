@@ -655,6 +655,59 @@ function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMove
         </div>
       )}
 
+      {/* ── Campo condicional de observação (só para Múltipla Escolha) ── */}
+      {field.type === 'radio' && (
+        <div className="space-y-2 border-t border-gray-200 pt-3 mt-1">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!field.conditionalTrigger}
+              onChange={e => onUpdate(e.target.checked
+                ? { conditionalTrigger: field.options?.[0] || '', conditionalLabel: 'Observação', conditionalRequired: false }
+                : { conditionalTrigger: undefined, conditionalLabel: undefined, conditionalRequired: undefined }
+              )}
+              className="h-3.5 w-3.5 text-rose-500 rounded"
+            />
+            <span className="text-sm font-medium text-gray-700">Ativar campo de observação condicional</span>
+          </label>
+
+          {!!field.conditionalTrigger && (
+            <div className="space-y-3 pl-4 border-l-2 border-rose-200 ml-1">
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-gray-600">Mostrar observação quando selecionado:</label>
+                <select
+                  value={field.conditionalTrigger}
+                  onChange={e => onUpdate({ conditionalTrigger: e.target.value })}
+                  className="block w-full px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+                >
+                  {(field.options || []).map((opt: string, i: number) => (
+                    <option key={i} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Pergunta do campo de observação</label>
+                <input
+                  value={field.conditionalLabel || ''}
+                  onChange={e => onUpdate({ conditionalLabel: e.target.value })}
+                  placeholder="Ex: Em qual salão você está marcado?"
+                  className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+                />
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!field.conditionalRequired}
+                  onChange={e => onUpdate({ conditionalRequired: e.target.checked })}
+                  className="h-3.5 w-3.5 text-rose-500 rounded"
+                />
+                <span className="text-sm text-gray-700">Observação obrigatória</span>
+              </label>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Obrigatório */}
       <label className="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
         <input
