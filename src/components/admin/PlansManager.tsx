@@ -982,7 +982,7 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
   )
 }
 
-// ── Layers icon workaround ───────────────────────────────────
+// ── Layers icon workaround───────────────────────────────────
 
 const Layers = ({ className }: any) => (
   <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
