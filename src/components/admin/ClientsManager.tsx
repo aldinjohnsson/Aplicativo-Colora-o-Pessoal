@@ -2008,15 +2008,36 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
       hline()
 
       // Campos ordenados
-      const ordered: [string, any][] = [
-        ...fields.filter((f: any) => formData[f.id] !== undefined).map((f: any) => [f.id, formData[f.id]] as [string, any]),
-        ...Object.keys(formData).filter(k => !fieldMap[k]).map(k => [k, formData[k]] as [string, any]),
-      ]
+      const ordered: [string, any][] = (() => {
+        const result: [string, any][] = []
+        const handled = new Set<string>()
+        for (const f of fields as any[]) {
+          if (formData[f.id] !== undefined) {
+            result.push([f.id, formData[f.id]])
+            handled.add(f.id)
+          }
+          const obsKey = Object.keys(formData).find(k => k.toLowerCase() === `${f.id}__obs`)
+          if (obsKey && formData[obsKey] !== undefined) {
+            result.push([obsKey, formData[obsKey]])
+            handled.add(obsKey)
+          }
+        }
+        Object.keys(formData).filter(k => !handled.has(k)).forEach(k => result.push([k, formData[k]]))
+        return result
+      })()
 
       for (let i = 0; i < ordered.length; i++) {
         const [key, value] = ordered[i]
         const field = fieldMap[key]
-        const label = field?.label || key
+        const label = (() => {
+          if (field) return field.label
+          if (key.toLowerCase().endsWith('__obs')) {
+            const parentId = key.replace(/__obs$/i, '')
+            const parentField = fieldMap[parentId]
+            return parentField?.conditionalLabel || 'Observação'
+          }
+          return key
+        })()
         const imgUrls = getImageUrls(value)
         const isImg = field?.type === 'image' || imgUrls.length > 0
 
@@ -2079,10 +2100,25 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
     }
   }
 
-  const orderedEntries: [string, any][] = [
-    ...fields.filter((f: any) => formData[f.id] !== undefined).map((f: any) => [f.id, formData[f.id]] as [string, any]),
-    ...Object.keys(formData).filter(k => !fieldMap[k]).map(k => [k, formData[k]] as [string, any]),
-  ]
+  const orderedEntries: [string, any][] = (() => {
+    const result: [string, any][] = []
+    const handled = new Set<string>()
+    for (const f of fields as any[]) {
+      if (formData[f.id] !== undefined) {
+        result.push([f.id, formData[f.id]])
+        handled.add(f.id)
+      }
+      // Insere a observação condicional logo após o campo pai
+      const obsKey = Object.keys(formData).find(k => k.toLowerCase() === `${f.id}__obs`)
+      if (obsKey && formData[obsKey] !== undefined) {
+        result.push([obsKey, formData[obsKey]])
+        handled.add(obsKey)
+      }
+    }
+    // Chaves não reconhecidas (sem campo correspondente e sem __obs mapeado)
+    Object.keys(formData).filter(k => !handled.has(k)).forEach(k => result.push([k, formData[k]]))
+    return result
+  })()
 
   return (
     <>
@@ -2123,7 +2159,16 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
             ) : (
               orderedEntries.map(([key, value], i) => {
                 const field = fieldMap[key]
-                const label = field?.label || key
+                // Resolve label: para chaves __obs, usa conditionalLabel do campo pai
+                const label = (() => {
+                  if (field) return field.label
+                  if (key.toLowerCase().endsWith('__obs')) {
+                    const parentId = key.replace(/__obs$/i, '')
+                    const parentField = fieldMap[parentId]
+                    return parentField?.conditionalLabel || 'Observação'
+                  }
+                  return key
+                })()
                 const imgUrls = getImageUrls(value)
                 const isImg = field?.type === 'image' || imgUrls.length > 0
                 return (
