@@ -2000,7 +2000,7 @@ export const clientService = {
     }
   },
 
-  // ---- Storage ----
+  // ----Storage----
   /**
    * Gera a URL pública de um arquivo de resultado no Supabase Storage.
    * Usado pelo portal da cliente para exibir links de download dos PDFs/arquivos
