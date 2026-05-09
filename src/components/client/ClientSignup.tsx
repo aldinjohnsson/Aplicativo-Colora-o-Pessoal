@@ -9,6 +9,8 @@ import {
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { clientService } from '../../lib/services'
+import { SignatureCanvas } from './SignatureCanvas'
+import { downloadContractPDF } from '../../lib/contractPDFGenerator'
 
 // ── Lista de países (Brasil primeiro) ────────────────────────────────────────
 const COUNTRIES = [
@@ -87,6 +89,8 @@ export function ClientSignup() {
   const [contractScrollProgress, setContractScrollProgress] = useState(0)
   const [contractCountry, setContractCountry] = useState('Brasil')
   const [contractSignTime, setContractSignTime] = useState<Date | null>(null)
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null)
+  const [signedAt, setSignedAt] = useState<string>('')
   const contractScrollRef = useRef<HTMLDivElement>(null)
 
   // ── Step: Done ────────────────────────────────────────────
@@ -188,15 +192,23 @@ export function ClientSignup() {
   }
 
   // ── Assinar contrato (Step 2 → 3) ─────────────────────────
+  // FIX: passa contractTitle, sections e signatureDataUrl para que a edge
+  // function possa gerar o PDF completo com assinatura manuscrita + IP.
   const handleContractSign = async () => {
-    if (!contractAgreed || !resultToken) return
+    if (!contractAgreed || !signatureDataUrl || !resultToken) return
     setContractSigning(true)
     try {
+      const signedAtStr = new Date().toISOString()
       await clientService.signContract(resultToken, {
         country: contractCountry,
         ip: clientIp,
-        signedAt: new Date().toISOString(),
+        signedAt: signedAtStr,
+        // ↓ Campos necessários para a edge gerar o PDF corretamente
+        contractTitle: plan?.contract?.title || 'Contrato de Prestação de Serviços',
+        sections: plan?.contract?.sections || [],
+        signatureDataUrl,                     // PNG base64 da assinatura manuscrita
       })
+      setSignedAt(signedAtStr)
       setStep('done')
     } catch (e: any) {
       alert(e.message || 'Erro ao assinar contrato. Tente novamente.')
@@ -205,25 +217,26 @@ export function ClientSignup() {
     }
   }
 
-  // ── Download do PDF ────────────────────────────────────────
+  // ── Download do PDF (gerado localmente com IP + assinatura) ──
   const handleDownloadPdf = async () => {
-    if (!resultToken) return
+    if (!plan?.contract) return
     setDownloadingPdf(true)
     try {
-      const { data } = await supabase.functions.invoke('send-contract-email', {
-        body: { type: 'download_contract', clientToken: resultToken },
-      })
-      if (data?.downloadUrl) {
-        const a = document.createElement('a')
-        a.href = data.downloadUrl
-        a.target = '_blank'
-        a.rel = 'noopener noreferrer'
-        a.click()
-      } else {
-        alert('O PDF foi enviado para o seu e-mail cadastrado.')
-      }
+      await downloadContractPDF(
+        plan.contract.title || 'Contrato de Prestação de Serviços',
+        plan.contract.sections || [],
+        {
+          fullName,
+          email,
+          phone: phone || '',
+          country: contractCountry,
+          ip: clientIp,
+          signedAt: signedAt || new Date().toISOString(),
+          signatureDataUrl: signatureDataUrl ?? undefined,
+        }
+      )
     } catch {
-      alert('O PDF foi enviado para o seu e-mail cadastrado.')
+      alert('Erro ao gerar o PDF. Tente novamente.')
     } finally {
       setDownloadingPdf(false)
     }
@@ -341,17 +354,17 @@ export function ClientSignup() {
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Como funciona</p>
               <div className="space-y-3">
                 {[
-                  { n: '1', label: 'Preencha seus dados', desc: 'Nome, e-mail e informações básicas' },
-                  { n: '2', label: 'Leia e assine o contrato', desc: 'Confirme a assinatura digital' },
-                  { n: '3', label: 'Continue o atendimento', desc: 'Formulário e envio de fotos no portal' },
-                ].map(item => (
-                  <div key={item.n} className="flex items-start gap-3">
-                    <div className="w-6 h-6 bg-rose-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <span className="text-xs font-bold text-rose-500">{item.n}</span>
+                  { icon: User,         label: 'Dados pessoais',    desc: 'Preencha seu nome, e-mail e telefone' },
+                  { icon: CheckCircle,  label: 'Contrato',          desc: 'Leia e assine digitalmente' },
+                  { icon: Sparkles,     label: 'Portal exclusivo',  desc: 'Acesse para enviar formulário e fotos' },
+                ].map(({ icon: Icon, label, desc }, i) => (
+                  <div key={i} className="flex items-start gap-3">
+                    <div className="w-8 h-8 bg-rose-100 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Icon className="h-4 w-4 text-rose-400" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-gray-800">{item.label}</p>
-                      <p className="text-xs text-gray-400">{item.desc}</p>
+                      <p className="text-sm font-medium text-gray-800">{label}</p>
+                      <p className="text-xs text-gray-400">{desc}</p>
                     </div>
                   </div>
                 ))}
@@ -360,291 +373,246 @@ export function ClientSignup() {
           </div>
         )}
 
-        {/* ── Barra de progresso (info / contract / done) ─── */}
+        {/* ── Progress bar (steps info/contract/done) ─────── */}
         {step !== 'welcome' && (
-          <div className="flex items-center gap-0">
-            {steps.map(({ key, label }, i) => {
-              const done   = i < stepIndex
-              const active = i === stepIndex
-              return (
-                <React.Fragment key={key}>
-                  <div className="flex flex-col items-center gap-1 flex-shrink-0">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
-                      done   ? 'bg-rose-400 text-white shadow-sm' :
-                      active ? 'bg-white text-rose-500 ring-2 ring-rose-400 shadow-sm' :
-                               'bg-gray-100 text-gray-400'
-                    }`}>
-                      {done ? <CheckCircle className="h-4 w-4" /> : i + 1}
-                    </div>
-                    <span className={`text-xs font-medium ${active ? 'text-rose-500' : done ? 'text-gray-500' : 'text-gray-300'}`}>
-                      {label}
-                    </span>
+          <div className="flex items-center gap-2">
+            {steps.map((s, i) => (
+              <React.Fragment key={s.key}>
+                <div className="flex items-center gap-1.5">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all
+                    ${i < stepIndex ? 'bg-green-400 text-white' : i === stepIndex ? 'bg-rose-400 text-white' : 'bg-gray-200 text-gray-400'}`}>
+                    {i < stepIndex ? <Check className="h-3.5 w-3.5" /> : i + 1}
                   </div>
-                  {i < steps.length - 1 && (
-                    <div className={`h-0.5 flex-1 mx-1 mb-4 transition-colors ${done ? 'bg-rose-300' : 'bg-gray-200'}`} />
-                  )}
-                </React.Fragment>
-              )
-            })}
+                  <span className={`text-xs font-medium hidden sm:block ${i === stepIndex ? 'text-rose-500' : 'text-gray-400'}`}>
+                    {s.label}
+                  </span>
+                </div>
+                {i < steps.length - 1 && (
+                  <div className={`flex-1 h-0.5 rounded ${i < stepIndex ? 'bg-green-300' : 'bg-gray-200'}`} />
+                )}
+              </React.Fragment>
+            ))}
           </div>
         )}
 
-        {/* ── Step 1: Dados ───────────────────────────────── */}
+        {/* ── Step 1: Info ─────────────────────────────────── */}
         {step === 'info' && (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="px-6 py-5 bg-gradient-to-r from-rose-50 to-pink-50 border-b border-gray-100">
-              <div className="flex items-center gap-3">
-                <button onClick={() => setStep('welcome')} className="text-gray-400 hover:text-gray-600 transition-colors">
-                  <ArrowLeft className="h-5 w-5" />
-                </button>
+            <div className="h-1.5 bg-gradient-to-r from-rose-400 to-pink-500" />
+            <div className="p-6 space-y-5">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Seus dados</h2>
+                <p className="text-sm text-gray-500 mt-0.5">Preencha as informações abaixo para continuar</p>
+              </div>
+
+              <form onSubmit={handleInfoSubmit} className="space-y-4">
                 <div>
-                  <h2 className="text-lg font-bold text-gray-900">Seus dados</h2>
-                  <p className="text-sm text-gray-500 mt-0.5">Preencha as informações abaixo para continuar.</p>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Nome completo <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={fullName}
+                    onChange={e => setFullName(e.target.value)}
+                    placeholder="Seu nome completo"
+                    className={inp}
+                    required
+                  />
                 </div>
-              </div>
-            </div>
 
-            <form onSubmit={handleInfoSubmit} className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Nome completo <span className="text-rose-400">*</span>
-                </label>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <input value={fullName} onChange={e => setFullName(e.target.value)} required autoFocus
-                    placeholder="Seu nome completo" className={`${inp} pl-10`} />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    E-mail <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="seu@email.com"
+                    className={inp}
+                    required
+                  />
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  E-mail <span className="text-rose-400">*</span>
-                </label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
-                    placeholder="seu@email.com" className={`${inp} pl-10`} />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Telefone</label>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={e => setPhone(e.target.value)}
+                    placeholder="(00) 00000-0000"
+                    className={inp}
+                  />
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Telefone</label>
-                <div className="relative">
-                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <input type="tel" value={phone} onChange={e => setPhone(e.target.value)}
-                    placeholder="(41) 99999-9999" className={`${inp} pl-10`} />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Data de nascimento <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={birthDate}
+                    onChange={e => setBirthDate(e.target.value)}
+                    className={inp}
+                    required
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Será usada como sua senha de acesso ao portal</p>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Data de nascimento <span className="text-rose-400">*</span>
-                </label>
-                <div className="relative">
-                  <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <input type="date" value={birthDate} onChange={e => setBirthDate(e.target.value)} required
-                    className={`${inp} pl-10`} />
-                </div>
-                <p className="text-xs text-gray-400 mt-1.5 flex items-center gap-1">
-                  <Lock className="h-3 w-3" /> Será usada como senha para acessar seu portal
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  País de residência <span className="text-rose-400">*</span>
-                </label>
-                <div className="relative">
-                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                  <select value={country} onChange={e => setCountry(e.target.value)} className={`${inp} pl-10`}>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">País</label>
+                  <select
+                    value={country}
+                    onChange={e => setCountry(e.target.value)}
+                    className={inp}
+                  >
                     {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
-              </div>
 
-              {formError && <ErrorBox message={formError} />}
+                {formError && <ErrorBox message={formError} />}
 
-              <button type="submit" disabled={submitting}
-                className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
-                  hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2
-                  disabled:opacity-60 disabled:cursor-not-allowed">
-                {submitting
-                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Cadastrando...</>
-                  : <>Continuar para o contrato <ChevronRight className="h-4 w-4" /></>}
-              </button>
-            </form>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
+                    hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2
+                    disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {submitting
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Salvando...</>
+                    : <>Continuar para o contrato <ChevronRight className="h-4 w-4" /></>}
+                </button>
+              </form>
+            </div>
           </div>
         )}
 
-        {/* ── Step 2: Contrato ────────────────────────────── */}
+        {/* ── Step 2: Contrato ──────────────────────────────── */}
         {step === 'contract' && (
-          <div className="space-y-4">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="h-1.5 bg-gradient-to-r from-rose-400 to-pink-500" />
 
-            {/* Banner de metadados (IP / Data / Hora) */}
-            <div className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 space-y-1.5">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
-                Registro de acesso
+            <div className="p-4 sm:p-6 border-b border-gray-100">
+              <h2 className="text-lg font-bold text-gray-900">
+                {plan.contract?.title || 'Contrato de Prestação de Serviços'}
+              </h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Leia com atenção antes de assinar
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs text-gray-700">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
-                  <span><strong>IP:</strong> {clientIp}</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
-                  <span><strong>Data:</strong> {formattedContractDate}</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
-                  <span><strong>Hora:</strong> {formattedContractTime}</span>
-                </span>
-              </div>
-              <p className="text-[10px] text-gray-400 pt-0.5">
-                Esses dados serão registrados junto à assinatura digital no PDF do contrato.
-              </p>
+              {(formattedContractDate || formattedContractTime) && (
+                <p className="text-xs text-gray-400 mt-1">
+                  Iniciado em {formattedContractDate} às {formattedContractTime}
+                </p>
+              )}
             </div>
 
-            {/* Card do contrato */}
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-
-              {/* Header com barra de leitura */}
-              <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="font-semibold text-gray-900">Leia o contrato</h2>
-                  {!contractRead ? (
-                    <span className="text-xs font-bold text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-full">
-                      {contractScrollProgress}% lido
-                    </span>
-                  ) : (
-                    <span className="text-xs font-semibold text-green-600 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                      <Check className="h-3 w-3" /> Lido
-                    </span>
-                  )}
-                </div>
-
-                {/* Barra de progresso */}
-                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${contractRead ? 'bg-green-400' : 'bg-amber-400'}`}
-                    style={{ width: `${contractScrollProgress}%` }}
-                  />
-                </div>
-
-                {/* Aviso de leitura obrigatória */}
-                {!contractRead && (
-                  <div className="mt-3 flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
-                    <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <p className="text-sm text-amber-900 leading-snug">
-                      <span className="font-semibold">Role até o final do contrato</span> abaixo para liberar a assinatura.
-                    </p>
-                  </div>
+            {/* Área scrollável do contrato */}
+            <div className="relative">
+              <div
+                ref={contractScrollRef}
+                onScroll={handleContractScroll}
+                className="px-4 sm:px-6 py-4 max-h-72 overflow-y-auto text-sm text-gray-700 leading-relaxed space-y-4"
+                style={{ scrollbarWidth: 'thin' }}
+              >
+                {(!plan.contract?.sections || plan.contract.sections.length === 0) && (
+                  <p className="text-gray-400 text-center py-8">Nenhuma cláusula configurada</p>
                 )}
+                {plan.contract?.sections?.map(s => (
+                  <div key={s.id}>
+                    <h4 className="font-semibold text-gray-800 mb-1.5">{s.title}</h4>
+                    <p className="whitespace-pre-wrap">{s.content}</p>
+                  </div>
+                ))}
               </div>
 
-              {/* Conteúdo do contrato (scrollável) */}
-              <div className="relative">
-                <div
-                  ref={contractScrollRef}
-                  className="px-4 sm:px-6 py-4 sm:py-5 max-h-72 overflow-y-auto text-sm text-gray-700 space-y-4 leading-relaxed"
-                  onScroll={handleContractScroll}
+              {/* Gradiente inferior — enquanto não terminou de ler */}
+              {!contractRead && contractScrollProgress < 80 && (
+                <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white to-transparent" />
+              )}
+            </div>
+
+            {/* Indicador "continue rolando" */}
+            {!contractRead && (
+              <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-50 border-t border-amber-100">
+                <div className="flex flex-col items-center animate-bounce">
+                  <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
+                  <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
+                </div>
+                <p className="text-xs font-semibold text-amber-700">
+                  Continue rolando para ler o contrato completo
+                </p>
+                <div className="flex flex-col items-center animate-bounce">
+                  <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
+                  <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
+                </div>
+              </div>
+            )}
+
+            {/* Ações de assinatura */}
+            <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-4">
+
+              {/* País de residência */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  País de residência
+                </label>
+                <select
+                  value={contractCountry}
+                  onChange={e => setContractCountry(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
                 >
-                  <h3 className="font-bold text-base text-gray-800">
-                    {plan.contract?.title || 'Contrato de Prestação de Serviços'}
-                  </h3>
-                  {(!plan.contract?.sections || plan.contract.sections.length === 0) && (
-                    <p className="text-gray-400 text-center py-8">Nenhuma cláusula configurada</p>
-                  )}
-                  {plan.contract?.sections?.map(s => (
-                    <div key={s.id}>
-                      <h4 className="font-semibold text-gray-800 mb-1.5">{s.title}</h4>
-                      <p className="whitespace-pre-wrap">{s.content}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Gradiente inferior — enquanto não terminou de ler */}
-                {!contractRead && contractScrollProgress < 80 && (
-                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white to-transparent" />
-                )}
+                  {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
               </div>
 
-              {/* Indicador "continue rolando" */}
-              {!contractRead && (
-                <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-50 border-t border-amber-100">
-                  <div className="flex flex-col items-center animate-bounce">
-                    <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
-                    <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
+              {/* Assinatura manuscrita */}
+              <SignatureCanvas onSignature={setSignatureDataUrl} />
+
+              {/* Checkbox — bloqueado até ler */}
+              <label className={`flex items-start gap-2.5 ${contractRead ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                <input
+                  type="checkbox"
+                  checked={contractAgreed}
+                  onChange={e => contractRead && setContractAgreed(e.target.checked)}
+                  disabled={!contractRead}
+                  className="mt-0.5 w-4 h-4 accent-rose-500"
+                />
+                <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>
+              </label>
+
+              {/* Botão de assinatura */}
+              {!contractRead ? (
+                <div className="w-full flex flex-col items-center justify-center gap-1 py-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-800 cursor-not-allowed select-none">
+                  <div className="flex items-center gap-2">
+                    <Lock className="h-4 w-4" />
+                    <span className="font-semibold text-sm">Assinatura bloqueada</span>
                   </div>
-                  <p className="text-xs font-semibold text-amber-700">
-                    Continue rolando para ler o contrato completo
+                  <p className="text-xs text-amber-700">
+                    Role até o final do contrato ({contractScrollProgress}% lido)
                   </p>
-                  <div className="flex flex-col items-center animate-bounce">
-                    <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
-                    <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
-                  </div>
                 </div>
+              ) : (
+                <button
+                  onClick={handleContractSign}
+                  disabled={!contractAgreed || !signatureDataUrl || contractSigning}
+                  className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-rose-400 to-pink-500
+                    text-white py-3.5 rounded-xl font-semibold hover:from-rose-500 hover:to-pink-600
+                    transition-all shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {contractSigning
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Assinando...</>
+                    : <><Check className="h-4 w-4" /> Assinar Contrato</>}
+                </button>
               )}
 
-              {/* Ações de assinatura */}
-              <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100 space-y-4">
-
-                {/* País de residência */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    País de residência
-                  </label>
-                  <select
-                    value={contractCountry}
-                    onChange={e => setContractCountry(e.target.value)}
-                    className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
-                  >
-                    {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-
-                {/* Checkbox — bloqueado até ler */}
-                <label className={`flex items-start gap-2.5 ${contractRead ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                  <input
-                    type="checkbox"
-                    checked={contractAgreed}
-                    onChange={e => contractRead && setContractAgreed(e.target.checked)}
-                    disabled={!contractRead}
-                    className="mt-0.5 w-4 h-4 accent-rose-500"
-                  />
-                  <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>
-                </label>
-
-                {/* Botão de assinatura */}
-                {!contractRead ? (
-                  <div className="w-full flex flex-col items-center justify-center gap-1 py-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-800 cursor-not-allowed select-none">
-                    <div className="flex items-center gap-2">
-                      <Lock className="h-4 w-4" />
-                      <span className="font-semibold text-sm">Assinatura bloqueada</span>
-                    </div>
-                    <p className="text-xs text-amber-700">
-                      Role até o final do contrato ({contractScrollProgress}% lido)
-                    </p>
-                  </div>
-                ) : (
-                  <button
-                    onClick={handleContractSign}
-                    disabled={!contractAgreed || contractSigning}
-                    className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-rose-400 to-pink-500
-                      text-white py-3.5 rounded-xl font-semibold hover:from-rose-500 hover:to-pink-600
-                      transition-all shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {contractSigning
-                      ? <><Loader2 className="h-4 w-4 animate-spin" /> Assinando...</>
-                      : <><Check className="h-4 w-4" /> Assinar Contrato</>}
-                  </button>
-                )}
-
-                {contractRead && !contractAgreed && (
-                  <p className="text-xs text-gray-400 text-center">
-                    Marque a caixa acima para confirmar que leu e concordou
-                  </p>
-                )}
-              </div>
+              {contractRead && (!contractAgreed || !signatureDataUrl) && (
+                <p className="text-xs text-gray-400 text-center">
+                  {!signatureDataUrl
+                    ? 'Desenhe e confirme sua assinatura acima para continuar'
+                    : 'Marque a caixa acima para confirmar que leu e concordou'}
+                </p>
+              )}
             </div>
           </div>
         )}

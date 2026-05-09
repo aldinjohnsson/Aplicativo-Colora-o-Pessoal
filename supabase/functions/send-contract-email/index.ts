@@ -9,18 +9,14 @@ const corsHeaders = {
 }
 
 // ── Corrige portalUrl com localhost vindo do frontend em dev ─────────────────
-// Configure SITE_URL no painel do Supabase → Edge Functions → Secrets
-// Ex: SITE_URL=https://seudominio.com.br
 function sanitizePortalUrl(url: string): string {
   if (!url) return url
   const siteUrl = Deno.env.get('SITE_URL') || ''
   if (!siteUrl) return url
-  // substitui qualquer origem localhost:XXXX ou localhost pelo domínio real
   return url.replace(/^https?:\/\/localhost(:\d+)?/, siteUrl.replace(/\/$/, ''))
 }
 
-// ── Helpers para gerar o PDF ──────────────────────────────────────────────────
-
+// ── Helper de quebra de texto ─────────────────────────────────────────────────
 function wrapText(text: string, font: any, fontSize: number, maxWidth: number): string[] {
   const lines: string[] = []
   const paragraphs = text.split('\n')
@@ -39,42 +35,94 @@ function wrapText(text: string, font: any, fontSize: number, maxWidth: number): 
   return lines
 }
 
+// ── Geração do PDF do contrato ────────────────────────────────────────────────
+//
+// Correções aplicadas:
+//  • Aceita `clientIp` e `signatureDataUrl` como parâmetros
+//  • Exibe IP do signatário no bloco de assinatura
+//  • Hora com segundos (HH:mm:ss)
+//  • Embute a imagem PNG da assinatura manuscrita via pdfDoc.embedPng()
+//  • Bloco de assinatura calculado previamente — nunca quebra de página
+
 async function generateContractPDF(
   contractTitle: string,
   sections: Array<{ title: string; content: string; order: number }>,
-  clientName: string, clientEmail: string, planName: string, signedAt: string,
+  clientName: string,
+  clientEmail: string,
+  planName: string,
+  signedAt: string,
+  clientIp?: string,
+  signatureDataUrl?: string,
 ): Promise<Uint8Array> {
-  const pdfDoc = await PDFDocument.create()
+  const pdfDoc      = await PDFDocument.create()
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  const PAGE_W = 595.28, PAGE_H = 841.89, MARGIN = 60
-  const CONTENT_W = PAGE_W - MARGIN * 2, LINE_HEIGHT = 16, SECTION_GAP = 24
+  const fontBold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+
+  const PAGE_W      = 595.28
+  const PAGE_H      = 841.89
+  const MARGIN      = 60
+  const CONTENT_W   = PAGE_W - MARGIN * 2
+  const LINE_HEIGHT = 16
+  const SECTION_GAP = 24
+
   let page = pdfDoc.addPage([PAGE_W, PAGE_H])
-  let y = PAGE_H - MARGIN
+  let y    = PAGE_H - MARGIN
+
   const ensureSpace = (needed: number) => {
-    if (y - needed < MARGIN) { page = pdfDoc.addPage([PAGE_W, PAGE_H]); y = PAGE_H - MARGIN }
+    if (y - needed < MARGIN) {
+      page = pdfDoc.addPage([PAGE_W, PAGE_H])
+      y    = PAGE_H - MARGIN
+    }
   }
-  page.drawRectangle({ x: 0, y: PAGE_H - 8, width: PAGE_W, height: 8, color: rgb(0.937, 0.267, 0.459) })
+
+  // ── Faixa de cor no topo ──────────────────────────────────────────────────
+  page.drawRectangle({
+    x: 0, y: PAGE_H - 8, width: PAGE_W, height: 8,
+    color: rgb(0.937, 0.267, 0.459),
+  })
   y -= 16
+
+  // ── Título do contrato ────────────────────────────────────────────────────
   const titleLines = wrapText(contractTitle, fontBold, 16, CONTENT_W)
   for (const line of titleLines) {
     ensureSpace(22)
     const tw = fontBold.widthOfTextAtSize(line, 16)
-    page.drawText(line, { x: MARGIN + (CONTENT_W - tw) / 2, y, size: 16, font: fontBold, color: rgb(0.067, 0.067, 0.067) })
+    page.drawText(line, {
+      x: MARGIN + (CONTENT_W - tw) / 2, y,
+      size: 16, font: fontBold, color: rgb(0.067, 0.067, 0.067),
+    })
     y -= 22
   }
   y -= 12
+
+  // ── Bloco do contratante ──────────────────────────────────────────────────
   ensureSpace(80)
-  page.drawRectangle({ x: MARGIN, y: y - 60, width: CONTENT_W, height: 68, color: rgb(0.96, 0.96, 0.98), borderColor: rgb(0.88, 0.88, 0.92), borderWidth: 0.5 })
-  page.drawText('CONTRATANTE', { x: MARGIN + 14, y: y - 16, size: 9, font: fontBold, color: rgb(0.4, 0.4, 0.5) })
-  page.drawText(clientName, { x: MARGIN + 14, y: y - 32, size: 11, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
-  page.drawText(`${clientEmail}  -  Plano: ${planName}`, { x: MARGIN + 14, y: y - 48, size: 10, font: fontRegular, color: rgb(0.4, 0.4, 0.45) })
+  page.drawRectangle({
+    x: MARGIN, y: y - 60, width: CONTENT_W, height: 68,
+    color: rgb(0.96, 0.96, 0.98),
+    borderColor: rgb(0.88, 0.88, 0.92), borderWidth: 0.5,
+  })
+  page.drawText('CONTRATANTE', {
+    x: MARGIN + 14, y: y - 16, size: 9, font: fontBold, color: rgb(0.4, 0.4, 0.5),
+  })
+  page.drawText(clientName, {
+    x: MARGIN + 14, y: y - 32, size: 11, font: fontBold, color: rgb(0.1, 0.1, 0.1),
+  })
+  page.drawText(`${clientEmail}  -  Plano: ${planName}`, {
+    x: MARGIN + 14, y: y - 48, size: 10, font: fontRegular, color: rgb(0.4, 0.4, 0.45),
+  })
   y -= 84
+
+  // ── Cláusulas ─────────────────────────────────────────────────────────────
   const sorted = [...sections].sort((a, b) => a.order - b.order)
   for (const section of sorted) {
     if (section.title) {
       const stLines = wrapText(section.title, fontBold, 11, CONTENT_W)
-      for (const line of stLines) { ensureSpace(LINE_HEIGHT + 4); page.drawText(line, { x: MARGIN, y, size: 11, font: fontBold, color: rgb(0.1, 0.1, 0.1) }); y -= LINE_HEIGHT }
+      for (const line of stLines) {
+        ensureSpace(LINE_HEIGHT + 4)
+        page.drawText(line, { x: MARGIN, y, size: 11, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
+        y -= LINE_HEIGHT
+      }
       y -= 4
     }
     const contentLines = wrapText(section.content, fontRegular, 10, CONTENT_W)
@@ -86,17 +134,161 @@ async function generateContractPDF(
     }
     y -= SECTION_GAP
   }
-  ensureSpace(80); y -= 8
-  page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 0.5, color: rgb(0.85, 0.85, 0.88) })
+
+  // ── Bloco de assinatura digital ───────────────────────────────────────────
+  //
+  // Calculamos o espaço total ANTES de começar a desenhar.
+  // Se não couber na página atual, forçamos nova página,
+  // garantindo que assinatura + dados legais fiquem sempre juntos.
+  //
+  const sigImgH   = signatureDataUrl ? 60 : 24
+  const extraRows = (clientIp ? 1 : 0)
+  const sigBlockH = 20             // linha divisória + margem
+                  + LINE_HEIGHT    // "[ASSINADO]  Aceito por..."
+                  + LINE_HEIGHT    // "em DD/MM/YYYY às HH:mm:ss"
+                  + LINE_HEIGHT    // "E-mail: ..."
+                  + extraRows * LINE_HEIGHT
+                  + 16             // espaço antes da assinatura
+                  + sigImgH        // caixa/linha da assinatura
+                  + 10             // margem
+                  + 36             // caixa de declaração legal
+                  + 10             // margem final
+
+  if (y - sigBlockH < MARGIN) {
+    page = pdfDoc.addPage([PAGE_W, PAGE_H])
+    y    = PAGE_H - MARGIN
+  }
+
+  // Linha divisória
+  y -= 8
+  page.drawLine({
+    start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y },
+    thickness: 0.5, color: rgb(0.85, 0.85, 0.88),
+  })
   y -= 20
-  const formattedDate = new Date(signedAt).toLocaleString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-  page.drawText(`[ASSINADO]  Aceito digitalmente por ${clientName}`, { x: MARGIN, y, size: 10, font: fontBold, color: rgb(0.13, 0.55, 0.33) })
-  y -= 16
-  page.drawText(`em ${formattedDate}`, { x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45) })
+
+  // Data e hora com segundos
+  const signDate    = new Date(signedAt)
+  const dateStr     = signDate.toLocaleDateString('pt-BR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  })
+  const timeStr     = signDate.toLocaleTimeString('pt-BR', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+  const datetimeStr = `${dateStr} às ${timeStr}`
+
+  page.drawText(`[ASSINADO]  Aceito digitalmente por ${clientName}`, {
+    x: MARGIN, y, size: 10, font: fontBold, color: rgb(0.13, 0.55, 0.33),
+  })
+  y -= LINE_HEIGHT
+
+  page.drawText(`em ${datetimeStr}`, {
+    x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45),
+  })
+  y -= LINE_HEIGHT
+
+  page.drawText(`E-mail: ${clientEmail}`, {
+    x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45),
+  })
+  y -= LINE_HEIGHT
+
+  if (clientIp) {
+    page.drawText(`IP do signatario: ${clientIp}`, {
+      x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45),
+    })
+    y -= LINE_HEIGHT
+  }
+
+  y -= 8
+
+  // ── Assinatura manuscrita (PNG base64) ────────────────────────────────────
+  if (signatureDataUrl) {
+    try {
+      const base64Data = signatureDataUrl.replace(/^data:image\/png;base64,/, '')
+      const pngBytes   = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0))
+      const pngImage   = await pdfDoc.embedPng(pngBytes)
+
+      const sigW = 160
+      const sigH = 48
+
+      page.drawText('Assinatura manuscrita digital:', {
+        x: MARGIN, y, size: 8, font: fontBold, color: rgb(0.3, 0.3, 0.3),
+      })
+      y -= 6
+
+      // Caixa de fundo
+      page.drawRectangle({
+        x: MARGIN, y: y - sigH, width: sigW, height: sigH,
+        color: rgb(1, 1, 1),
+        borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 0.5,
+      })
+
+      // Linha de base
+      page.drawLine({
+        start: { x: MARGIN + 4,        y: y - sigH + 10 },
+        end:   { x: MARGIN + sigW - 4, y: y - sigH + 10 },
+        thickness: 0.5, color: rgb(0.82, 0.82, 0.82),
+      })
+
+      // Imagem da assinatura
+      page.drawImage(pngImage, {
+        x:      MARGIN + 4,
+        y:      y - sigH + 12,
+        width:  sigW - 8,
+        height: sigH - 16,
+      })
+
+      y -= sigH + 10
+    } catch (imgErr) {
+      console.warn('Nao foi possivel inserir a imagem da assinatura:', imgErr)
+      // Fallback: linha clássica
+      page.drawLine({
+        start: { x: MARGIN, y: y - 12 }, end: { x: MARGIN + 120, y: y - 12 },
+        thickness: 0.5, color: rgb(0, 0, 0),
+      })
+      y -= 24
+    }
+  } else {
+    page.drawLine({
+      start: { x: MARGIN, y: y - 12 }, end: { x: MARGIN + 120, y: y - 12 },
+      thickness: 0.5, color: rgb(0, 0, 0),
+    })
+    page.drawText('Assinatura', {
+      x: MARGIN, y: y - 22, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.6),
+    })
+    y -= 30
+  }
+
+  // ── Declaração legal ──────────────────────────────────────────────────────
+  y -= 4
+  const declarationText =
+    'O contratante declara ter lido, compreendido e aceito todos os termos e condicoes deste contrato.'
+  const declarationLines = wrapText(declarationText, fontRegular, 8, CONTENT_W - 20)
+  const declBoxH = declarationLines.length * 12 + 16
+
+  page.drawRectangle({
+    x: MARGIN, y: y - declBoxH + 8, width: CONTENT_W, height: declBoxH,
+    color: rgb(0.95, 0.95, 0.95),
+    borderColor: rgb(0.75, 0.75, 0.75), borderWidth: 0.5,
+  })
+
+  let dy = y - 4
+  for (const line of declarationLines) {
+    page.drawText(line, {
+      x: MARGIN + 8, y: dy, size: 8, font: fontRegular, color: rgb(0.35, 0.35, 0.35),
+    })
+    dy -= 12
+  }
+
+  // ── Rodapé em todas as páginas ────────────────────────────────────────────
   const pages = pdfDoc.getPages()
   pages.forEach((p, i) => {
-    p.drawText(`MS Color - Coloracao Pessoal  -  Pagina ${i + 1} de ${pages.length}`, { x: MARGIN, y: 30, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.65) })
+    p.drawText(
+      `MS Color - Coloracao Pessoal  -  Pagina ${i + 1} de ${pages.length}`,
+      { x: MARGIN, y: 30, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.65) }
+    )
   })
+
   return await pdfDoc.save()
 }
 
@@ -204,39 +396,33 @@ serve(async (req) => {
   }
 
   try {
-    const payload = await req.json()
-    const emailType = payload.type || 'contract_signed'
+    const rawBody  = await req.text()
+    const userAgent = req.headers.get('user-agent') || 'unknown'
+    const origin    = req.headers.get('origin')     || 'no-origin'
+    const referer   = req.headers.get('referer')    || 'no-referer'
+    console.log(`[DEBUG request] method=${req.method} | bytes=${rawBody.length} | ua="${userAgent}" | origin="${origin}" | referer="${referer}"`)
+
+    let payload: any = {}
+    try {
+      payload = rawBody ? JSON.parse(rawBody) : {}
+    } catch (parseErr) {
+      console.warn(`[DEBUG request] body nao e JSON valido: ${rawBody.slice(0, 200)}`)
+      return jsonResponse({ error: 'Body invalido' }, 400)
+    }
+
+    const emailType = payload.type
+    if (!emailType) {
+      console.warn(`[DEBUG request] payload.type ausente. payload keys=${Object.keys(payload).join(',') || '(vazio)'}`)
+      return jsonResponse({ skipped: true, reason: 'type ausente no payload' })
+    }
 
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // ── FIX MULTI-TENANT + HIDRATAÇÃO ANON ──────────────────────────────────
-    //
-    // O supabaseClient usa service role (bypassa RLS), então conseguimos ler
-    // a linha do cliente e do admin sem depender de auth.uid().
-    //
-    // Por que hidratar AQUI:
-    //   • signContract() roda no portal anon — a RLS bloqueia o SELECT em
-    //     `clients` no frontend, e o payload chega com clientName/clientEmail/
-    //     planName vazios. Sem hidratar, o Resend devolve 422 ("Invalid `to`")
-    //     no e-mail do cliente e o e-mail do admin sai com Cliente/Plano em
-    //     branco.
-    //   • Para chamadas admin-side, os campos do payload têm prioridade
-    //     (já vêm preenchidos), e o DB serve só de fallback se algum vier
-    //     vazio.
-    //
-    // Identificação do tenant (adminId):
-    //   1. payload.adminId        → chamadas admin-side passam direto.
-    //   2. clientFromDb.admin_id  → resolvido via clientToken (portal anon).
-    //   3. DEFAULT_ADMIN_ID (env) → clientes legados sem admin_id e webhooks.
-    //   Sem nenhum dos três, pulamos o envio com skipped:true.
-    // ────────────────────────────────────────────────────────────────────────
-
     console.log(`[DEBUG payload] type=${emailType} | adminId=${payload.adminId ?? 'NULL'} | clientToken=${payload.clientToken ?? 'NULL'}`)
 
-    // Hidrata o cliente via service role quando o token vier no payload.
     let clientFromDb: {
       full_name?: string
       email?: string
@@ -264,7 +450,6 @@ serve(async (req) => {
       }
     }
 
-    // Resolve adminId em cascata
     let adminId: string | null = payload.adminId || clientFromDb?.admin_id || null
 
     if (!adminId) {
@@ -275,26 +460,22 @@ serve(async (req) => {
     }
 
     if (!adminId) {
-      console.warn(`[${emailType}] adminId nao resolvido (payload.adminId | clientToken | DEFAULT_ADMIN_ID). Pulando envio.`)
+      console.warn(`[${emailType}] adminId nao resolvido. Pulando envio.`)
       return jsonResponse({ skipped: true, reason: 'adminId nao resolvido' })
     }
 
-    // Resolve campos do cliente: payload tem prioridade, DB é fallback.
-    // Estes são VARS DE TOP-LEVEL — os handlers abaixo NÃO devem
-    // re-desestruturar clientName/clientEmail/planName do payload.
     const clientName  = (payload.clientName  || clientFromDb?.full_name || '').trim()
     const clientEmail = (payload.clientEmail || clientFromDb?.email     || '').trim()
     const planName    = (payload.planName    || clientFromDb?.plan_name || '').trim()
 
-    // Carrega APENAS as settings do admin dono deste evento
     const { data: settingsRow } = await supabaseClient
       .from('admin_content')
       .select('content')
       .eq('type', 'settings')
-      .eq('admin_id', adminId)   // ← isolamento por tenant
+      .eq('admin_id', adminId)
       .maybeSingle()
 
-    const cfg = settingsRow?.content as any
+    const cfg          = settingsRow?.content as any
     const RESEND_API_KEY = cfg?.resendApiKey
     const ADMIN_EMAIL    = cfg?.adminEmail
     const FROM_EMAIL     = cfg?.fromEmail || 'MS Color <onboarding@resend.dev>'
@@ -318,11 +499,9 @@ serve(async (req) => {
       }
     }
 
-    // Wrapper: só chama Resend se o destinatário for válido.
-    // Evita erro 422 quando, mesmo após hidratação, clientEmail veio vazio.
     const sendToClient = async (subject: string, html: string, attachments: any[] = []) => {
       if (!clientEmail) {
-        console.warn(`[${emailType}] clientEmail vazio mesmo apos hidratacao — envio pro cliente pulado. token=${payload.clientToken ?? 'NULL'}`)
+        console.warn(`[${emailType}] clientEmail vazio — envio pro cliente pulado. token=${payload.clientToken ?? 'NULL'}`)
         return
       }
       await send(clientEmail, subject, html, attachments)
@@ -330,27 +509,45 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 1: CONTRATO ASSINADO
-    // Envia PDF do contrato para cliente e admin
+    // Envia PDF do contrato (com assinatura manuscrita + IP) para
+    // cliente e admin via Resend.
     // ============================================================
     if (emailType === 'contract_signed') {
-      // clientName/clientEmail/planName vêm do escopo superior (já hidratados)
       const { signedAt, contractTitle, sections } = payload
-      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
+      // Campos enviados pelo ClientSignup.tsx (corrigido)
+      const contractIp           = (payload.ip             || '').trim()
+      const contractSignatureUrl = (payload.signatureDataUrl || '').trim()
+
+      const portalUrl     = sanitizePortalUrl(payload.portalUrl || '')
       const formattedDate = new Date(signedAt).toLocaleString('pt-BR', {
-        day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+        day: '2-digit', month: 'long', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
       })
 
       const title = contractTitle ?? 'CONTRATO DE PRESTACAO DE SERVICOS'
       let pdfBase64 = ''
+
       if (sections?.length) {
-        const pdfBytes = await generateContractPDF(title, sections, clientName, clientEmail, planName, signedAt)
+        const pdfBytes = await generateContractPDF(
+          title,
+          sections,
+          clientName,
+          clientEmail,
+          planName,
+          signedAt,
+          contractIp           || undefined,
+          contractSignatureUrl || undefined,
+        )
         let binary = ''
         for (let i = 0; i < pdfBytes.length; i++) binary += String.fromCharCode(pdfBytes[i])
         pdfBase64 = btoa(binary)
       }
 
-      const attachments = pdfBase64 ? [{ filename: `Contrato - ${planName}.pdf`, content: pdfBase64 }] : []
+      const attachments = pdfBase64
+        ? [{ filename: `Contrato - ${planName}.pdf`, content: pdfBase64 }]
+        : []
+
       const subject = `Contrato de ${planName} - MS Color`
 
       const clientHtml = buildEmail(
@@ -360,14 +557,29 @@ serve(async (req) => {
           <p class="alert-green-title">&#10003; Contrato assinado com sucesso!</p>
           <p class="alert-green-text">O PDF do contrato esta anexo neste e-mail para seu registro.</p>
         </div>
-        ${infoTable([['Plano', planName], ['Nome', clientName], ['E-mail', clientEmail], ['Assinado em', formattedDate]])}
-        ${portalUrl ? `<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 0">Acompanhe o andamento da sua analise pelo portal:</p>${linkButton(portalUrl, 'Acessar meu portal')}` : ''}`
+        ${infoTable([
+          ['Plano',       planName],
+          ['Nome',        clientName],
+          ['E-mail',      clientEmail],
+          ['Assinado em', formattedDate],
+          ...(contractIp ? [['IP', contractIp] as [string, string]] : []),
+        ])}
+        ${portalUrl
+          ? `<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 0">Acompanhe o andamento da sua analise pelo portal:</p>${linkButton(portalUrl, 'Acessar meu portal')}`
+          : ''
+        }`
       )
 
       const adminHtml = buildEmail(
         'Nova Assinatura de Contrato',
         '&#128221; Nova cliente cadastrada!',
-        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName], ['Assinado em', formattedDate]])}`
+        `${infoTable([
+          ['Cliente',     clientName],
+          ['E-mail',      clientEmail],
+          ['Plano',       planName],
+          ['Assinado em', formattedDate],
+          ...(contractIp ? [['IP', contractIp] as [string, string]] : []),
+        ])}`
       )
 
       const results = await Promise.allSettled([
@@ -380,12 +592,8 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 2: FOTOS FINALIZADAS (cliente submeteu fotos)
-    // Cliente recebe confirmação + prazo; admin recebe aviso para revisar
     // ============================================================
     if (emailType === 'photos_finalized') {
-      // clientName/clientEmail/planName vêm do escopo superior
-
-      // Somente a consultora recebe — cliente nao precisa de confirmacao neste momento
       const adminHtml = buildEmail(
         '📷 Fotos para Revisar',
         `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
@@ -401,14 +609,15 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 3: ANALISE APROVADA (admin aprovou fotos + form)
-    // Somente cliente recebe — admin ja sabe que acabou de aprovar
     // ============================================================
     if (emailType === 'analysis_approved') {
       const { deadlineDate } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDeadline = deadlineDate
-        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', {
+            weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+          })
         : ''
 
       const subject = `Sua analise foi aprovada! - MS Color`
@@ -440,7 +649,6 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 4: AJUSTE SOLICITADO (admin rejeitou fotos e/ou form)
-    // Somente cliente recebe — admin acabou de solicitar
     // ============================================================
     if (emailType === 'analysis_rejected') {
       const { rejectPhotos, photosReason, rejectForm, formReason } = payload
@@ -483,14 +691,10 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 5b: RESULTADO PARCIAL LIBERADO (prévia durante simulações)
-    // Disparado SOMENTE quando a admin clica em "Liberar resultado parcial"
-    // Mensagem diferenciada: avisa que as simulações ainda continuam
     // ============================================================
     if (emailType === 'partial_result_released') {
-      // clientName/clientEmail/planName vêm do escopo superior
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-
-      const subject = `Prévia do seu resultado disponível - MS Color`
+      const subject   = `Prévia do seu resultado disponível - MS Color`
 
       const clientHtml = buildEmail(
         `Prévia do seu Resultado`,
@@ -517,13 +721,10 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 5: RESULTADO FINAL LIBERADO
-    // Somente a cliente recebe — admin nao precisa de notificacao
     // ============================================================
     if (emailType === 'result_released') {
-      // clientName/clientEmail/planName vêm do escopo superior
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-
-      const subject = `Sua analise ${planName} esta pronta! - MS Color`
+      const subject   = `Sua analise ${planName} esta pronta! - MS Color`
 
       const clientHtml = buildEmail(
         `Sua Analise ${planName} esta Pronta!`,
@@ -548,8 +749,7 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // TIPO 6: FOTOS APROVADAS (admin aprovou as fotos da cliente)
-    // Cliente recebe confirmação + botão para acompanhar a análise
+    // TIPO 6: FOTOS APROVADAS
     // ============================================================
     if (emailType === 'photos_approved') {
       const { deadlineDate } = payload
@@ -589,14 +789,12 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // TIPO 7: FOTOS REJEITADAS (admin solicitou ajuste nas fotos)
-    // Cliente recebe motivo + botão para entrar no portal
+    // TIPO 7: FOTOS REJEITADAS
     // ============================================================
     if (emailType === 'photos_rejected') {
       const { reason } = payload
-      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-
-      const subject = `Suas fotos precisam de um ajuste - MS Color`
+      const portalUrl  = sanitizePortalUrl(payload.portalUrl || '')
+      const subject    = `Suas fotos precisam de um ajuste - MS Color`
 
       const clientHtml = buildEmail(
         'Ajuste nas Fotos',
@@ -622,14 +820,12 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // TIPO 8: FORMULARIO REJEITADO (admin solicitou ajuste no form)
-    // Cliente recebe motivo + botão para entrar no portal
+    // TIPO 8: FORMULARIO REJEITADO
     // ============================================================
     if (emailType === 'form_rejected') {
       const { reason } = payload
-      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-
-      const subject = `Seu formulario precisa de um ajuste - MS Color`
+      const portalUrl  = sanitizePortalUrl(payload.portalUrl || '')
+      const subject    = `Seu formulario precisa de um ajuste - MS Color`
 
       const clientHtml = buildEmail(
         'Ajuste no Formulario',
@@ -655,14 +851,12 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // TIPO 9: AMBOS REJEITADOS (admin solicitou ajuste em fotos + form)
-    // Cliente recebe os dois motivos + botão para entrar no portal
+    // TIPO 9: AMBOS REJEITADOS (fotos + form)
     // ============================================================
     if (emailType === 'both_rejected') {
       const { formReason, photosReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-
-      const subject = `Ajustes necessarios na sua analise - MS Color`
+      const subject   = `Ajustes necessarios na sua analise - MS Color`
 
       const clientHtml = buildEmail(
         'Ajustes Necessarios',
@@ -694,14 +888,9 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // ALIAS: photos_submitted → redireciona para photos_finalized
-    // services.ts envia 'photos_submitted' mas o handler historico
-    // usa 'photos_finalized'. Suportamos os dois para compatibilidade.
+    // ALIAS: photos_submitted → mesmo comportamento de photos_finalized
     // ============================================================
     if (emailType === 'photos_submitted') {
-      // clientName/clientEmail/planName vêm do escopo superior
-
-      // Somente a consultora recebe — cliente nao precisa de confirmacao neste momento
       const adminHtml = buildEmail(
         '📷 Fotos para Revisar',
         `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
@@ -717,13 +906,8 @@ serve(async (req) => {
 
     // ============================================================
     // TIPO 12: FOTO PARA SIMULAÇÃO (IA) ENVIADA
-    // Cliente enviou a foto extra na etapa "Aguardando Foto IA".
-    // Apenas a consultora recebe — precisa validar a foto antes
-    // de avançar para "Simulações".
     // ============================================================
     if (emailType === 'ai_photo_submitted') {
-      // clientName/clientEmail/planName vêm do escopo superior
-
       const adminHtml = buildEmail(
         '✨ Foto para simulação enviada',
         `<strong>${clientName}</strong> enviou a foto para a simulação. A consultora deve validar antes de avançar para "Simulações".`,
