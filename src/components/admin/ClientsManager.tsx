@@ -315,25 +315,6 @@ function getColLabel(
   return customLabels[statusKey] ?? STATUSES[statusKey]?.[field] ?? statusKey
 }
 
-// ─── Drag & Drop: mapa de reopen keys ────────────────────────────────────
-// Mapeia cada coluna destino para a chave usada em reopenStep
-const REOPEN_KEY_MAP: Record<string, 'contract' | 'form' | 'photos' | 'review' | 'analysis' | 'materials' | 'validate_materials' | 'send_dossier' | 'ai_photo' | 'simulations' | 'make_capillary' | 'validate_capillary' | 'send_capillary' | 'result'> = {
-  awaiting_contract:            'contract',
-  awaiting_form:                'form',
-  awaiting_photos:              'photos',
-  photos_submitted:             'review',
-  in_analysis:                  'analysis',
-  preparing_materials:          'materials',
-  validating_materials:         'validate_materials',
-  sending_dossier:              'send_dossier',
-  awaiting_ai_photo:            'ai_photo',
-  simulating:                   'simulations',
-  making_capillary_dossier:     'make_capillary',
-  validating_capillary_dossier: 'validate_capillary',
-  sending_capillary_dossier:    'send_capillary',
-  completed:                    'result',
-}
-
 // ─── Avatar Helpers ───────────────────────────────────────────────────────
 const AVATAR_COLORS: [string, string][] = [
   ['#fce7f3', '#be185d'], ['#ede9fe', '#6d28d9'], ['#dbeafe', '#1d4ed8'],
@@ -1496,7 +1477,12 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   }
   const toggleCollapse = useCallback((key: string) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] })), [])
 
-  // ── Handler de drop: avança ou reabre etapa ────────────────────────────
+  // ── Handler de drop: pulo direto pra etapa (silencioso) ────────────────
+  // Usa adminService.jumpToStep, que SÓ muda o status (sem disparar e-mails
+  // de fotos aprovadas, sem calcular prazo, sem criar contrato manual).
+  // Exceções tratadas dentro do jumpToStep:
+  //   - destino 'awaiting_contract' → hard reset (apaga formulário/fotos/prazo/resultado)
+  //   - destino 'completed' → libera resultado + e-mail final
   const handleDrop = useCallback((targetStatus: string) => {
     if (!draggingClientId) return
     const client = clients.find(c => c.id === draggingClientId)
@@ -1512,6 +1498,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     const targetLabel = STATUSES[targetStatus]?.label ?? targetStatus
     const name = client.full_name
     const previousStatus = client.status  // salva para rollback
+    const goingForward = toIdx > fromIdx
+    const steps = Math.abs(toIdx - fromIdx)
 
     // Move o card localmente antes da confirmação visual
     const applyOptimistic = () =>
@@ -1525,70 +1513,49 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         c.id === clientIdSnap ? { ...c, status: previousStatus } : c
       ))
 
-    if (toIdx > fromIdx) {
-      // ── Avançar ────────────────────────────────────────────────────────
-      const steps = toIdx - fromIdx
-      setConfirmState({
-        title: `Mover para "${targetLabel}"?`,
-        body: steps > 1
-          ? `"${name}" vai avançar ${steps} etapas de uma vez.`
-          : `"${name}" será movida para "${targetLabel}".`,
-        confirmLabel: 'Confirmar',
-        onConfirm: async () => {
-          applyOptimistic()
-          try {
-            // advanceStep de sending_dossier decide o destino pelo plano (pode ir para
-            // simulating em vez de awaiting_ai_photo). Se o usuário arrastou
-            // explicitamente para awaiting_ai_photo, forçamos esse destino.
-            if (client.status === 'sending_dossier' && targetStatus === 'awaiting_ai_photo') {
-              await adminService.reopenStep(clientIdSnap, 'ai_photo', 'Movido via kanban')
-            } else {
-              for (let i = 0; i < steps; i++) {
-                await adminService.advanceStep(clientIdSnap)
-              }
-            }
-            silentLoad()  // sincroniza em segundo plano sem spinner
-          } catch (e: any) {
-            rollback()
-            alert(e?.message || 'Erro ao mover cliente')
-          }
-        },
-      })
+    // Mensagem de confirmação adaptada ao caso
+    let body: string
+    let confirmLabel = 'Confirmar'
+    let confirmColor: string | undefined
+
+    if (targetStatus === 'awaiting_contract') {
+      body = `Atenção: voltar "${name}" para o contrato apaga TUDO que ela já enviou (formulário, fotos, prazo e resultado). Use só se for realmente recomeçar do zero.`
+      confirmLabel = 'Recomeçar do zero'
+      confirmColor = '#dc2626'
+    } else if (targetStatus === 'completed') {
+      body = `"${name}" será marcada como Concluída e o resultado será liberado no portal. Um e-mail de notificação será enviado pra ela.`
+      confirmLabel = 'Liberar resultado'
+    } else if (goingForward) {
+      body = steps > 1
+        ? `"${name}" vai avançar ${steps} etapas de uma vez. Os dados das etapas puladas ficam vazios — a cliente só vê a etapa atual.`
+        : `"${name}" será movida para "${targetLabel}".`
     } else {
-      // ── Voltar ─────────────────────────────────────────────────────────
-      const reopenKey = REOPEN_KEY_MAP[targetStatus]
-      if (!reopenKey) {
-        setConfirmState({
-          title: 'Etapa não disponível via arrasto',
-          body: `Para retornar para "${targetLabel}", use o Controle de Etapas dentro do cadastro da cliente.`,
-          confirmLabel: 'Entendido',
-          infoOnly: true,
-          onConfirm: () => {},
-        })
-        return
-      }
-      setConfirmState({
-        title: `Voltar para "${targetLabel}"?`,
-        body: targetStatus === 'awaiting_contract'
-          ? `Atenção: voltar "${name}" para o contrato apaga TUDO que ela já enviou (formulário, fotos e prazo). Use só se for realmente recomeçar do zero.`
-          : `Os dados de "${name}" ficam preservados — a cliente só ajusta o que precisar.`,
-        confirmLabel: 'Voltar etapa',
-        confirmColor: targetStatus === 'awaiting_contract' ? '#dc2626' : '#6366f1',
-        onConfirm: async () => {
-          applyOptimistic()
-          try {
-            await adminService.reopenStep(clientIdSnap, reopenKey, 'Movido via kanban')
-            silentLoad()  // sincroniza em segundo plano sem spinner
-          } catch (e: any) {
-            rollback()
-            alert(e?.message || 'Erro ao mover cliente')
-          }
-        },
-      })
+      body = `"${name}" volta para "${targetLabel}". Os dados (formulário, fotos, prazo, resultado) ficam preservados — a cliente só ajusta o que precisar.`
+      confirmLabel = 'Voltar etapa'
+      confirmColor = '#6366f1'
     }
+
+    setConfirmState({
+      title: targetStatus === 'awaiting_contract'
+        ? `Recomeçar "${name}" do zero?`
+        : `Mover para "${targetLabel}"?`,
+      body,
+      confirmLabel,
+      confirmColor,
+      onConfirm: async () => {
+        applyOptimistic()
+        try {
+          await adminService.jumpToStep(clientIdSnap, targetStatus)
+          silentLoad()  // sincroniza em segundo plano sem spinner
+        } catch (e: any) {
+          rollback()
+          alert(e?.message || 'Erro ao mover cliente')
+        }
+      },
+    })
   }, [draggingClientId, clients])
 
-  // ── Handler de quick-move via botão do card ────────────────────────────
+  // ── Handler de quick-move via botão do card (mesma lógica do handleDrop) ──
   const handleQuickMove = useCallback((clientId: string, targetStatus: string) => {
     const client = clients.find(c => c.id === clientId)
     if (!client || client.status === targetStatus) return
@@ -1600,6 +1567,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     const targetLabel = STATUSES[targetStatus]?.label ?? targetStatus
     const name = client.full_name
     const previousStatus = client.status
+    const goingForward = toIdx > fromIdx
+    const steps = Math.abs(toIdx - fromIdx)
 
     const applyOptimistic = () =>
       setClients(prev => prev.map(c =>
@@ -1610,56 +1579,42 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         c.id === clientId ? { ...c, status: previousStatus } : c
       ))
 
-    if (toIdx > fromIdx) {
-      const steps = toIdx - fromIdx
-      setConfirmState({
-        title: `Mover para "${targetLabel}"?`,
-        body: steps > 1
-          ? `"${name}" vai avançar ${steps} etapas de uma vez.`
-          : `"${name}" será movida para "${targetLabel}".`,
-        confirmLabel: 'Confirmar',
-        onConfirm: async () => {
-          applyOptimistic()
-          try {
-            // Mesmo fix do handleDrop: advanceStep de sending_dossier pode ir para
-            // simulating em vez de awaiting_ai_photo dependendo do plano.
-            if (client.status === 'sending_dossier' && targetStatus === 'awaiting_ai_photo') {
-              await adminService.reopenStep(clientId, 'ai_photo', 'Movido via kanban')
-            } else {
-              for (let i = 0; i < steps; i++) await adminService.advanceStep(clientId)
-            }
-            silentLoad()
-          } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
-        },
-      })
+    let body: string
+    let confirmLabel = 'Confirmar'
+    let confirmColor: string | undefined
+
+    if (targetStatus === 'awaiting_contract') {
+      body = `Atenção: voltar "${name}" para o contrato apaga TUDO que ela já enviou (formulário, fotos, prazo e resultado). Use só se for realmente recomeçar do zero.`
+      confirmLabel = 'Recomeçar do zero'
+      confirmColor = '#dc2626'
+    } else if (targetStatus === 'completed') {
+      body = `"${name}" será marcada como Concluída e o resultado será liberado no portal. Um e-mail de notificação será enviado pra ela.`
+      confirmLabel = 'Liberar resultado'
+    } else if (goingForward) {
+      body = steps > 1
+        ? `"${name}" vai avançar ${steps} etapas de uma vez. Os dados das etapas puladas ficam vazios — a cliente só vê a etapa atual.`
+        : `"${name}" será movida para "${targetLabel}".`
     } else {
-      const reopenKey = REOPEN_KEY_MAP[targetStatus]
-      if (!reopenKey) {
-        setConfirmState({
-          title: 'Etapa não disponível',
-          body: `Para retornar para "${targetLabel}", use o Controle de Etapas dentro do cadastro da cliente.`,
-          confirmLabel: 'Entendido',
-          infoOnly: true,
-          onConfirm: () => {},
-        })
-        return
-      }
-      setConfirmState({
-        title: `Voltar para "${targetLabel}"?`,
-        body: targetStatus === 'awaiting_contract'
-          ? `Atenção: voltar "${name}" para o contrato apaga TUDO que ela já enviou (formulário, fotos e prazo).`
-          : `Os dados de "${name}" ficam preservados — a cliente só ajusta o que precisar.`,
-        confirmLabel: 'Voltar etapa',
-        confirmColor: targetStatus === 'awaiting_contract' ? '#dc2626' : '#6366f1',
-        onConfirm: async () => {
-          applyOptimistic()
-          try {
-            await adminService.reopenStep(clientId, reopenKey, 'Movido via kanban')
-            silentLoad()
-          } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
-        },
-      })
+      body = `"${name}" volta para "${targetLabel}". Os dados ficam preservados — a cliente só ajusta o que precisar.`
+      confirmLabel = 'Voltar etapa'
+      confirmColor = '#6366f1'
     }
+
+    setConfirmState({
+      title: targetStatus === 'awaiting_contract'
+        ? `Recomeçar "${name}" do zero?`
+        : `Mover para "${targetLabel}"?`,
+      body,
+      confirmLabel,
+      confirmColor,
+      onConfirm: async () => {
+        applyOptimistic()
+        try {
+          await adminService.jumpToStep(clientId, targetStatus)
+          silentLoad()
+        } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
+      },
+    })
   }, [clients])
 
   const activeClients = useMemo(() => clients.filter(c => !archivedIds.has(c.id)), [clients, archivedIds])
@@ -2854,8 +2809,25 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const handleSaveDeadline = async () => {
     if (!deadlineInput) return
     setSavingDeadline(true)
-    try { await supabase.from('client_deadlines').update({ deadline_date: deadlineInput }).eq('client_id', clientId!); setEditingDeadline(false); load() }
-    catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
+    try {
+      // UPSERT: cria o registro se não existir (sem fotos aprovadas ainda),
+      // ou atualiza se já existir (permite edição a qualquer momento).
+      // A aprovação de fotos pode sobrescrever com o prazo calculado pelo plano.
+      const { error } = await supabase
+        .from('client_deadlines')
+        .upsert(
+          {
+            client_id: clientId!,
+            deadline_date: deadlineInput,
+            // photos_sent_at: mantém o valor existente se já houver um registro
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'client_id', ignoreDuplicates: false }
+        )
+      if (error) throw error
+      setEditingDeadline(false)
+      load()
+    } catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
   }
 
   const handleCleanupFiles = async () => {
@@ -3339,21 +3311,30 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold" style={{ color: t.text }}>Prazo</h3>
-                  {deadline?.deadline_date && !editingDeadline && client.status !== 'photos_submitted' && (
-                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline.deadline_date); setEditingDeadline(true) }}><Calendar className="h-3.5 w-3.5" /> Editar</Btn>
+                  {!editingDeadline && (
+                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline?.deadline_date ?? ''); setEditingDeadline(true) }}>
+                      <Calendar className="h-3.5 w-3.5" />
+                      {deadline?.deadline_date ? 'Editar' : 'Definir prazo'}
+                    </Btn>
                   )}
                 </div>
-                {client.status === 'photos_submitted' ? (
-                  <div className="flex items-start gap-2 bg-pink-50 rounded-lg p-3 border border-pink-100">
+
+                {/* Aviso informativo quando fotos ainda não foram aprovadas */}
+                {client.status === 'photos_submitted' && (
+                  <div className="flex items-start gap-2 bg-pink-50 rounded-lg p-3 border border-pink-100 mb-3">
                     <Clock className="h-4 w-4 text-pink-400 mt-0.5 flex-shrink-0" />
-                    <p className="text-sm text-pink-700">O prazo começa a contar após a aprovação das fotos.</p>
+                    <p className="text-sm text-pink-700">A aprovação das fotos sobrescreve o prazo com o valor calculado pelo plano. Você pode definir manualmente caso queira antecipar.</p>
                   </div>
-                ) : deadline?.deadline_date ? (
+                )}
+
+                {deadline?.deadline_date ? (
                   <div className="space-y-3">
-                    <div>
-                      <p className="text-xs mb-0.5" style={{ color: t.text3 }}>Fotos enviadas em</p>
-                      <p className="text-sm font-medium" style={{ color: t.text }}>{new Date(deadline.photos_sent_at).toLocaleString('pt-BR')}</p>
-                    </div>
+                    {deadline.photos_sent_at && (
+                      <div>
+                        <p className="text-xs mb-0.5" style={{ color: t.text3 }}>Fotos enviadas em</p>
+                        <p className="text-sm font-medium" style={{ color: t.text }}>{new Date(deadline.photos_sent_at).toLocaleString('pt-BR')}</p>
+                      </div>
+                    )}
                     <div>
                       <p className="text-xs mb-0.5" style={{ color: t.text3 }}>Prazo de entrega</p>
                       {editingDeadline ? (
@@ -3368,18 +3349,29 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         <>
                           <p className="text-sm font-medium" style={{ color: t.text }}>{formatDeadlineDate(deadline.deadline_date)}</p>
                           {client.status !== 'completed' && (() => {
-                          const dias = calendarDaysUntil(deadline.deadline_date)
-                          return (
-                            <p className="text-xs text-orange-600 mt-0.5">
-                              {dias === 0 ? 'Vence hoje' : `${dias} dia${dias !== 1 ? 's' : ''} restante${dias !== 1 ? 's' : ''}`}
-                            </p>
-                          )
-                        })()}
+                            const dias = calendarDaysUntil(deadline.deadline_date)
+                            return (
+                              <p className="text-xs text-orange-600 mt-0.5">
+                                {dias === 0 ? 'Vence hoje' : `${dias} dia${dias !== 1 ? 's' : ''} restante${dias !== 1 ? 's' : ''}`}
+                              </p>
+                            )
+                          })()}
                         </>
                       )}
                     </div>
                   </div>
-                ) : <p className="text-sm" style={{ color: t.text3 }}>Prazo calculado após aprovação das fotos</p>}
+                ) : editingDeadline ? (
+                  // Formulário de inserção — nenhum prazo existe ainda
+                  <div className="space-y-2">
+                    <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
+                    <div className="flex gap-2">
+                      <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
+                      <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm" style={{ color: t.text3 }}>Nenhum prazo definido</p>
+                )}
               </div>
 
               {/* Observações internas */}

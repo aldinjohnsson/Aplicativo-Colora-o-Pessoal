@@ -1135,6 +1135,124 @@ export const adminService = {
     if (updateErr) throw updateErr
   },
 
+  /**
+   * Pular DIRETAMENTE para uma etapa qualquer (pra frente OU pra trás), sem
+   * disparar efeitos colaterais das transições intermediárias.
+   *
+   * Diferente de `advanceStep` (que respeita o fluxo natural — chama
+   * approvePhotos, releaseResult, calcula prazo, manda e-mails) e diferente
+   * de `reopenStep` (que volta SOFT preservando dados ou HARD apagando tudo
+   * no caso do contrato), este método apenas atualiza `status` e ajusta
+   * `stage_timestamps` (apaga timestamps de etapas posteriores ao destino,
+   * pra UI ficar consistente quando a admin "regrediu").
+   *
+   * Dados de tabelas relacionadas (client_contracts, client_form_submissions,
+   * client_photos, client_deadlines, client_results, client_result_files)
+   * NUNCA são tocados aqui — preservação total.
+   *
+   * Exceções:
+   *   - destino = 'awaiting_contract' → delega pra `reopenStep('contract')`
+   *     que faz hard reset (apaga assinatura, formulário, fotos, prazo,
+   *     resultado e arquivos). É o único caso em que o pulo destrói dados,
+   *     porque "voltar pro contrato" significa recomeçar do zero.
+   *   - destino = 'completed' → delega pra `releaseResult` que libera o
+   *     resultado (`is_released = true`) e dispara e-mail "result_released".
+   *     Sem isso, o portal não exibe o resultado final.
+   *
+   * Observação: o `client_results.is_released` (parcial) NÃO é alterado
+   * automaticamente em destinos como `awaiting_ai_photo` ou `simulating` —
+   * a admin libera/cancela parcial manualmente pelos botões existentes.
+   */
+  async jumpToStep(clientId: string, targetStatus: string): Promise<void> {
+    // Lista canônica de status na ordem do fluxo (espelha COL_ORDER do
+    // ClientsManager e STEPS do StageController). Se um status novo for
+    // adicionado ao sistema, lembre de adicionar aqui também.
+    const STATUS_ORDER = [
+      'awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted',
+      'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier',
+      'awaiting_ai_photo', 'simulating', 'making_capillary_dossier',
+      'validating_capillary_dossier', 'sending_capillary_dossier', 'completed',
+    ]
+    // Mapa status → key usada em stage_timestamps (mesmo nome usado no
+    // StageController, mantido por compatibilidade visual).
+    const STATUS_TO_KEY: Record<string, string> = {
+      awaiting_contract:            'contract',
+      awaiting_form:                'form',
+      awaiting_photos:              'photos',
+      photos_submitted:             'review',
+      in_analysis:                  'analysis',
+      preparing_materials:          'materials',
+      validating_materials:         'validate_materials',
+      sending_dossier:              'send_dossier',
+      awaiting_ai_photo:            'ai_photo',
+      simulating:                   'simulations',
+      making_capillary_dossier:     'make_capillary',
+      validating_capillary_dossier: 'validate_capillary',
+      sending_capillary_dossier:    'send_capillary',
+      completed:                    'result',
+    }
+
+    if (!STATUS_ORDER.includes(targetStatus)) {
+      throw new Error(`Status de destino inválido: ${targetStatus}`)
+    }
+
+    // Caso especial 1 — destino é o contrato: hard reset via reopenStep.
+    if (targetStatus === 'awaiting_contract') {
+      return this.reopenStep(clientId, 'contract', 'Movido manualmente pela consultora')
+    }
+
+    // Caso especial 2 — destino é completed: precisa liberar o resultado e
+    // mandar o e-mail final, senão o portal não exibe nada pra cliente.
+    if (targetStatus === 'completed') {
+      return this.releaseResult(clientId)
+    }
+
+    const now = new Date().toISOString()
+
+    // Busca status atual + timestamps pra ajustar a UI corretamente.
+    const { data: current, error: fetchErr } = await supabase
+      .from('clients')
+      .select('status, stage_timestamps')
+      .eq('id', clientId)
+      .single()
+    if (fetchErr) throw fetchErr
+    if (!current) throw new Error('Cliente não encontrada')
+
+    const currentStatus = current.status as string
+    if (currentStatus === targetStatus) return // no-op
+
+    const targetIdx = STATUS_ORDER.indexOf(targetStatus)
+    const stageTimestamps: Record<string, string> = (current as any).stage_timestamps || {}
+
+    // Apaga timestamps das etapas que ficam DEPOIS do destino (incluindo o
+    // destino, porque ele agora é a etapa atual — não está concluído).
+    // Ex: se destino é 'in_analysis' (idx 4), apaga keys de 'analysis',
+    // 'materials', 'validate_materials', etc. em diante. Etapas anteriores
+    // (contract, form, photos, review) mantêm seus timestamps reais.
+    const updatedTimestamps = { ...stageTimestamps }
+    for (let i = targetIdx; i < STATUS_ORDER.length; i++) {
+      const status = STATUS_ORDER[i]
+      const key = STATUS_TO_KEY[status]
+      if (key) delete updatedTimestamps[key]
+    }
+
+    // Limpa rejeições pendentes — quando admin pula, ela está reposicionando
+    // a cliente, qualquer rejeição anterior fica obsoleta.
+    const { error } = await supabase
+      .from('clients')
+      .update({
+        status: targetStatus,
+        stage_timestamps: updatedTimestamps,
+        form_rejection_reason: null,
+        form_rejected_at: null,
+        photos_rejection_reason: null,
+        photos_rejected_at: null,
+        updated_at: now,
+      })
+      .eq('id', clientId)
+    if (error) throw error
+  },
+
   // ---- Results ----
   async getClientPhotosWithUrls(clientId: string) {
     const { data: photos } = await supabase
@@ -1172,7 +1290,7 @@ export const adminService = {
           client_id: clientId,
           is_released: true,
           released_at: new Date().toISOString(),
-          chat_enabled: options?.chatEnabled ?? true,
+          chat_enabled: options?.chatEnabled ?? false,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'client_id' }
@@ -1226,7 +1344,7 @@ export const adminService = {
           client_id: clientId,
           is_released: true,
           released_at: new Date().toISOString(),
-          chat_enabled: options?.chatEnabled ?? true,
+          chat_enabled: options?.chatEnabled ?? false,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'client_id' }
@@ -2000,7 +2118,7 @@ export const clientService = {
     }
   },
 
-  // ----Storage----
+  // ---- Storage ----
   /**
    * Gera a URL pública de um arquivo de resultado no Supabase Storage.
    * Usado pelo portal da cliente para exibir links de download dos PDFs/arquivos

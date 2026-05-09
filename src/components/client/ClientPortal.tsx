@@ -1546,16 +1546,21 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
-  // Defesa: se por algum motivo o plano não tem categoria IA mas o status
-  // está em awaiting_ai_photo (admin moveu manualmente), mostra fallback.
+  // Defesa: o plano da cliente NÃO tem categoria de Foto IA, mas a admin
+  // mandou pra esta etapa (provavelmente via "Mover para…"). Sem categoria
+  // IA não dá pra fazer upload, então o portal mostra:
+  //   - Se result já foi liberado: ResultScreen com aiPhotoMode (banner pedindo
+  //     a foto adicional). A admin vai coletar a foto fora do sistema (chat
+  //     interno, WhatsApp, e-mail).
+  //   - Se result NÃO foi liberado: mensagem amigável "aguardando consultora"
+  //     pra evitar que a cliente fique sem feedback.
   if (!aiCat) {
-    return (
-      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
-        <AlertCircle className="h-10 w-10 text-amber-500 mx-auto mb-3" />
-        <h2 className="font-semibold text-amber-900">Aguardando consultora</h2>
-        <p className="text-sm text-amber-700 mt-2">Estamos preparando a próxima etapa do seu atendimento. Em breve daremos novidades.</p>
-      </div>
-    )
+    if (data.result) {
+      return <ResultScreen token={token} data={data} aiPhotoMode />
+    }
+    // Plano sem categoria de Foto IA, mas admin moveu pra esta etapa manualmente.
+    // Exibe a mesma tela das demais etapas internas — sem campo de upload.
+    return <AnalysisScreen data={data} materialsBeingPrepared />
   }
 
   const addFiles = async (files: File[]) => {

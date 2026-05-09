@@ -3,6 +3,7 @@ import React, { useState } from 'react'
 import {
   Check, FileText, ClipboardList, Camera, Eye, Sparkles, Package,
   ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2, Unlock, Lock, Calendar,
+  Shuffle,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -313,6 +314,250 @@ function ReopenModal({
   )
 }
 
+// ─── Modal: Mover para etapa específica ────────────────────────────────────
+//
+// Diferente do ReopenModal (que volta etapas com confirmações específicas),
+// este modal permite escolher QUALQUER etapa de destino — pra frente ou pra
+// trás. Use jumpToStep no service, que muda só o status sem disparar
+// efeitos colaterais (sem e-mails, sem cálculo de prazo, sem assinatura
+// manual). Exceções tratadas no próprio jumpToStep:
+//   - destino 'awaiting_contract' → hard reset (apaga TUDO)
+//   - destino 'completed'         → libera resultado + e-mail final
+
+function JumpToStepModal({
+  open, currentStatus, planHasAiPhoto, clientName, onCancel, onConfirm,
+}: {
+  open: boolean
+  currentStatus: string
+  planHasAiPhoto: boolean
+  clientName: string
+  onCancel: () => void
+  onConfirm: (targetStatus: string) => Promise<void>
+}) {
+  const { theme: t } = useTheme()
+  const [selected, setSelected] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  if (!open) return null
+
+  const target = STEPS.find(s => s.activeStatus === selected) || null
+  const currentIdx = STEPS.findIndex(s => s.activeStatus === currentStatus)
+  const targetIdx = target ? STEPS.findIndex(s => s.key === target.key) : -1
+  const goingForward = targetIdx > currentIdx
+  const isHardReset = selected === 'awaiting_contract'
+  const isReleaseFinal = selected === 'completed'
+
+  const handleSubmit = async () => {
+    if (!selected) return
+    setSubmitting(true)
+    try {
+      await onConfirm(selected)
+      setSelected(null)
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao mover etapa')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // Mensagem contextual de acordo com a escolha
+  const getContextMessage = (): { tone: 'danger' | 'info' | 'warn'; text: string } | null => {
+    if (!target) return null
+    if (isHardReset) {
+      return {
+        tone: 'danger',
+        text: `Atenção: voltar para o contrato APAGA TUDO que ${clientName} já enviou (formulário, fotos, prazo, resultado e arquivos). Use só se for realmente recomeçar do zero.`,
+      }
+    }
+    if (isReleaseFinal) {
+      return {
+        tone: 'info',
+        text: `${clientName} será marcada como Concluída e o resultado será liberado no portal. Um e-mail de notificação será enviado pra ela.`,
+      }
+    }
+    if (goingForward && targetIdx - currentIdx > 1) {
+      return {
+        tone: 'warn',
+        text: `Vai pular ${targetIdx - currentIdx} etapas. As intermediárias ficam marcadas como concluídas, mas sem dados (sem prazo, sem fotos enviadas, sem e-mails). A cliente só vê a etapa atual no portal.`,
+      }
+    }
+    if (!goingForward) {
+      return {
+        tone: 'info',
+        text: `${clientName} volta para esta etapa. Os dados (formulário, fotos, prazo, resultado) ficam preservados — ela só ajusta o que precisar.`,
+      }
+    }
+    return null
+  }
+  const ctx = getContextMessage()
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div
+        className="rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col"
+        style={{ background: t.surface, border: `1px solid ${t.border}`, maxHeight: '90vh' }}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 bg-gradient-to-r from-indigo-500 to-violet-500 text-white flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <Shuffle className="h-5 w-5 flex-shrink-0" />
+            <p className="font-semibold text-sm">Mover para etapa…</p>
+          </div>
+          <button onClick={onCancel} className="p-1 rounded-lg hover:bg-white/20" disabled={submitting}>
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-3 overflow-y-auto flex-1">
+          <p className="text-xs leading-relaxed" style={{ color: t.text2 }}>
+            Escolha a etapa de destino. Ela substitui a etapa atual sem disparar
+            e-mails automáticos ou cálculo de prazo das etapas intermediárias —
+            é um pulo direto.
+          </p>
+
+          {/* Lista de etapas */}
+          <div className="space-y-1.5">
+            {STEPS.map((step, idx) => {
+              const isCurrent = step.activeStatus === currentStatus
+              const isSelected = selected === step.activeStatus
+              const isAiPhoto = step.key === 'ai_photo'
+              const isContract = step.activeStatus === 'awaiting_contract'
+              const isCompleted = step.activeStatus === 'completed'
+
+              return (
+                <button
+                  key={step.key}
+                  onClick={() => !isCurrent && setSelected(step.activeStatus)}
+                  disabled={isCurrent || submitting}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all disabled:cursor-not-allowed"
+                  style={{
+                    background: isSelected
+                      ? step.activeBg
+                      : isCurrent
+                        ? t.surface2
+                        : 'transparent',
+                    border: isSelected
+                      ? `1.5px solid ${step.activeBorder}`
+                      : `1px solid ${t.border}`,
+                    opacity: isCurrent ? 0.55 : 1,
+                  }}
+                  onMouseEnter={e => {
+                    if (!isCurrent && !isSelected) e.currentTarget.style.background = t.surface2
+                  }}
+                  onMouseLeave={e => {
+                    if (!isCurrent && !isSelected) e.currentTarget.style.background = 'transparent'
+                  }}
+                >
+                  <div
+                    className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
+                    style={{
+                      background: isSelected ? step.dotColor : t.surface2,
+                      color: isSelected ? '#fff' : t.text2,
+                      border: isSelected ? 'none' : `1px solid ${t.border}`,
+                    }}
+                  >
+                    {idx + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="text-sm font-medium" style={{ color: t.text }}>
+                        {step.label}
+                      </p>
+                      {isCurrent && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                          style={{ background: t.accent, color: t.accentFg }}
+                        >
+                          atual
+                        </span>
+                      )}
+                      {isAiPhoto && !planHasAiPhoto && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                          style={{ background: 'rgba(156,163,175,0.18)', color: '#6b7280', border: '1px solid rgba(156,163,175,0.3)' }}
+                        >
+                          plano sem IA
+                        </span>
+                      )}
+                      {isContract && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                          style={{ background: 'rgba(239,68,68,0.15)', color: '#b91c1c', border: '1px solid rgba(239,68,68,0.3)' }}
+                        >
+                          ⚠ apaga tudo
+                        </span>
+                      )}
+                      {isCompleted && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                          style={{ background: 'rgba(34,197,94,0.15)', color: '#15803d', border: '1px solid rgba(34,197,94,0.3)' }}
+                        >
+                          libera resultado
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Aviso contextual */}
+          {ctx && (
+            <div
+              className="rounded-lg p-3 flex gap-2 text-xs leading-relaxed"
+              style={
+                ctx.tone === 'danger'
+                  ? { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#b91c1c' }
+                  : ctx.tone === 'warn'
+                  ? { background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', color: '#b45309' }
+                  : { background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#4338ca' }
+              }
+            >
+              <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              <p>{ctx.text}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div
+          className="px-5 py-4 flex gap-3 flex-shrink-0"
+          style={{ borderTop: `1px solid ${t.border}` }}
+        >
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
+            style={{
+              background: t.surface2,
+              border: `1px solid ${t.border}`,
+              color: t.text2,
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || !selected}
+            className="flex-1 py-2.5 text-white rounded-xl text-sm font-medium disabled:opacity-40 flex items-center justify-center gap-2"
+            style={{
+              background: isHardReset ? '#dc2626' : '#6366f1',
+            }}
+          >
+            {submitting
+              ? <><Loader2 className="h-4 w-4 animate-spin" /> Movendo…</>
+              : isHardReset
+                ? <><AlertTriangle className="h-4 w-4" /> Recomeçar do zero</>
+                : <><Shuffle className="h-4 w-4" /> Mover</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main component ────────────────────────────────────────────────────────
 
 interface StageControllerProps {
@@ -341,6 +586,7 @@ export function StageController({
 }: StageControllerProps) {
   const { theme: t } = useTheme()
   const [reopenTarget, setReopenTarget] = useState<StepDef | null>(null)
+  const [jumpModalOpen, setJumpModalOpen] = useState(false)
   const [advancing, setAdvancing] = useState(false)
   const [releasingPartial, setReleasingPartial] = useState(false)
   const [cancelingPartial, setCancelingPartial] = useState(false)
@@ -351,21 +597,60 @@ export function StageController({
   const stageTimestamps: Record<string, string> = client.stage_timestamps || {}
 
   // ─── Grava timestamp no Supabase para a etapa recém-concluída ────────────
+  // DEFENSIVO: se a coluna stage_timestamps ainda não existir no banco
+  // (migration pendente), o erro é silenciado para não bloquear o fluxo.
   const recordTimestamp = async (stepKey: StepKey) => {
     // contract/form/photos têm datas próprias — não precisam de registro manual
     if (stepKey === 'contract' || stepKey === 'form' || stepKey === 'photos') return
-    const updated = { ...stageTimestamps, [stepKey]: new Date().toISOString() }
-    await supabase.from('clients').update({ stage_timestamps: updated }).eq('id', client.id)
+    try {
+      const updated = { ...stageTimestamps, [stepKey]: new Date().toISOString() }
+      const { error } = await supabase
+        .from('clients')
+        .update({ stage_timestamps: updated })
+        .eq('id', client.id)
+      if (error) {
+        if (error.message?.includes('stage_timestamps') || error.code === '42703') {
+          console.warn('[StageController] stage_timestamps não existe no banco — execute a migration')
+        } else {
+          throw error
+        }
+      }
+    } catch (e: any) {
+      if (e?.message?.includes('stage_timestamps') || e?.code === '42703') {
+        console.warn('[StageController] stage_timestamps não existe no banco — execute a migration')
+      } else {
+        throw e
+      }
+    }
   }
 
   // ─── Remove timestamps da etapa reaberta em diante ──────────────────────
+  // DEFENSIVO: mesmo tratamento de coluna inexistente.
   const clearTimestampsFrom = async (stepKey: StepKey) => {
     const fromIdx = STEPS.findIndex(s => s.key === stepKey)
     if (fromIdx < 0) return
-    const keysToRemove = STEPS.slice(fromIdx).map(s => s.key)
-    const updated = { ...stageTimestamps }
-    keysToRemove.forEach(k => delete updated[k])
-    await supabase.from('clients').update({ stage_timestamps: updated }).eq('id', client.id)
+    try {
+      const keysToRemove = STEPS.slice(fromIdx).map(s => s.key)
+      const updated = { ...stageTimestamps }
+      keysToRemove.forEach(k => delete updated[k])
+      const { error } = await supabase
+        .from('clients')
+        .update({ stage_timestamps: updated })
+        .eq('id', client.id)
+      if (error) {
+        if (error.message?.includes('stage_timestamps') || error.code === '42703') {
+          console.warn('[StageController] stage_timestamps não existe no banco — execute a migration')
+        } else {
+          throw error
+        }
+      }
+    } catch (e: any) {
+      if (e?.message?.includes('stage_timestamps') || e?.code === '42703') {
+        console.warn('[StageController] stage_timestamps não existe no banco — execute a migration')
+      } else {
+        throw e
+      }
+    }
   }
 
   const handleReopen = async (reason: string) => {
@@ -373,6 +658,16 @@ export function StageController({
     await adminService.reopenStep(client.id, reopenTarget.reopenKey, reason || undefined)
     await clearTimestampsFrom(reopenTarget.key)
     setReopenTarget(null)
+    await onChange()
+  }
+
+  // Pulo direto pra qualquer etapa — silencioso (sem e-mails/efeitos
+  // colaterais), exceto quando destino é 'awaiting_contract' (hard reset)
+  // ou 'completed' (libera resultado + e-mail final). Lógica está no
+  // adminService.jumpToStep.
+  const handleJumpToStep = async (targetStatus: string) => {
+    await adminService.jumpToStep(client.id, targetStatus)
+    setJumpModalOpen(false)
     await onChange()
   }
 
@@ -501,18 +796,39 @@ export function StageController({
           </p>
         </div>
 
-        {canAdvance && (
+        {/* Botões de ação no header. Layout responsivo: empilha em mobile,
+            lado a lado em sm+. O "Mover para…" sempre aparece (admin pode
+            pular pra qualquer etapa, inclusive quando não há próxima). */}
+        <div className="flex flex-col sm:flex-row gap-2 sm:flex-shrink-0">
           <button
-            onClick={handleAdvance}
-            disabled={advancing}
-            className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 text-left flex-shrink-0"
-            style={{ wordBreak: 'break-word' }}
+            onClick={() => setJumpModalOpen(true)}
+            className="flex items-center justify-center gap-2 px-3 py-2.5 sm:py-2 rounded-lg text-xs font-medium transition-colors"
+            style={{
+              border: `1px solid ${t.border}`,
+              color: t.text2,
+              background: t.surface2,
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = t.surface)}
+            onMouseLeave={e => (e.currentTarget.style.background = t.surface2)}
+            title="Pular para qualquer etapa (pra frente ou pra trás)"
           >
-            {advancing
-              ? <><Loader2 className="h-3.5 w-3.5 animate-spin flex-shrink-0" /> Avançando…</>
-              : <><ArrowRight className="h-3.5 w-3.5 flex-shrink-0" /> <span>Avançar para <strong>"{STEPS[currentIdx + 1]?.label}"</strong></span></>}
+            <Shuffle className="h-3.5 w-3.5 flex-shrink-0" />
+            Mover para…
           </button>
-        )}
+
+          {canAdvance && (
+            <button
+              onClick={handleAdvance}
+              disabled={advancing}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 sm:py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 text-left"
+              style={{ wordBreak: 'break-word' }}
+            >
+              {advancing
+                ? <><Loader2 className="h-3.5 w-3.5 animate-spin flex-shrink-0" /> Avançando…</>
+                : <><ArrowRight className="h-3.5 w-3.5 flex-shrink-0" /> <span>Avançar para <strong>"{STEPS[currentIdx + 1]?.label}"</strong></span></>}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Steps list */}
@@ -620,6 +936,14 @@ export function StageController({
                       >
                         ✨ condicional
                       </span>
+                    ) : isCurrent ? (
+                      <span
+                        className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                        style={{ background: 'rgba(168,85,247,0.18)', color: '#7e22ce', border: '1px solid rgba(168,85,247,0.3)' }}
+                        title="Plano não tem Foto IA, mas você ativou esta etapa manualmente"
+                      >
+                        🛠 manual
+                      </span>
                     ) : (
                       <span
                         className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
@@ -664,11 +988,14 @@ export function StageController({
                 </div>
 
                 {/* Botão de liberação/cancelamento parcial.
-                    Aparece em 'ai_photo' quando o plano tem Foto IA, ou em
-                    'simulations' quando o plano NÃO tem (caminho equivalente). */}
+                    Aparece em 'ai_photo' OU 'simulations' quando for a etapa
+                    atual, independente do plano. Antes era condicional ao
+                    planHasAiPhoto, mas com o pulo livre a admin pode usar
+                    qualquer das duas etapas — então liberar parcial funciona
+                    em ambas. */}
                 {(
-                  (step.key === 'ai_photo' && isCurrent && planHasAiPhoto) ||
-                  (step.key === 'simulations' && isCurrent && !planHasAiPhoto)
+                  (step.key === 'ai_photo' && isCurrent) ||
+                  (step.key === 'simulations' && isCurrent)
                 ) && (
                   <div className="mt-2">
                     {result?.is_released ? (
@@ -766,6 +1093,15 @@ export function StageController({
         fromCompleted={fromCompleted}
         onCancel={() => setReopenTarget(null)}
         onConfirm={handleReopen}
+      />
+
+      <JumpToStepModal
+        open={jumpModalOpen}
+        currentStatus={client.status}
+        planHasAiPhoto={planHasAiPhoto}
+        clientName={client.full_name}
+        onCancel={() => setJumpModalOpen(false)}
+        onConfirm={handleJumpToStep}
       />
     </div>
   )

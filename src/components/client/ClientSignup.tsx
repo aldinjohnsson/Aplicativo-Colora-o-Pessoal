@@ -329,7 +329,7 @@ export function ClientSignup() {
                     através das cores.
                   </p>
                   <p className="text-gray-500 text-sm leading-relaxed">
-                    Preencha seus dados, leia e assine o contrato — tudo aqui mesmo — e em seguida
+                    Preencha seus dados, leia e assine o contrato, tudo aqui mesmo e, em seguida,
                     acesse seu portal para continuar o atendimento.
                   </p>
                 </div>
