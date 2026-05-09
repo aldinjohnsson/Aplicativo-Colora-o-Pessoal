@@ -1639,7 +1639,17 @@ export const clientService = {
 
   async signContract(
     token: string,
-    meta?: { country?: string; ip?: string; signedAt?: string }
+    meta?: {
+      country?: string
+      ip?: string
+      signedAt?: string
+      // ↓ Campos adicionados: ClientSignup.tsx envia, mas estavam sendo
+      // descartados pelo TypeScript silenciosamente. Sem eles, a Edge Function
+      // gerava o PDF SEM a assinatura manuscrita e SEM o IP do signatário.
+      contractTitle?: string
+      sections?: Array<{ id?: string; title: string; content: string; order: number }>
+      signatureDataUrl?: string
+    }
   ): Promise<void> {
     const { data, error } = await supabase.rpc('sign_client_contract', { p_token: token })
     if (error) throw error
@@ -1683,17 +1693,21 @@ export const clientService = {
         .eq('token', token)
         .maybeSingle()
 
-      // Busca conteúdo do contrato para gerar o PDF (só se temos plan_id)
-      let contractTitle: string | undefined
-      let sections: any[] = []
-      if ((client as any)?.plan_id) {
+      // Prioridade: o que vem do frontend > o que está no DB.
+      // O frontend já carregou o contrato pra exibir e pra gerar o PDF de
+      // download local, então geralmente já manda tudo pronto.
+      let contractTitle: string | undefined = meta?.contractTitle
+      let sections: any[] = Array.isArray(meta?.sections) ? meta!.sections : []
+
+      // Fallback: se não veio do frontend, tenta buscar do DB
+      if ((!sections || sections.length === 0) && (client as any)?.plan_id) {
         const { data: planContract } = await supabase
           .from('plan_contracts')
           .select('title, sections')
           .eq('plan_id', (client as any).plan_id)
           .maybeSingle()
         if (planContract) {
-          contractTitle = planContract.title
+          if (!contractTitle) contractTitle = planContract.title
           sections = Array.isArray(planContract.sections) ? planContract.sections : []
         }
       }
@@ -1715,6 +1729,10 @@ export const clientService = {
           contractTitle,
           sections,
           portalUrl,
+          // ↓ Campos que estavam faltando — sem eles o PDF do e-mail saía
+          // sem a assinatura manuscrita e sem o IP no bloco de assinatura.
+          ip: meta?.ip,
+          signatureDataUrl: meta?.signatureDataUrl,
         },
       })
     } catch (e) {
