@@ -556,6 +556,7 @@ function QuickMoveButton({ currentStatus, theme: t, onMove, columnLabels = {} }:
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
   onDragStart, isDragging, onQuickMove, columnLabels = {}, hasConditionalObs,
+  hasAiPhotoPending,
 }: {
   client: Client; deadline?: DeadlineData | null; theme: Theme
   onView: () => void; onArchive: () => void; onDelete: () => void; onStar: () => void
@@ -565,11 +566,16 @@ function KanbanCard({
   onQuickMove?: (targetStatus: string) => void
   columnLabels?: Record<string, string>
   hasConditionalObs?: boolean
+  hasAiPhotoPending?: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuPopRef = useRef<HTMLDivElement>(null)
+  // Tema serve a paleta via `t` (prop), mas precisamos saber se é claro/escuro
+  // para escolher o tom certo do destaque "foto IA pendente" — violeta clara
+  // some no dark, então no escuro usamos violeta forte com leve fundo.
+  const { isDark } = useTheme()
   const dl = getDeadlineInfo(client, deadline)
   const [bgColor, fgColor] = getAvatarColor(client.full_name)
   const needsReview = client.status === 'photos_submitted'
@@ -577,6 +583,16 @@ function KanbanCard({
   const personalColorTag = aiTags.find(tag => tag.name.toLowerCase().includes('coloração pessoal') || tag.name.toLowerCase().includes('coloracao pessoal'))
   const personalColor = personalColorTag?.value?.trim() || null
   const planName: string | null = (client as any).plan?.name ?? null
+
+  // Cor do destaque do card "Foto IA pendente" — laranja vibrante para chamar
+  // atenção (distinto do rosa de "aguardando aprovação", vermelho de "prazo"
+  // e amarelo de "warning"). Combina com o ✨ que enfatiza algo a fazer.
+  const aiBorderColor  = isDark ? '#f97316' : '#fb923c'
+  const aiCardBg       = isDark
+    ? 'color-mix(in srgb, #f97316 14%, ' + t.cardBg + ')'
+    : 'color-mix(in srgb, #f97316 7%, '  + t.cardBg + ')'
+  const aiBadgeBg      = isDark ? 'rgba(249,115,22,0.25)' : '#ffedd5'
+  const aiBadgeColor   = isDark ? '#fdba74' : '#c2410c'
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -596,7 +612,9 @@ function KanbanCard({
       ? '#fcd34d'
       : needsReview
         ? '#fbcfe8'
-        : t.cardBorder
+        : hasAiPhotoPending
+          ? aiBorderColor
+          : t.cardBorder
 
   return (
     <div
@@ -606,7 +624,7 @@ function KanbanCard({
         onDragStart?.()
       }}
       style={{
-        background: t.cardBg,
+        background: hasAiPhotoPending ? aiCardBg : t.cardBg,
         border: `1px solid ${borderColor}`,
         borderRadius: 10,
         padding: compact ? '9px 12px' : '11px 13px',
@@ -710,11 +728,16 @@ function KanbanCard({
       )}
 
       {/* ── Row 3: Tags (always shown regardless of stage) ── */}
-      {(personalColor || needsReview) && (
+      {(personalColor || needsReview || hasAiPhotoPending) && (
         <div style={{ marginTop: 7, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
           {needsReview && (
             <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 700, background: '#fce7f3', color: '#9d174d', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
               📸 Aguardando aprovação
+            </span>
+          )}
+          {hasAiPhotoPending && (
+            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 700, background: aiBadgeBg, color: aiBadgeColor, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              ✨ Foto IA p/ revisar
             </span>
           )}
           {personalColor && (() => {
@@ -757,6 +780,7 @@ function KanbanColumn({
   onQuickMove,
   columnLabels = {},
   formObsIds,
+  aiPhotoPendingIds,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -771,11 +795,18 @@ function KanbanColumn({
   onQuickMove?: (clientId: string, targetStatus: string) => void
   columnLabels?: Record<string, string>
   formObsIds?: Set<string>
+  aiPhotoPendingIds?: Set<string>
 }) {
   const obsIds: Set<string> = formObsIds ?? new Set<string>()
   const cfg = STATUSES[statusKey]
   const dangerCount = clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length
   const reviewCount = statusKey === 'photos_submitted' ? clients.length : 0
+  // Quando esta coluna é a `awaiting_ai_photo`, conta quantos clientes já
+  // enviaram a foto IA — eles aparecem com badge no card e a contagem é
+  // mostrada no header da coluna recolhida.
+  const aiReviewCount = statusKey === 'awaiting_ai_photo' && aiPhotoPendingIds
+    ? clients.filter(c => aiPhotoPendingIds.has(c.id)).length
+    : 0
   const [compact, setCompact] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -821,6 +852,7 @@ function KanbanColumn({
         </span>
         {dangerCount > 0 && <span style={{ fontSize: 10, color: '#ef4444' }}>⚠{dangerCount}</span>}
         {reviewCount > 0 && <span style={{ fontSize: 10, color: '#ec4899' }}>📸{reviewCount}</span>}
+        {aiReviewCount > 0 && <span style={{ fontSize: 10, color: '#f97316' }}>✨{aiReviewCount}</span>}
         <ChevronRight size={13} color={t.text3} />
       </div>
     )
@@ -952,6 +984,7 @@ function KanbanColumn({
               onQuickMove={onQuickMove ? (targetStatus) => onQuickMove(client.id, targetStatus) : undefined}
               columnLabels={columnLabels}
               hasConditionalObs={formObsIds.has(client.id)}
+              hasAiPhotoPending={!!aiPhotoPendingIds?.has(client.id) && client.status === 'awaiting_ai_photo'}
             />
           ))
         )}
@@ -964,11 +997,13 @@ function KanbanColumn({
 function KanbanSidebar({
   theme: t, clients, search, onSearch, filter, onFilter,
   sidebarOpen, onToggle, total, archivedCount, deadlines, columnLabels,
+  aiPhotoPendingIds,
 }: {
   theme: Theme; clients: Client[]; search: string; onSearch: (v: string) => void
   filter: string; onFilter: (v: string) => void; sidebarOpen: boolean; onToggle: () => void
   total: number; archivedCount: number; deadlines: Record<string, DeadlineData>
   columnLabels: Record<string, string>
+  aiPhotoPendingIds?: Set<string>
 }) {
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
@@ -980,6 +1015,12 @@ function KanbanSidebar({
     clients.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger').length,
     [clients, deadlines]
   )
+
+  // Fotos IA aguardando revisão: clientes em awaiting_ai_photo que JÁ enviaram a foto.
+  const aiPhotoPendingCount = useMemo(() => {
+    if (!aiPhotoPendingIds || aiPhotoPendingIds.size === 0) return 0
+    return clients.filter(c => c.status === 'awaiting_ai_photo' && aiPhotoPendingIds.has(c.id)).length
+  }, [clients, aiPhotoPendingIds])
 
   const navBtn = (key: string, label: string, count: number, color?: string, icon?: React.ReactNode) => (
     <button key={key} onClick={() => onFilter(key)}
@@ -1024,6 +1065,7 @@ function KanbanSidebar({
             {navBtn('all', 'Todas as clientes', total)}
             {navBtn('danger', 'Prazo crítico', dangerCount, '#ef4444', <AlertTriangle size={14} />)}
             {navBtn('photos_submitted', 'Aguardando revisão', counts['photos_submitted'] || 0, '#9d174d', <Camera size={14} />)}
+            {aiPhotoPendingCount > 0 && navBtn('awaiting_ai_photo', 'Foto IA p/ revisar', aiPhotoPendingCount, '#c2410c', <Wand2 size={14} />)}
             {navBtn('preparing_materials', 'Preparando materiais', counts['preparing_materials'] || 0, '#0d9488', <Layers size={14} />)}
 
             <div style={{ borderTop: `1px solid ${t.border}`, margin: '8px 0', padding: '8px 0 4px' }}>
@@ -1243,8 +1285,12 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [plans, setPlans] = useState<Plan[]>([])
   const [deadlines, setDeadlines] = useState<Record<string, DeadlineData>>({})
   const [formObsIds, setFormObsIds] = useState<Set<string>>(new Set())
+  // IDs de clientes em `awaiting_ai_photo` que JÁ enviaram a foto IA — pendentes
+  // de revisão pela consultora. Usado para mostrar badge no card e contador
+  // no painel lateral.
+  const [aiPhotoPendingIds, setAiPhotoPendingIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(window.innerWidth >= 768)
-  const { theme: t, themeName, setThemeName } = useTheme()
+  const { theme: t, themeName, setThemeName, isDark } = useTheme()
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -1437,13 +1483,26 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     e.preventDefault()
   }, [])
 
+  // Busca clientes que JÁ enviaram a foto IA (categoria com `is_ai_simulation`).
+  // Combinada no front com `client.status === 'awaiting_ai_photo'` para identificar
+  // os que estão aguardando revisão. Quando a admin avança a etapa, o cliente
+  // sai de `awaiting_ai_photo`, então a flag deixa de aparecer naturalmente.
+  const fetchAiPhotoSenders = async (): Promise<Set<string>> => {
+    const aiCats = await supabase.from('plan_photo_categories').select('id').eq('is_ai_simulation', true)
+    const aiCatIds = (aiCats.data || []).map((c: any) => c.id)
+    if (aiCatIds.length === 0) return new Set()
+    const photos = await supabase.from('client_photos').select('client_id').in('category_id', aiCatIds)
+    return new Set<string>((photos.data || []).map((p: any) => p.client_id))
+  }
+
   const load = async () => {
     setLoading(true)
-    const [c, p, dl, fs] = await Promise.all([
+    const [c, p, dl, fs, aiPending] = await Promise.all([
       adminService.getClients(),
       adminService.getPlans(),
       supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
       supabase.from('client_form_submissions').select('client_id, form_data'),
+      fetchAiPhotoSenders(),
     ])
     setClients(c)
     setPlans(p.filter((pl: any) => pl.is_active))
@@ -1458,15 +1517,17 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
       }
     })
     setFormObsIds(obsSet)
+    setAiPhotoPendingIds(aiPending)
     setLoading(false)
   }
 
   // Sincroniza dados em segundo plano sem mostrar spinner (usado após optimistic updates)
   const silentLoad = async () => {
-    const [c, dl, fs] = await Promise.all([
+    const [c, dl, fs, aiPending] = await Promise.all([
       adminService.getClients(),
       supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
       supabase.from('client_form_submissions').select('client_id, form_data'),
+      fetchAiPhotoSenders(),
     ])
     setClients(c)
     const dlMap: Record<string, DeadlineData> = {}
@@ -1480,6 +1541,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
       }
     })
     setFormObsIds(obsSet)
+    setAiPhotoPendingIds(aiPending)
   }
 
   const handleCreate = async () => {
@@ -1793,7 +1855,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         <KanbanSidebar theme={t} clients={activeClients} search={search} onSearch={setSearch}
           filter={filter} onFilter={setFilter} sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(v => !v)}
           total={activeClients.length} archivedCount={archivedClients.length} deadlines={deadlines}
-          columnLabels={columnLabels} />
+          columnLabels={columnLabels} aiPhotoPendingIds={aiPhotoPendingIds} />
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {isArchiveView && (
@@ -1853,6 +1915,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       onQuickMove={handleQuickMove}
                       columnLabels={columnLabels}
                       formObsIds={formObsIds}
+                      aiPhotoPendingIds={aiPhotoPendingIds}
                     />
                   ))}
                 </div>
@@ -1877,12 +1940,24 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                   }).map(client => {
                     const cfg = STATUSES[client.status]
                     const dl = getDeadlineInfo(client, deadlines[client.id])
+                    const aiPending = aiPhotoPendingIds.has(client.id) && client.status === 'awaiting_ai_photo'
+                    const aiBorderColor = isDark ? '#f97316' : '#fb923c'
+                    const baseBorderColor = dl?.urgency === 'danger'
+                      ? '#fca5a5'
+                      : client.status === 'photos_submitted'
+                        ? '#fbcfe8'
+                        : aiPending
+                          ? aiBorderColor
+                          : t.cardBorder
+                    const baseBgColor = aiPending
+                      ? `color-mix(in srgb, #f97316 ${isDark ? 14 : 7}%, ${t.cardBg})`
+                      : t.cardBg
                     return (
                       <div key={client.id}
-                        style={{ background: t.cardBg, border: `1px solid ${dl?.urgency === 'danger' ? '#fca5a5' : client.status === 'photos_submitted' ? '#fbcfe8' : t.cardBorder}`, borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, cursor: 'pointer' }}
+                        style={{ background: baseBgColor, border: `1px solid ${baseBorderColor}`, borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, cursor: 'pointer' }}
                         onClick={() => navigate(`/admin/clients/${client.id}`)}
                         onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = t.accent + '60'}
-                        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = dl?.urgency === 'danger' ? '#fca5a5' : client.status === 'photos_submitted' ? '#fbcfe8' : t.cardBorder}
+                        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = baseBorderColor}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
                           <div style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, background: getAvatarColor(client.full_name)[0], color: getAvatarColor(client.full_name)[1], display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700 }}>
@@ -1895,6 +1970,9 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                                 <Bell size={11} strokeWidth={2} style={{ color: '#f97316', opacity: 0.75, flexShrink: 0 }} title="Possui observação condicional no formulário" />
                               )}
                               <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: cfg?.bg, color: cfg?.textColor, fontWeight: 600 }}>{cfg?.label}</span>
+                              {aiPending && (
+                                <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: isDark ? 'rgba(249,115,22,0.25)' : '#ffedd5', color: isDark ? '#fdba74' : '#c2410c', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>✨ Foto IA p/ revisar</span>
+                              )}
                               {starredIds.has(client.id) && <span style={{ fontSize: 11, color: '#f59e0b' }}>★</span>}
                               {dl && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 600, background: dl.urgency === 'danger' ? '#fee2e2' : '#fef3c7', color: dl.urgency === 'danger' ? '#991b1b' : '#92400e' }}>📅 {dl.label}</span>}
                             </div>
