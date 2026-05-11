@@ -85,18 +85,18 @@ function PlansList() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Planos</h1>
           <p className="text-sm text-gray-500 mt-0.5">Configure contrato, formulário e instruções de foto por plano</p>
         </div>
-        <Btn onClick={() => setCreating(true)}>
-          <Plus className="h-4 w-4" /> Novo Plano
+        <Btn onClick={() => setCreating(true)} className="shrink-0">
+          <Plus className="h-4 w-4" /> <span className="hidden sm:inline">Novo Plano</span><span className="sm:hidden">Novo</span>
         </Btn>
       </div>
 
       {creating && (
-        <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm space-y-4">
+        <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-6 shadow-sm space-y-4">
           <h3 className="font-semibold text-gray-900">Novo Plano</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -133,13 +133,13 @@ function PlansList() {
       ) : (
         <div className="space-y-3">
           {plans.map(plan => (
-            <div key={plan.id} className="bg-white border border-gray-200 rounded-xl p-5 flex items-center justify-between hover:border-rose-200 transition-colors">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-rose-50 rounded-lg flex items-center justify-center">
+            <div key={plan.id} className="bg-white border border-gray-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 hover:border-rose-200 transition-colors">
+              <div className="flex items-center gap-3 sm:gap-4">
+                <div className="w-10 h-10 bg-rose-50 rounded-lg flex items-center justify-center shrink-0">
                   <Layers className="h-5 w-5 text-rose-500" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-semibold text-gray-900">{plan.name}</h3>
                     <span className={`text-xs px-2 py-0.5 rounded-full ${plan.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                       {plan.is_active ? 'Ativo' : 'Inativo'}
@@ -148,12 +148,14 @@ function PlansList() {
                   <p className="text-sm text-gray-500">{plan.deadline_days} dias úteis{plan.description ? ` · ${plan.description}` : ''}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 sm:ml-auto">
                 <Btn variant="outline" size="sm" onClick={() => handleShare(plan)}>
-                  {copiedId === plan.id ? <><CheckCircle className="h-3.5 w-3.5 text-green-500" /> Copiado!</> : <><Share2 className="h-3.5 w-3.5" /> Compartilhar</>}
+                  {copiedId === plan.id
+                    ? <><CheckCircle className="h-3.5 w-3.5 text-green-500" /><span className="hidden sm:inline">Copiado!</span></>
+                    : <><Share2 className="h-3.5 w-3.5" /><span className="hidden sm:inline">Compartilhar</span></>}
                 </Btn>
                 <Btn variant="outline" size="sm" onClick={() => navigate(`/admin/plans/${plan.id}`)}>
-                  <Pencil className="h-3.5 w-3.5" /> Editar
+                  <Pencil className="h-3.5 w-3.5" /><span className="hidden sm:inline">Editar</span>
                 </Btn>
                 <Btn variant="ghost" size="sm" onClick={() => handleDelete(plan)} className="text-red-500 hover:bg-red-50">
                   <Trash2 className="h-3.5 w-3.5" />
@@ -199,25 +201,27 @@ function PlanEditor() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate('/admin/plans')} className="text-gray-400 hover:text-gray-600">
+        <button onClick={() => navigate('/admin/plans')} className="text-gray-400 hover:text-gray-600 shrink-0">
           <ArrowLeft className="h-5 w-5" />
         </button>
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">{plan.name}</h1>
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-xl font-bold text-gray-900 truncate">{plan.name}</h1>
           <p className="text-sm text-gray-500">{plan.deadline_days} dias úteis</p>
         </div>
       </div>
 
-      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-            }`}>
-            <Icon className="h-4 w-4" />
-            {label}
-          </button>
-        ))}
+      <div className="overflow-x-auto -mx-1 px-1">
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit min-w-full sm:min-w-0">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button key={id} onClick={() => setTab(id)}
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                tab === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}>
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === 'general' && <GeneralTab plan={plan} onUpdate={setPlan} />}
@@ -246,7 +250,7 @@ function GeneralTab({ plan, onUpdate }: { plan: Plan; onUpdate: (p: Plan) => voi
   }
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-5 max-w-2xl">
+    <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-6 space-y-5 max-w-2xl">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Nome do Plano</label>
@@ -319,7 +323,7 @@ function ContractTab({ planId }: { planId: string }) {
 
   return (
     <div className="space-y-5">
-      <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4 max-w-3xl">
+      <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-6 space-y-4 max-w-3xl">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Título do Contrato</label>
           <input value={data.title} onChange={e => setData({ ...data, title: e.target.value })}
@@ -327,9 +331,9 @@ function ContractTab({ planId }: { planId: string }) {
         </div>
 
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-gray-700">Cláusulas</h3>
-            <Btn size="sm" variant="outline" onClick={addSection}><Plus className="h-3.5 w-3.5" /> Adicionar</Btn>
+            <Btn size="sm" variant="outline" onClick={addSection}><Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Adicionar</span></Btn>
           </div>
 
           {data.sections.sort((a, b) => a.order - b.order).map((section) => (
@@ -452,7 +456,7 @@ function FormTab({ planId }: { planId: string }) {
   return (
     <div className="space-y-5 max-w-3xl">
       {/* Título e descrição do formulário */}
-      <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+      <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-6 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Título do Formulário</label>
@@ -468,7 +472,7 @@ function FormTab({ planId }: { planId: string }) {
       </div>
 
       {/* Campos */}
-      <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+      <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-gray-700">Campos ({data.fields.length})</h3>
         </div>
@@ -808,10 +812,10 @@ function PhotosTab({ planId }: { planId: string }) {
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-gray-500">Categorias de fotos que o cliente vai enviar</p>
         <Btn size="sm" onClick={() => { setAdding(true); setEditingId(null) }}>
-          <Plus className="h-3.5 w-3.5" /> Nova Categoria
+          <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Nova </span>Categoria
         </Btn>
       </div>
 
@@ -838,9 +842,9 @@ function PhotosTab({ planId }: { planId: string }) {
               onCancel={() => { setEditingId(null); setEditCat(null) }}
             />
           ) : (
-            <div className="p-5">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
+            <div className="p-4 sm:p-5">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h4 className="font-semibold text-gray-900">{cat.title}</h4>
                     {(cat as any).is_ai_simulation && (
@@ -882,9 +886,9 @@ function PhotosTab({ planId }: { planId: string }) {
                     )
                   })()}
                 </div>
-                <div className="flex items-center gap-2 ml-4">
+                <div className="flex items-center gap-2 sm:ml-4 self-start">
                   <Btn variant="outline" size="sm" onClick={() => handleEdit(cat)}>
-                    <Pencil className="h-3.5 w-3.5" /> Editar
+                    <Pencil className="h-3.5 w-3.5" /><span className="hidden sm:inline"> Editar</span>
                   </Btn>
                   <button onClick={() => handleDelete(cat.id)} className="text-red-400 hover:text-red-600 p-1">
                     <Trash2 className="h-4 w-4" />
@@ -924,7 +928,7 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
   }
 
   return (
-    <div className="bg-white border border-rose-200 rounded-xl p-6 space-y-4">
+    <div className="bg-white border border-rose-200 rounded-xl p-4 sm:p-6 space-y-4">
       <h3 className="font-semibold text-gray-900 text-sm">{title}</h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
