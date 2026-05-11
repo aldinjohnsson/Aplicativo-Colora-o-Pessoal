@@ -15,12 +15,13 @@ import {
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
   SlidersHorizontal, ChevronDown, Palette, Pencil,
-  Loader2, AlertCircle, Bell,
+  Loader2, AlertCircle, Bell, Wand2,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
 import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib/deadlineCalculator'
 import { AIPromptConfig } from './AIPromptConfig'
+import { GeminiChat } from '../client/GeminiChat'
 import { RejectionModal } from './RejectionModal'
 import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
@@ -2729,7 +2730,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [copied, setCopied] = useState(false)
-  const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'ai'>('overview')
+  const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'documents' | 'ai' | 'chat'>('overview')
   const [showFormModal, setShowFormModal] = useState(false)
   const [resultForm, setResultForm] = useState({ observations: '' })
   const [savingResult, setSavingResult] = useState(false)
@@ -3099,6 +3100,32 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const aiPhotoSent = !!aiCat && (photos || []).some((p: any) => p.category_id === aiCat.id)
   const hasAiPhotoToReview = client.status === 'awaiting_ai_photo' && aiPhotoSent
 
+  // ── Dados para o Chat IA do admin (espelha o que o ClientPortal monta) ──
+  // Sempre reconstruímos o systemPrompt a partir das configurações atuais
+  // (folder + tags) para refletir mudanças não-salvas. Assim o admin pode
+  // testar o efeito de uma nova tag antes de bater "Salvar".
+  const adminAiSystemPrompt = buildSystemPrompt(client.full_name, linkedFolderConfig, clientTags)
+  const adminAiRefPhotos: { type: string; label: string; storagePath: string; url: string }[] = (() => {
+    if (Array.isArray(client.ai_reference_photos) && client.ai_reference_photos.length > 0) {
+      return client.ai_reference_photos.map((p: any) => ({
+        type: (p.typeId || p.type || 'geral') as string,
+        label: p.typeName || p.label || p.typeId || p.type || 'Geral',
+        storagePath: p.storagePath,
+        url: supabase.storage.from('client-photos').getPublicUrl(p.storagePath).data.publicUrl,
+      }))
+    }
+    if (client.ai_reference_photo_path) {
+      const url = supabase.storage.from('client-photos').getPublicUrl(client.ai_reference_photo_path).data.publicUrl
+      return [{ type: 'geral', label: 'Foto Geral/Rosto', storagePath: client.ai_reference_photo_path, url }]
+    }
+    return []
+  })()
+  const adminAiRefPhotoUrl = adminAiRefPhotos.find(p => p.type === 'geral')?.url || adminAiRefPhotos[0]?.url || null
+  const adminResultFileUrls = (resultFiles || []).map((f: any) => ({
+    url: adminService.getResultFileUrl(f.storage_path),
+    name: f.file_name,
+  }))
+
   return (
     <div className="flex flex-col h-full w-full" style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: t.bg }}>
       {/* Topbar */}
@@ -3312,6 +3339,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               { id: 'result', label: 'Resultado' },
               { id: 'documents', label: 'Documentos' },
               { id: 'ai', label: '✨ IA' },
+              { id: 'chat', label: '💬 Chat IA' },
             ].map(({ id, label }) => (
               <button
                 key={id}
@@ -3705,6 +3733,60 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               onSaveChatEnabled={handleSaveChatEnabled}
             />
           </div>
+        </div>
+      )}
+
+      {/* ── Aba Chat IA (admin) ──────────────────────────────────────────────
+          Reaproveita o GeminiChat que a cliente vê, mas em modo `unlimited`
+          (sem checagem/consumo de créditos) e com chave de localStorage
+          própria para não misturar com o histórico real da cliente. */}
+      {tab === 'chat' && (
+        <div className="space-y-3">
+          <div className="rounded-xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3"
+            style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center flex-shrink-0">
+              <MessageSquare className="h-4 w-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold" style={{ color: t.text }}>
+                Pré-visualização do Chat IA — modo admin
+              </p>
+              <p className="text-xs" style={{ color: t.text3 }}>
+                Mesma experiência que a cliente verá, sem limite de imagens ou textos. As mensagens ficam em histórico separado do chat real da cliente.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {result?.chat_enabled
+                ? <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200"><Unlock className="h-3 w-3" /> Liberado p/ cliente</span>
+                : <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-gray-50 text-gray-500 border border-gray-200"><Lock className="h-3 w-3" /> Não liberado</span>}
+              <button onClick={() => setTab('ai')} className="text-xs px-2.5 py-1 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50">
+                Configurar
+              </button>
+            </div>
+          </div>
+
+          {!adminAiSystemPrompt ? (
+            <div className="rounded-xl p-6 text-center" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+              <Wand2 className="h-8 w-8 mx-auto mb-2" style={{ color: t.text3 }} />
+              <p className="text-sm font-medium" style={{ color: t.text }}>Configuração de IA ainda não preenchida</p>
+              <p className="text-xs mt-1" style={{ color: t.text3 }}>
+                Vincule uma pasta de IA e preencha as informações da análise na aba <strong>Resultado</strong> para liberar o chat.
+              </p>
+            </div>
+          ) : (
+            <GeminiChat
+              clientName={client.full_name}
+              systemPrompt={adminAiSystemPrompt}
+              referencePhotoUrl={adminAiRefPhotoUrl}
+              referencePhotos={adminAiRefPhotos}
+              folderConfig={linkedFolderConfig}
+              clientId={clientId!}
+              resultFileUrls={adminResultFileUrls}
+              resultObservations={result?.observations || ''}
+              unlimited
+              chatStorageKey={`mscolors_chat_admin_${clientId}`}
+            />
+          )}
         </div>
       )}
 

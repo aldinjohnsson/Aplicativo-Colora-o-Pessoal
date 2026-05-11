@@ -44,6 +44,11 @@ interface GeminiChatProps {
   clientId?: string
   resultFileUrls?: ResultFile[]
   resultObservations?: string
+  /** Quando true, desativa verificação e consumo de créditos (modo admin). */
+  unlimited?: boolean
+  /** Chave customizada para persistência no localStorage. Útil para o admin
+   *  manter um histórico separado do chat real da cliente. */
+  chatStorageKey?: string
 }
 
 const uid = () => Math.random().toString(36).slice(2)
@@ -77,7 +82,7 @@ async function uploadChatImage(clientId: string, msgId: string, idx: number, bas
 
 const WELCOME = (name: string) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '' }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -155,24 +160,29 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   }, [resultFileUrls])
 
   useEffect(() => {
-    if (!clientId) return
+    if (!clientId || unlimited) return
     supabase.rpc('check_ai_credits', { p_client_id: clientId }).then(({ data }) => {
       if (data) { setCreditsImage(data.image ?? null); setCreditsText(data.text ?? null) }
     })
-  }, [clientId])
+  }, [clientId, unlimited])
+
+  // Chave usada para persistir o histórico no localStorage. O admin passa
+  // `chatStorageKey` para manter um histórico próprio sem misturar com o
+  // chat real da cliente (que continua usando `chatKey(clientId)`).
+  const storageKey = chatStorageKey || (clientId ? chatKey(clientId) : null)
 
   useEffect(() => {
-    if (clientId) {
-      const saved = localStorage.getItem(chatKey(clientId))
+    if (storageKey) {
+      const saved = localStorage.getItem(storageKey)
       if (saved) { const msgs = deserializeMessages(saved); if (msgs.length > 0) { setMessages(msgs); return } }
     }
     setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
-  }, [clientName, clientId])
+  }, [clientName, storageKey])
 
   useEffect(() => {
-    if (!clientId || messages.length === 0 || messages.some(m => m.loading)) return
-    localStorage.setItem(chatKey(clientId), serializeMessages(messages))
-  }, [messages, clientId])
+    if (!storageKey || messages.length === 0 || messages.some(m => m.loading)) return
+    localStorage.setItem(storageKey, serializeMessages(messages))
+  }, [messages, storageKey])
 
   // Scroll só dentro do container de mensagens, NUNCA a página inteira.
   // scrollIntoView (mesmo com block: 'nearest') pode rolar a janela em mobile,
@@ -288,7 +298,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const apiKey = await getGeminiApiKey()
     if (!apiKey) { setApiError('Chave da API não configurada.'); return }
 
-    if (clientId) {
+    if (clientId && !unlimited) {
       const available = isImage ? creditsImage : creditsText
       if (available !== null && available <= 0) { setApiError(`Seus créditos de ${isImage ? 'imagem' : 'texto'} acabaram. Entre em contato com a consultora para adicionar mais.`); return }
     }
@@ -343,10 +353,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             if (saved.length > 0) setMessages(prev => prev.map(m => m.id === lid ? { ...m, savedImageUrls: saved } : m))
           })
         }
-        const creditType = hasImage ? 'image' : 'text'
-        supabase.rpc('use_ai_credit', { p_client_id: clientId, p_type: creditType }).then(({ data }) => {
-          if (data?.remaining !== undefined) { if (creditType === 'image') setCreditsImage(data.remaining); else setCreditsText(data.remaining) }
-        })
+        if (!unlimited) {
+          const creditType = hasImage ? 'image' : 'text'
+          supabase.rpc('use_ai_credit', { p_client_id: clientId, p_type: creditType }).then(({ data }) => {
+            if (data?.remaining !== undefined) { if (creditType === 'image') setCreditsImage(data.remaining); else setCreditsText(data.remaining) }
+          })
+        }
       }
     } catch (err: any) {
       setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: '', error: err.message || 'Erro' } : m))
@@ -681,8 +693,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
           {creditsImage !== null && <span className="hidden sm:inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
-          {clientId && messages.length > 1 && (
-            <button onClick={() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(chatKey(clientId)); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
+          {storageKey && messages.length > 1 && (
+            <button onClick={() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
