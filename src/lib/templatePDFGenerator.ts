@@ -1189,12 +1189,24 @@ async function embedImage(pdf: PDFDocument, dataUrl: string): Promise<{ image: a
 interface LoadedTemplate { templateBytes: ArrayBuffer; style?: PdfStyleConfig }
 
 async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
+  // IMPORTANTE: filtrar SEMPRE por admin_id.
+  // Sem esse filtro o super_admin (policy USING true) enxerga todas as linhas
+  // de todos os admins e .maybeSingle() lança "multiple rows returned" (409/PGRST116).
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+
   const { data: settingsRow, error: settingsErr } = await supabase
-    .from('admin_content').select('content').eq('type', 'settings').maybeSingle()
+    .from('admin_content').select('content')
+    .eq('type', 'settings')
+    .eq('admin_id', user.id)   // ← CORRIGIDO: filtro explícito por admin
+    .maybeSingle()
   if (settingsErr) throw new Error('Erro ao carregar configurações: ' + settingsErr.message)
 
   const { data: tplRow } = await supabase
-    .from('admin_content').select('content').eq('type', 'pdf_template').maybeSingle()
+    .from('admin_content').select('content')
+    .eq('type', 'pdf_template')
+    .eq('admin_id', user.id)   // ← CORRIGIDO: filtro explícito por admin
+    .maybeSingle()
 
   const tplContent = tplRow?.content as { pdfTemplateBase64?: string } | null
   const settings   = settingsRow?.content as Record<string, any> | null
