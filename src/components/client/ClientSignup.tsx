@@ -207,6 +207,7 @@ export function ClientSignup() {
         contractTitle: plan?.contract?.title || 'Contrato de Prestação de Serviços',
         sections: plan?.contract?.sections || [],
         signatureDataUrl,                     // PNG base64 da assinatura manuscrita
+        portalUrl: `${window.location.origin}/c/${resultToken}`, // Link do portal no e-mail
       })
       setSignedAt(signedAtStr)
       setStep('done')
