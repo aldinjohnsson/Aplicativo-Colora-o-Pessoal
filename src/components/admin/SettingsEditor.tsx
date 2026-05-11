@@ -53,6 +53,38 @@ interface AppSettings {
   fromEmail: string
 }
 
+// ── Helper: select → update ou insert ───────────────────────────────────────────
+// Filtra sempre por admin_id (campo FK) — nunca por id (PK da linha).
+// Sem esse filtro explícito o super_admin enxergaria linhas de outros admins
+// via RLS e o upsert poderia sobrescrever dados de outro usuário.
+async function saveOrUpdate(type: string, content: Record<string, any>, adminId: string) {
+  // Verifica se já existe uma linha para este admin + type
+  const { data: existing, error: selectErr } = await supabase
+    .from('admin_content')
+    .select('id')
+    .eq('admin_id', adminId)   // ← CORRIGIDO: era .eq('id', adminId)
+    .eq('type', type)
+    .maybeSingle()
+
+  if (selectErr) throw new Error(selectErr.message)
+
+  if (existing) {
+    // Linha existe → UPDATE pela chave composta (admin_id + type)
+    const { error } = await supabase
+      .from('admin_content')
+      .update({ content, updated_at: new Date().toISOString() })
+      .eq('admin_id', adminId)  // ← CORRIGIDO: era .eq('id', adminId)
+      .eq('type', type)
+    if (error) throw new Error(error.message)
+  } else {
+    // Linha não existe → INSERT com admin_id explícito
+    const { error } = await supabase
+      .from('admin_content')
+      .insert({ admin_id: adminId, type, content })  // ← CORRIGIDO: era { id: adminId }
+    if (error) throw new Error(error.message)
+  }
+}
+
 // Serviço de storage — salva no localStorage E no Supabase
 const settingsStorageService = {
   async saveSettings(data: AppSettings) {
@@ -73,16 +105,8 @@ const settingsStorageService = {
     // ── 3. Supabase: separar o template em linha própria p/ não estourar payload
     const { pdfTemplateBase64, ...settingsWithoutTemplate } = data
 
-    // 3a. Salvar configurações (sem base64) — upsert sempre pelo par (admin_id, type)
-    // O admin_id é preenchido pelo DEFAULT auth.uid() no INSERT e já está presente
-    // no UPDATE (filtro explícito abaixo garante que só tocamos na linha deste admin).
-    const { error: settingsError } = await supabase
-      .from('admin_content')
-      .upsert(
-        { type: 'settings', content: settingsWithoutTemplate as any },
-        { onConflict: 'admin_id,type' }
-      )
-    if (settingsError) throw new Error(settingsError.message)
+    // 3a. Salvar configurações (sem base64).
+    await saveOrUpdate('settings', settingsWithoutTemplate as any, user.id)
 
     // 3b. Salvar template PDF em linha separada (só quando há base64)
     if (pdfTemplateBase64) {
@@ -90,13 +114,7 @@ const settingsStorageService = {
         pdfTemplateBase64,
         pdfTemplateFileName: data.pdfTemplateFileName ?? '',
       }
-      const { error: tplError } = await supabase
-        .from('admin_content')
-        .upsert(
-          { type: 'pdf_template', content: tplPayload as any },
-          { onConflict: 'admin_id,type' }
-        )
-      if (tplError) throw new Error(tplError.message)
+      await saveOrUpdate('pdf_template', tplPayload as any, user.id)
     }
 
     return { success: true }
@@ -134,16 +152,16 @@ const settingsStorageService = {
       const { data: settingsRow } = await supabase
         .from('admin_content')
         .select('content')
+        .eq('admin_id', adminId ?? '')   // ← CORRIGIDO: era .eq('id', adminId)
         .eq('type', 'settings')
-        .eq('admin_id', adminId ?? '')
         .maybeSingle()
 
       // Carregar template PDF (linha separada)
       const { data: tplRow } = await supabase
         .from('admin_content')
         .select('content')
+        .eq('admin_id', adminId ?? '')   // ← CORRIGIDO: era .eq('id', adminId)
         .eq('type', 'pdf_template')
-        .eq('admin_id', adminId ?? '')
         .maybeSingle()
 
       const tplContent = tplRow?.content as { pdfTemplateBase64?: string; pdfTemplateFileName?: string } | null
