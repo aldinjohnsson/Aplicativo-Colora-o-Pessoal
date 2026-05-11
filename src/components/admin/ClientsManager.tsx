@@ -416,10 +416,23 @@ function QuickMoveButton({ currentStatus, theme: t, onMove, columnLabels = {} }:
     if (open) { setOpen(false); return }
     const rect = btnRef.current?.getBoundingClientRect()
     if (rect) {
-      setPopPos({
-        top: rect.bottom + 4,
-        left: Math.min(rect.right - 218, window.innerWidth - 226),
-      })
+      // Estimativa de altura do popover (header + próxima etapa + lista + paddings)
+      const estHeight =
+        30 +                                   // header "MOVER ETAPA"
+        (nextStatus ? 60 : 0) +                // bloco "Próxima etapa"
+        24 +                                   // label "Todas as etapas"
+        Math.min(COL_ORDER.length * 32, 220) + // lista (limitada por maxHeight: 220)
+        14                                     // paddings + espaço inferior
+      const margin = 8
+      const spaceBelow = window.innerHeight - rect.bottom - margin
+      const spaceAbove = rect.top - margin
+      // Abre para cima se não couber abaixo E houver mais espaço acima
+      const openUp = spaceBelow < estHeight && spaceAbove > spaceBelow
+      const top = openUp
+        ? Math.max(margin, rect.top - estHeight - 4)
+        : rect.bottom + 4
+      const left = Math.max(margin, Math.min(rect.right - 218, window.innerWidth - 226))
+      setPopPos({ top, left })
     }
     setOpen(true)
   }
