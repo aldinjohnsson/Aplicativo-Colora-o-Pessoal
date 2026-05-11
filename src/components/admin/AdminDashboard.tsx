@@ -252,35 +252,42 @@ function AdminDashboardInner({ onLogout }: Props) {
 
         {/* ── Non-kanban top bar (hidden on clients route since ClientsManager is fixed) ── */}
         {!isClientsRoute && (
-          <header style={{
-            height: 52, background: t.header, color: t.headerText,
-            display: 'flex', alignItems: 'center',
-            padding: '0 16px', gap: 12, position: 'sticky', top: 0, zIndex: 40,
-            boxShadow: '0 1px 8px rgba(0,0,0,0.3)',
-            transition: 'background 0.25s ease',
-          }}>
+          <header
+            className="px-3 sm:px-4"
+            style={{
+              height: 52, background: t.header, color: t.headerText,
+              display: 'flex', alignItems: 'center',
+              gap: 12, position: 'sticky', top: 0, zIndex: 40,
+              boxShadow: '0 1px 8px rgba(0,0,0,0.3)',
+              transition: 'background 0.25s ease',
+            }}>
             <button
               onClick={() => setNavOpen(true)}
               style={{
                 background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: 8,
                 padding: '7px 9px', cursor: 'pointer', display: 'flex', color: 'rgba(255,255,255,0.8)',
+                flexShrink: 0,
               }}
             >
               <Menu size={18} />
             </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
               <div style={{
                 width: 28, height: 28,
                 background: `linear-gradient(135deg, ${t.accent}, ${t.accent}cc)`,
                 borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
               }}>
                 <Palette size={14} color={t.accentFg} />
               </div>
-              <span style={{ fontSize: 14, fontWeight: 700, color: t.headerText }}>MS Colors</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: t.headerText, whiteSpace: 'nowrap' }}>MS Colors</span>
             </div>
 
-            {/* Inline nav for non-kanban pages */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 8 }}>
+            {/* Inline nav for non-kanban pages — visível apenas em sm+; em mobile o drawer cobre */}
+            <div
+              className="hidden sm:flex"
+              style={{ alignItems: 'center', gap: 2, marginLeft: 8, flexWrap: 'wrap' }}
+            >
               {visibleNavItems.map(({ to, label }) => (
                 <NavLink
                   key={to}
@@ -291,6 +298,7 @@ function AdminDashboardInner({ onLogout }: Props) {
                     color: isActive ? t.headerText : t.headerTextDim,
                     background: isActive ? `${t.accent}40` : 'transparent',
                     textDecoration: 'none', transition: 'all 0.15s',
+                    whiteSpace: 'nowrap',
                   })}
                 >
                   {label}

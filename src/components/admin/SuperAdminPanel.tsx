@@ -281,11 +281,14 @@ function AdminRow({
   const isSuper = admin.role === 'super_admin'
 
   return (
-    <div style={{
-      padding: 14,
-      borderBottom: isLast ? 'none' : `1px solid ${border}`,
-      display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12,
-    }}>
+    <div
+      className="flex flex-col sm:flex-row sm:items-center"
+      style={{
+        padding: 14,
+        borderBottom: isLast ? 'none' : `1px solid ${border}`,
+        gap: 12,
+      }}
+    >
       {/* Avatar + info */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: '1 1 220px' }}>
         <div style={{
@@ -300,9 +303,9 @@ function AdminRow({
         }}>
           {initials}
         </div>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: t.text }}>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: t.text, wordBreak: 'break-word' }}>
               {admin.nome || admin.email.split('@')[0]}
             </p>
             {isSuper && (
@@ -325,11 +328,74 @@ function AdminRow({
             )}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 12px', marginTop: 2 }}>
-            <span style={{ fontSize: 12, color: textDim, display: 'flex', alignItems: 'center', gap: 4 }}>
-              <Mail size={11} /> {admin.email}
+            <span style={{
+              fontSize: 12, color: textDim, display: 'flex', alignItems: 'center', gap: 4,
+              minWidth: 0, wordBreak: 'break-all',
+            }}>
+              <Mail size={11} style={{ flexShrink: 0 }} /> {admin.email}
             </span>
           </div>
         </div>
+
+        {/* Menu de ações — fica colado ao avatar/info no mobile, no fim da linha no desktop */}
+        {!isCurrent && (
+          <div className="sm:hidden" style={{ position: 'relative', flexShrink: 0 }}>
+            <button
+              onClick={() => setMenuOpen(v => !v)}
+              style={{
+                padding: 6, background: 'transparent', border: 'none',
+                cursor: 'pointer', color: textDim, borderRadius: 6,
+                display: 'flex',
+              }}
+            >
+              <MoreVertical size={16} />
+            </button>
+            {menuOpen && (
+              <>
+                <div
+                  style={{ position: 'fixed', inset: 0, zIndex: 30 }}
+                  onClick={() => setMenuOpen(false)}
+                />
+                <div style={{
+                  position: 'absolute', right: 0, top: 32,
+                  background: cardBg,
+                  border: `1px solid ${border}`,
+                  borderRadius: 8,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                  minWidth: 140, zIndex: 40,
+                  overflow: 'hidden',
+                }}>
+                  <button
+                    onClick={() => { setMenuOpen(false); onEdit() }}
+                    style={{
+                      width: '100%', padding: '8px 12px',
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      background: 'transparent', border: 'none',
+                      fontSize: 13, color: t.text,
+                      cursor: 'pointer', textAlign: 'left',
+                    }}
+                  >
+                    <Edit2 size={13} /> Editar
+                  </button>
+                  {!isSuper && (
+                    <button
+                      onClick={() => { setMenuOpen(false); onDelete() }}
+                      style={{
+                        width: '100%', padding: '8px 12px',
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        background: 'transparent', border: 'none',
+                        fontSize: 13, color: '#ef4444',
+                        cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
+                      <Trash2 size={13} /> Excluir
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Status + ações da licença (só pra admin comum) */}
@@ -391,9 +457,9 @@ function AdminRow({
         </div>
       )}
 
-      {/* Menu de ações */}
+      {/* Menu de ações — visível apenas em sm+ (em mobile o menu está colado ao avatar acima) */}
       {!isCurrent && (
-        <div style={{ position: 'relative' }}>
+        <div className="hidden sm:block" style={{ position: 'relative' }}>
           <button
             onClick={() => setMenuOpen(v => !v)}
             style={{
