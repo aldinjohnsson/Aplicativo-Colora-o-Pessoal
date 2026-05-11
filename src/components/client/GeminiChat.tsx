@@ -385,10 +385,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   }
 
   // ── Helpers para sincronizar rawLines com o texto atual antes de gerar o PDF ──
-  // Independente do que está salvo no banco, re-derivamos os blocos a partir do
-  // tintReference/reference atual do prompt. Isso garante que mudanças na ordem
-  // das seções (ex.: NUANCES antes de CORES) sejam refletidas imediatamente,
-  // sem precisar reabrir o editor de layout.
   const SECTION_RE = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}]/u
   function pdfParseBlocks(text: string): Array<{ id: string; rawLines: string[]; isSection: boolean }> {
     if (!text.trim()) return [{ id: 'b0', rawLines: [''], isSection: false }]
@@ -426,9 +422,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           for (const cat of cfg?.categories ?? []) {
             for (const p of cat?.prompts ?? []) {
               if (p?.id && p?.pdfLayout) {
-                // Re-sincroniza os rawLines com o texto atual do prompt antes de usar.
-                // Evita que a ordem antiga (salva nos rawLines) sobreponha a ordem atual
-                // do tintReference/reference quando o usuário reordena seções.
                 const refText = (cat.type === 'cabelo' ? p.tintReference : p.reference) || ''
                 freshLayoutMap.set(p.id, pdfSyncLayout(p.pdfLayout, refText))
               }
@@ -446,59 +439,14 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   const imageMsgs = messages.filter(m => m.role === 'assistant' && !m.loading && !m.error && (m.responseParts?.some(p => p.type === 'image' && p.imageBase64) || m.savedImageUrls?.length))
 
-  const PdfModal = () => {
-    const bySection = imageMsgs.reduce((acc, msg) => { const s = msg.pdfMeta?.section || 'Geral'; if (!acc[s]) acc[s] = []; acc[s].push(msg); return acc }, {} as Record<string, ChatMsg[]>)
-    return (
-      <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4">
-        <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90dvh] flex flex-col">
-          <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-            <div>
-              <p className="font-semibold text-gray-900 text-sm sm:text-base">Exportar PDF</p>
-              <p className="text-xs text-gray-500">{pdfSelected.size} de {imageMsgs.length} imagens selecionadas</p>
-            </div>
-            <div className="flex gap-3 items-center">
-              <button onClick={() => setPdfSelected(new Set(imageMsgs.map(m => m.id)))} className="text-xs text-violet-600 font-medium">Todas</button>
-              <button onClick={() => setPdfSelected(new Set())} className="text-xs text-gray-400">Nenhuma</button>
-              <button onClick={() => setShowPdfModal(false)}><X className="h-5 w-5 text-gray-400" /></button>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
-            {Object.entries(bySection).map(([s, msgs]) => (
-              <div key={s}>
-                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">{s}</p>
-                <div className="grid grid-cols-2 gap-2 sm:gap-3">
-                  {msgs.map(msg => {
-                    const sel = pdfSelected.has(msg.id)
-                    const imgSrc = msg.responseParts?.find(p => p.type === 'image' && p.imageBase64) ? `data:${msg.responseParts.find(p => p.type === 'image')?.imageMimeType || 'image/jpeg'};base64,${msg.responseParts.find(p => p.type === 'image' && p.imageBase64)?.imageBase64}` : msg.savedImageUrls?.[0]
-                    return (
-                      <button key={msg.id} onClick={() => setPdfSelected(prev => { const s = new Set(prev); s.has(msg.id) ? s.delete(msg.id) : s.add(msg.id); return s })}
-                        className={`relative rounded-xl overflow-hidden border-2 text-left transition-all ${sel ? 'border-violet-500 ring-2 ring-violet-200' : 'border-gray-200'}`}>
-                        {imgSrc && <img src={imgSrc} alt="" className="w-full aspect-square object-cover" />}
-                        <div className={`absolute top-2 right-2 ${sel ? 'text-violet-600' : 'text-gray-400'}`}>
-                          {sel ? <CheckSquare className="h-5 w-5 bg-white rounded" /> : <Square className="h-5 w-5 bg-white/80 rounded" />}
-                        </div>
-                        <div className="px-2 py-1.5 bg-white/95">
-                          <p className="text-xs font-medium text-gray-700 leading-tight line-clamp-2">{msg.pdfMeta?.label || '✨ Imagem gerada'}</p>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="px-4 sm:px-5 py-4 border-t border-gray-100 flex gap-2">
-            <button onClick={() => setShowPdfModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Cancelar</button>
-            <button onClick={generatePDF} disabled={pdfSelected.size === 0 || pdfGenerating}
-              className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2">
-              {pdfGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-              {pdfGenerating ? 'Gerando...' : 'Baixar PDF'}
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  // ── Agrupa imagens por seção para o modal do PDF ──────────────────────────────
+  // Calculado fora do JSX para evitar recriação a cada render do modal.
+  const pdfBySection = imageMsgs.reduce((acc, msg) => {
+    const s = msg.pdfMeta?.section || 'Geral'
+    if (!acc[s]) acc[s] = []
+    acc[s].push(msg)
+    return acc
+  }, {} as Record<string, ChatMsg[]>)
 
   const renderMsg = (msg: ChatMsg) => {
     const isU = msg.role === 'user'
@@ -578,7 +526,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                       className="absolute inset-0 w-full h-full object-cover"
                       onError={e => { e.currentTarget.style.display = 'none' }} />
                   )}
-                </div>                  
+                </div>
                 <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{p.name}</span>
                 </button>
               ))}
@@ -659,7 +607,82 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   return (
     <>
-      {showPdfModal && <PdfModal />}
+      {/*
+        ── Modal de exportação PDF ───────────────────────────────────────────────
+        IMPORTANTE: o modal é renderizado como JSX inline — NÃO como um
+        subcomponente (const PdfModal = () => {...}).
+
+        Quando o modal era um componente definido dentro de GeminiChat, o React
+        criava uma nova função a cada render. Por ser uma referência diferente,
+        o React desmontava e remontava o modal inteiro ao clicar em qualquer foto
+        (mudança de estado em pdfSelected) — resetando o scroll para o topo.
+
+        Com JSX inline, o React apenas atualiza os elementos que mudaram
+        (ícone de check/uncheck), sem tocar no scroll container.
+      */}
+      {showPdfModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90dvh] flex flex-col">
+            <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <p className="font-semibold text-gray-900 text-sm sm:text-base">Exportar PDF</p>
+                <p className="text-xs text-gray-500">{pdfSelected.size} de {imageMsgs.length} imagens selecionadas</p>
+              </div>
+              <div className="flex gap-3 items-center">
+                <button onClick={() => setPdfSelected(new Set(imageMsgs.map(m => m.id)))} className="text-xs text-violet-600 font-medium">Todas</button>
+                <button onClick={() => setPdfSelected(new Set())} className="text-xs text-gray-400">Nenhuma</button>
+                <button onClick={() => setShowPdfModal(false)}><X className="h-5 w-5 text-gray-400" /></button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
+              {Object.entries(pdfBySection).map(([section, msgs]) => (
+                <div key={section}>
+                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">{section}</p>
+                  <div className="grid grid-cols-2 gap-2 sm:gap-3">
+                    {msgs.map(msg => {
+                      const sel = pdfSelected.has(msg.id)
+                      const imgSrc = msg.responseParts?.find(p => p.type === 'image' && p.imageBase64)
+                        ? `data:${msg.responseParts.find(p => p.type === 'image')?.imageMimeType || 'image/jpeg'};base64,${msg.responseParts.find(p => p.type === 'image' && p.imageBase64)?.imageBase64}`
+                        : msg.savedImageUrls?.[0]
+                      return (
+                        <button
+                          key={msg.id}
+                          onClick={() => setPdfSelected(prev => {
+                            const next = new Set(prev)
+                            next.has(msg.id) ? next.delete(msg.id) : next.add(msg.id)
+                            return next
+                          })}
+                          className={`relative rounded-xl overflow-hidden border-2 text-left transition-all ${sel ? 'border-violet-500 ring-2 ring-violet-200' : 'border-gray-200'}`}
+                        >
+                          {imgSrc && <img src={imgSrc} alt="" className="w-full aspect-square object-cover" />}
+                          <div className={`absolute top-2 right-2 ${sel ? 'text-violet-600' : 'text-gray-400'}`}>
+                            {sel ? <CheckSquare className="h-5 w-5 bg-white rounded" /> : <Square className="h-5 w-5 bg-white/80 rounded" />}
+                          </div>
+                          <div className="px-2 py-1.5 bg-white/95">
+                            <p className="text-xs font-medium text-gray-700 leading-tight line-clamp-2">{msg.pdfMeta?.label || '✨ Imagem gerada'}</p>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="px-4 sm:px-5 py-4 border-t border-gray-100 flex gap-2">
+              <button onClick={() => setShowPdfModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Cancelar</button>
+              <button
+                onClick={generatePDF}
+                disabled={pdfSelected.size === 0 || pdfGenerating}
+                className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {pdfGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                {pdfGenerating ? 'Gerando...' : 'Baixar PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/*
         Altura do chat:
         - Mobile (< sm): 75dvh com mínimo absoluto de 480px (fallback caso dvh
