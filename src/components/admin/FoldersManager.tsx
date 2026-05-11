@@ -102,6 +102,25 @@ export function FoldersManager() {
   const [savingSubId, setSavingSubId] = useState<string | null>(null)
   const [savedSubIds, setSavedSubIds] = useState<Set<string>>(new Set())
 
+  // ⭐ NOVO: Estados para controlar expansão das seções de comprimentos e texturas
+  const [lengthsSectionExpanded, setLengthsSectionExpanded] = useState<Record<string, boolean>>({})
+  const [texturesSectionExpanded, setTexturesSectionExpanded] = useState<Record<string, boolean>>({})
+
+  // ⭐ NOVO: Funções para alternar expansão
+  const toggleLengthsSection = (promptId: string) => {
+    setLengthsSectionExpanded(prev => ({
+      ...prev,
+      [promptId]: !prev[promptId]
+    }))
+  }
+
+  const toggleTexturesSection = (promptId: string) => {
+    setTexturesSectionExpanded(prev => ({
+      ...prev,
+      [promptId]: !prev[promptId]
+    }))
+  }
+
   // Global sub-option picker (comprimentos / texturas compartilhados)
   interface GlobalSubOpt extends SubOption { kind: 'length' | 'texture' }
   const [globalSubOpts, setGlobalSubOpts] = useState<GlobalSubOpt[]>([])
@@ -209,6 +228,27 @@ export function FoldersManager() {
 
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
   }, [config])
+
+  // ⭐ MELHORIA: Função para forçar salvamento imediato
+  const forceAutoSave = async () => {
+    const folder = editingFolderRef.current
+    if (!folder || folder.id === 'new') return
+
+    try {
+      setAutoSaving(true)
+      await supabase
+        .from('ai_folders')
+        .update({ name: config.folderName, config, updated_at: new Date().toISOString() })
+        .eq('id', folder.id)
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 3000)
+    } catch (error) {
+      console.error('Erro ao salvar:', error)
+      setSaveStatus('error')
+    } finally {
+      setAutoSaving(false)
+    }
+  }
 
   const { types: photoTypes } = usePhotoTypes()
   const [typeModalOpen, setTypeModalOpen] = useState(false)
@@ -1609,34 +1649,92 @@ export function FoldersManager() {
                           {cat.type === 'cabelo' && (
                             <div className="space-y-4 pt-1">
                               <div className="border-t border-violet-100 pt-3">
-                                <p className="text-xs font-semibold text-violet-700 mb-3">✂️ Opções de Comprimento e Textura</p>
-                                <p className="text-xs text-gray-500 mb-3">
-                                  No chat, após clicar neste prompt, a cliente escolhe o comprimento e depois a textura antes de gerar a imagem.
-                                </p>
+                                <div className="flex items-center justify-between mb-3">
+                                  <div>
+                                    <p className="text-xs font-semibold text-violet-700">✂️ Opções de Comprimento e Textura</p>
+                                    <p className="text-[10px] text-gray-400 mt-0.5">
+                                      A cliente escolhe comprimento e textura antes de gerar
+                                    </p>
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      toggleLengthsSection(prompt.id)
+                                      toggleTexturesSection(prompt.id)
+                                    }}
+                                    className="text-xs px-2 py-1 rounded-md hover:bg-violet-50 text-violet-600 flex items-center gap-1"
+                                  >
+                                    {!lengthsSectionExpanded[prompt.id] && !texturesSectionExpanded[prompt.id] ? (
+                                      <>Expandir <ChevronDown className="h-3 w-3" /></>
+                                    ) : (
+                                      <>Recolher <ChevronUp className="h-3 w-3" /></>
+                                    )}
+                                  </button>
+                                </div>
 
-                                {/* Comprimentos */}
-                                {renderSubOptions(
-                                  cat, prompt, 'lengths',
-                                  'Comprimentos', '✂️',
-                                  { bg: 'bg-violet-100', text: 'text-violet-700', border: 'border-violet-300', dashed: 'border-violet-300' },
-                                  openLengthId, setOpenLengthId,
+                                {/* ⭐ Resumo quando colapsado */}
+                                {!lengthsSectionExpanded[prompt.id] && !texturesSectionExpanded[prompt.id] && (
+                                  <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 mb-3">
+                                    <div className="flex items-center justify-between text-xs">
+                                      <span className="text-violet-700">
+                                        ✂️ Comprimentos: <strong>{prompt.lengths?.length || 0}</strong>
+                                      </span>
+                                      <span className="text-violet-700">
+                                        🌀 Texturas: <strong>{prompt.textures?.length || 0}</strong>
+                                      </span>
+                                    </div>
+                                  </div>
                                 )}
 
-                                {/* Texturas */}
-                                <div className="mt-4">
-                                  {renderSubOptions(
-                                    cat, prompt, 'textures',
-                                    'Texturas', '🌀',
-                                    { bg: 'bg-cyan-100', text: 'text-cyan-700', border: 'border-cyan-300', dashed: 'border-cyan-300' },
-                                    openTextureId, setOpenTextureId,
-                                  )}
-                                </div>
+                                {/* Comprimentos - só aparece se expandido */}
+                                {lengthsSectionExpanded[prompt.id] && (
+                                  <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <p className="text-xs font-medium text-violet-700">✂️ Comprimentos</p>
+                                      <button
+                                        onClick={() => toggleLengthsSection(prompt.id)}
+                                        className="text-xs text-violet-400 hover:text-violet-600"
+                                      >
+                                        <ChevronUp className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                    {renderSubOptions(
+                                      cat, prompt, 'lengths',
+                                      'Comprimentos', '✂️',
+                                      { bg: 'bg-violet-100', text: 'text-violet-700', border: 'border-violet-300', dashed: 'border-violet-300' },
+                                      openLengthId, setOpenLengthId,
+                                    )}
+                                  </div>
+                                )}
 
-                                <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
-                                  <p className="text-xs text-amber-800">
-                                    💡 A IA receberá: instruções do prompt + instrução do comprimento + instrução da textura + todas as imagens de referência combinadas.
-                                  </p>
-                                </div>
+                                {/* Texturas - só aparece se expandido */}
+                                {texturesSectionExpanded[prompt.id] && (
+                                  <div className="mt-4">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <p className="text-xs font-medium text-cyan-700">🌀 Texturas</p>
+                                      <button
+                                        onClick={() => toggleTexturesSection(prompt.id)}
+                                        className="text-xs text-cyan-400 hover:text-cyan-600"
+                                      >
+                                        <ChevronUp className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                    {renderSubOptions(
+                                      cat, prompt, 'textures',
+                                      'Texturas', '🌀',
+                                      { bg: 'bg-cyan-100', text: 'text-cyan-700', border: 'border-cyan-300', dashed: 'border-cyan-300' },
+                                      openTextureId, setOpenTextureId,
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Info - só mostra quando expandido */}
+                                {(lengthsSectionExpanded[prompt.id] || texturesSectionExpanded[prompt.id]) && (
+                                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                                    <p className="text-xs text-amber-800">
+                                      💡 A IA receberá: instruções do prompt + instrução do comprimento + instrução da textura + todas as imagens de referência combinadas.
+                                    </p>
+                                  </div>
+                                )}
                               </div>
 
                               {/* Tint reference */}
@@ -1678,7 +1776,10 @@ export function FoldersManager() {
                                     <Copy className="h-3 w-3" /> Copiar formato
                                   </button>
                                   <button
-                                    onClick={() => updatePrompt(cat.id, prompt.id, { pdfLayout: undefined })}
+                                    onClick={async () => {
+                                      updatePrompt(cat.id, prompt.id, { pdfLayout: undefined })
+                                      await forceAutoSave() // ⭐ Força salvamento imediato
+                                    }}
                                     className="text-violet-400 hover:text-red-500"
                                     title="Remover layout"
                                   >
