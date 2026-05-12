@@ -332,11 +332,10 @@ const COLLAGE_GAP       = 14
 const COLLAGE_LABEL_H   = 20
 // Aspect ratio da foto (altura / largura). 1.33 ≈ portrait 3:4
 const COLLAGE_ASPECT    = 1.33
-// Fração da altura ORIGINAL da foto exibida na célula (top-crop bias).
-// 1.00 = cover normal · 0.85 = corte sutil · 0.75 = equilibrado · 0.65 = bem fechado no rosto.
-// Reduzir este valor remove mais da parte de BAIXO da foto (busto/blusa),
-// dando respiro entre a base da imagem e a linha do label.
-const COLLAGE_TOP_CROP  = 0.75
+// Espaço (pts) reservado na BASE da página de colagem para o rodapé do template
+// (texto "MARILIA SANTOS - COLORAÇÃO PESSOAL" + logo MS).
+// Aumente se o grid ainda estiver sobrepondo o rodapé; diminua para fotos maiores.
+const COLLAGE_BOTTOM_RESERVE = 80
 
 async function renderCollagePage(
   pdf:       PDFDocument,
@@ -375,7 +374,10 @@ async function renderCollageSinglePage(
 
   const margin = MG
   const availW = PW - 2 * margin
-  const availH = CONTENT_TOP - CONTENT_BTM
+  // Reserva COLLAGE_BOTTOM_RESERVE pts na base para que a última linha do grid
+  // (especialmente o label e a linha decorativa) não sobreponha o rodapé fixo do
+  // template ("MARILIA SANTOS - COLORAÇÃO PESSOAL" + logo MS).
+  const availH = CONTENT_TOP - CONTENT_BTM - COLLAGE_BOTTOM_RESERVE
 
   // Grid fixo 3x3 — dimensões calculadas uma vez, não dependem do nº de items
   const cellW = (availW - (COLLAGE_COLS - 1) * COLLAGE_GAP) / COLLAGE_COLS
@@ -406,23 +408,13 @@ async function renderCollageSinglePage(
     if (imgEntry) {
       const { image, width: iw, height: ih } = imgEntry
 
-      // Cover scale com top-crop: força um zoom maior para que apenas a porção
-      // SUPERIOR da foto (rosto + cabelo) apareça na célula, descartando o excesso
-      // pela base (busto/blusa). Evita que a parte de baixo encoste na linha do label.
-      //
-      // COLLAGE_TOP_CROP define a fração da altura ORIGINAL da foto que deve ficar
-      // visível na célula. Ajuste fino conforme o enquadramento das fotos:
-      //   0.85 → corte sutil, ainda mostra parte do busto
-      //   0.75 → equilibrado (padrão recomendado)
-      //   0.65 → bem fechado no rosto/cabelo (catálogo de cor capilar)
-      const coverScale = Math.max(cellW / iw, imgH / (ih * COLLAGE_TOP_CROP))
+      // Cover scale: foto preenche a célula em ambas dimensões (overflow é cortado)
+      const coverScale = Math.max(cellW / iw, imgH / ih)
       const rw = iw * coverScale
       const rh = ih * coverScale
 
       const ox = cellLeftPts + (cellW - rw) / 2
-      // Top-align: alinha o topo da foto com o topo da célula, garantindo que todo
-      // o excedente vertical seja cortado pela parte de baixo (e não centralizado).
-      const oy = PH - cellTopPts - rh
+      const oy = PH - cellTopPts - (imgH + rh) / 2
 
       const clipX = cellLeftPts
       const clipY = PH - cellTopPts - imgH
@@ -457,9 +449,7 @@ async function renderCollageSinglePage(
       const lw = style.fontHeaderBold.widthOfTextAtSize(labelText, fontSize)
       const lx = cellLeftPts + Math.max(0, (cellW - lw) / 2)
 
-      // Respiro entre a base da foto e o label (3pts a mais que o original
-      // para evitar que o label fique colado na imagem).
-      const labelTopPts = cellTopPts + imgH + 8
+      const labelTopPts = cellTopPts + imgH + 5
       const ly          = PH - labelTopPts - fontSize
 
       page.drawText(labelText, {
