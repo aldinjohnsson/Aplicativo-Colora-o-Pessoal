@@ -407,7 +407,7 @@ async function renderCollageSinglePage(
       const rh = ih * coverScale
 
       const ox = cellLeftPts + (cellW - rw) / 2
-      const oy = PH - cellTopPts - (imgH + rh) / 2
+      const oy = PH - cellTopPts - rh
 
       const clipX = cellLeftPts
       const clipY = PH - cellTopPts - imgH
@@ -442,7 +442,7 @@ async function renderCollageSinglePage(
       const lw = style.fontHeaderBold.widthOfTextAtSize(labelText, fontSize)
       const lx = cellLeftPts + Math.max(0, (cellW - lw) / 2)
 
-      const labelTopPts = cellTopPts + imgH + 5
+      const labelTopPts = cellTopPts + imgH + 8
       const ly          = PH - labelTopPts - fontSize
 
       page.drawText(labelText, {
