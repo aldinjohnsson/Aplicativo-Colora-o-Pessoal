@@ -2800,6 +2800,24 @@ function FolderPicker({ folders, linkedFolderId, onSelect }: {
   )
 }
 
+// ─── Helpers: tags do tipo IMAGEM ─────────────────────────────────────────
+// Resolve um imagePath salvo em ai_info_templates.options para URL pública.
+// Bucket é público pra leitura (catálogo de opções, não dado sensível).
+const getOptionImageUrl = (imagePath: string): string => {
+  if (!imagePath) return ''
+  const { data } = supabase.storage
+    .from('ai-tag-option-images')
+    .getPublicUrl(imagePath)
+  return data.publicUrl
+}
+
+// Normaliza uma opção: aceita string (formato antigo, type='text') ou
+// objeto { label, imagePath } (type='image'). Retorna sempre objeto.
+const normalizeTagOption = (opt: any): { label: string; imagePath: string } => {
+  if (typeof opt === 'string') return { label: opt, imagePath: '' }
+  return { label: opt?.label ?? '', imagePath: opt?.imagePath ?? '' }
+}
+
 // ─── Client Detail ────────────────────────────────────────────────────────
 function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const { theme: t } = useTheme()
@@ -2842,7 +2860,28 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [nameInput, setNameInput] = useState('')
   const [savingName, setSavingName] = useState(false)
 
+  // Qual dropdown de tag-imagem está aberto (apenas 1 por vez, igual select nativo)
+  const [openImagePicker, setOpenImagePicker] = useState<string | null>(null)
+
   useEffect(() => { load() }, [clientId])
+
+  // Fecha o dropdown de tag-imagem ao clicar fora dele ou ao apertar ESC
+  useEffect(() => {
+    if (!openImagePicker) return
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Element | null
+      if (!target?.closest('[data-image-picker]')) setOpenImagePicker(null)
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenImagePicker(null)
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [openImagePicker])
 
   const buildSystemPrompt = (name: string, folderConfig: any, tags: { name: string; value: string }[]): string => {
     const filled = tags.filter(t => t.value.trim())
@@ -2863,7 +2902,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     const [detail, foldersRes, templatesRes] = await Promise.all([
       adminService.getClientDetail(clientId),
       supabase.from('ai_folders').select('id, name, config').order('name'),
-      supabase.from('ai_info_templates').select('id, name, options').order('sort_order'),
+      supabase.from('ai_info_templates').select('id, name, type, options').order('sort_order'),
     ])
     setData(detail)
     setNotes(detail.client.notes || '')
@@ -2871,7 +2910,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     if (detail.result) setChatEnabled(detail.result.chat_enabled ?? false)
     const folders = foldersRes.data || []
     setAiFolders(folders)
-    const tpls = (templatesRes.data || []).map((t: any) => ({ ...t, options: Array.isArray(t.options) ? t.options : [] }))
+    const tpls = (templatesRes.data || []).map((t: any) => ({
+      ...t,
+      type: t.type === 'image' ? 'image' : 'text',
+      options: Array.isArray(t.options) ? t.options : []
+    }))
     setTagTemplates(tpls)
     const folderId = detail.client.ai_folder_id || null
     setLinkedFolderId(folderId)
@@ -3727,21 +3770,166 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
               {tagTemplates.length > 0 && (
                 <div className="rounded-xl p-5 space-y-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
-                  <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}><Tag className="h-4 w-4 text-emerald-500" /> Informações da análise</h3>
+                  <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
+                    <Tag className="h-4 w-4 text-emerald-500" /> Informações da análise
+                  </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {clientTags.map(tag => {
-                      const template = tagTemplates.find(t => t.id === tag.templateId)
-                      const options = template?.options || []
+                      const template = tagTemplates.find(tpl => tpl.id === tag.templateId)
+                      const options  = template?.options || []
+                      const tagType: 'text' | 'image' = template?.type === 'image' ? 'image' : 'text'
+
+                      const updateValue = (newValue: string) =>
+                        setClientTags(prev => prev.map(x =>
+                          x.templateId === tag.templateId ? { ...x, value: newValue } : x
+                        ))
+
                       return (
                         <div key={tag.templateId}>
-                          <label className="block text-xs font-medium mb-1" style={{ color: t.text2 }}>{tag.name}</label>
-                          {options.length > 0 ? (
-                            <select value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: tag.value ? t.text : t.text3 }}>
+                          <label className="block text-xs font-medium mb-1" style={{ color: t.text2 }}>
+                            {tag.name}
+                          </label>
+
+                          {/* ── Tag IMAGEM: dropdown com preview ──────────────────── */}
+                          {tagType === 'image' && options.length > 0 && (() => {
+                            const isPickerOpen = openImagePicker === tag.templateId
+                            const normalized   = options.map((o: any) => normalizeTagOption(o))
+                            const selectedOpt  = normalized.find(o => o.label === tag.value)
+                            return (
+                              <div className="relative" data-image-picker>
+                                {/* Trigger (parece um select) */}
+                                <button
+                                  type="button"
+                                  onClick={() => setOpenImagePicker(isPickerOpen ? null : tag.templateId)}
+                                  className="w-full px-3 py-2 rounded-lg text-sm flex items-center gap-2 focus:outline-none focus:ring-2 focus:ring-emerald-400 transition-colors"
+                                  style={{
+                                    background: t.surface2,
+                                    border: `1px solid ${t.border}`,
+                                    color: tag.value ? t.text : t.text3,
+                                  }}
+                                >
+                                  {selectedOpt?.imagePath ? (
+                                    <img
+                                      src={getOptionImageUrl(selectedOpt.imagePath)}
+                                      alt=""
+                                      className="w-7 h-7 rounded object-cover flex-shrink-0"
+                                    />
+                                  ) : selectedOpt ? (
+                                    <div className="w-7 h-7 rounded flex-shrink-0" style={{ background: t.surface }} />
+                                  ) : null}
+                                  <span className="flex-1 text-left truncate">
+                                    {tag.value || '— Selecione —'}
+                                  </span>
+                                  <ChevronDown
+                                    className={`h-4 w-4 flex-shrink-0 transition-transform ${isPickerOpen ? 'rotate-180' : ''}`}
+                                    style={{ color: t.text3 }}
+                                  />
+                                </button>
+
+                                {/* Painel de opções (lista vertical) */}
+                                {isPickerOpen && (
+                                  <div
+                                    className="absolute z-20 left-0 right-0 mt-1 rounded-lg shadow-lg overflow-y-auto"
+                                    style={{
+                                      background: t.surface,
+                                      border: `1px solid ${t.border}`,
+                                      maxHeight: '18rem',
+                                    }}
+                                  >
+                                    {/* opção "Nenhuma" */}
+                                    <button
+                                      type="button"
+                                      onClick={() => { updateValue(''); setOpenImagePicker(null) }}
+                                      className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:bg-emerald-50/60 transition-colors"
+                                      style={{ color: tag.value === '' ? '#059669' : t.text3 }}
+                                    >
+                                      <div
+                                        className="w-7 h-7 rounded border border-dashed flex items-center justify-center text-xs flex-shrink-0"
+                                        style={{ borderColor: t.border, color: t.text3 }}
+                                      >
+                                        —
+                                      </div>
+                                      <span className="flex-1">Nenhuma</span>
+                                      {tag.value === '' && <Check className="h-4 w-4 text-emerald-500" />}
+                                    </button>
+
+                                    {normalized.map((opt, i) => {
+                                      const isSelected = tag.value === opt.label
+                                      return (
+                                        <button
+                                          type="button"
+                                          key={i}
+                                          onClick={() => { updateValue(opt.label); setOpenImagePicker(null) }}
+                                          className={`w-full px-3 py-2 flex items-center gap-2 text-sm text-left transition-colors ${
+                                            isSelected ? 'bg-emerald-50' : 'hover:bg-gray-50'
+                                          }`}
+                                          style={{ color: isSelected ? '#059669' : t.text }}
+                                        >
+                                          {opt.imagePath ? (
+                                            <img
+                                              src={getOptionImageUrl(opt.imagePath)}
+                                              alt=""
+                                              className="w-7 h-7 rounded object-cover flex-shrink-0"
+                                              loading="lazy"
+                                            />
+                                          ) : (
+                                            <div
+                                              className="w-7 h-7 rounded flex items-center justify-center text-[9px] flex-shrink-0"
+                                              style={{ color: t.text3, background: t.surface2 }}
+                                            >
+                                              s/img
+                                            </div>
+                                          )}
+                                          <span className="flex-1 truncate">{opt.label}</span>
+                                          {isSelected && <Check className="h-4 w-4 text-emerald-500 flex-shrink-0" />}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })()}
+
+                          {/* ── Tag TEXTO com opções: select ─────────────────────────── */}
+                          {tagType === 'text' && options.length > 0 && (
+                            <select
+                              value={tag.value}
+                              onChange={e => updateValue(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                              style={{
+                                background: t.surface2,
+                                border: `1px solid ${t.border}`,
+                                color: tag.value ? t.text : t.text3,
+                              }}
+                            >
                               <option value="">— Selecione —</option>
-                              {options.map((opt: string, i: number) => <option key={i} value={opt}>{opt}</option>)}
+                              {options.map((opt: any, i: number) => {
+                                const label = typeof opt === 'string' ? opt : (opt?.label ?? '')
+                                return <option key={i} value={label}>{label}</option>
+                              })}
                             </select>
-                        ) : (
-                            <input value={tag.value} onChange={e => setClientTags(prev => prev.map(t => t.templateId === tag.templateId ? { ...t, value: e.target.value } : t))} placeholder="Digite o valor..." className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
+                          )}
+
+                          {/* ── Tag TEXTO sem opções: input livre ────────────────────── */}
+                          {tagType === 'text' && options.length === 0 && (
+                            <input
+                              value={tag.value}
+                              onChange={e => updateValue(e.target.value)}
+                              placeholder="Digite o valor..."
+                              className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                              style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }}
+                            />
+                          )}
+
+                          {/* ── Tag IMAGEM sem opções: aviso ────────────────────────── */}
+                          {tagType === 'image' && options.length === 0 && (
+                            <p
+                              className="text-xs italic px-3 py-2 rounded-lg"
+                              style={{ color: t.text3, background: t.surface2, border: `1px dashed ${t.border}` }}
+                            >
+                              Cadastre opções desta tag em <strong>Configurações</strong>.
+                            </p>
                           )}
                         </div>
                       )
