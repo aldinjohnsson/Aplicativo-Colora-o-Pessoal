@@ -2860,13 +2860,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [nameInput, setNameInput] = useState('')
   const [savingName, setSavingName] = useState(false)
 
-  // Fotos de referência escolhidas manualmente no chat admin
-  // null = usa as derivadas automaticamente; array = override do admin para a sessão
-  const [adminChatRefPhotos, setAdminChatRefPhotos] = useState<
-    { type: string; label: string; storagePath: string; url: string }[] | null
-  >(null)
-  const [showRefPhotoPicker, setShowRefPhotoPicker] = useState(false)
-
   // Qual dropdown de tag-imagem está aberto (apenas 1 por vez, igual select nativo)
   const [openImagePicker, setOpenImagePicker] = useState<string | null>(null)
 
@@ -3270,20 +3263,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   // (folder + tags) para refletir mudanças não-salvas. Assim o admin pode
   // testar o efeito de uma nova tag antes de bater "Salvar".
   const adminAiSystemPrompt = buildSystemPrompt(client.full_name, linkedFolderConfig, clientTags)
-
-  // Helper: infere o tipo de referência de IA a partir do título da categoria.
-  const inferRefType = (title: string): 'cabelo' | 'roupa' | 'geral' => {
-    const low = title.toLowerCase()
-    if (low.includes('cabelo') || low.includes('hair')) return 'cabelo'
-    if (low.includes('roupa') || low.includes('corpo') || low.includes('look') || low.includes('vestim')) return 'roupa'
-    return 'geral'
-  }
-
-  // Fotos de referência para o chat admin:
-  // 1. ai_reference_photos salvo no banco (atribuído formalmente)
-  // 2. ai_reference_photo_path legado
-  // 3. Fallback automático a partir das fotos enviadas pela cliente
-  //    → permite usar o chat antes de liberar o resultado
   const adminAiRefPhotos: { type: string; label: string; storagePath: string; url: string }[] = (() => {
     if (Array.isArray(client.ai_reference_photos) && client.ai_reference_photos.length > 0) {
       return client.ai_reference_photos.map((p: any) => ({
@@ -3297,35 +3276,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       const url = supabase.storage.from('client-photos').getPublicUrl(client.ai_reference_photo_path).data.publicUrl
       return [{ type: 'geral', label: 'Foto Geral/Rosto', storagePath: client.ai_reference_photo_path, url }]
     }
-    // Fallback: deriva das fotos enviadas, uma por categoria
-    const seen = new Set<string>()
-    const derived: { type: string; label: string; storagePath: string; url: string }[] = []
-    for (const cat of (photoCategories || [])) {
-      if ((cat as any).is_ai_simulation) continue
-      const catPhotos = (photos || []).filter((p: any) => p.category_id === cat.id && p.storage_path)
-      if (catPhotos.length === 0) continue
-      const photo = catPhotos[catPhotos.length - 1] // usa a mais recente
-      const type = inferRefType(cat.title)
-      if (!seen.has(type)) {
-        seen.add(type)
-        derived.push({
-          type,
-          label: cat.title,
-          storagePath: photo.storage_path,
-          url: supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl,
-        })
-      }
-    }
-    // Garante sempre uma entrada 'geral'
-    if (!seen.has('geral') && derived.length > 0) {
-      derived.unshift({ ...derived[0], type: 'geral', label: `${derived[0].label} (principal)` })
-    }
-    return derived
+    return []
   })()
-
-  // Fotos efetivas para o GeminiChat: override manual do admin > auto-derivadas
-  const effectiveAdminRefPhotos = adminChatRefPhotos ?? adminAiRefPhotos
-  const adminAiRefPhotoUrl = effectiveAdminRefPhotos.find(p => p.type === 'geral')?.url || effectiveAdminRefPhotos[0]?.url || null
+  const adminAiRefPhotoUrl = adminAiRefPhotos.find(p => p.type === 'geral')?.url || adminAiRefPhotos[0]?.url || null
   const adminResultFileUrls = (resultFiles || []).map((f: any) => ({
     url: adminService.getResultFileUrl(f.storage_path),
     name: f.file_name,
@@ -4134,142 +4087,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             </div>
           </div>
 
-          {/* ── Painel de fotos de referência para o chat ─────────────────── */}
-          {(() => {
-            // Todas as fotos não-IA agrupadas por categoria, para o picker
-            const allCatPhotos = (photoCategories || [])
-              .filter((cat: any) => !cat.is_ai_simulation)
-              .map((cat: any) => ({
-                cat,
-                catPhotos: (photos || []).filter((p: any) => p.category_id === cat.id && p.storage_path).map((p: any) => ({
-                  ...p,
-                  url: supabase.storage.from('client-photos').getPublicUrl(p.storage_path).data.publicUrl,
-                })),
-              }))
-              .filter(({ catPhotos }) => catPhotos.length > 0)
-
-            if (allCatPhotos.length === 0) return null
-
-            const TYPE_LABEL: Record<string, string> = { cabelo: '💇 Cabelo', roupa: '👗 Roupa', geral: '🧍 Geral/Rosto' }
-
-            return (
-              <div className="rounded-xl overflow-hidden" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
-                {/* Header */}
-                <button
-                  onClick={() => setShowRefPhotoPicker(v => !v)}
-                  className="w-full flex items-center gap-3 p-3 text-left transition-colors"
-                  style={{ borderBottom: showRefPhotoPicker ? `1px solid ${t.border}` : 'none' }}
-                >
-                  <Camera className="h-4 w-4 flex-shrink-0" style={{ color: t.accent }} />
-                  <span className="text-sm font-semibold flex-1" style={{ color: t.text }}>
-                    Fotos de referência do chat
-                  </span>
-                  {/* Miniaturas das fotos selecionadas */}
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    {effectiveAdminRefPhotos.slice(0, 3).map((rp, i) => (
-                      <div key={i} className="w-7 h-7 rounded-lg overflow-hidden border-2" style={{ borderColor: t.accent }}>
-                        <img src={rp.url} alt="" className="w-full h-full object-cover" />
-                      </div>
-                    ))}
-                    {effectiveAdminRefPhotos.length === 0 && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                        Nenhuma foto
-                      </span>
-                    )}
-                  </div>
-                  <ChevronDown className={`h-4 w-4 flex-shrink-0 transition-transform ${showRefPhotoPicker ? 'rotate-180' : ''}`} style={{ color: t.text3 }} />
-                </button>
-
-                {showRefPhotoPicker && (
-                  <div className="p-3 space-y-3">
-                    <p className="text-xs" style={{ color: t.text3 }}>
-                      Selecione qual foto de cada categoria será usada como referência nas gerações do chat. A seleção vale apenas para esta sessão.
-                    </p>
-
-                    {/* Fotos atualmente selecionadas */}
-                    {effectiveAdminRefPhotos.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {effectiveAdminRefPhotos.map((rp, i) => (
-                          <div key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium"
-                            style={{ background: t.accentLight, color: t.accent, border: `1px solid ${t.accent}30` }}>
-                            <div className="w-5 h-5 rounded overflow-hidden flex-shrink-0">
-                              <img src={rp.url} alt="" className="w-full h-full object-cover" />
-                            </div>
-                            <span>{TYPE_LABEL[rp.type] || rp.type}: {rp.label}</span>
-                            <button
-                              onClick={() => {
-                                const next = effectiveAdminRefPhotos.filter((_, j) => j !== i)
-                                setAdminChatRefPhotos(next)
-                              }}
-                              className="ml-0.5 opacity-60 hover:opacity-100"
-                            ><X className="h-3 w-3" /></button>
-                          </div>
-                        ))}
-                        {adminChatRefPhotos !== null && (
-                          <button
-                            onClick={() => setAdminChatRefPhotos(null)}
-                            className="text-xs px-2 py-1 rounded-lg border"
-                            style={{ color: t.text3, borderColor: t.border }}
-                          >↺ Restaurar auto</button>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Picker: fotos por categoria */}
-                    {allCatPhotos.map(({ cat, catPhotos }) => (
-                      <div key={cat.id}>
-                        <p className="text-xs font-semibold mb-1.5" style={{ color: t.text2 }}>
-                          {cat.title} <span className="font-normal" style={{ color: t.text3 }}>→ {TYPE_LABEL[inferRefType(cat.title)]}</span>
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {catPhotos.map((photo: any) => {
-                            const type = inferRefType(cat.title)
-                            const isSelected = effectiveAdminRefPhotos.some(r => r.storagePath === photo.storage_path)
-                            return (
-                              <button
-                                key={photo.id}
-                                onClick={() => {
-                                  const base = adminChatRefPhotos ?? adminAiRefPhotos
-                                  // Remove qualquer foto do mesmo tipo e adiciona esta
-                                  const next = base.filter(r => r.type !== type)
-                                  next.push({
-                                    type,
-                                    label: cat.title,
-                                    storagePath: photo.storage_path,
-                                    url: photo.url,
-                                  })
-                                  // Garante 'geral' presente
-                                  if (!next.find(r => r.type === 'geral')) {
-                                    next.unshift({ ...next[0], type: 'geral', label: `${next[0].label} (principal)` })
-                                  }
-                                  setAdminChatRefPhotos(next)
-                                }}
-                                className="relative rounded-lg overflow-hidden flex-shrink-0 transition-all"
-                                style={{
-                                  width: 52, height: 52,
-                                  outline: isSelected ? `2.5px solid ${t.accent}` : '2px solid transparent',
-                                  outlineOffset: 1,
-                                }}
-                                title={`Usar esta foto como referência de ${TYPE_LABEL[type] || type}`}
-                              >
-                                <img src={photo.url} alt="" className="w-full h-full object-cover" />
-                                {isSelected && (
-                                  <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.35)' }}>
-                                    <Check className="h-4 w-4 text-white drop-shadow" />
-                                  </div>
-                                )}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          })()}
-
           {!adminAiSystemPrompt ? (
             <div className="rounded-xl p-6 text-center" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
               <Wand2 className="h-8 w-8 mx-auto mb-2" style={{ color: t.text3 }} />
@@ -4283,7 +4100,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               clientName={client.full_name}
               systemPrompt={adminAiSystemPrompt}
               referencePhotoUrl={adminAiRefPhotoUrl}
-              referencePhotos={effectiveAdminRefPhotos}
+              referencePhotos={adminAiRefPhotos}
               folderConfig={linkedFolderConfig}
               clientId={clientId!}
               resultFileUrls={adminResultFileUrls}
