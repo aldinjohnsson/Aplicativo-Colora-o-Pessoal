@@ -1,12 +1,22 @@
 // src/components/admin/documents/client/TagValueImageDialog.tsx
 //
 // Modal usado em ClientTagValuesPanel para definir o valor de uma tag de
-// imagem. Tem duas abas:
+// imagem. Três abas:
 //   1. "Das fotos do cliente" — grade das fotos já enviadas (client_photos).
-//   2. "Upload novo"          — file input para imagem avulsa.
+//   2. "Das tags de análise"  — imagens das opções selecionadas em
+//                               ai_info_templates do tipo imagem.
+//   3. "Upload novo"          — file input para imagem avulsa.
+//
+// A aba "Tags de análise" usa o snapshot/cópia: ao confirmar, baixa os bytes
+// da imagem do catálogo (bucket ai-tag-option-images) e devolve como um
+// `File` normal via onSelect({ kind: 'upload', file: ... }). Assim o caller
+// usa o fluxo existente de upload, sem nenhuma mudança de schema ou de
+// resolveTagValues / generatePdf.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { X, Upload, Image as ImageIcon, Camera, Check, AlertCircle } from 'lucide-react'
+import {
+  X, Upload, Image as ImageIcon, Camera, Check, AlertCircle, Tag as TagIcon,
+} from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 
 // ── Btn ───────────────────────────────────────────────────────────────
@@ -45,6 +55,14 @@ interface ClientPhoto {
   category_title: string | null
 }
 
+interface AiInfoImageSource {
+  templateId: string
+  templateName: string
+  selectedLabel: string
+  imagePath: string
+  imageUrl: string
+}
+
 export type ImageDialogResult =
   | { kind: 'photo'; photoId: string }
   | { kind: 'upload'; file: File }
@@ -58,35 +76,58 @@ interface Props {
   onSelect: (result: ImageDialogResult) => void | Promise<void>
 }
 
+type Tab = 'existing' | 'ai_info' | 'upload'
+
 // ─── Component ────────────────────────────────────────────────────────
 
 export function TagValueImageDialog({
   clientId, tagName, currentPhotoId, onClose, onSelect,
 }: Props) {
-  const [tab, setTab] = useState<'existing' | 'upload'>('existing')
+  const [tab, setTab] = useState<Tab>('existing')
 
+  // ── Aba "fotos do cliente" ──
   const [photos, setPhotos] = useState<ClientPhoto[]>([])
   const [loadingPhotos, setLoadingPhotos] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [photosError, setPhotosError] = useState<string | null>(null)
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(currentPhotoId ?? null)
 
+  // ── Aba "tags de análise" ──
+  const [aiSources, setAiSources] = useState<AiInfoImageSource[]>([])
+  const [loadingAi, setLoadingAi] = useState(true)
+  const [aiError, setAiError] = useState<string | null>(null)
+  const [selectedAiKey, setSelectedAiKey] = useState<string | null>(null)
+
+  // ── Aba "upload" ──
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
 
+  // ── Submit ──
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  // ── Load photos ──────────────────────────────────────────────────
+  // ── Load fotos ──────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
     setLoadingPhotos(true)
-    setLoadError(null)
+    setPhotosError(null)
     documentsService.listClientPhotos(clientId)
       .then(list => { if (!cancelled) setPhotos(list) })
-      .catch(e => { if (!cancelled) setLoadError(e?.message || 'Erro ao carregar fotos') })
+      .catch(e => { if (!cancelled) setPhotosError(e?.message || 'Erro ao carregar fotos') })
       .finally(() => { if (!cancelled) setLoadingPhotos(false) })
+    return () => { cancelled = true }
+  }, [clientId])
+
+  // ── Load AI info image sources ─────────────────────────────────
+  useEffect(() => {
+    let cancelled = false
+    setLoadingAi(true)
+    setAiError(null)
+    documentsService.getAiInfoImageSources(clientId)
+      .then(list => { if (!cancelled) setAiSources(list) })
+      .catch(e => { if (!cancelled) setAiError(e?.message || 'Erro ao carregar tags de análise') })
+      .finally(() => { if (!cancelled) setLoadingAi(false) })
     return () => { cancelled = true }
   }, [clientId])
 
@@ -126,11 +167,31 @@ export function TagValueImageDialog({
     if (f) handleFileChange(f)
   }
 
+  // ── Materializa imagem do catálogo AI info em File ─────────────
+  const buildFileFromAiInfoSource = async (src: AiInfoImageSource): Promise<File> => {
+    const res = await fetch(src.imageUrl)
+    if (!res.ok) {
+      throw new Error(`Falha ao baixar imagem do catálogo (HTTP ${res.status})`)
+    }
+    const blob = await res.blob()
+    const mime = blob.type || 'image/jpeg'
+    const ext  = mime.toLowerCase().includes('png') ? 'png' : 'jpg'
+    // Nome amigável: "<tag>_<label>.<ext>" sanitizado
+    const baseName = `${src.templateName}_${src.selectedLabel}`
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 60) || 'ai_info'
+    const fileName = `${baseName}.${ext}`
+    return new File([blob], fileName, { type: mime })
+  }
+
   // ── Submit ───────────────────────────────────────────────────────
   const handleConfirm = async () => {
     setSubmitError(null)
     try {
       setSubmitting(true)
+
       if (tab === 'existing') {
         if (!selectedPhotoId) {
           setSubmitError('Selecione uma foto.')
@@ -138,14 +199,28 @@ export function TagValueImageDialog({
           return
         }
         await onSelect({ kind: 'photo', photoId: selectedPhotoId })
-      } else {
-        if (!file) {
-          setSubmitError('Escolha um arquivo primeiro.')
+        return
+      }
+
+      if (tab === 'ai_info') {
+        const src = aiSources.find(s => s.templateId === selectedAiKey)
+        if (!src) {
+          setSubmitError('Selecione uma tag de análise.')
           setSubmitting(false)
           return
         }
-        await onSelect({ kind: 'upload', file })
+        const synthFile = await buildFileFromAiInfoSource(src)
+        await onSelect({ kind: 'upload', file: synthFile })
+        return
       }
+
+      // upload tab
+      if (!file) {
+        setSubmitError('Escolha um arquivo primeiro.')
+        setSubmitting(false)
+        return
+      }
+      await onSelect({ kind: 'upload', file })
     } catch (e: any) {
       setSubmitError(e?.message || 'Erro ao salvar imagem')
     } finally {
@@ -162,6 +237,12 @@ export function TagValueImageDialog({
     }
     grouped[key].photos.push(p)
   }
+
+  // ── Disponibilidade do botão "Usar esta imagem" ────────────────
+  const canConfirm =
+    (tab === 'existing' && !!selectedPhotoId) ||
+    (tab === 'ai_info'  && !!selectedAiKey) ||
+    (tab === 'upload'   && !!file)
 
   return (
     <div
@@ -188,7 +269,7 @@ export function TagValueImageDialog({
 
         {/* Tabs */}
         <div className="px-5 pt-3 flex-shrink-0 border-b border-gray-100">
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit flex-wrap">
             <button
               onClick={() => setTab('existing')}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
@@ -201,6 +282,20 @@ export function TagValueImageDialog({
                 <span className="text-[10px] px-1.5 rounded-full bg-gray-200 text-gray-600">{photos.length}</span>
               )}
             </button>
+
+            <button
+              onClick={() => setTab('ai_info')}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                tab === 'ai_info' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <TagIcon className="h-3.5 w-3.5" />
+              Das tags de análise
+              {aiSources.length > 0 && (
+                <span className="text-[10px] px-1.5 rounded-full bg-violet-100 text-violet-700">{aiSources.length}</span>
+              )}
+            </button>
+
             <button
               onClick={() => setTab('upload')}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
@@ -215,23 +310,24 @@ export function TagValueImageDialog({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
-          {tab === 'existing' ? (
+          {/* ── Aba: fotos do cliente ───────────────────────────────── */}
+          {tab === 'existing' && (
             <>
               {loadingPhotos ? (
                 <div className="flex justify-center py-12">
                   <div className="animate-spin h-7 w-7 border-2 border-rose-400 border-t-transparent rounded-full" />
                 </div>
-              ) : loadError ? (
+              ) : photosError ? (
                 <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
                   <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-                  <p className="text-xs text-red-700">{loadError}</p>
+                  <p className="text-xs text-red-700">{photosError}</p>
                 </div>
               ) : photos.length === 0 ? (
                 <div className="text-center py-12 text-sm text-gray-500">
                   <ImageIcon className="h-8 w-8 mx-auto mb-2 text-gray-300" />
                   Nenhuma foto enviada pelo cliente ainda.
                   <br />
-                  Use a aba "Upload novo" para anexar uma imagem.
+                  Use as outras abas para anexar uma imagem.
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -271,8 +367,70 @@ export function TagValueImageDialog({
                 </div>
               )}
             </>
-          ) : (
-            // Upload tab
+          )}
+
+          {/* ── Aba: tags de análise ────────────────────────────────── */}
+          {tab === 'ai_info' && (
+            <>
+              {loadingAi ? (
+                <div className="flex justify-center py-12">
+                  <div className="animate-spin h-7 w-7 border-2 border-violet-400 border-t-transparent rounded-full" />
+                </div>
+              ) : aiError ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-red-700">{aiError}</p>
+                </div>
+              ) : aiSources.length === 0 ? (
+                <div className="text-center py-12 text-sm text-gray-500">
+                  <TagIcon className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                  Nenhuma tag de análise do tipo imagem preenchida pra este cliente.
+                  <br />
+                  Volte à aba <strong>Resultado</strong> do cliente e selecione uma opção que tenha imagem.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {aiSources.map(src => {
+                    const selected = selectedAiKey === src.templateId
+                    return (
+                      <button
+                        key={src.templateId}
+                        onClick={() => setSelectedAiKey(src.templateId)}
+                        className={`group relative rounded-lg overflow-hidden border-2 transition-all text-left ${
+                          selected ? 'border-rose-500 ring-2 ring-rose-200' : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="aspect-square bg-gray-50 overflow-hidden">
+                          <img
+                            src={src.imageUrl}
+                            alt={src.selectedLabel}
+                            loading="lazy"
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="px-2 py-1.5 bg-white">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-600 truncate">
+                            {src.templateName}
+                          </p>
+                          <p className="text-xs font-medium text-gray-800 truncate">
+                            {src.selectedLabel}
+                          </p>
+                        </div>
+                        {selected && (
+                          <div className="absolute top-1.5 right-1.5 h-6 w-6 rounded-full bg-rose-500 text-white flex items-center justify-center shadow-lg">
+                            <Check className="h-3.5 w-3.5" />
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Aba: upload novo ──────────────────────────────────── */}
+          {tab === 'upload' && (
             <div className="space-y-3">
               <input
                 ref={fileInputRef}
@@ -334,7 +492,7 @@ export function TagValueImageDialog({
             variant="primary"
             onClick={handleConfirm}
             loading={submitting}
-            disabled={submitting || (tab === 'existing' && !selectedPhotoId) || (tab === 'upload' && !file)}
+            disabled={submitting || !canConfirm}
           >
             {submitting ? 'Salvando...' : 'Usar esta imagem'}
           </Btn>

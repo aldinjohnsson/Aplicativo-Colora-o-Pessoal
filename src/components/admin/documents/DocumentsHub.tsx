@@ -10,12 +10,13 @@
 
 import React from 'react'
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { FileText, Tag as TagIcon, Layers } from 'lucide-react'
+import { FileText, Tag as TagIcon, Layers, Sparkles } from 'lucide-react'
 import { TagsManager } from './tags/TagsManager'
 import { TemplatesList } from './templates/TemplatesList'
 import { TemplateEditor } from './templates/editor/TemplateEditor'
+import { AiImagePromptsManager } from './prompts/AiImagePromptsManager'
 
-type Tab = 'tags' | 'templates'
+type Tab = 'tags' | 'templates' | 'prompts'
 
 // ─── Shell (header + tabs) ───────────────────────────────────────────
 
@@ -23,8 +24,9 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
   const navigate = useNavigate()
 
   const TABS: { id: Tab; label: string; icon: any; to: string }[] = [
-    { id: 'tags',      label: 'Tags',      icon: TagIcon, to: '/admin/documents/tags' },
-    { id: 'templates', label: 'Templates', icon: Layers,  to: '/admin/documents/templates' },
+    { id: 'tags',      label: 'Tags',       icon: TagIcon,   to: '/admin/documents/tags' },
+    { id: 'templates', label: 'Templates',  icon: Layers,    to: '/admin/documents/templates' },
+    { id: 'prompts',   label: 'Prompts IA', icon: Sparkles,  to: '/admin/documents/prompts' },
   ]
 
   return (
@@ -64,6 +66,7 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
 
           {tab === 'tags' && <TagsManager />}
           {tab === 'templates' && <TemplatesList />}
+          {tab === 'prompts' && <AiImagePromptsManager />}
         </div>
       </div>
     </div>
@@ -78,7 +81,9 @@ export function DocumentsHub() {
   // Detecta a aba só pra colorir o destaque.
   const path = location.pathname
   const tab: Tab =
-    path.includes('/documents/templates') ? 'templates' : 'tags'
+    path.includes('/documents/templates') ? 'templates' :
+    path.includes('/documents/prompts')   ? 'prompts' :
+    'tags'
 
   return (
     <Routes>
@@ -88,6 +93,7 @@ export function DocumentsHub() {
       {/* Rotas que usam o shell com abas */}
       <Route path="tags"      element={<DocumentsHubShell tab="tags" />} />
       <Route path="templates" element={<DocumentsHubShell tab="templates" />} />
+      <Route path="prompts"   element={<DocumentsHubShell tab="prompts" />} />
 
       {/* Default: redireciona para Tags */}
       <Route path="*" element={<DocumentsHubShell tab={tab} />} />

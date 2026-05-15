@@ -16,16 +16,79 @@ import {
   Tag as TagIcon, Type as TypeIcon, Image as ImageIcon,
   Download as DownloadIcon, ChevronDown, Check,
   AlertCircle, Trash2, Loader2, Inbox, RefreshCw,
+  Link2, ExternalLink, Sparkles, Wand2,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import type {
   DocumentTag, ClientTagValue, TextImportSourceOption,
 } from '../types'
 import { TagValueImageDialog, ImageDialogResult } from './TagValueImageDialog'
+import { GenerateAiImageDialog } from './GenerateAiImageDialog'
 
 // ─── Save status ──────────────────────────────────────────────────────
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+// ─── Vínculo a fonte do sistema ───────────────────────────────────────
+
+interface AiInfoLink {
+  templateId: string
+  templateName: string
+  templateType: 'text' | 'image'
+  selectedLabel: string
+  imagePath: string | null
+  imageUrl: string | null
+}
+
+/**
+ * Lê o vínculo de uma DocumentTag.
+ *
+ * Suporta:
+ *  • Formato novo (canônico):
+ *      { source: 'import_source', key: '<chave>' }
+ *  • Formato antigo (compat):
+ *      { source: 'ai_info_template', templateId: '<uuid>' }
+ *      → equivalente a key: 'ai_info:<uuid>'
+ *
+ * Retorna:
+ *  • kind='ai_info_image' → doc-tag imagem que precisa do arquivo
+ *    do catálogo AI Info (usa aiInfoLinks pra resolver bytes/URL)
+ *  • kind='import_source' → doc-tag texto que pega a string via
+ *    getTextImportSources (textSources já carregado)
+ *  • null → tag manual (não vinculada)
+ */
+type ParsedTagLink =
+  | { kind: 'ai_info_image'; templateId: string }
+  | { kind: 'import_source'; key: string }
+  | { kind: 'ai_generated' }
+  | null
+
+function parseTagLink(tag: DocumentTag): ParsedTagLink {
+  const hint = (tag as any).default_hint
+  if (!hint || typeof hint !== 'object') return null
+
+  if (hint.source === 'ai_generated') {
+    // promptId pode existir em tags antigas — ignoramos, agora é escolhido por cliente.
+    if (tag.type === 'image') return { kind: 'ai_generated' }
+    return null   // ai_generated só vale pra image
+  }
+
+  if (hint.source === 'ai_info_template' && typeof hint.templateId === 'string' && hint.templateId) {
+    if (tag.type === 'image') return { kind: 'ai_info_image', templateId: hint.templateId }
+    return { kind: 'import_source', key: `ai_info:${hint.templateId}` }
+  }
+
+  if (hint.source === 'import_source' && typeof hint.key === 'string' && hint.key) {
+    if (tag.type === 'image') {
+      const m = /^ai_info:(.+)$/.exec(hint.key)
+      if (m) return { kind: 'ai_info_image', templateId: m[1] }
+      return null
+    }
+    return { kind: 'import_source', key: hint.key }
+  }
+
+  return null
+}
 
 function StatusDot({ status }: { status: SaveStatus }) {
   if (status === 'idle') return null
@@ -53,6 +116,7 @@ export function ClientTagValuesPanel({ clientId }: Props) {
   const [tags, setTags] = useState<DocumentTag[]>([])
   const [valuesByTag, setValuesByTag] = useState<Record<string, ClientTagValue>>({})
   const [textSources, setTextSources] = useState<TextImportSourceOption[]>([])
+  const [aiInfoLinks, setAiInfoLinks] = useState<Record<string, AiInfoLink>>({})  // chave: templateId
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -70,6 +134,21 @@ export function ClientTagValuesPanel({ clientId }: Props) {
       for (const v of valuesList) map[v.tag_id] = v
       setValuesByTag(map)
       setTextSources(sources)
+
+      // Resolve os vínculos AI Info imagem (precisa dos templates pra ter URL).
+      // Tags texto vinculadas resolvem via textSources direto, sem chamada extra.
+      const linkedTplIdsForImage = Array.from(new Set(
+        tagsList
+          .map(t => parseTagLink(t))
+          .filter((x): x is { kind: 'ai_info_image'; templateId: string } => x?.kind === 'ai_info_image')
+          .map(x => x.templateId)
+      ))
+      if (linkedTplIdsForImage.length > 0) {
+        const links = await documentsService.resolveAiInfoLinks(clientId, linkedTplIdsForImage)
+        setAiInfoLinks(links)
+      } else {
+        setAiInfoLinks({})
+      }
     } catch (e: any) {
       setError(e?.message || 'Erro ao carregar tags e valores')
     } finally {
@@ -89,14 +168,32 @@ export function ClientTagValuesPanel({ clientId }: Props) {
   }
 
   const filledCount = useMemo(() => {
+    const sourceByKey: Record<string, TextImportSourceOption> = {}
+    for (const s of textSources) sourceByKey[s.key] = s
+
     return tags.reduce((acc, t) => {
+      const link = parseTagLink(t)
+      if (link?.kind === 'ai_info_image') {
+        const ai = aiInfoLinks[link.templateId]
+        return acc + (ai?.imageUrl ? 1 : 0)
+      }
+      if (link?.kind === 'import_source') {
+        const src = sourceByKey[link.key]
+        return acc + (src?.value && src.value.trim() ? 1 : 0)
+      }
+      if (link?.kind === 'ai_generated') {
+        // Considera preenchida se a geração já foi salva em client_tag_values.
+        const v = valuesByTag[t.id]
+        return acc + (v?.image_storage_path ? 1 : 0)
+      }
+      // manual
       const v = valuesByTag[t.id]
       if (!v) return acc
       if (t.type === 'text')  return acc + (v.text_value && v.text_value.trim() ? 1 : 0)
       if (t.type === 'image') return acc + ((v.photo_id || v.image_storage_path) ? 1 : 0)
       return acc
     }, 0)
-  }, [tags, valuesByTag])
+  }, [tags, valuesByTag, aiInfoLinks, textSources])
 
   if (loading) {
     return (
@@ -158,8 +255,32 @@ export function ClientTagValuesPanel({ clientId }: Props) {
           </div>
         ) : (
           <div className="space-y-3">
-            {tags.map(tag => (
-              tag.type === 'text'
+            {tags.map(tag => {
+              const link = parseTagLink(tag)
+              if (link?.kind === 'ai_generated') {
+                return (
+                  <GeneratedTagRow
+                    key={tag.id}
+                    clientId={clientId}
+                    tag={tag}
+                    value={valuesByTag[tag.id]}
+                    onUpdate={v => updateLocal(tag.id, v)}
+                  />
+                )
+              }
+              if (link) {
+                return (
+                  <LinkedTagRow
+                    key={tag.id}
+                    clientId={clientId}
+                    tag={tag}
+                    link={link}
+                    aiInfoLink={link.kind === 'ai_info_image' ? aiInfoLinks[link.templateId] : null}
+                    textSources={textSources}
+                  />
+                )
+              }
+              return tag.type === 'text'
                 ? <TextTagRow
                     key={tag.id}
                     tag={tag}
@@ -175,7 +296,7 @@ export function ClientTagValuesPanel({ clientId }: Props) {
                     value={valuesByTag[tag.id]}
                     onUpdate={v => updateLocal(tag.id, v)}
                   />
-            ))}
+            })}
           </div>
         )}
       </div>
@@ -612,6 +733,297 @@ function ImageTagRow({
           currentPhotoId={value?.photo_id ?? null}
           onClose={() => setShowDialog(false)}
           onSelect={handleSelect}
+        />
+      )}
+    </>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//   LinkedTagRow — tag vinculada a uma fonte do sistema (read-only)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Renderiza a tag em modo leitura, exibindo o valor que vai entrar no PDF
+// (label, ou imagem) puxado da fonte vinculada. Pra editar, o admin precisa
+// ir até a origem do dado (geralmente a aba Resultado).
+
+function LinkedTagRow({
+  clientId, tag, link, aiInfoLink, textSources,
+}: {
+  clientId: string
+  tag: DocumentTag
+  link: ParsedTagLink
+  aiInfoLink: AiInfoLink | null      // só pra link.kind === 'ai_info_image'
+  textSources: TextImportSourceOption[]
+}) {
+  const goToResult = () => {
+    window.location.href = `/admin/clients/${clientId}#result`
+  }
+
+  // ── Caminho A: imagem vinculada a AI Info ──
+  if (link?.kind === 'ai_info_image') {
+    const missingValue = !aiInfoLink
+    const missingImage = !!aiInfoLink && !aiInfoLink.imageUrl
+    const hasResolved  = !!aiInfoLink && !!aiInfoLink.imageUrl
+
+    return (
+      <TagRowShell
+        icon={ImageIcon}
+        iconColor="text-violet-600 bg-violet-50"
+        title={tag.name}
+        description={tag.description}
+        status="idle"
+        tone={hasResolved ? 'filled' : 'default'}
+      >
+        <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+          <Link2 className="h-3 w-3" />
+          Automático · via Configurações
+        </div>
+
+        <div className="flex items-center gap-4">
+          <div className="h-24 w-24 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
+            {aiInfoLink?.imageUrl ? (
+              <img src={aiInfoLink.imageUrl} alt={aiInfoLink.selectedLabel} className="h-full w-full object-cover" />
+            ) : (
+              <ImageIcon className="h-7 w-7 text-gray-300" />
+            )}
+          </div>
+
+          <div className="flex-1 min-w-0">
+            {missingValue && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5" />
+                Cliente ainda não selecionou opção em Resultado
+              </p>
+            )}
+            {missingImage && aiInfoLink && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5" />
+                A opção <strong className="mx-1">"{aiInfoLink.selectedLabel}"</strong> não tem imagem cadastrada
+              </p>
+            )}
+            {hasResolved && aiInfoLink && (
+              <>
+                <p className="text-[11px] uppercase tracking-wide text-violet-600 font-semibold">
+                  {aiInfoLink.templateName}
+                </p>
+                <p className="text-sm font-medium text-gray-800 mt-0.5">
+                  {aiInfoLink.selectedLabel}
+                </p>
+              </>
+            )}
+            <button
+              onClick={goToResult}
+              className="mt-2 inline-flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {hasResolved ? 'Trocar em Resultado' : 'Selecionar em Resultado'}
+            </button>
+          </div>
+        </div>
+      </TagRowShell>
+    )
+  }
+
+  // ── Caminho B: texto vinculado a uma fonte (cliente/resultado/AI Info/etc) ──
+  if (link?.kind === 'import_source') {
+    const source   = textSources.find(s => s.key === link.key) || null
+    const value    = source?.value ?? null
+    const hasValue = !!value && value.trim() !== ''
+
+    // Label amigável da fonte. Se a fonte sumiu do catálogo (ex: AI Info
+    // removido), tentamos inferir só pra explicar pro admin.
+    const sourceLabel = source?.label || '(fonte não encontrada)'
+    const groupLabel  = source?.groupLabel || ''
+
+    return (
+      <TagRowShell
+        icon={TypeIcon}
+        iconColor="text-sky-600 bg-sky-50"
+        title={tag.name}
+        description={tag.description}
+        status="idle"
+        tone={hasValue ? 'filled' : 'default'}
+      >
+        <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+          <Link2 className="h-3 w-3" />
+          Automático · {groupLabel || 'via Configurações'}
+        </div>
+
+        <div className="space-y-2">
+          {!source ? (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5" />
+              Fonte original não foi encontrada — pode ter sido removida.
+            </p>
+          ) : !hasValue ? (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5" />
+              {groupLabel === 'Informações da análise'
+                ? 'Cliente ainda não preencheu essa tag em Resultado'
+                : `Sem valor em ${groupLabel || 'origem'} → ${sourceLabel}`}
+            </p>
+          ) : (
+            <>
+              <div className="px-3 py-2.5 rounded-lg bg-gray-50 border border-gray-200 text-sm text-gray-800 whitespace-pre-wrap break-words">
+                {value}
+              </div>
+              <p className="text-[11px] text-gray-500">
+                Vem de: <span className="font-medium text-gray-700">{groupLabel} → {sourceLabel}</span>
+              </p>
+            </>
+          )}
+          <button
+            onClick={goToResult}
+            className="inline-flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 hover:underline"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Abrir Resultado
+          </button>
+        </div>
+      </TagRowShell>
+    )
+  }
+
+  // ── Não deveria chegar aqui (sem vínculo) ──
+  return null
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//   GeneratedTagRow — tag tipo imagem gerada por IA (gpt-image-1)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Estado:
+//  • sem geração ainda  → CTA "Gerar imagem" abre GenerateAiImageDialog
+//  • já gerada          → preview + botões "Regenerar" e "Remover"
+//
+// Após gerar, faz reload local via onUpdate (mesma assinatura usada pelas
+// outras Rows). O image_storage_path já foi gravado pela Edge Function.
+
+function GeneratedTagRow({
+  clientId, tag, value, onUpdate,
+}: {
+  clientId: string
+  tag: DocumentTag
+  value: ClientTagValue | undefined
+  onUpdate: (next: ClientTagValue | undefined) => void
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [removing, setRemoving]     = useState(false)
+  const [imgUrl, setImgUrl]         = useState<string | null>(null)
+
+  const hasImage = !!value?.image_storage_path
+
+  // Resolve signed URL pra preview quando há imagem
+  useEffect(() => {
+    let cancelled = false
+    if (!hasImage || !value?.image_storage_path) { setImgUrl(null); return }
+    documentsService.getSignedTagImageUrl(value.image_storage_path)
+      .then(url => { if (!cancelled) setImgUrl(url) })
+      .catch(() => { if (!cancelled) setImgUrl(null) })
+    return () => { cancelled = true }
+  }, [hasImage, value?.image_storage_path])
+
+  const handleGenerated = async (storagePath: string) => {
+    // A Edge Function já fez upsert. Re-busca o ClientTagValue pra sincronizar UI.
+    try {
+      const list = await documentsService.listClientTagValues(clientId)
+      const updated = list.find(v => v.tag_id === tag.id)
+      onUpdate(updated)
+      setDialogOpen(false)
+    } catch {
+      // Mesmo se a re-busca falhar, fecha o modal — o admin pode dar refresh.
+      setDialogOpen(false)
+    }
+  }
+
+  const handleRemove = async () => {
+    if (!hasImage || !value) return
+    if (!confirm('Remover a imagem gerada? Você precisará gerar de novo pra incluir no PDF.')) return
+    setRemoving(true)
+    try {
+      await documentsService.clearClientTagValue(clientId, tag.id)
+      onUpdate(undefined)
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao remover')
+    } finally {
+      setRemoving(false)
+    }
+  }
+
+  return (
+    <>
+      <TagRowShell
+        icon={Sparkles}
+        iconColor="text-fuchsia-600 bg-fuchsia-50"
+        title={tag.name}
+        description={tag.description}
+        status="idle"
+        tone={hasImage ? 'filled' : 'default'}
+      >
+        <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200">
+          <Sparkles className="h-3 w-3" />
+          Gerada por IA
+        </div>
+
+        {hasImage ? (
+          <div className="flex items-start gap-4 flex-wrap">
+            <div className="h-32 w-32 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
+              {imgUrl ? (
+                <img src={imgUrl} alt={tag.name} className="h-full w-full object-cover" />
+              ) : (
+                <Loader2 className="h-5 w-5 text-gray-300 animate-spin" />
+              )}
+            </div>
+            <div className="flex-1 min-w-[200px] space-y-2">
+              <p className="text-xs text-gray-600">
+                Imagem gerada e pronta pra entrar no PDF.
+              </p>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => setDialogOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-fuchsia-600 text-white hover:bg-fuchsia-700"
+                >
+                  <Wand2 className="h-3.5 w-3.5" /> Regenerar
+                </button>
+                <button
+                  onClick={handleRemove}
+                  disabled={removing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {removing
+                    ? <div className="animate-spin h-3 w-3 border-2 border-current border-t-transparent rounded-full" />
+                    : <Trash2 className="h-3.5 w-3.5" />}
+                  Remover
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5" />
+              Nenhuma imagem gerada ainda
+            </p>
+            <div>
+              <button
+                onClick={() => setDialogOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-fuchsia-600 text-white hover:bg-fuchsia-700"
+              >
+                <Wand2 className="h-4 w-4" /> Gerar imagem
+              </button>
+            </div>
+          </div>
+        )}
+      </TagRowShell>
+
+      {dialogOpen && (
+        <GenerateAiImageDialog
+          clientId={clientId}
+          tagId={tag.id}
+          tagName={tag.name}
+          onClose={() => setDialogOpen(false)}
+          onGenerated={handleGenerated}
         />
       )}
     </>

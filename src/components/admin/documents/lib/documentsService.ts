@@ -327,6 +327,264 @@ export const documentsService = {
     return options
   },
 
+  // ────────────────────────────────────────────────────────────────
+  //  AI Info Tags do tipo IMAGEM — alimenta a aba "Tags de análise"
+  //  no picker de imagem (TagValueImageDialog).
+  //
+  //  Retorna, pra este cliente, apenas as tags ai_info_templates onde:
+  //   • type === 'image'
+  //   • o cliente selecionou alguma opção (clients.ai_info_tags)
+  //   • a opção selecionada tem imagePath cadastrado no catálogo
+  //
+  //  Tags sem imagem na opção ou ainda não preenchidas são filtradas.
+  // ────────────────────────────────────────────────────────────────
+
+  async getAiInfoImageSources(clientId: string): Promise<Array<{
+    templateId: string
+    templateName: string
+    selectedLabel: string
+    imagePath: string         // path no bucket ai-tag-option-images
+    imageUrl: string          // URL pública pronta pra <img src>
+  }>> {
+    // 1. Lê o que o cliente selecionou em cada tag
+    const { data: client, error: clientErr } = await supabase
+      .from('clients')
+      .select('ai_info_tags')
+      .eq('id', clientId)
+      .single()
+    if (clientErr) throw clientErr
+
+    const saved: Array<{ templateId: string; value: string }> =
+      Array.isArray(client?.ai_info_tags) ? (client!.ai_info_tags as any[]) : []
+    if (saved.length === 0) return []
+
+    const savedMap: Record<string, string> = {}
+    for (const row of saved) {
+      if (row && typeof row.templateId === 'string') {
+        savedMap[row.templateId] = (row.value ?? '').toString().trim()
+      }
+    }
+
+    // 2. Lê o catálogo de tags do tipo imagem
+    const { data: templates, error: tplErr } = await supabase
+      .from('ai_info_templates')
+      .select('id, name, options, sort_order')
+      .eq('type', 'image')
+      .order('sort_order')
+    if (tplErr) throw tplErr
+
+    // 3. Cruza: pra cada template-imagem, acha a opção cujo label
+    //    bate com o valor salvo pelo cliente; só inclui se a opção tem imagePath.
+    const out: Array<{
+      templateId: string
+      templateName: string
+      selectedLabel: string
+      imagePath: string
+      imageUrl: string
+    }> = []
+
+    for (const tpl of (templates || []) as Array<{ id: string; name: string; options: any }>) {
+      const label = savedMap[tpl.id]
+      if (!label) continue
+
+      const options: any[] = Array.isArray(tpl.options) ? tpl.options : []
+      const opt = options.find(o => {
+        if (typeof o === 'string') return o === label
+        return o && typeof o === 'object' && o.label === label
+      })
+      if (!opt || typeof opt === 'string') continue
+      const imagePath: string | undefined = opt.imagePath
+      if (!imagePath) continue
+
+      const { data: urlData } = supabase.storage
+        .from('ai-tag-option-images')
+        .getPublicUrl(imagePath)
+
+      out.push({
+        templateId: tpl.id,
+        templateName: tpl.name,
+        selectedLabel: label,
+        imagePath,
+        imageUrl: urlData.publicUrl,
+      })
+    }
+
+    return out
+  },
+
+  // ────────────────────────────────────────────────────────────────
+  //  Lista enxuta das AI Info Tags ativas (Settings → tagsmanager).
+  //  Usada no TagFormDialog para popular o dropdown de vínculo.
+  // ────────────────────────────────────────────────────────────────
+
+  async listAiInfoTemplates(): Promise<Array<{
+    id: string
+    name: string
+    type: 'text' | 'image'
+    options: any[]
+  }>> {
+    const { data, error } = await supabase
+      .from('ai_info_templates')
+      .select('id, name, type, options, sort_order')
+      .order('sort_order')
+    if (error) throw error
+    return (data || []).map((t: any) => ({
+      id: t.id,
+      name: t.name,
+      type: t.type === 'image' ? 'image' : 'text',
+      options: Array.isArray(t.options) ? t.options : [],
+    }))
+  },
+
+  // ────────────────────────────────────────────────────────────────
+  //  Resolve, para um cliente, o valor "ao vivo" de uma lista de
+  //  AI Info Templates linkadas. Usado por:
+  //   • resolveTagValues  (engine de geração de PDF)
+  //   • ClientTagValuesPanel  (preview das tags vinculadas)
+  //
+  //  Retorna map templateId → resolução. Templates ausentes do mapa
+  //  significam: ou o template não existe mais, ou o cliente não
+  //  selecionou nenhuma opção.
+  // ────────────────────────────────────────────────────────────────
+
+  async resolveAiInfoLinks(
+    clientId: string,
+    templateIds: string[],
+  ): Promise<Record<string, {
+    templateId: string
+    templateName: string
+    templateType: 'text' | 'image'
+    selectedLabel: string
+    imagePath: string | null    // só pra type='image' COM imagem no catálogo
+    imageUrl: string | null
+  }>> {
+    if (templateIds.length === 0) return {}
+
+    // 1. Valores selecionados pelo cliente
+    const { data: client, error: cErr } = await supabase
+      .from('clients')
+      .select('ai_info_tags')
+      .eq('id', clientId)
+      .single()
+    if (cErr) throw cErr
+
+    const saved: Array<{ templateId: string; value: string }> =
+      Array.isArray(client?.ai_info_tags) ? (client!.ai_info_tags as any[]) : []
+    const savedMap: Record<string, string> = {}
+    for (const row of saved) {
+      if (row && typeof row.templateId === 'string') {
+        savedMap[row.templateId] = (row.value ?? '').toString().trim()
+      }
+    }
+
+    // 2. Carrega os templates pedidos
+    const { data: tpls, error: tErr } = await supabase
+      .from('ai_info_templates')
+      .select('id, name, type, options')
+      .in('id', templateIds)
+    if (tErr) throw tErr
+
+    const out: Record<string, {
+      templateId: string
+      templateName: string
+      templateType: 'text' | 'image'
+      selectedLabel: string
+      imagePath: string | null
+      imageUrl: string | null
+    }> = {}
+
+    for (const tpl of (tpls || []) as Array<{ id: string; name: string; type: string; options: any }>) {
+      const label = savedMap[tpl.id]
+      if (!label) continue   // cliente ainda não selecionou nada pra essa tag
+
+      const templateType: 'text' | 'image' = tpl.type === 'image' ? 'image' : 'text'
+
+      let imagePath: string | null = null
+      let imageUrl:  string | null = null
+
+      if (templateType === 'image') {
+        const options: any[] = Array.isArray(tpl.options) ? tpl.options : []
+        const opt = options.find(o => {
+          if (typeof o === 'string') return o === label
+          return o && typeof o === 'object' && o.label === label
+        })
+        if (opt && typeof opt === 'object' && opt.imagePath) {
+          imagePath = opt.imagePath as string
+          const { data: urlData } = supabase.storage
+            .from('ai-tag-option-images')
+            .getPublicUrl(imagePath)
+          imageUrl = urlData.publicUrl
+        }
+      }
+
+      out[tpl.id] = {
+        templateId: tpl.id,
+        templateName: tpl.name,
+        templateType,
+        selectedLabel: label,
+        imagePath,
+        imageUrl,
+      }
+    }
+
+    return out
+  },
+
+  // ────────────────────────────────────────────────────────────────
+  //  Catálogo de fontes disponíveis pra vínculo (NO catalog level — sem
+  //  contexto de cliente). Usado em TagFormDialog pra popular o dropdown
+  //  "Vincular a...". A resolução do VALOR por cliente é feita em
+  //  getTextImportSources (texto) ou resolveAiInfoLinks (imagem).
+  //
+  //  Chaves alinhadas com as do getTextImportSources:
+  //   • 'full_name', 'email', 'phone'   → Dados do cliente
+  //   • 'observations', 'result_folder' → Resultado
+  //   • 'ai_info:<uuid>'                → AI Info Templates
+  // ────────────────────────────────────────────────────────────────
+
+  async listImportSourceCatalog(): Promise<Array<{
+    key: string
+    label: string
+    groupLabel: string
+    /**
+     * Tipos de doc tag que podem vincular a esta fonte.
+     * - Fontes de texto puro (cliente, resultado, AI Info texto): ['text']
+     * - AI Info imagem: ['text', 'image']  (texto → label; imagem → arquivo)
+     */
+    acceptedTagTypes: Array<'text' | 'image'>
+  }>> {
+    const out: Array<{
+      key: string; label: string; groupLabel: string
+      acceptedTagTypes: Array<'text' | 'image'>
+    }> = [
+      { key: 'full_name',     label: 'Nome',                       groupLabel: 'Dados do cliente', acceptedTagTypes: ['text'] },
+      { key: 'email',         label: 'E-mail',                     groupLabel: 'Dados do cliente', acceptedTagTypes: ['text'] },
+      { key: 'phone',         label: 'Telefone',                   groupLabel: 'Dados do cliente', acceptedTagTypes: ['text'] },
+      { key: 'observations',  label: 'Observações do resultado',   groupLabel: 'Resultado',        acceptedTagTypes: ['text'] },
+      { key: 'result_folder', label: 'Link da pasta do resultado', groupLabel: 'Resultado',        acceptedTagTypes: ['text'] },
+    ]
+
+    // AI Info Templates (ambos tipos viram fonte de tag — text/imagem)
+    const { data: tpls, error } = await supabase
+      .from('ai_info_templates')
+      .select('id, name, type, sort_order')
+      .order('sort_order')
+    if (error) throw error
+
+    for (const t of (tpls || []) as Array<{ id: string; name: string; type: string }>) {
+      const isImg = t.type === 'image'
+      out.push({
+        key: `ai_info:${t.id}`,
+        label: t.name,
+        groupLabel: 'Informações da análise',
+        // Doc-tag texto sempre vale (pega a label). Doc-tag imagem só se a AI Info é imagem.
+        acceptedTagTypes: isImg ? ['text', 'image'] : ['text'],
+      })
+    }
+
+    return out
+  },
+
   async listClientPhotos(clientId: string): Promise<Array<{
     id: string; photo_name: string; storage_path: string; url: string;
     category_id: string | null; category_title: string | null;
@@ -583,5 +841,98 @@ export const documentsService = {
     await supabase.storage.from('document-generated').remove([doc.storage_path]).catch(() => {})
     const { error } = await supabase.from('client_generated_documents').delete().eq('id', doc.id)
     if (error) throw error
+  },
+
+  // ════════════════════════════════════════════════════════════════════
+  //  AI Image Prompts — catálogo de prompts pra geração via gpt-image-1
+  // ════════════════════════════════════════════════════════════════════
+
+  async listAiImagePrompts(opts?: { includeInactive?: boolean }): Promise<Array<{
+    id: string
+    name: string
+    prompt: string
+    model: string
+    size: string
+    quality: string
+    is_active: boolean
+    created_at: string
+    updated_at: string
+  }>> {
+    let q = supabase.from('ai_image_prompts').select('*').order('name')
+    if (!opts?.includeInactive) q = q.eq('is_active', true)
+    const { data, error } = await q
+    if (error) throw error
+    return (data || []) as any[]
+  },
+
+  async createAiImagePrompt(input: {
+    name: string
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+  }): Promise<{ id: string; name: string; prompt: string; model: string; size: string; quality: string; is_active: boolean }> {
+    const { data, error } = await supabase
+      .from('ai_image_prompts')
+      .insert({
+        name:    input.name.trim(),
+        prompt:  input.prompt,
+        model:   input.model   || 'gpt-image-1',
+        size:    input.size    || '1024x1024',
+        quality: input.quality || 'medium',
+        is_active: true,
+      })
+      .select('id, name, prompt, model, size, quality, is_active')
+      .single()
+    if (error) throw error
+    return data as any
+  },
+
+  async updateAiImagePrompt(id: string, updates: Partial<{
+    name: string
+    prompt: string
+    model: string
+    size: string
+    quality: string
+    is_active: boolean
+  }>): Promise<void> {
+    const payload: any = { ...updates }
+    if (typeof payload.name === 'string') payload.name = payload.name.trim()
+    const { error } = await supabase.from('ai_image_prompts').update(payload).eq('id', id)
+    if (error) throw error
+  },
+
+  async deleteAiImagePrompt(id: string): Promise<void> {
+    const { error } = await supabase.from('ai_image_prompts').delete().eq('id', id)
+    if (error) throw error
+  },
+
+  // ────────────────────────────────────────────────────────────────────
+  //  Invocação da Edge Function — gera imagem pra um tag/cliente.
+  //  A Function valida admin, baixa a foto, chama OpenAI, sobe o
+  //  resultado em client-tag-images e upserta client_tag_values.
+  // ────────────────────────────────────────────────────────────────────
+
+  async generateTagImageFromAI(input: {
+    promptId: string
+    clientId: string
+    tagId:    string
+    photoId:  string
+  }): Promise<{ storagePath: string; size: number; promptName: string }> {
+    const { data, error } = await supabase.functions.invoke('generate-tag-image', { body: input })
+    if (error) {
+      // Tenta extrair detalhe do response body se houver
+      const ctx = (error as any)?.context
+      let detail = ''
+      try {
+        if (ctx?.text) detail = await ctx.text()
+        else if (typeof ctx === 'string') detail = ctx
+      } catch { /* ignora */ }
+      throw new Error(`${error.message}${detail ? ` — ${detail.slice(0, 300)}` : ''}`)
+    }
+    if (!data || (data as any).error) {
+      throw new Error((data as any)?.error || 'Resposta vazia da Edge Function')
+    }
+    return data as any
   },
 }

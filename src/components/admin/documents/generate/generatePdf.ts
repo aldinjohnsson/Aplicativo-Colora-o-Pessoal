@@ -12,6 +12,8 @@
 //    Antes usava `fontSize` como aproximação, e o texto descia ~25%.
 //  • TEXTO suporta verticalAlign: 'top' | 'middle' | 'bottom'.
 //  • TEXTO suporta autoFit: reduz fontSize até caber em largura e altura.
+//  • IMAGEM respeita a orientação EXIF do arquivo de origem (fotos
+//    tiradas em modo retrato pelo celular NÃO saem mais deitadas).
 //
 // Sistema de coordenadas:
 //   • Banco guarda x_pt/y_pt com origem NO CANTO SUPERIOR ESQUERDO.
@@ -279,6 +281,13 @@ async function drawText(params: {
  * Implementação: createImageBitmap (decodifica) → canvas (recorta e
  * redimensiona) → toBlob (recodifica).
  *
+ * IMPORTANTE — orientação EXIF:
+ *   Passamos `imageOrientation: 'from-image'` ao createImageBitmap. Sem
+ *   esse flag, o browser IGNORA a tag EXIF Orientation, e fotos tiradas
+ *   em modo retrato no celular saem deitadas no PDF (a câmera grava em
+ *   landscape e marca via EXIF que precisa rotacionar 90°). Com o flag,
+ *   o bitmap já vem na orientação visual correta.
+ *
  * Resolução do canvas: limitada para evitar arquivos enormes. Usamos
  * ~3× a largura final do box em pt, com piso de 800px. Isso dá qualidade
  * de impressão sem inflar o PDF.
@@ -290,7 +299,14 @@ async function cropImageForCover(
   boxHPt: number,
 ): Promise<{ bytes: ArrayBuffer; mime: 'image/png' | 'image/jpeg' }> {
   const blob = new Blob([bytes], { type: mime })
-  const bitmap = await createImageBitmap(blob)
+  // `imageOrientation: 'from-image'` aplica o EXIF Orientation tag se houver.
+  // Fallback silencioso se o browser não suportar a opção (Safari < 13.1).
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' })
+  } catch {
+    bitmap = await createImageBitmap(blob)
+  }
 
   const imgRatio = bitmap.width / bitmap.height
   const boxRatio = boxWPt / boxHPt
@@ -341,6 +357,60 @@ async function cropImageForCover(
   return { bytes: await outBlob.arrayBuffer(), mime: outMime }
 }
 
+/**
+ * Para o caminho 'contain': não recortamos, mas AINDA precisamos respeitar
+ * a orientação EXIF — pdf-lib NÃO interpreta essa flag ao embed direto.
+ * Solução: rasterizamos via canvas com `imageOrientation: 'from-image'`
+ * e re-codificamos preservando proporção, sem corte.
+ *
+ * Só faz isso quando há EXIF rotation; do contrário, embedamos os bytes
+ * originais (mais leve e mantém qualidade vetorial nula porque é JPEG/PNG).
+ */
+async function normalizeOrientationForContain(
+  bytes: ArrayBuffer,
+  mime: string,
+): Promise<{ bytes: ArrayBuffer; mime: 'image/png' | 'image/jpeg' }> {
+  const blob = new Blob([bytes], { type: mime })
+  let oriented: ImageBitmap
+  let raw: ImageBitmap
+  try {
+    oriented = await createImageBitmap(blob, { imageOrientation: 'from-image' })
+    raw      = await createImageBitmap(blob, { imageOrientation: 'none' })
+  } catch {
+    // Browser velho: assume sem EXIF e devolve bytes originais
+    const isPng = mime.toLowerCase().includes('png')
+    return { bytes, mime: (isPng ? 'image/png' : 'image/jpeg') }
+  }
+
+  // Mesmas dimensões → sem rotação EXIF, mantém original (leve)
+  if (oriented.width === raw.width && oriented.height === raw.height) {
+    oriented.close?.()
+    raw.close?.()
+    const isPng = mime.toLowerCase().includes('png')
+    return { bytes, mime: (isPng ? 'image/png' : 'image/jpeg') }
+  }
+
+  // Há rotação: rasteriza na orientação correta
+  raw.close?.()
+  const canvas = document.createElement('canvas')
+  canvas.width  = oriented.width
+  canvas.height = oriented.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D indisponível para orientação de imagem')
+  ctx.drawImage(oriented, 0, 0)
+  oriented.close?.()
+
+  const isPng = mime.toLowerCase().includes('png')
+  const outMime: 'image/png' | 'image/jpeg' = isPng ? 'image/png' : 'image/jpeg'
+  const outBlob: Blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(
+      b => b ? resolve(b) : reject(new Error('canvas.toBlob falhou')),
+      outMime, 0.92,
+    ),
+  )
+  return { bytes: await outBlob.arrayBuffer(), mime: outMime }
+}
+
 async function drawImage(params: {
   pdf: import('pdf-lib').PDFDocument
   page: import('pdf-lib').PDFPage
@@ -352,13 +422,19 @@ async function drawImage(params: {
   const { pdf, page, bytes, mime, x, y, width, height, style } = params
   const fit: 'cover' | 'contain' = style.objectFit ?? 'cover'
 
-  // Para cover: recorta antes pra preencher exatamente o box.
   let imgBytes = bytes
   let imgMime  = mime
+
   if (fit === 'cover') {
+    // Recorta + respeita EXIF
     const cropped = await cropImageForCover(bytes, mime, width, height)
     imgBytes = cropped.bytes
     imgMime  = cropped.mime
+  } else {
+    // Só normaliza orientação EXIF (sem recorte)
+    const normalized = await normalizeOrientationForContain(bytes, mime)
+    imgBytes = normalized.bytes
+    imgMime  = normalized.mime
   }
 
   const m = imgMime.toLowerCase()

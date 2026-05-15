@@ -44,6 +44,7 @@ interface AppSettings {
   saveFormAsPdf: boolean
   googleDriveAttachmentsFolder: string
   geminiApiKey: string
+  openaiApiKey: string
   pdfTemplateUrl: string
   pdfTemplateBase64?: string
   pdfTemplateFileName?: string
@@ -132,6 +133,7 @@ const settingsStorageService = {
       saveFormAsPdf: true,
       googleDriveAttachmentsFolder: '',
       geminiApiKey: '',
+      openaiApiKey: '',
       pdfTemplateUrl: '',
       pdfTemplateBase64: '',
       pdfTemplateFileName: '',
@@ -314,6 +316,7 @@ export default function SettingsEditor() {
     saveFormAsPdf: true,
     googleDriveAttachmentsFolder: '',
     geminiApiKey: '',
+    openaiApiKey: '',
     pdfTemplateUrl: '',
     pdfStyle: PDF_STYLE_DEFAULTS,
     adminEmail: '',
@@ -448,6 +451,82 @@ export default function SettingsEditor() {
             <div className="bg-violet-50 border border-violet-100 rounded-xl p-4">
               <p className="text-sm text-violet-700">
                 ✓ IA ativada — suas clientes poderão conversar com a consultora de coloração pessoal e receber sugestões personalizadas.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Geração de Imagem OpenAI (gpt-image-1) ───────────────────────── */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-rose-500 rounded-xl flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+                <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Geração de Imagem OpenAI</h2>
+              <p className="text-sm text-gray-500">Para tags de documento do tipo "Gerada por IA"</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Chave da API OpenAI
+            </label>
+            <div className="relative">
+              <input
+                type="password"
+                value={settings.openaiApiKey}
+                onChange={e => setSettings({ ...settings, openaiApiKey: e.target.value })}
+                placeholder="sk-proj-... ou sk-..."
+                autoComplete="off"
+                spellCheck={false}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-28"
+              />
+              {settings.openaiApiKey && (
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
+                  ✓ Configurada
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5">
+              Crie em{' '}
+              <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"
+                className="text-fuchsia-600 hover:underline font-medium">
+                platform.openai.com/api-keys
+              </a>
+              {' · '}
+              <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener noreferrer"
+                className="text-fuchsia-600 hover:underline font-medium">
+                Billing
+              </a>
+            </p>
+          </div>
+
+          {settings.openaiApiKey ? (
+            <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-xl p-4 space-y-2">
+              <p className="text-sm text-fuchsia-700">
+                ✓ Geração de imagem ativada. Cada chamada usa <strong>sua conta OpenAI</strong>.
+              </p>
+              <p className="text-xs text-fuchsia-600">
+                ⚠️ <strong>gpt-image-1</strong> exige verificação de identidade na sua organização OpenAI{' '}
+                (<a href="https://platform.openai.com/settings/organization/general" target="_blank" rel="noopener noreferrer" className="underline font-medium">Settings → General → Verify</a>).
+                Sem isso, as chamadas voltam com erro 403.
+              </p>
+              <p className="text-xs text-fuchsia-600">
+                💰 Custo estimado por imagem: ~US$ 0,04 (medium) a ~US$ 0,19 (high quality).
+              </p>
+            </div>
+          ) : (
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+              <p className="text-sm text-gray-600">
+                Sem chave configurada, as tags do tipo "Gerada por IA" não conseguem gerar imagens.
               </p>
             </div>
           )}

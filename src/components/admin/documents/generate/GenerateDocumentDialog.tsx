@@ -143,7 +143,7 @@ export function GenerateDocumentDialog({
         }
 
         const { missing } = await resolveTagValues({
-          elements: els, tags, values,
+          clientId, elements: els, tags, values,
         })
         if (cancelled) return
 
@@ -174,7 +174,7 @@ export function GenerateDocumentDialog({
     try {
       // Resolve valores + baixa imagens
       const { resolved, missing } = await resolveTagValues({
-        elements, tags, values,
+        clientId, elements, tags, values,
       })
       if (missing.length > 0) {
         // Corrida: alguém esvaziou valor; reavalia.

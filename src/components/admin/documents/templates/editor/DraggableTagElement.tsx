@@ -6,6 +6,14 @@
 // Coordenadas e tamanhos são trocados entre pt (banco) e px (editor):
 //   px = pt * zoom
 //
+// NOVIDADES nesta versão:
+//  • HUD flutuante mostra x/y/w/h em pt enquanto você arrasta ou
+//    redimensiona — chega de "advinhação".
+//  • Callback `onLiveChange` notifica o canvas pai de cada delta — usado
+//    pelas linhas-guia de alinhamento (snap).
+//  • Callback `onSnapTarget`: o canvas pai devolve a posição/tamanho
+//    "snapado" para a guia mais próxima; aplicamos no onStop.
+//
 // PREVIEW WYSIWYG: para tags de texto, renderizamos `{{slug}}` aplicando a
 // mesma fontFamily/size/cor/alinhamento configurados — assim o usuário vê
 // no editor exatamente como o texto vai sair no PDF (aproximação muito
@@ -15,10 +23,27 @@
 // Para tags de imagem, mostramos um placeholder com badge do modo de
 // ajuste ('Cobrir' / 'Conter') pra deixar claro o que foi escolhido.
 
-import React from 'react'
+import React, { useRef, useState } from 'react'
 import { Rnd } from 'react-rnd'
 import { Image as ImageIcon, X } from 'lucide-react'
 import type { DocumentTag, DocumentTemplateElement, ElementStyle } from '../../types'
+
+// ─── Tipos ────────────────────────────────────────────────────────────
+
+export interface LiveBox {
+  x_pt: number; y_pt: number
+  width_pt: number; height_pt: number
+}
+
+export type SnapResolver = (
+  elementId: string,
+  proposed: LiveBox,
+  /**
+   * 'drag' = só posição muda; 'resize' = posição+tamanho podem mudar.
+   * Usado pelo canvas pra escolher quais arestas comparar.
+   */
+  kind: 'drag' | 'resize',
+) => LiveBox
 
 interface Props {
   element: DocumentTemplateElement
@@ -30,10 +55,15 @@ interface Props {
     'x_pt' | 'y_pt' | 'width_pt' | 'height_pt'
   >>) => void
   onDelete: () => void
+  /** Chamado durante drag/resize com a caixa atual (sem snap aplicado). */
+  onLiveChange?: (id: string, box: LiveBox | null) => void
+  /** Função pura: dada uma caixa proposta, devolve a snapada. */
+  snap?: SnapResolver
 }
 
 export function DraggableTagElement({
   element, tag, zoom, selected, onSelect, onChange, onDelete,
+  onLiveChange, snap,
 }: Props) {
   const isImage = tag?.type === 'image'
 
@@ -49,27 +79,77 @@ export function DraggableTagElement({
   const wPx = wPt * zoom
   const hPx = hPt * zoom
 
+  const [hud, setHud] = useState<LiveBox | null>(null)
+  const interactionRef = useRef<'drag' | 'resize' | null>(null)
+
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
     onDelete()
+  }
+
+  const emitLive = (box: LiveBox | null) => {
+    setHud(box)
+    onLiveChange?.(element.id, box)
   }
 
   return (
     <Rnd
       size={{ width: wPx, height: hPx }}
       position={{ x: xPx, y: yPx }}
-      onDragStart={() => onSelect()}
-      onResizeStart={() => onSelect()}
-      onDragStop={(_, d) => {
-        onChange({ x_pt: d.x / zoom, y_pt: d.y / zoom })
+      onDragStart={() => {
+        interactionRef.current = 'drag'
+        onSelect()
       }}
-      onResizeStop={(_, __, ref, ___, position) => {
-        onChange({
-          width_pt: parseFloat(ref.style.width) / zoom,
-          height_pt: parseFloat(ref.style.height) / zoom,
+      onDrag={(_, d) => {
+        const box: LiveBox = {
+          x_pt: d.x / zoom,
+          y_pt: d.y / zoom,
+          width_pt: wPt,
+          height_pt: hPt,
+        }
+        emitLive(box)
+      }}
+      onResizeStart={() => {
+        interactionRef.current = 'resize'
+        onSelect()
+      }}
+      onResize={(_, __, ref, ___, position) => {
+        const box: LiveBox = {
           x_pt: position.x / zoom,
           y_pt: position.y / zoom,
+          width_pt: parseFloat(ref.style.width) / zoom,
+          height_pt: parseFloat(ref.style.height) / zoom,
+        }
+        emitLive(box)
+      }}
+      onDragStop={(_, d) => {
+        const raw: LiveBox = {
+          x_pt: d.x / zoom,
+          y_pt: d.y / zoom,
+          width_pt: wPt,
+          height_pt: hPt,
+        }
+        const final = snap ? snap(element.id, raw, 'drag') : raw
+        onChange({ x_pt: final.x_pt, y_pt: final.y_pt })
+        interactionRef.current = null
+        emitLive(null)
+      }}
+      onResizeStop={(_, __, ref, ___, position) => {
+        const raw: LiveBox = {
+          x_pt: position.x / zoom,
+          y_pt: position.y / zoom,
+          width_pt: parseFloat(ref.style.width) / zoom,
+          height_pt: parseFloat(ref.style.height) / zoom,
+        }
+        const final = snap ? snap(element.id, raw, 'resize') : raw
+        onChange({
+          x_pt: final.x_pt,
+          y_pt: final.y_pt,
+          width_pt: final.width_pt,
+          height_pt: final.height_pt,
         })
+        interactionRef.current = null
+        emitLive(null)
       }}
       bounds="parent"
       enableResizing={{
@@ -94,8 +174,16 @@ export function DraggableTagElement({
           <TextPreview tag={tag} style={element.style as ElementStyle} zoom={zoom} />
         )}
 
+        {/* HUD: dimensões em pt durante drag/resize */}
+        {hud && (
+          <DimensionHud
+            box={hud}
+            kind={interactionRef.current ?? 'drag'}
+          />
+        )}
+
         {/* Botão excluir (só quando selecionado) */}
-        {selected && (
+        {selected && !hud && (
           <button
             onMouseDown={e => e.stopPropagation()}
             onClick={handleDelete}
@@ -107,13 +195,35 @@ export function DraggableTagElement({
         )}
 
         {/* Label flutuante com nome da tag (só quando selecionado) */}
-        {selected && tag && (
+        {selected && tag && !hud && (
           <div className="absolute -top-5 left-0 text-[10px] font-medium text-rose-600 bg-white px-1.5 py-0.5 rounded shadow-sm border border-rose-200 whitespace-nowrap pointer-events-none">
             {tag.name}
           </div>
         )}
       </div>
     </Rnd>
+  )
+}
+
+// ─── HUD de dimensões ─────────────────────────────────────────────────
+
+function DimensionHud({ box, kind }: { box: LiveBox; kind: 'drag' | 'resize' }) {
+  // Posição: drag → mostra "x,y"; resize → mostra "w × h"
+  const main = kind === 'drag'
+    ? `x ${Math.round(box.x_pt)}, y ${Math.round(box.y_pt)}`
+    : `${Math.round(box.width_pt)} × ${Math.round(box.height_pt)} pt`
+  const sub = kind === 'drag'
+    ? `${Math.round(box.width_pt)} × ${Math.round(box.height_pt)} pt`
+    : `x ${Math.round(box.x_pt)}, y ${Math.round(box.y_pt)}`
+  return (
+    <div
+      className="absolute -top-12 left-1/2 -translate-x-1/2 z-40 pointer-events-none
+        bg-gray-900/95 text-white rounded-md px-2 py-1 shadow-lg
+        whitespace-nowrap text-[10px] leading-tight"
+    >
+      <p className="font-semibold tabular-nums">{main}</p>
+      <p className="text-gray-300 tabular-nums">{sub}</p>
+    </div>
   )
 }
 

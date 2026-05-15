@@ -1,14 +1,24 @@
 // src/components/admin/documents/templates/editor/TemplateEditor.tsx
 //
-// Editor visual de template — Fase 3 + painel de propriedades.
+// Editor visual de template — Fase 3+ com ferramentas de medição.
 //
-// NOVIDADES:
-//  • Painel de propriedades (direita) aparece ao selecionar um elemento:
-//    - Texto: família, tamanho, cor, negrito/itálico, alinhamento H e V,
-//             altura de linha, transformação, autoFit.
-//    - Imagem: objectFit (cover / contain).
-//    - Ambos: campos numéricos de X, Y, Largura, Altura em pt.
-//  • Preview WYSIWYG já refletia os estilos; agora o usuário CONTROLA.
+// NOVIDADES desta versão:
+//  • Réguas em pt nas bordas superior e esquerda de cada página.
+//  • Grid opcional (10 / 50 / 100 pt) por toggle no topbar.
+//  • Linhas-guia roxas de alinhamento (snap) ao arrastar/redimensionar.
+//      - Compara com bordas e centro da página
+//      - Compara com bordas e centros dos OUTROS elementos da página
+//      - Threshold de ~4pt; toggle on/off pelo topbar (tecla S)
+//  • HUD flutuante mostra x/y e w×h durante interação.
+//  • Setas do teclado movem o elemento selecionado:
+//      ←/→/↑/↓     = 1 pt
+//      Shift+seta = 10 pt
+//      Alt+seta   = redimensiona em vez de mover
+//  • Painel de propriedades: nova seção "Ajustes rápidos" com presets
+//      - Largura total / Altura total
+//      - Centralizar X / Centralizar Y / Centralizar nos dois eixos
+//      - Tela cheia (preenche a página)
+//      - Duplicar (Ctrl/Cmd+D)
 //
 // ATENÇÃO À ESTRATÉGIA DE ALTURA:
 // O AdminDashboard não dá altura fixa para a rota de Documentos — ela é
@@ -25,6 +35,9 @@ import {
   FileText, Type as TypeIcon, Image as ImageIcon,
   MousePointer2, Check, AlignLeft, AlignCenter, AlignRight,
   AlignJustify, ChevronUp, ChevronsUpDown, ChevronDown,
+  Grid3x3, Magnet, Copy as CopyIcon,
+  Maximize2, AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter,
+  ArrowLeftRight, ArrowUpDown,
 } from 'lucide-react'
 import * as pdfjs from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -34,9 +47,14 @@ import type {
   DocumentTag, DocumentTemplate, DocumentTemplateElement, ElementStyle,
 } from '../../types'
 import { SUPPORTED_FONTS } from '../../types'
-import { DraggableTagElement } from './DraggableTagElement'
+import { DraggableTagElement, type LiveBox, type SnapResolver } from './DraggableTagElement'
 
 const ADMIN_TOPBAR_HEIGHT = 52
+
+// Largura/altura da régua (em px na tela)
+const RULER_SIZE = 18
+// Distância máxima (em pt) entre arestas para ativar o snap
+const SNAP_THRESHOLD_PT = 4
 
 let workerConfigured = false
 function ensureWorker() {
@@ -85,6 +103,10 @@ export function TemplateEditor() {
   const [zoom, setZoom] = useState(1)
   const [activePage, setActivePage] = useState(1)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // ── Toolbox flags ──────────────────────────────────────────────────
+  const [showGrid, setShowGrid] = useState(false)
+  const [snapEnabled, setSnapEnabled] = useState(true)
 
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -184,26 +206,73 @@ export function TemplateEditor() {
     return () => container.removeEventListener('scroll', onScroll)
   }, [template, pdf])
 
+  // ── Atalhos de teclado ────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!selectedId) return
       const target = e.target as HTMLElement | null
       const isTyping =
         target?.tagName === 'INPUT' ||
         target?.tagName === 'TEXTAREA' ||
         target?.isContentEditable
       if (isTyping) return
+
+      // Toggles globais
+      if (e.key === 'g' || e.key === 'G') { e.preventDefault(); setShowGrid(s => !s); return }
+      if (e.key === 's' || e.key === 'S') { e.preventDefault(); setSnapEnabled(s => !s); return }
+
+      if (!selectedId) return
+
+      // Duplicar
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault()
+        handleDuplicate(selectedId)
+        return
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
         handleDeleteElement(selectedId)
-      } else if (e.key === 'Escape') {
+        return
+      }
+      if (e.key === 'Escape') {
         setSelectedId(null)
+        return
+      }
+
+      // Setas → mover (ou redimensionar com Alt)
+      const arrow = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
+      if (!arrow) return
+      e.preventDefault()
+
+      const step = e.shiftKey ? 10 : 1
+      const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
+      const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0
+
+      const el = elements.find(x => x.id === selectedId)
+      if (!el || !template) return
+
+      if (e.altKey) {
+        // Redimensiona
+        const w = (el.width_pt ?? 180) + dx
+        const h = (el.height_pt ?? 40) + dy
+        handleChangeElement(selectedId, {
+          width_pt: Math.max(4, Math.min(template.page_width_pt - el.x_pt, w)),
+          height_pt: Math.max(4, Math.min(template.page_height_pt - el.y_pt, h)),
+        })
+      } else {
+        // Move
+        const w = el.width_pt ?? 180
+        const h = el.height_pt ?? 40
+        handleChangeElement(selectedId, {
+          x_pt: Math.max(0, Math.min(template.page_width_pt - w, el.x_pt + dx)),
+          y_pt: Math.max(0, Math.min(template.page_height_pt - h, el.y_pt + dy)),
+        })
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId])
+  }, [selectedId, elements, template])
 
   // ═══════════ CRUD ═══════════
 
@@ -270,6 +339,37 @@ export function TemplateEditor() {
     } catch (e: any) {
       setElements(prev)
       alert(e?.message || 'Erro ao excluir elemento')
+    }
+  }
+
+  const handleDuplicate = async (id: string) => {
+    const src = elements.find(e => e.id === id)
+    if (!src || !template) return
+    const w = src.width_pt ?? 180
+    const h = src.height_pt ?? 40
+    const offX = 12
+    const offY = 12
+    const newX = Math.min(template.page_width_pt - w, src.x_pt + offX)
+    const newY = Math.min(template.page_height_pt - h, src.y_pt + offY)
+    setSaveStatus('saving')
+    try {
+      const created = await documentsService.createTemplateElement({
+        template_id: template.id,
+        tag_id: src.tag_id,
+        page_number: src.page_number,
+        x_pt: newX,
+        y_pt: newY,
+        width_pt: w,
+        height_pt: h,
+        style: src.style as any,
+      } as any)
+      setElements(prev => [...prev, created])
+      setSelectedId(created.id)
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 1200)
+    } catch (e: any) {
+      setSaveStatus('error')
+      alert(e?.message || 'Erro ao duplicar')
     }
   }
 
@@ -343,6 +443,28 @@ export function TemplateEditor() {
           <SaveStatusIndicator status={saveStatus} />
         </div>
 
+        {/* Toggles: Grid + Snap */}
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+          <button
+            onClick={() => setShowGrid(s => !s)}
+            title="Mostrar grade (G)"
+            className={`p-1.5 rounded-md transition-colors ${
+              showGrid ? 'bg-white text-rose-500 shadow-sm' : 'text-gray-500 hover:bg-white'
+            }`}
+          >
+            <Grid3x3 className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => setSnapEnabled(s => !s)}
+            title="Alinhar com guias (S)"
+            className={`p-1.5 rounded-md transition-colors ${
+              snapEnabled ? 'bg-white text-rose-500 shadow-sm' : 'text-gray-500 hover:bg-white'
+            }`}
+          >
+            <Magnet className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
         <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
           <button onClick={zoomOut} className="p-1.5 rounded-md hover:bg-white text-gray-600" title="Zoom out"><ZoomOut className="h-3.5 w-3.5" /></button>
           <button onClick={zoomFit} className="px-2 text-xs font-medium text-gray-600 hover:bg-white rounded-md h-7 min-w-[3rem]" title="Ajustar">
@@ -374,12 +496,19 @@ export function TemplateEditor() {
               tags.map(t => <PaletteTagItem key={t.id} tag={t} />)
             )}
           </div>
+
+          {/* Atalhos */}
+          <div className="px-3 py-2 border-t border-gray-100 text-[10px] text-gray-400 leading-relaxed">
+            <p><kbd className="px-1 bg-gray-100 rounded text-[9px]">←↑↓→</kbd> mover · <kbd className="px-1 bg-gray-100 rounded text-[9px]">⇧</kbd>+seta 10pt</p>
+            <p><kbd className="px-1 bg-gray-100 rounded text-[9px]">Alt</kbd>+seta redimensiona</p>
+            <p><kbd className="px-1 bg-gray-100 rounded text-[9px]">G</kbd> grade · <kbd className="px-1 bg-gray-100 rounded text-[9px]">S</kbd> snap · <kbd className="px-1 bg-gray-100 rounded text-[9px]">⌘D</kbd> duplicar</p>
+          </div>
         </aside>
 
         {/* Canvas (rola aqui) */}
         <div ref={scrollRef} className="flex-1 overflow-auto px-4 md:px-8 py-6 min-h-0">
           {pdf ? (
-            <div className="flex flex-col items-center gap-6">
+            <div className="flex flex-col items-center gap-10">
               {pageNumbers.map(n => (
                 <div
                   key={n}
@@ -387,12 +516,13 @@ export function TemplateEditor() {
                   className="relative"
                 >
                   <span className="absolute -top-5 left-0 text-[11px] text-gray-400 font-medium">
-                    {n}
+                    Página {n}
                   </span>
                   <PdfPageCanvas
                     pdf={pdf}
                     pageNumber={n}
                     zoom={zoom}
+                    template={template}
                     elements={elements.filter(e => e.page_number === n)}
                     tagsById={tagsById}
                     selectedId={selectedId}
@@ -400,6 +530,8 @@ export function TemplateEditor() {
                     onChangeElement={handleChangeElement}
                     onDeleteElement={handleDeleteElement}
                     onDropTag={(tagId, xPt, yPt) => handleCreateElement(tagId, n, xPt, yPt)}
+                    showGrid={showGrid}
+                    snapEnabled={snapEnabled}
                   />
                 </div>
               ))}
@@ -421,6 +553,7 @@ export function TemplateEditor() {
             tag={tagsById[selectedElement.tag_id]}
             template={template}
             onChange={handleChangeElement}
+            onDuplicate={() => handleDuplicate(selectedElement.id)}
           />
         ) : pdf && template.page_count > 1 ? (
           <aside className="w-32 border-l border-gray-200 bg-white flex-shrink-0 hidden md:flex flex-col min-h-0">
@@ -452,12 +585,13 @@ export function TemplateEditor() {
 // ═══════════════════════════════════════════════════════════════════════
 
 function StylePanel({
-  element, tag, template, onChange,
+  element, tag, template, onChange, onDuplicate,
 }: {
   element: DocumentTemplateElement
   tag: DocumentTag | undefined
   template: DocumentTemplate
   onChange: (id: string, patch: Partial<DocumentTemplateElement>) => void
+  onDuplicate: () => void
 }) {
   const style: ElementStyle = (element.style as ElementStyle) || {}
   const isImage = tag?.type === 'image'
@@ -472,6 +606,19 @@ function StylePanel({
     onChange(element.id, patch)
   }
 
+  // ── Atalhos de tamanho/posição ──
+  const w = element.width_pt ?? (isImage ? 180 : 180)
+  const h = element.height_pt ?? (isImage ? 180 : 40)
+  const PW = template.page_width_pt
+  const PH = template.page_height_pt
+
+  const presetFullWidth   = () => updateGeom({ x_pt: 0, width_pt: PW })
+  const presetFullHeight  = () => updateGeom({ y_pt: 0, height_pt: PH })
+  const presetCenterX     = () => updateGeom({ x_pt: (PW - w) / 2 })
+  const presetCenterY     = () => updateGeom({ y_pt: (PH - h) / 2 })
+  const presetCenterBoth  = () => updateGeom({ x_pt: (PW - w) / 2, y_pt: (PH - h) / 2 })
+  const presetFullPage    = () => updateGeom({ x_pt: 0, y_pt: 0, width_pt: PW, height_pt: PH })
+
   return (
     <aside className="w-64 border-l border-gray-200 bg-white flex-shrink-0 hidden md:flex flex-col min-h-0 overflow-hidden">
       {/* Header */}
@@ -483,9 +630,16 @@ function StylePanel({
           {isImage
             ? <ImageIcon className="h-3.5 w-3.5 text-violet-500" />
             : <TypeIcon className="h-3.5 w-3.5 text-sky-500" />}
-          <p className="text-xs font-medium text-gray-700 truncate">
+          <p className="text-xs font-medium text-gray-700 truncate flex-1">
             {tag?.name ?? '(tag removida)'}
           </p>
+          <button
+            onClick={onDuplicate}
+            title="Duplicar (Ctrl+D)"
+            className="p-1 rounded text-gray-400 hover:text-rose-500 hover:bg-rose-50"
+          >
+            <CopyIcon className="h-3 w-3" />
+          </button>
         </div>
       </div>
 
@@ -521,6 +675,18 @@ function StylePanel({
               max={template.page_height_pt}
               onChange={v => updateGeom({ height_pt: v })}
             />
+          </div>
+        </PropSection>
+
+        {/* ── Ajustes rápidos ── */}
+        <PropSection title="Ajustes rápidos">
+          <div className="grid grid-cols-3 gap-1.5">
+            <PresetBtn label="Largura total" onClick={presetFullWidth} icon={<ArrowLeftRight className="h-3.5 w-3.5" />} />
+            <PresetBtn label="Altura total"  onClick={presetFullHeight} icon={<ArrowUpDown className="h-3.5 w-3.5" />} />
+            <PresetBtn label="Tela cheia"    onClick={presetFullPage}  icon={<Maximize2 className="h-3.5 w-3.5" />} />
+            <PresetBtn label="Centro X"      onClick={presetCenterX}   icon={<AlignHorizontalJustifyCenter className="h-3.5 w-3.5" />} />
+            <PresetBtn label="Centro Y"      onClick={presetCenterY}   icon={<AlignVerticalJustifyCenter className="h-3.5 w-3.5" />} />
+            <PresetBtn label="Centralizar"   onClick={presetCenterBoth} icon={<><AlignHorizontalJustifyCenter className="h-3 w-3" /><AlignVerticalJustifyCenter className="h-3 w-3 -ml-1" /></>} />
           </div>
         </PropSection>
 
@@ -738,6 +904,23 @@ function PropSection({ title, children }: { title: string; children: React.React
   )
 }
 
+function PresetBtn({
+  label, onClick, icon,
+}: { label: string; onClick: () => void; icon: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg
+        border border-gray-200 bg-white hover:border-rose-300 hover:bg-rose-50/40
+        text-gray-600 hover:text-rose-600 transition-colors"
+    >
+      <div className="flex items-center">{icon}</div>
+      <span className="text-[9px] leading-tight text-center">{label}</span>
+    </button>
+  )
+}
+
 function NumericField({
   label, value, min, max, step = 1, onChange,
 }: {
@@ -828,7 +1011,7 @@ function FitButton({
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//   Subcomponentes existentes (sem alteração)
+//   Subcomponentes existentes
 // ═══════════════════════════════════════════════════════════════════════
 
 function SaveStatusIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | 'error' }) {
@@ -882,16 +1065,29 @@ function PaletteTagItem({ tag }: { tag: DocumentTag }) {
   )
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//   PdfPageCanvas — agora com réguas, grid e snap guides
+// ═══════════════════════════════════════════════════════════════════════
+
+interface Guide {
+  axis: 'x' | 'y'
+  /** Posição em pt onde a guia aparece (na coord do template). */
+  pos: number
+}
+
 function PdfPageCanvas({
   pdf, pageNumber, zoom,
+  template,
   elements, tagsById,
   selectedId, onSelect,
   onChangeElement, onDeleteElement,
   onDropTag,
+  showGrid, snapEnabled,
 }: {
   pdf: PDFDocumentProxy
   pageNumber: number
   zoom: number
+  template: DocumentTemplate
   elements: DocumentTemplateElement[]
   tagsById: Record<string, DocumentTag>
   selectedId: string | null
@@ -899,12 +1095,15 @@ function PdfPageCanvas({
   onChangeElement: (id: string, patch: Partial<DocumentTemplateElement>) => void
   onDeleteElement: (id: string) => void
   onDropTag: (tagId: string, xPt: number, yPt: number) => void
+  showGrid: boolean
+  snapEnabled: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<{ w: number; h: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragHover, setDragHover] = useState(false)
+  const [activeGuides, setActiveGuides] = useState<Guide[]>([])
 
   const renderTaskRef = useRef<ReturnType<pdfjs.PDFPageProxy['render']> | null>(null)
 
@@ -958,6 +1157,140 @@ function PdfPageCanvas({
     }
   }, [pdf, pageNumber, zoom])
 
+  // ── Snap math ──────────────────────────────────────────────────────
+  //
+  // Para cada interação (drag/resize), comparamos as arestas e centros
+  // da caixa proposta com os "snap targets" — bordas e centros da página
+  // e dos outros elementos da MESMA página.
+
+  const buildTargets = useCallback((excludeId: string): { xs: number[]; ys: number[] } => {
+    const xs: number[] = [0, template.page_width_pt / 2, template.page_width_pt]
+    const ys: number[] = [0, template.page_height_pt / 2, template.page_height_pt]
+    for (const el of elements) {
+      if (el.id === excludeId) continue
+      const w = el.width_pt ?? 0
+      const h = el.height_pt ?? 0
+      xs.push(el.x_pt, el.x_pt + w / 2, el.x_pt + w)
+      ys.push(el.y_pt, el.y_pt + h / 2, el.y_pt + h)
+    }
+    return { xs, ys }
+  }, [elements, template])
+
+  const computeSnap = useCallback((
+    id: string,
+    box: LiveBox,
+    kind: 'drag' | 'resize',
+  ): { box: LiveBox; guides: Guide[] } => {
+    if (!snapEnabled) return { box, guides: [] }
+    const { xs, ys } = buildTargets(id)
+    const guides: Guide[] = []
+    const out = { ...box }
+
+    // Candidatos no eixo X: borda esquerda, centro, borda direita
+    const leftX   = box.x_pt
+    const centerX = box.x_pt + box.width_pt / 2
+    const rightX  = box.x_pt + box.width_pt
+
+    // Acha o melhor X-target (menor distância dentre todas as combinações)
+    let bestX: { srcEdge: 'L' | 'C' | 'R'; target: number; dist: number } | null = null
+    for (const t of xs) {
+      const candidates: [number, 'L' | 'C' | 'R'][] = [
+        [leftX,   'L'],
+        [centerX, 'C'],
+        [rightX,  'R'],
+      ]
+      for (const [v, edge] of candidates) {
+        const d = Math.abs(v - t)
+        if (d <= SNAP_THRESHOLD_PT && (!bestX || d < bestX.dist)) {
+          bestX = { srcEdge: edge, target: t, dist: d }
+        }
+      }
+    }
+
+    if (bestX) {
+      // Aplica o snap
+      const delta =
+        bestX.srcEdge === 'L' ? (bestX.target - leftX) :
+        bestX.srcEdge === 'C' ? (bestX.target - centerX) :
+                                (bestX.target - rightX)
+      if (kind === 'drag') {
+        out.x_pt = box.x_pt + delta
+      } else {
+        // Em resize, decidir baseado em qual aresta tá próxima:
+        // L → move x_pt; R → muda width_pt; C → expande/contrai mantendo centro.
+        if (bestX.srcEdge === 'L') {
+          out.x_pt = box.x_pt + delta
+          out.width_pt = box.width_pt - delta
+        } else if (bestX.srcEdge === 'R') {
+          out.width_pt = box.width_pt + delta
+        } else {
+          out.width_pt = box.width_pt + delta * 2
+          out.x_pt = box.x_pt - delta
+        }
+      }
+      guides.push({ axis: 'x', pos: bestX.target })
+    }
+
+    // Mesma lógica para Y
+    const topY    = box.y_pt
+    const middleY = box.y_pt + box.height_pt / 2
+    const bottomY = box.y_pt + box.height_pt
+    let bestY: { srcEdge: 'T' | 'M' | 'B'; target: number; dist: number } | null = null
+    for (const t of ys) {
+      const candidates: [number, 'T' | 'M' | 'B'][] = [
+        [topY,    'T'],
+        [middleY, 'M'],
+        [bottomY, 'B'],
+      ]
+      for (const [v, edge] of candidates) {
+        const d = Math.abs(v - t)
+        if (d <= SNAP_THRESHOLD_PT && (!bestY || d < bestY.dist)) {
+          bestY = { srcEdge: edge, target: t, dist: d }
+        }
+      }
+    }
+    if (bestY) {
+      const delta =
+        bestY.srcEdge === 'T' ? (bestY.target - topY) :
+        bestY.srcEdge === 'M' ? (bestY.target - middleY) :
+                                (bestY.target - bottomY)
+      if (kind === 'drag') {
+        out.y_pt = box.y_pt + delta
+      } else {
+        if (bestY.srcEdge === 'T') {
+          out.y_pt = box.y_pt + delta
+          out.height_pt = box.height_pt - delta
+        } else if (bestY.srcEdge === 'B') {
+          out.height_pt = box.height_pt + delta
+        } else {
+          out.height_pt = box.height_pt + delta * 2
+          out.y_pt = box.y_pt - delta
+        }
+      }
+      guides.push({ axis: 'y', pos: bestY.target })
+    }
+
+    // Mínimos pra evitar caixa inválida
+    if (out.width_pt < 4)  out.width_pt = 4
+    if (out.height_pt < 4) out.height_pt = 4
+
+    return { box: out, guides }
+  }, [buildTargets, snapEnabled])
+
+  const handleLiveChange = useCallback((id: string, box: LiveBox | null) => {
+    if (!box || !snapEnabled) { setActiveGuides([]); return }
+    // Não persiste — só calcula guides pra mostrar
+    const { guides } = computeSnap(id, box, 'drag')
+    setActiveGuides(guides)
+  }, [computeSnap, snapEnabled])
+
+  const snapResolver: SnapResolver = useCallback((id, box, kind) => {
+    setActiveGuides([])
+    const { box: snapped } = computeSnap(id, box, kind)
+    return snapped
+  }, [computeSnap])
+
+  // ── Drag-drop de tags ──────────────────────────────────────────────
   const onDragOver = (e: React.DragEvent) => {
     if (Array.from(e.dataTransfer.types).includes('application/x-document-tag-id')) {
       e.preventDefault()
@@ -1001,41 +1334,260 @@ function PdfPageCanvas({
     )
   }
 
+  // ─── Render ─────────────────────────────────────────────────────
   return (
-    <div className="relative inline-block shadow-lg rounded-sm bg-white">
-      {!size && (
-        <div className="w-60 aspect-[210/297] flex items-center justify-center text-gray-400">
-          <Loader2 className="h-6 w-6 animate-spin" />
-        </div>
-      )}
-      <canvas ref={canvasRef} className="block" />
-
+    <div
+      className="relative inline-block"
+      style={{
+        paddingTop: RULER_SIZE,
+        paddingLeft: RULER_SIZE,
+      }}
+    >
+      {/* Réguas */}
       {size && (
-        <div
-          ref={overlayRef}
-          className={`absolute inset-0 ${dragHover ? 'bg-rose-50/40 ring-2 ring-rose-400 ring-inset' : ''}`}
-          style={{ width: size.w, height: size.h }}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-          onMouseDown={handleOverlayClick}
-          data-page={pageNumber}
-        >
-          {elements.map(el => (
-            <DraggableTagElement
-              key={el.id}
-              element={el}
-              tag={tagsById[el.tag_id]}
-              zoom={zoom}
-              selected={selectedId === el.id}
-              onSelect={() => onSelect(el.id)}
-              onChange={patch => onChangeElement(el.id, patch)}
-              onDelete={() => onDeleteElement(el.id)}
-            />
-          ))}
-        </div>
+        <>
+          <RulerHorizontal width={size.w} zoom={zoom} offsetLeft={RULER_SIZE} />
+          <RulerVertical  height={size.h} zoom={zoom} offsetTop={RULER_SIZE} />
+          {/* Canto superior-esquerdo (cobertura visual) */}
+          <div
+            className="absolute top-0 left-0 bg-gray-100 border-r border-b border-gray-200"
+            style={{ width: RULER_SIZE, height: RULER_SIZE }}
+          />
+        </>
       )}
+
+      <div className="relative inline-block shadow-lg rounded-sm bg-white">
+        {!size && (
+          <div className="w-60 aspect-[210/297] flex items-center justify-center text-gray-400">
+            <Loader2 className="h-6 w-6 animate-spin" />
+          </div>
+        )}
+        <canvas ref={canvasRef} className="block" />
+
+        {/* Grid overlay */}
+        {size && showGrid && (
+          <GridOverlay width={size.w} height={size.h} zoom={zoom} />
+        )}
+
+        {/* Snap guides (linhas roxas) */}
+        {size && activeGuides.length > 0 && (
+          <GuideOverlay guides={activeGuides} width={size.w} height={size.h} zoom={zoom} />
+        )}
+
+        {size && (
+          <div
+            ref={overlayRef}
+            className={`absolute inset-0 ${dragHover ? 'bg-rose-50/40 ring-2 ring-rose-400 ring-inset' : ''}`}
+            style={{ width: size.w, height: size.h }}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            onMouseDown={handleOverlayClick}
+            data-page={pageNumber}
+          >
+            {elements.map(el => (
+              <DraggableTagElement
+                key={el.id}
+                element={el}
+                tag={tagsById[el.tag_id]}
+                zoom={zoom}
+                selected={selectedId === el.id}
+                onSelect={() => onSelect(el.id)}
+                onChange={patch => onChangeElement(el.id, patch)}
+                onDelete={() => onDeleteElement(el.id)}
+                onLiveChange={handleLiveChange}
+                snap={snapResolver}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+// ─── Régua horizontal ────────────────────────────────────────────────
+
+function RulerHorizontal({
+  width, zoom, offsetLeft,
+}: { width: number; zoom: number; offsetLeft: number }) {
+  // Decide step de tick baseado no zoom
+  const stepMinor = zoom >= 1.5 ? 10 : zoom >= 0.8 ? 25 : 50
+  const stepLabel = zoom >= 1.5 ? 50 : zoom >= 0.8 ? 100 : 200
+
+  const widthPt = width / zoom
+  const ticks: { pos: number; major: boolean; label?: number }[] = []
+  for (let v = 0; v <= widthPt; v += stepMinor) {
+    const major = v % stepLabel === 0
+    ticks.push({ pos: v * zoom, major, label: major ? v : undefined })
+  }
+
+  return (
+    <div
+      className="absolute top-0 bg-gray-100 border-b border-gray-200 overflow-hidden"
+      style={{ left: offsetLeft, width, height: RULER_SIZE }}
+    >
+      <svg width={width} height={RULER_SIZE} className="block">
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line
+              x1={t.pos}
+              x2={t.pos}
+              y1={t.major ? RULER_SIZE - 8 : RULER_SIZE - 4}
+              y2={RULER_SIZE}
+              stroke={t.major ? '#9ca3af' : '#d1d5db'}
+              strokeWidth="1"
+            />
+            {t.label !== undefined && (
+              <text
+                x={t.pos + 2}
+                y={9}
+                fontSize="9"
+                fill="#6b7280"
+                fontFamily="ui-monospace, monospace"
+              >
+                {t.label}
+              </text>
+            )}
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+// ─── Régua vertical ──────────────────────────────────────────────────
+
+function RulerVertical({
+  height, zoom, offsetTop,
+}: { height: number; zoom: number; offsetTop: number }) {
+  const stepMinor = zoom >= 1.5 ? 10 : zoom >= 0.8 ? 25 : 50
+  const stepLabel = zoom >= 1.5 ? 50 : zoom >= 0.8 ? 100 : 200
+
+  const heightPt = height / zoom
+  const ticks: { pos: number; major: boolean; label?: number }[] = []
+  for (let v = 0; v <= heightPt; v += stepMinor) {
+    const major = v % stepLabel === 0
+    ticks.push({ pos: v * zoom, major, label: major ? v : undefined })
+  }
+
+  return (
+    <div
+      className="absolute left-0 bg-gray-100 border-r border-gray-200 overflow-hidden"
+      style={{ top: offsetTop, height, width: RULER_SIZE }}
+    >
+      <svg width={RULER_SIZE} height={height} className="block">
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line
+              x1={t.major ? RULER_SIZE - 8 : RULER_SIZE - 4}
+              x2={RULER_SIZE}
+              y1={t.pos}
+              y2={t.pos}
+              stroke={t.major ? '#9ca3af' : '#d1d5db'}
+              strokeWidth="1"
+            />
+            {t.label !== undefined && (
+              <text
+                x={2}
+                y={t.pos + 9}
+                fontSize="9"
+                fill="#6b7280"
+                fontFamily="ui-monospace, monospace"
+              >
+                {t.label}
+              </text>
+            )}
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+// ─── Grid overlay ────────────────────────────────────────────────────
+
+function GridOverlay({
+  width, height, zoom,
+}: { width: number; height: number; zoom: number }) {
+  const stepMinor = 10
+  const stepMajor = 50
+  const widthPt  = width / zoom
+  const heightPt = height / zoom
+
+  const vLines: { pos: number; major: boolean }[] = []
+  for (let v = stepMinor; v < widthPt; v += stepMinor) {
+    vLines.push({ pos: v * zoom, major: v % stepMajor === 0 })
+  }
+  const hLines: { pos: number; major: boolean }[] = []
+  for (let v = stepMinor; v < heightPt; v += stepMinor) {
+    hLines.push({ pos: v * zoom, major: v % stepMajor === 0 })
+  }
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      className="absolute inset-0 pointer-events-none"
+    >
+      {vLines.map((l, i) => (
+        <line
+          key={`v${i}`}
+          x1={l.pos} x2={l.pos}
+          y1={0} y2={height}
+          stroke={l.major ? '#cbd5e1' : '#e5e7eb'}
+          strokeWidth="1"
+          opacity={l.major ? 0.7 : 0.45}
+        />
+      ))}
+      {hLines.map((l, i) => (
+        <line
+          key={`h${i}`}
+          x1={0} x2={width}
+          y1={l.pos} y2={l.pos}
+          stroke={l.major ? '#cbd5e1' : '#e5e7eb'}
+          strokeWidth="1"
+          opacity={l.major ? 0.7 : 0.45}
+        />
+      ))}
+    </svg>
+  )
+}
+
+// ─── Snap guide overlay ──────────────────────────────────────────────
+
+function GuideOverlay({
+  guides, width, height, zoom,
+}: { guides: Guide[]; width: number; height: number; zoom: number }) {
+  return (
+    <svg
+      width={width}
+      height={height}
+      className="absolute inset-0 pointer-events-none"
+    >
+      {guides.map((g, i) => {
+        const pPx = g.pos * zoom
+        return g.axis === 'x' ? (
+          <line
+            key={i}
+            x1={pPx} x2={pPx}
+            y1={0} y2={height}
+            stroke="#a855f7"
+            strokeWidth="1"
+            strokeDasharray="3,2"
+          />
+        ) : (
+          <line
+            key={i}
+            x1={0} x2={width}
+            y1={pPx} y2={pPx}
+            stroke="#a855f7"
+            strokeWidth="1"
+            strokeDasharray="3,2"
+          />
+        )
+      })}
+    </svg>
   )
 }
 

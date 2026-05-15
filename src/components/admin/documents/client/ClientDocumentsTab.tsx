@@ -2,20 +2,25 @@
 //
 // Aba "Documentos" dentro do detalhe do cliente (ClientsManager > ClientDetail).
 //
-// Composta por dois blocos empilhados:
+// Composta por três blocos empilhados:
 //   1. ClientTagValuesPanel  — preenche os valores das tags deste cliente
-//   2. Lista de documentos gerados + botão "Gerar documento" (Fase 5 ativa)
+//   2. Ferramentas visuais   — gerador de layout de contraste (fixo)
+//   3. Lista de documentos gerados + botão "Gerar documento" (Fase 5 ativa)
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FileText, Plus, Download, ExternalLink,
   Inbox, AlertCircle, Trash2, Loader2,
+  LayoutTemplate,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
-import type { ClientGeneratedDocument, DocumentTemplate } from '../types'
+import type {
+  ClientGeneratedDocument, DocumentTemplate, DocumentTag, ClientTagValue,
+} from '../types'
 import { ClientTagValuesPanel } from './ClientTagValuesPanel'
 import { GenerateDocumentDialog } from '../generate/GenerateDocumentDialog'
+import { ContrastLayoutDialog } from './ContrastLayoutDialog'
 import { supabase } from '../../../../lib/supabase'
 
 // ── Btn ────────────────────────────────────────────────────────────────
@@ -90,28 +95,36 @@ interface Props {
 export function ClientDocumentsTab({ clientId }: Props) {
   const navigate = useNavigate()
 
-  const [clientName, setClientName] = useState<string>('')
-  const [docs, setDocs] = useState<ClientGeneratedDocument[]>([])
-  const [templates, setTemplates] = useState<DocumentTemplate[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [clientName, setClientName]     = useState<string>('')
+  const [docs, setDocs]                 = useState<ClientGeneratedDocument[]>([])
+  const [templates, setTemplates]       = useState<DocumentTemplate[]>([])
+  const [imageTags, setImageTags]       = useState<DocumentTag[]>([])
+  const [tagValues, setTagValues]       = useState<ClientTagValue[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [error, setError]               = useState<string | null>(null)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [showGenerate, setShowGenerate] = useState(false)
+  const [showContrast, setShowContrast] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ClientGeneratedDocument | null>(null)
-  const [deleting, setDeleting] = useState(false)
+  const [deleting, setDeleting]         = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [d, t, clientRes] = await Promise.all([
+      const [d, t, clientRes, allTags, allValues] = await Promise.all([
         documentsService.listGeneratedForClient(clientId),
         documentsService.listTemplates(),
         supabase.from('clients').select('full_name').eq('id', clientId).single(),
+        documentsService.listTags(),
+        documentsService.listClientTagValues(clientId),
       ])
       setDocs(d)
       setTemplates(t)
       setClientName((clientRes.data as any)?.full_name || '')
+      // Only image-type tags are relevant for the contrast generator
+      setImageTags((allTags as DocumentTag[]).filter(tag => tag.type === 'image'))
+      setTagValues(allValues as ClientTagValue[])
     } catch (e: any) {
       setError(e?.message || 'Erro ao carregar documentos')
     } finally {
@@ -158,6 +171,14 @@ export function ClientDocumentsTab({ clientId }: Props) {
     }
   }
 
+  // When the contrast generator saves a tag value, refresh the values list
+  const handleTagValueSaved = async () => {
+    try {
+      const updated = await documentsService.listClientTagValues(clientId)
+      setTagValues(updated as ClientTagValue[])
+    } catch { /* non-critical */ }
+  }
+
   // ── Render ──────────────────────────────────────────────────────
 
   return (
@@ -165,7 +186,54 @@ export function ClientDocumentsTab({ clientId }: Props) {
       {/* ═══ Bloco 1: valores das tags ═══ */}
       <ClientTagValuesPanel clientId={clientId} />
 
-      {/* ═══ Bloco 2: documentos gerados ═══ */}
+      {/* ═══ Bloco 2: ferramentas visuais (fixo) ═══ */}
+      <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100">
+          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+            <LayoutTemplate className="h-4 w-4 text-rose-500" />
+            Ferramentas visuais
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Gere layouts prontos a partir das fotos da cliente.
+          </p>
+        </div>
+
+        <div className="p-4">
+          {/* Contrast Layout card */}
+          <button
+            onClick={() => setShowContrast(true)}
+            className="w-full flex items-center gap-4 rounded-xl border border-gray-200 px-4 py-4
+              hover:border-rose-300 hover:bg-rose-50/40 transition-colors text-left group"
+          >
+            {/* Icon */}
+            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-gray-900 to-gray-400
+              flex items-center justify-center flex-shrink-0 shadow-sm">
+              <div className="flex gap-0.5">
+                <div className="w-4 h-7 bg-white/20 rounded-sm" />
+                <div className="w-4 h-7 bg-white/70 rounded-sm" />
+              </div>
+            </div>
+
+            {/* Text */}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-gray-900 group-hover:text-rose-700 transition-colors">
+                Layout de Contraste
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Gera imagem 1340×950px com a foto em P&B e colorida lado a lado, escala de
+                profundidade e faixa de contraste configuráveis.
+              </p>
+            </div>
+
+            {/* Arrow */}
+            <div className="text-gray-300 group-hover:text-rose-400 transition-colors text-lg leading-none">
+              →
+            </div>
+          </button>
+        </div>
+      </section>
+
+      {/* ═══ Bloco 3: documentos gerados ═══ */}
       <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between flex-wrap gap-3">
           <div>
@@ -254,13 +322,24 @@ export function ClientDocumentsTab({ clientId }: Props) {
         </div>
       </section>
 
-      {/* Modais */}
+      {/* ═══ Modais ═══ */}
       {showGenerate && (
         <GenerateDocumentDialog
           clientId={clientId}
           clientName={clientName || 'Cliente'}
           onClose={() => setShowGenerate(false)}
           onGenerated={handleGenerated}
+        />
+      )}
+
+      {showContrast && (
+        <ContrastLayoutDialog
+          clientId={clientId}
+          clientName={clientName || 'Cliente'}
+          imageTags={imageTags}
+          tagValues={tagValues}
+          onClose={() => setShowContrast(false)}
+          onTagValueSaved={handleTagValueSaved}
         />
       )}
 
