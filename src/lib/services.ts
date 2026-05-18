@@ -1,5 +1,6 @@
 // src/lib/services.ts
 import { supabase } from './supabase'
+import { driveStorage } from './driveStorage'
 import { calculateDeadline, formatDateForDB } from './deadlineCalculator'
 
 // ============================================================
@@ -431,12 +432,19 @@ export const adminService = {
       .select('storage_path')
       .eq('client_id', id)
 
-    if (photos?.length) {
-      await supabase.storage.from('client-photos').remove(photos.map(p => p.storage_path))
+    // Legado: limpa arquivos antigos do Supabase Storage (fotos sem drive_file_id)
+    const legacyPhotos  = (photos      || []).filter(p => p.storage_path).map(p => p.storage_path)
+    const legacyResults = (resultFiles || []).filter(f => f.storage_path).map(f => f.storage_path)
+
+    if (legacyPhotos.length) {
+      await supabase.storage.from('client-photos').remove(legacyPhotos)
     }
-    if (resultFiles?.length) {
-      await supabase.storage.from('client-results').remove(resultFiles.map(f => f.storage_path))
+    if (legacyResults.length) {
+      await supabase.storage.from('client-results').remove(legacyResults)
     }
+
+    // Fotos do Drive: o cleanup automático (cron 21 dias após análise entregue)
+    // apaga a pasta inteira do cliente. Aqui só removemos do banco.
 
     const { error } = await supabase.from('clients').delete().eq('id', id)
     if (error) throw error
@@ -1262,10 +1270,18 @@ export const adminService = {
       .order('uploaded_at')
 
     return (photos || []).map(photo => {
-      const { data } = supabase.storage
-        .from('client-photos')
-        .getPublicUrl(photo.storage_path)
-      return { ...photo, url: data.publicUrl }
+      let url: string
+      if (photo.drive_file_id) {
+        // Foto nova: pública no Drive da admin
+        url = driveStorage.viewUrl(photo.drive_file_id)
+      } else if (photo.storage_path) {
+        // Foto legada: ainda no bucket do Supabase
+        const { data } = supabase.storage.from('client-photos').getPublicUrl(photo.storage_path)
+        url = data.publicUrl
+      } else {
+        url = ''
+      }
+      return { ...photo, url }
     })
   },
 
@@ -1420,38 +1436,51 @@ export const adminService = {
   },
 
   async uploadResultFile(clientId: string, file: File): Promise<void> {
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-    const storagePath = `${clientId}/${Date.now()}_${safeName}`
+    // Resgata o token do cliente — a Edge Function drive/upload precisa
+    // dele pra resolver o admin dono
+    const { data: client, error: cliErr } = await supabase
+      .from('clients')
+      .select('token')
+      .eq('id', clientId)
+      .single()
+    if (cliErr || !client) throw new Error('Cliente não encontrado')
 
-    const { error: uploadError } = await supabase.storage
-      .from('client-results')
-      .upload(storagePath, file, { contentType: file.type, upsert: false })
-    if (uploadError) throw uploadError
-
-    const { error: dbError } = await supabase
-      .from('client_result_files')
-      .insert({
-        client_id: clientId,
-        file_name: file.name,
-        storage_path: storagePath,
-        file_size: file.size,
-      })
-    if (dbError) {
-      await supabase.storage.from('client-results').remove([storagePath])
-      throw dbError
-    }
+    await driveStorage.uploadPhoto({
+      portalToken: client.token,
+      file,
+      categoryId: null,
+      kind: 'result_file',
+    })
   },
 
-  async deleteResultFile(fileId: string, storagePath: string): Promise<void> {
-    await supabase.storage.from('client-results').remove([storagePath])
+  async deleteResultFile(fileId: string, storagePath: string | null): Promise<void> {
+    if (storagePath) {
+      // Legado: arquivo no bucket
+      try { await supabase.storage.from('client-results').remove([storagePath]) } catch {}
+    }
+    // Drive: cleanup automático apaga junto com a pasta do cliente em 21d
     await supabase.from('client_result_files').delete().eq('id', fileId)
   },
 
-  getResultFileUrl(storagePath: string): string {
-    const { data } = supabase.storage
-      .from('client-results')
-      .getPublicUrl(storagePath)
-    return data.publicUrl
+  /**
+   * Gera a URL pra abrir/baixar arquivo de resultado.
+   * Aceita o registro inteiro (com storage_path OU drive_file_id).
+   * Mantém compatibilidade com chamadas antigas que passavam só o storage_path string.
+   */
+  getResultFileUrl(fileOrPath: string | { storage_path?: string | null; drive_file_id?: string | null }): string {
+    // Compat: chamada antiga com string
+    if (typeof fileOrPath === 'string') {
+      const { data } = supabase.storage.from('client-results').getPublicUrl(fileOrPath)
+      return data.publicUrl
+    }
+    if (fileOrPath.drive_file_id) {
+      return driveStorage.downloadUrl(fileOrPath.drive_file_id)
+    }
+    if (fileOrPath.storage_path) {
+      const { data } = supabase.storage.from('client-results').getPublicUrl(fileOrPath.storage_path)
+      return data.publicUrl
+    }
+    return ''
   },
 
   // ─── Kanban Column Labels ───────────────────────────────────────────────────
@@ -1922,47 +1951,41 @@ export const clientService = {
 
   async uploadPhoto(
     token: string,
-    clientId: string,
+    _clientId: string,
     file: File,
     categoryId: string | null
   ): Promise<void> {
-    const uniqueName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    const path = `${clientId}/${uniqueName}`
-
-    const { error: uploadError } = await supabase.storage
-      .from('client-photos')
-      .upload(path, file, { contentType: file.type, upsert: false })
-    if (uploadError) throw uploadError
-
-    const { data, error } = await supabase.rpc('save_client_photo', {
-      p_token: token,
-      p_photo_name: uniqueName,
-      p_photo_type: file.type,
-      p_photo_size: file.size,
-      p_storage_path: path,
-      p_category_id: categoryId,
+    // Delega tudo pra Edge Function `drive/upload`: ela faz upload no Drive
+    // da admin dona desse token e grava em client_photos via RPC.
+    await driveStorage.uploadPhoto({
+      portalToken: token,
+      file,
+      categoryId,
+      kind: 'photo',
     })
-    if (error) throw error
-    if (data?.error) throw new Error(data.error)
   },
 
   /**
    * Cliente remove uma foto específica (usado durante reenvio pós-rejeição).
    *
-   * O RPC `delete_client_photo` valida que a foto pertence ao cliente do
-   * token e apaga o registro. O storage é limpo aqui em seguida.
+   * Para fotos novas (Drive): o RPC `delete_client_photo_drive` valida que a
+   * foto pertence ao cliente do token e apaga o registro. O arquivo no Drive
+   * continua até o cleanup automático (21d após análise entregue) — escolha
+   * consciente pra simplificar o frontend.
+   *
+   * Para fotos legadas (Storage): também limpa o bucket.
    */
   async deletePhoto(token: string, photoId: string): Promise<void> {
-    const { data, error } = await supabase.rpc('delete_client_photo', {
+    const { data, error } = await supabase.rpc('delete_client_photo_drive', {
       p_token: token,
       p_photo_id: photoId,
     })
     if (error) throw error
     if (data?.error) throw new Error(data.error)
 
-    // Limpeza do storage (feita no client porque o RPC só devolve o path)
+    // Legado: foto antiga que ainda estava no Supabase Storage
     if (data?.storage_path) {
-      await supabase.storage.from('client-photos').remove([data.storage_path])
+      try { await supabase.storage.from('client-photos').remove([data.storage_path]) } catch {}
     }
   },
 
@@ -2033,66 +2056,29 @@ export const clientService = {
    * Cliente envia a foto para a etapa "Aguardando Foto IA".
    *
    * FLUXO:
-   *   - Apaga foto IA antiga da mesma categoria (caso reenvio)
-   *   - Faz upload no bucket client-photos
-   *   - Chama RPC `save_ai_photo` (que valida status + categoria IA)
+   *   - A Edge Function drive/upload apaga foto IA antiga da mesma categoria
+   *   - Faz upload no Drive da admin (pasta do cliente)
+   *   - Chama RPC `save_client_photo_drive` (valida status + categoria IA)
    *   - NÃO muda o status — admin valida e avança via StageController
    *   - Dispara e-mail 'ai_photo_submitted' pra consultora
    */
   async submitAiPhoto(
     token: string,
-    clientId: string,
+    _clientId: string,
     categoryId: string,
     file: File
   ): Promise<void> {
-    // 1. Apaga fotos antigas dessa categoria IA (caso seja reenvio)
-    const { data: existing } = await supabase
-      .from('client_photos')
-      .select('id, storage_path')
-      .eq('client_id', clientId)
-      .eq('category_id', categoryId)
-
-    if (existing && existing.length > 0) {
-      const paths = existing.map(p => p.storage_path).filter(Boolean)
-      if (paths.length) {
-        try { await supabase.storage.from('client-photos').remove(paths) } catch (e) {
-          console.warn('Erro ao limpar fotos IA antigas do storage:', e)
-        }
-      }
-      await supabase.from('client_photos').delete().in('id', existing.map(p => p.id))
-    }
-
-    // 2. Upload da nova foto
-    const uniqueName = `${Date.now()}_ai_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    const path = `${clientId}/${uniqueName}`
-
-    const { error: uploadError } = await supabase.storage
-      .from('client-photos')
-      .upload(path, file, { contentType: file.type, upsert: false })
-    if (uploadError) throw uploadError
-
-    // 3. Registro no banco — RPC dedicado que aceita awaiting_ai_photo
-    const { data, error } = await supabase.rpc('save_ai_photo', {
-      p_token: token,
-      p_photo_name: uniqueName,
-      p_photo_type: file.type,
-      p_photo_size: file.size,
-      p_storage_path: path,
-      p_category_id: categoryId,
+    // A Edge Function drive/upload já apaga a foto IA anterior da mesma
+    // categoria (via save_client_photo_drive com is_ai_photo=true).
+    await driveStorage.uploadPhoto({
+      portalToken: token,
+      file,
+      categoryId,
+      kind: 'ai_photo',
     })
-    if (error) {
-      try { await supabase.storage.from('client-photos').remove([path]) } catch {}
-      throw error
-    }
-    if (data?.error) {
-      try { await supabase.storage.from('client-photos').remove([path]) } catch {}
-      throw new Error(data.error)
-    }
 
-    // 4. E-mail pra consultora
+    // E-mail pra consultora (mantido igual ao fluxo original)
     try {
-      // .maybeSingle() + clientToken: mesmo padrão de finalizePhotos para
-      // tolerar RLS bloqueando a leitura no portal anon.
       const { data: client } = await supabase
         .from('clients')
         .select('full_name, email, token, admin_id, plan:plans(name)')
@@ -2120,14 +2106,22 @@ export const clientService = {
 
   // ---- Storage ----
   /**
-   * Gera a URL pública de um arquivo de resultado no Supabase Storage.
-   * Usado pelo portal da cliente para exibir links de download dos PDFs/arquivos
-   * liberados pela admin.
+   * Gera a URL pública de um arquivo de resultado.
+   * Aceita storage_path (legado) ou drive_file_id.
+   * Mantém compat com chamadas antigas que passavam só string.
    */
-  getResultFileUrl(storagePath: string): string {
-    const { data } = supabase.storage
-      .from('client-results')
-      .getPublicUrl(storagePath)
-    return data.publicUrl
+  getResultFileUrl(fileOrPath: string | { storage_path?: string | null; drive_file_id?: string | null }): string {
+    if (typeof fileOrPath === 'string') {
+      const { data } = supabase.storage.from('client-results').getPublicUrl(fileOrPath)
+      return data.publicUrl
+    }
+    if (fileOrPath.drive_file_id) {
+      return driveStorage.downloadUrl(fileOrPath.drive_file_id)
+    }
+    if (fileOrPath.storage_path) {
+      const { data } = supabase.storage.from('client-results').getPublicUrl(fileOrPath.storage_path)
+      return data.publicUrl
+    }
+    return ''
   },
 }

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
+import { DriveConnectionSection } from './DriveConnectionSection'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
 
@@ -400,6 +401,9 @@ export default function SettingsEditor() {
           {message.text}
         </div>
       )}
+
+      {/* ── Google Drive ─────────────────────────────────────────────────── */}
+      <DriveConnectionSection />
 
       {/* ── Assistente de IA Gemini ─────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">

@@ -11,6 +11,7 @@ import {
 import { clientService, ClientPortalData } from '../../lib/services'
 import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 import { GeminiChat } from './GeminiChat'
 
 // ── Tiny UI ──────────────────────────────────────────────────────────────────
@@ -652,6 +653,7 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
               {f.type === 'image' && (
                 <ImageUploadFormField
                   field={f}
+                  token={token}
                   clientId={data.client.id}
                   value={formData[f.id] || []}
                   onChange={imgs => handleChange(f.id, imgs)}
@@ -680,11 +682,13 @@ interface FormImage {
 
 function ImageUploadFormField({
   field,
+  token,
   clientId,
   value,
   onChange,
 }: {
   field: any
+  token: string
   clientId: string
   value: FormImage[]
   onChange: (imgs: FormImage[]) => void
@@ -709,14 +713,16 @@ function ImageUploadFormField({
       const uploaded: FormImage[] = []
       for (const file of toAdd) {
         const processed = await processImage(file)
-        const uniqueName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-        const path = `${clientId}/form/${field.id}/${uniqueName}`
-        const { error: upErr } = await supabase.storage
-          .from('client-photos')
-          .upload(path, processed, { contentType: processed.type, upsert: false })
-        if (upErr) throw upErr
-        const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(path)
-        uploaded.push({ storagePath: path, url: urlData.publicUrl })
+        // Upload via Edge Function drive/upload → arquivo vai pro Drive da admin
+        const result = await driveStorage.uploadPhoto({
+          portalToken: token,
+          file: processed,
+          categoryId: null,
+          kind: 'form_image',
+        })
+        // Reaproveitamos `storagePath` pra guardar o drive_file_id
+        // (mantém o tipo intacto e o resto do código continua funcionando)
+        uploaded.push({ storagePath: result.driveFileId, url: result.url })
       }
       onChange([...value, ...uploaded])
     } catch (e: any) {
@@ -729,9 +735,12 @@ function ImageUploadFormField({
   const handleRemove = async (idx: number) => {
     const img = value[idx]
     setRemoving(s => new Set([...s, img.storagePath]))
-    try {
-      await supabase.storage.from('client-photos').remove([img.storagePath])
-    } catch {}
+    // Drive: o cleanup automático apaga junto com a pasta do cliente em 21d
+    //        (após análise entregue). Não removemos imediatamente do Drive.
+    // Legado: se o storagePath é caminho do bucket antigo (contém '/'), remove
+    if (img.storagePath.includes('/')) {
+      try { await supabase.storage.from('client-photos').remove([img.storagePath]) } catch {}
+    }
     onChange(value.filter((_, i) => i !== idx))
     setRemoving(s => { const n = new Set(s); n.delete(img.storagePath); return n })
   }
@@ -1755,17 +1764,24 @@ function ResultScreen({
         setAiPrompt(row?.ai_prompt || null)
 
         if (row?.ai_reference_photos && Array.isArray(row.ai_reference_photos) && row.ai_reference_photos.length > 0) {
-          const photos: RefPhoto[] = row.ai_reference_photos.map((p: any) => ({
-            type: (p.typeId || p.type || 'geral') as string,
-            label: p.typeName || p.label || p.typeId || p.type || 'Geral',
-            storagePath: p.storagePath,
-            url: supabase.storage.from('client-photos').getPublicUrl(p.storagePath).data.publicUrl,
-          }))
+          const photos: RefPhoto[] = row.ai_reference_photos.map((p: any) => {
+            const driveId = p.driveFileId || p.drive_file_id
+            const url = driveId
+              ? driveStorage.viewUrl(driveId)
+              : supabase.storage.from('client-photos').getPublicUrl(p.storagePath).data.publicUrl
+            return {
+              type: (p.typeId || p.type || 'geral') as string,
+              label: p.typeName || p.label || p.typeId || p.type || 'Geral',
+              storagePath: p.storagePath || driveId || '',
+              url,
+            }
+          })
           setAiRefPhotos(photos)
           const geral = photos.find(p => p.type === 'geral')
           if (geral) setAiRefPhotoUrl(geral.url)
           else if (photos.length > 0) setAiRefPhotoUrl(photos[0].url)
         } else if (row?.ai_reference_photo_path) {
+          // Legado: campo único string (caminho do bucket antigo)
           const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(row.ai_reference_photo_path)
           setAiRefPhotoUrl(urlData.publicUrl)
           setAiRefPhotos([{
@@ -1924,7 +1940,7 @@ function ResultScreen({
             {files.map((file: any) => (
               <a
                 key={file.id}
-                href={clientService.getResultFileUrl(file.storage_path)}
+                href={clientService.getResultFileUrl(file)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-100 transition-all group"
@@ -1975,7 +1991,7 @@ function ResultScreen({
             folderConfig={aiFolderConfig}
             clientId={data.client.id}
             resultFileUrls={files.map((f: any) => ({
-              url: clientService.getResultFileUrl(f.storage_path),
+              url: clientService.getResultFileUrl(f),
               name: f.file_name,
             }))}
             resultObservations={result.observations || ''}

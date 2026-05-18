@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib/deadlineCalculator'
 import { AIPromptConfig } from './AIPromptConfig'
 import { GeminiChat } from '../client/GeminiChat'
@@ -2466,7 +2467,7 @@ function PhotoThumb({ photo, onClick }: { photo: any; onClick: () => void }) {
 }
 
 // ─── Photos View ──────────────────────────────────────────────────────────
-function PhotosView({ clientId, photos, photoCategories }: { clientId: string; photos: any[]; photoCategories: any[] }) {
+function PhotosView({ clientId, photos, photoCategories, clientToken }: { clientId: string; photos: any[]; photoCategories: any[]; clientToken: string }) {
   const { theme: t } = useTheme()
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -2476,11 +2477,15 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
   const uploadInputRef = useRef<HTMLInputElement>(null)
 
   const handleDeletePhoto = async (photo: any) => {
-    const { error: storageError } = await supabase.storage
-      .from('client-photos')
-      .remove([photo.storage_path])
-    if (storageError) throw storageError
-
+    // Legado (Supabase Storage): apaga do bucket antes de remover do banco
+    if (!photo.drive_file_id && photo.storage_path) {
+      const { error: storageError } = await supabase.storage
+        .from('client-photos')
+        .remove([photo.storage_path])
+      if (storageError) throw storageError
+    }
+    // Drive: o arquivo fica no Drive até o cleanup automático (cron 21d após análise)
+    // Aqui só removemos o registro do banco
     const { error: dbError } = await supabase
       .from('client_photos')
       .delete()
@@ -2506,26 +2511,12 @@ function PhotosView({ clientId, photos, photoCategories }: { clientId: string; p
     setUploadingToCategory(categoryId ?? 'uploading')
     try {
       for (const file of Array.from(files)) {
-        const uniqueName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-        const path = `${clientId}/${uniqueName}`
-
-        const { error: uploadError } = await supabase.storage
-          .from('client-photos')
-          .upload(path, file, { contentType: file.type, upsert: false })
-        if (uploadError) throw uploadError
-
-        const { error: dbError } = await supabase
-          .from('client_photos')
-          .insert({
-            client_id: clientId,
-            photo_name: uniqueName,
-            photo_type: file.type,
-            photo_size: file.size,
-            storage_path: path,
-            category_id: categoryId,
-            uploaded_at: new Date().toISOString()
-          })
-        if (dbError) throw dbError
+        await driveStorage.uploadPhoto({
+          portalToken: clientToken,
+          file,
+          categoryId,
+          kind: 'photo',
+        })
       }
       await loadPhotos()
     } catch (e: any) {
@@ -3302,17 +3293,21 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     const derived: { type: string; label: string; storagePath: string; url: string }[] = []
     for (const cat of (photoCategories || [])) {
       if ((cat as any).is_ai_simulation) continue
-      const catPhotos = (photos || []).filter((p: any) => p.category_id === cat.id && p.storage_path)
+      const catPhotos = (photos || []).filter((p: any) => p.category_id === cat.id && (p.storage_path || p.drive_file_id))
       if (catPhotos.length === 0) continue
       const photo = catPhotos[catPhotos.length - 1] // usa a mais recente
       const type = inferRefType(cat.title)
       if (!seen.has(type)) {
         seen.add(type)
+        const photoKey = photo.drive_file_id || photo.storage_path
+        const photoUrl = photo.drive_file_id
+          ? driveStorage.viewUrl(photo.drive_file_id)
+          : supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl
         derived.push({
           type,
           label: cat.title,
-          storagePath: photo.storage_path,
-          url: supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl,
+          storagePath: photoKey,
+          url: photoUrl,
         })
       }
     }
@@ -3327,7 +3322,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const effectiveAdminRefPhotos = adminChatRefPhotos ?? adminAiRefPhotos
   const adminAiRefPhotoUrl = effectiveAdminRefPhotos.find(p => p.type === 'geral')?.url || effectiveAdminRefPhotos[0]?.url || null
   const adminResultFileUrls = (resultFiles || []).map((f: any) => ({
-    url: adminService.getResultFileUrl(f.storage_path),
+    url: adminService.getResultFileUrl(f),
     name: f.file_name,
   }))
 
@@ -3746,7 +3741,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
           {tab === 'photos' && (
             <div className="space-y-4">
-              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} />
+              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} clientToken={client.token} />
 
               {/* Zona de limpeza — visível apenas para clientes concluídos */}
               {client.status === 'completed' && (
@@ -4067,7 +4062,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         <span className="text-xs" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
                       </div>
                       <div className="flex items-center gap-2 ml-3">
-                        <a href={adminService.getResultFileUrl(f.storage_path)} target="_blank" rel="noopener noreferrer">
+                        <a href={adminService.getResultFileUrl(f)} target="_blank" rel="noopener noreferrer">
                           <Btn variant="ghost" size="sm"><Download className="h-3.5 w-3.5" /></Btn>
                         </a>
                         <Btn variant="ghost" size="sm" onClick={() => handleDeleteFile(f.id, f.storage_path)} className="text-red-500 hover:bg-red-50">
@@ -4141,10 +4136,16 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               .filter((cat: any) => !cat.is_ai_simulation)
               .map((cat: any) => ({
                 cat,
-                catPhotos: (photos || []).filter((p: any) => p.category_id === cat.id && p.storage_path).map((p: any) => ({
-                  ...p,
-                  url: supabase.storage.from('client-photos').getPublicUrl(p.storage_path).data.publicUrl,
-                })),
+                catPhotos: (photos || [])
+                  .filter((p: any) => p.category_id === cat.id && (p.storage_path || p.drive_file_id))
+                  .map((p: any) => ({
+                    ...p,
+                    url: p.drive_file_id
+                      ? driveStorage.viewUrl(p.drive_file_id)
+                      : supabase.storage.from('client-photos').getPublicUrl(p.storage_path).data.publicUrl,
+                    // Identificador único independente de storage_path poder ser null
+                    _photoKey: p.drive_file_id || p.storage_path || p.id,
+                  })),
               }))
               .filter(({ catPhotos }) => catPhotos.length > 0)
 
@@ -4224,7 +4225,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         <div className="flex flex-wrap gap-2">
                           {catPhotos.map((photo: any) => {
                             const type = inferRefType(cat.title)
-                            const isSelected = effectiveAdminRefPhotos.some(r => r.storagePath === photo.storage_path)
+                            const isSelected = effectiveAdminRefPhotos.some(r => r.storagePath === photo._photoKey)
                             return (
                               <button
                                 key={photo.id}
@@ -4235,7 +4236,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                                   next.push({
                                     type,
                                     label: cat.title,
-                                    storagePath: photo.storage_path,
+                                    storagePath: photo._photoKey,
                                     url: photo.url,
                                   })
                                   // Garante 'geral' presente

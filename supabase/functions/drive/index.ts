@@ -1,0 +1,517 @@
+// supabase/functions/drive/index.ts
+//
+// Edge Function única para integração com Google Drive.
+// Rotas (path após /functions/v1/drive):
+//
+//   POST /start        — admin: gera URL de autorização OAuth
+//   GET  /callback     — Google → recebe code, troca por tokens, salva
+//   GET  /status       — admin: retorna se está conectado
+//   POST /disconnect   — admin: remove credenciais
+//   POST /set-root     — admin: define pasta raiz no Drive
+//   POST /upload       — cliente anônimo: envia foto, sobe pro Drive (público)
+//   POST /cleanup      — cron: apaga pastas de clientes finalizados há 21+ dias
+//
+// Env vars necessárias:
+//   SUPABASE_URL              (auto)
+//   SUPABASE_SERVICE_ROLE_KEY (auto)
+//   GOOGLE_OAUTH_CLIENT_ID
+//   GOOGLE_OAUTH_CLIENT_SECRET
+//   CLEANUP_SECRET            (string aleatória, qualquer coisa)
+
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const DRIVE_API     = 'https://www.googleapis.com/drive/v3'
+const DRIVE_UPLOAD  = 'https://www.googleapis.com/upload/drive/v3'
+const FOLDER_MIME   = 'application/vnd.google-apps.folder'
+
+const SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
+].join(' ')
+
+const CORS = {
+  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cleanup-token',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, DELETE',
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function env(name: string): string {
+  const v = Deno.env.get(name)
+  if (!v) throw new Error(`Missing env var: ${name}`)
+  return v
+}
+
+function adminSb(): SupabaseClient {
+  return createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'), {
+    auth: { persistSession: false, autoRefreshToken: false }
+  })
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS, 'Content-Type': 'application/json' }
+  })
+}
+
+function html(body: string, status = 200) {
+  return new Response(body, {
+    status,
+    headers: { ...CORS, 'Content-Type': 'text/html; charset=utf-8' }
+  })
+}
+
+async function getAuthUser(req: Request) {
+  const auth = req.headers.get('authorization') || ''
+  if (!auth.startsWith('Bearer ')) return null
+  const sb = createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'))
+  const { data, error } = await sb.auth.getUser(auth.slice(7))
+  if (error || !data.user) return null
+  return data.user
+}
+
+function sanitizeFolderName(name: string): string {
+  return name.trim().replace(/[\/\\]/g, '-').replace(/\s+/g, ' ').slice(0, 200) || 'cliente'
+}
+
+// ─── Google OAuth ──────────────────────────────────────────────────────────
+
+async function exchangeCode(code: string, redirectUri: string) {
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id:     env('GOOGLE_OAUTH_CLIENT_ID'),
+      client_secret: env('GOOGLE_OAUTH_CLIENT_SECRET'),
+      redirect_uri:  redirectUri,
+      grant_type:    'authorization_code',
+    }),
+  })
+  if (!r.ok) throw new Error(`OAuth exchange: ${r.status} ${await r.text()}`)
+  return r.json() as Promise<{ access_token: string; refresh_token?: string; expires_in: number }>
+}
+
+async function refresh(refreshToken: string) {
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: refreshToken,
+      client_id:     env('GOOGLE_OAUTH_CLIENT_ID'),
+      client_secret: env('GOOGLE_OAUTH_CLIENT_SECRET'),
+      grant_type:    'refresh_token',
+    }),
+  })
+  if (!r.ok) throw new Error(`OAuth refresh: ${r.status} ${await r.text()}`)
+  return r.json() as Promise<{ access_token: string; expires_in: number }>
+}
+
+async function getAdminToken(sb: SupabaseClient, adminId: string) {
+  const { data: c } = await sb
+    .from('admin_drive_credentials')
+    .select('refresh_token, access_token, access_token_expires_at, root_folder_id')
+    .eq('admin_id', adminId)
+    .maybeSingle()
+  if (!c) throw new Error('Admin não conectou o Google Drive')
+
+  const exp = c.access_token_expires_at ? new Date(c.access_token_expires_at).getTime() : 0
+  if (c.access_token && exp > Date.now() + 60_000) {
+    return { accessToken: c.access_token, rootFolderId: c.root_folder_id }
+  }
+
+  const r = await refresh(c.refresh_token)
+  const newExp = new Date(Date.now() + r.expires_in * 1000).toISOString()
+  await sb.from('admin_drive_credentials').update({
+    access_token: r.access_token,
+    access_token_expires_at: newExp,
+    updated_at: new Date().toISOString(),
+  }).eq('admin_id', adminId)
+
+  return { accessToken: r.access_token, rootFolderId: c.root_folder_id }
+}
+
+async function fetchUserEmail(token: string): Promise<string> {
+  const r = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  if (!r.ok) throw new Error(`userinfo: ${r.status}`)
+  const j = await r.json()
+  return j.email
+}
+
+// ─── Drive API ──────────────────────────────────────────────────────────────
+
+async function findOrCreateFolder(token: string, name: string, parentId: string | null, makePublic = false): Promise<string> {
+  const escaped = name.replace(/'/g, "\\'")
+  const q = [
+    `mimeType='${FOLDER_MIME}'`,
+    `name='${escaped}'`,
+    'trashed=false',
+    parentId ? `'${parentId}' in parents` : null,
+  ].filter(Boolean).join(' and ')
+
+  const sr = await fetch(`${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  if (!sr.ok) throw new Error(`Drive search: ${sr.status} ${await sr.text()}`)
+  const sj = await sr.json() as { files: { id: string }[] }
+  if (sj.files?.length) return sj.files[0].id
+
+  const body: Record<string, unknown> = { name, mimeType: FOLDER_MIME }
+  if (parentId) body.parents = [parentId]
+
+  const cr = await fetch(`${DRIVE_API}/files?fields=id`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!cr.ok) throw new Error(`Drive create folder: ${cr.status} ${await cr.text()}`)
+  const cj = await cr.json() as { id: string }
+
+  if (makePublic) await makeAnyoneReader(token, cj.id)
+  return cj.id
+}
+
+async function makeAnyoneReader(token: string, fileId: string): Promise<void> {
+  const r = await fetch(`${DRIVE_API}/files/${fileId}/permissions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+  })
+  if (!r.ok && r.status !== 409) {  // 409 = já tem permissão
+    throw new Error(`Drive perms: ${r.status} ${await r.text()}`)
+  }
+}
+
+async function uploadToDrive(token: string, opts: {
+  name: string; mimeType: string; parents: string[]; body: Uint8Array
+}): Promise<{ id: string }> {
+  const boundary = '----b' + Math.random().toString(36).slice(2)
+  const enc = new TextEncoder()
+  const meta = enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name: opts.name, mimeType: opts.mimeType, parents: opts.parents })}\r\n`)
+  const dataStart = enc.encode(`--${boundary}\r\nContent-Type: ${opts.mimeType}\r\n\r\n`)
+  const end = enc.encode(`\r\n--${boundary}--`)
+
+  const merged = new Uint8Array(meta.length + dataStart.length + opts.body.length + end.length)
+  let off = 0
+  merged.set(meta, off); off += meta.length
+  merged.set(dataStart, off); off += dataStart.length
+  merged.set(opts.body, off); off += opts.body.length
+  merged.set(end, off)
+
+  const r = await fetch(`${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body: merged,
+  })
+  if (!r.ok) throw new Error(`Drive upload: ${r.status} ${await r.text()}`)
+  return r.json()
+}
+
+async function deleteFromDrive(token: string, fileId: string): Promise<void> {
+  const r = await fetch(`${DRIVE_API}/files/${fileId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  if (!r.ok && r.status !== 404) throw new Error(`Drive delete: ${r.status} ${await r.text()}`)
+}
+
+// ─── HTML do popup OAuth ────────────────────────────────────────────────────
+
+function popupCloser(result: { ok: boolean; error?: string; googleEmail?: string }) {
+  const safe = JSON.stringify(result).replace(/</g, '\\u003c')
+  return `<!doctype html><meta charset="utf-8"><title>Drive</title>
+<style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f9fafb;color:#111827;padding:40px;text-align:center}h1{font-size:18px;margin:0 0 8px}p{color:#6b7280;font-size:14px}</style>
+<h1>${result.ok ? '✓ Drive conectado!' : '✗ Falha ao conectar'}</h1>
+<p>${result.ok ? 'Esta janela vai fechar automaticamente.' : (result.error || 'Tente novamente.')}</p>
+<script>
+(function(){
+  var d=${safe};
+  try{ if(window.opener) window.opener.postMessage({type:'drive-oauth',payload:d},'*'); }catch(e){}
+  setTimeout(function(){ try{window.close()}catch(e){} },1500);
+})();
+</script>`
+}
+
+// ─── Handler ────────────────────────────────────────────────────────────────
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
+
+  const url = new URL(req.url)
+  const path = url.pathname.replace(/^.*\/drive/, '') || '/'
+
+  try {
+    // ─── POST /start ───────────────────────────────────────────────────────
+    if (req.method === 'POST' && path === '/start') {
+      const user = await getAuthUser(req)
+      if (!user) return json({ error: 'Não autenticado' }, 401)
+
+      const { redirectUri } = await req.json() as { redirectUri: string }
+      if (!redirectUri) return json({ error: 'redirectUri obrigatório' }, 400)
+
+      const state = crypto.randomUUID()
+      const sb = adminSb()
+      const { error } = await sb.from('admin_drive_oauth_state').insert({ state, admin_id: user.id })
+      if (error) return json({ error: error.message }, 500)
+
+      const params = new URLSearchParams({
+        client_id: env('GOOGLE_OAUTH_CLIENT_ID'),
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: SCOPES,
+        access_type: 'offline',
+        prompt: 'consent',
+        state,
+      })
+      return json({ authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params}` })
+    }
+
+    // ─── GET /callback ─────────────────────────────────────────────────────
+    if (req.method === 'GET' && path === '/callback') {
+      const code  = url.searchParams.get('code')
+      const state = url.searchParams.get('state')
+      const err   = url.searchParams.get('error')
+
+      if (err)              return html(popupCloser({ ok: false, error: err }))
+      if (!code || !state)  return html(popupCloser({ ok: false, error: 'missing code/state' }))
+
+      const sb = adminSb()
+      const { data: stateRow } = await sb
+        .from('admin_drive_oauth_state')
+        .select('admin_id, expires_at')
+        .eq('state', state)
+        .maybeSingle()
+      if (!stateRow) return html(popupCloser({ ok: false, error: 'state inválido' }))
+      if (new Date(stateRow.expires_at).getTime() < Date.now()) {
+        await sb.from('admin_drive_oauth_state').delete().eq('state', state)
+        return html(popupCloser({ ok: false, error: 'state expirado' }))
+      }
+      await sb.from('admin_drive_oauth_state').delete().eq('state', state)
+
+      const redirectUri = `${url.origin}${url.pathname}`
+      const tokens = await exchangeCode(code, redirectUri)
+      if (!tokens.refresh_token) {
+        return html(popupCloser({ ok: false, error: 'Google não retornou refresh_token. Revogue em myaccount.google.com/permissions e tente de novo.' }))
+      }
+
+      const email = await fetchUserEmail(tokens.access_token)
+      await sb.from('admin_drive_credentials').upsert({
+        admin_id: stateRow.admin_id,
+        google_email: email,
+        refresh_token: tokens.refresh_token,
+        access_token: tokens.access_token,
+        access_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'admin_id' })
+
+      return html(popupCloser({ ok: true, googleEmail: email }))
+    }
+
+    // ─── GET /status ───────────────────────────────────────────────────────
+    if (req.method === 'GET' && path === '/status') {
+      const user = await getAuthUser(req)
+      if (!user) return json({ error: 'Não autenticado' }, 401)
+
+      const sb = adminSb()
+      const { data } = await sb
+        .from('admin_drive_credentials')
+        .select('google_email, root_folder_id, root_folder_name, connected_at')
+        .eq('admin_id', user.id)
+        .maybeSingle()
+
+      return json({
+        connected:      !!data,
+        googleEmail:    data?.google_email     ?? null,
+        rootFolderId:   data?.root_folder_id   ?? null,
+        rootFolderName: data?.root_folder_name ?? null,
+        connectedAt:    data?.connected_at     ?? null,
+      })
+    }
+
+    // ─── POST /disconnect ──────────────────────────────────────────────────
+    if (req.method === 'POST' && path === '/disconnect') {
+      const user = await getAuthUser(req)
+      if (!user) return json({ error: 'Não autenticado' }, 401)
+      const sb = adminSb()
+      await sb.from('admin_drive_credentials').delete().eq('admin_id', user.id)
+      return json({ ok: true })
+    }
+
+    // ─── POST /set-root ────────────────────────────────────────────────────
+    if (req.method === 'POST' && path === '/set-root') {
+      const user = await getAuthUser(req)
+      if (!user) return json({ error: 'Não autenticado' }, 401)
+      const { rootFolderId, rootFolderName } = await req.json() as { rootFolderId: string | null; rootFolderName: string | null }
+      const sb = adminSb()
+      await sb.from('admin_drive_credentials').update({
+        root_folder_id: rootFolderId,
+        root_folder_name: rootFolderName,
+        updated_at: new Date().toISOString(),
+      }).eq('admin_id', user.id)
+      return json({ ok: true })
+    }
+
+    // ─── POST /upload ──────────────────────────────────────────────────────
+    if (req.method === 'POST' && path === '/upload') {
+      const form = await req.formData()
+      const portalToken = String(form.get('portal_token') ?? '')
+      const kind        = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image'
+      const categoryId  = form.get('category_id') ? String(form.get('category_id')) : null
+      const file        = form.get('file') as File | null
+
+      if (!portalToken)        return json({ error: 'portal_token obrigatório' }, 400)
+      if (!(file instanceof File)) return json({ error: 'file obrigatório' }, 400)
+
+      const sb = adminSb()
+      const { data: client } = await sb
+        .from('clients')
+        .select('id, admin_id, full_name, drive_folder_id')
+        .eq('token', portalToken)
+        .maybeSingle()
+      if (!client) return json({ error: 'Token inválido' }, 401)
+
+      let accessToken: string, rootFolderId: string | null
+      try {
+        const t = await getAdminToken(sb, client.admin_id)
+        accessToken  = t.accessToken
+        rootFolderId = t.rootFolderId
+      } catch (e: any) {
+        return json({ error: e.message }, 412)
+      }
+
+      // Pasta do cliente (com permissão pública). Se já existe, reusa.
+      let clientFolderId = client.drive_folder_id
+      if (!clientFolderId) {
+        const folderName = sanitizeFolderName(client.full_name || `cliente-${client.id}`)
+        clientFolderId = await findOrCreateFolder(accessToken, folderName, rootFolderId, /* makePublic */ true)
+        await sb.from('clients').update({ drive_folder_id: clientFolderId }).eq('id', client.id)
+      }
+
+      // Resultados vão numa subpasta dentro do cliente
+      let targetFolderId = clientFolderId
+      if (kind === 'result_file') {
+        targetFolderId = await findOrCreateFolder(accessToken, 'Resultados', clientFolderId, false)
+      }
+
+      const safeName = `${Date.now()}_${kind === 'ai_photo' ? 'ai_' : ''}${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const uploaded = await uploadToDrive(accessToken, {
+        name:     safeName,
+        mimeType: file.type || 'application/octet-stream',
+        parents:  [targetFolderId],
+        body:     bytes,
+      })
+
+      // Torna o arquivo público para que a URL de thumbnail funcione
+      // diretamente em <img src> sem autenticação.
+      // Nota: makePublic na pasta (acima) não propaga para arquivos filhos
+      // com o scope drive.file — cada arquivo precisa de permissão explícita.
+      await makeAnyoneReader(accessToken, uploaded.id)
+
+      // Registra no DB
+      if (kind === 'photo' || kind === 'ai_photo') {
+        const { data: rpcData, error: rpcErr } = await sb.rpc('save_client_photo_drive', {
+          p_token: portalToken,
+          p_photo_name: safeName,
+          p_photo_type: file.type,
+          p_photo_size: file.size,
+          p_drive_file_id: uploaded.id,
+          p_category_id: categoryId,
+          p_is_ai_photo: kind === 'ai_photo',
+        })
+        if (rpcErr || rpcData?.error) {
+          try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
+          return json({ error: rpcErr?.message ?? rpcData?.error }, 500)
+        }
+      } else if (kind === 'result_file') {
+        const { error: insErr } = await sb.from('client_result_files').insert({
+          client_id: client.id,
+          file_name: file.name,
+          file_size: file.size,
+          drive_file_id: uploaded.id,
+          storage_path: null,
+        })
+        if (insErr) {
+          try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
+          return json({ error: insErr.message }, 500)
+        }
+      }
+
+      // URL pública pra exibir direto no <img>
+      const viewUrl  = `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`
+      const downloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`
+
+      return json({
+        ok: true,
+        driveFileId:   uploaded.id,
+        driveFolderId: targetFolderId,
+        photoName:     safeName,
+        url:           viewUrl,
+        downloadUrl,
+      })
+    }
+
+    // ─── POST /cleanup ─────────────────────────────────────────────────────
+    if (req.method === 'POST' && path === '/cleanup') {
+      const secret = req.headers.get('x-cleanup-token')
+      if (secret !== env('CLEANUP_SECRET')) return json({ error: 'Não autorizado' }, 401)
+
+      const sb = adminSb()
+      const { data: expired, error } = await sb
+        .from('v_drive_expired_clients')
+        .select('client_id, full_name, admin_id, drive_folder_id, released_at')
+        .limit(100)
+      if (error) return json({ error: error.message }, 500)
+
+      const results: any[] = []
+      // Agrupa por admin pra reusar access_token
+      const byAdmin = new Map<string, typeof expired>()
+      for (const row of expired || []) {
+        const arr = byAdmin.get(row.admin_id) ?? []
+        arr.push(row)
+        byAdmin.set(row.admin_id, arr)
+      }
+
+      for (const [adminId, rows] of byAdmin) {
+        let accessToken: string
+        try {
+          const t = await getAdminToken(sb, adminId)
+          accessToken = t.accessToken
+        } catch (e: any) {
+          results.push({ adminId, error: `auth: ${e.message}`, skipped: rows.length })
+          continue
+        }
+
+        for (const r of rows) {
+          try {
+            await deleteFromDrive(accessToken, r.drive_folder_id)
+          } catch (e: any) {
+            results.push({ clientId: r.client_id, error: `drive: ${e.message}` })
+            continue
+          }
+          await sb.from('clients').update({
+            drive_folder_id: null,
+            drive_purged_at: new Date().toISOString(),
+          }).eq('id', r.client_id)
+          await sb.from('client_photos').delete().eq('client_id', r.client_id)
+          await sb.from('client_result_files').delete().eq('client_id', r.client_id)
+          results.push({ clientId: r.client_id, fullName: r.full_name, purged: true })
+        }
+      }
+
+      return json({ ok: true, purged: results.filter(r => r.purged).length, results })
+    }
+
+    return json({ error: 'Rota não encontrada' }, 404)
+  } catch (e: any) {
+    console.error('drive error:', e)
+    return json({ error: e?.message ?? String(e) }, 500)
+  }
+})
