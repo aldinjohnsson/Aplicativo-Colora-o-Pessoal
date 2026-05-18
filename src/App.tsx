@@ -20,6 +20,16 @@ function App() {
     })
   }, [])
 
+  // Fecha o popup após redirect do OAuth do Google Drive.
+  // O backend redireciona o popup para cá com ?drive_connected=1
+  // para evitar COOP — mesma origem = window.close() funciona normalmente.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('drive_connected') === '1') {
+      window.history.replaceState({}, '', window.location.pathname)
+      window.close()
+    }
+  }, [])
+
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">

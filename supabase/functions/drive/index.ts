@@ -59,7 +59,7 @@ function json(body: unknown, status = 200) {
 function html(body: string, status = 200) {
   return new Response(body, {
     status,
-    headers: { ...CORS, 'Content-Type': 'text/html; charset=utf-8' }
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
   })
 }
 
@@ -253,10 +253,19 @@ Deno.serve(async (req: Request) => {
       const user = await getAuthUser(req)
       if (!user) return json({ error: 'Não autenticado' }, 401)
 
-      const { redirectUri } = await req.json() as { redirectUri: string }
-      if (!redirectUri) return json({ error: 'redirectUri obrigatório' }, 400)
+      const redirectUri = `${env('SUPABASE_URL')}/functions/v1/drive/callback`
 
-      const state = crypto.randomUUID()
+      // Recebe a origem do app para redirecionar o popup de volta após OAuth.
+      // Isso contorna o COOP do Google/Supabase: o popup termina no mesmo domínio
+      // do opener, sem nenhuma restrição cross-origin.
+      const body = await req.json().catch(() => ({})) as { appOrigin?: string }
+      const appOrigin = (body.appOrigin && /^https?:\/\/[^/\s]+$/.test(body.appOrigin))
+        ? body.appOrigin : ''
+
+      // Codifica appOrigin no state (sem alterar schema do DB).
+      const uuid  = crypto.randomUUID()
+      const state = appOrigin ? `${uuid}|${encodeURIComponent(appOrigin)}` : uuid
+
       const sb = adminSb()
       const { error } = await sb.from('admin_drive_oauth_state').insert({ state, admin_id: user.id })
       if (error) return json({ error: error.message }, 500)
@@ -295,7 +304,7 @@ Deno.serve(async (req: Request) => {
       }
       await sb.from('admin_drive_oauth_state').delete().eq('state', state)
 
-      const redirectUri = `${url.origin}${url.pathname}`
+      const redirectUri = `${env('SUPABASE_URL')}/functions/v1/drive/callback`
       const tokens = await exchangeCode(code, redirectUri)
       if (!tokens.refresh_token) {
         return html(popupCloser({ ok: false, error: 'Google não retornou refresh_token. Revogue em myaccount.google.com/permissions e tente de novo.' }))
@@ -311,6 +320,13 @@ Deno.serve(async (req: Request) => {
         updated_at: new Date().toISOString(),
       }, { onConflict: 'admin_id' })
 
+      // Redireciona o popup de volta ao app com ?drive_connected=1.
+      // O app detecta esse param e fecha a janela — sem COOP, sem HTML cru.
+      const [, encodedOrigin] = state.split('|')
+      const appOrigin = encodedOrigin ? decodeURIComponent(encodedOrigin) : ''
+      if (appOrigin) {
+        return Response.redirect(`${appOrigin}?drive_connected=1`, 302)
+      }
       return html(popupCloser({ ok: true, googleEmail: email }))
     }
 
@@ -408,12 +424,6 @@ Deno.serve(async (req: Request) => {
         parents:  [targetFolderId],
         body:     bytes,
       })
-
-      // Torna o arquivo público para que a URL de thumbnail funcione
-      // diretamente em <img src> sem autenticação.
-      // Nota: makePublic na pasta (acima) não propaga para arquivos filhos
-      // com o scope drive.file — cada arquivo precisa de permissão explícita.
-      await makeAnyoneReader(accessToken, uploaded.id)
 
       // Registra no DB
       if (kind === 'photo' || kind === 'ai_photo') {
