@@ -1,11 +1,27 @@
 // src/components/admin/documents/ai-compositions/AddPageDialog.tsx
+//
+// Dialog simplificado pra adicionar páginas à composição.
+//
+// Fluxo novo:
+//   1. Seleciona o prompt PAI (ex: "Outono Escuro")
+//      → mostra as N partes cadastradas nele
+//   2. Seleciona a foto base:
+//      • Da galeria do cliente (grid)
+//      • OU faz upload de uma foto diretamente
+//   3. Confirma → onConfirm recebe um AddPageResult POR PARTE
+//      (o sistema enfileira N páginas de uma vez)
+//
+// Removido do dialog:
+//   • Campo "Imagem de referência extra"  (agora mora no cadastro do prompt)
+//   • Seletor de modelo               (vem do prompt)
 
 import React, { useEffect, useRef, useState } from 'react'
 import {
   X, Sparkles, Check, AlertCircle, Image as ImageIcon,
-  ChevronDown, ChevronUp, UploadCloud, Trash2, Cpu,
+  ChevronDown, ChevronUp, UploadCloud, Trash2, Layers,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
+import type { AiPromptPart } from '../prompts/AiImagePromptsManager'
 
 // ── Btn ───────────────────────────────────────────────────────────────
 
@@ -33,46 +49,43 @@ const Btn = ({
   )
 }
 
-// ─── Modelos disponíveis ──────────────────────────────────────────────
-
-const MODELS = [
-  { value: 'gpt-image-1', label: 'gpt-image-1', desc: 'Melhor qualidade (padrão)' },
-  { value: 'dall-e-3',    label: 'DALL·E 3',    desc: 'Alta criatividade' },
-  { value: 'dall-e-2',    label: 'DALL·E 2',    desc: 'Mais rápido e barato' },
-]
-
 // ─── Types ────────────────────────────────────────────────────────────
 
 interface ClientPhoto {
-  id: string
-  photo_name: string
-  storage_path: string
-  url: string
-  drive_file_id: string | null
-  category_id: string | null
-  category_title: string | null
+  id:              string
+  photo_name:      string
+  storage_path:    string
+  url:             string
+  drive_file_id:   string | null
+  category_id:     string | null
+  category_title:  string | null
 }
 
 interface AiPromptLite {
-  id: string
-  name: string
-  prompt: string
-  size: string
-  quality: string
+  id:                   string
+  name:                 string
+  parts:                AiPromptPart[]
+  reference_image_url:  string | null
+  model:                string
+  size:                 string
+  quality:              string
 }
 
+/** Um resultado por parte do prompt selecionado. */
 export interface AddPageResult {
-  promptId:   string
-  promptName: string
-  photoId:    string
-  photoName:  string
-  photoUrl:   string
-  /** Drive file ID — presente apenas quando a foto veio do Google Drive */
+  promptId:    string
+  promptName:  string
+  partId:      string
+  partLabel:   string
+  partPrompt:  string   // texto do prompt desta parte — enviado direto à edge function
+  // Foto base — galeria ou upload
+  photoId?:    string         // presente se veio da galeria
+  photoName:   string
+  photoUrl:    string         // thumbnail pra preview no card
   driveFileId?: string
-  /** Imagem extra de referência em base64 puro (sem prefixo data:…) — opcional */
-  uploadedImageBase64?: string
-  uploadedImageMime?:   string
-  /** Modelo selecionado pelo usuário */
+  uploadedPhotoBase64?: string  // presente se foi feito upload
+  uploadedPhotoMime?:   string
+  // Modelo vem do prompt
   modelVersion: string
 }
 
@@ -80,12 +93,15 @@ interface Props {
   clientId:   string
   clientName: string
   onClose:    () => void
-  onConfirm:  (r: AddPageResult) => void
+  onConfirm:  (results: AddPageResult[]) => void   // ← array, uma entrada por parte
 }
+
+type PhotoSource = 'gallery' | 'upload'
 
 // ─── Component ────────────────────────────────────────────────────────
 
 export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Props) {
+
   // ── Prompts ──
   const [prompts, setPrompts]                   = useState<AiPromptLite[]>([])
   const [loadingPrompts, setLoadingPrompts]     = useState(true)
@@ -93,21 +109,22 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   const [selectedPromptId, setSelectedPromptId] = useState<string>('')
   const [promptOpen, setPromptOpen]             = useState(false)
 
-  // ── Fotos da galeria ──
-  const [photos, setPhotos]                   = useState<ClientPhoto[]>([])
-  const [loadingPhotos, setLoadingPhotos]     = useState(true)
-  const [photosError, setPhotosError]         = useState<string | null>(null)
-  const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null)
+  // ── Foto base ──
+  const [photoSource, setPhotoSource]           = useState<PhotoSource>('gallery')
 
-  // ── Upload opcional ──
-  const fileInputRef                          = useRef<HTMLInputElement>(null)
-  const [uploadedBase64, setUploadedBase64]   = useState<string | null>(null)
-  const [uploadedMime, setUploadedMime]       = useState<string>('image/png')
-  const [uploadedPreview, setUploadedPreview] = useState<string | null>(null)
-  const [uploadError, setUploadError]         = useState<string | null>(null)
+  // Galeria
+  const [photos, setPhotos]                     = useState<ClientPhoto[]>([])
+  const [loadingPhotos, setLoadingPhotos]       = useState(true)
+  const [photosError, setPhotosError]           = useState<string | null>(null)
+  const [selectedPhotoId, setSelectedPhotoId]   = useState<string | null>(null)
 
-  // ── Modelo ──
-  const [modelVersion, setModelVersion] = useState<string>('gpt-image-1')
+  // Upload
+  const photoFileRef                            = useRef<HTMLInputElement>(null)
+  const [uploadedBase64, setUploadedBase64]     = useState<string | null>(null)
+  const [uploadedMime, setUploadedMime]         = useState<string>('image/png')
+  const [uploadedPreview, setUploadedPreview]   = useState<string | null>(null)
+  const [uploadedName, setUploadedName]         = useState<string>('foto-upload')
+  const [uploadError, setUploadError]           = useState<string | null>(null)
 
   // ── Esc fecha ──
   useEffect(() => {
@@ -141,12 +158,11 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
 
   useEffect(() => { setPromptOpen(false) }, [selectedPromptId])
 
-  // ── Upload de imagem de referência ──
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── Upload de foto ──
+  const handlePhotoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     setUploadError(null)
-
     const ALLOWED = ['image/png', 'image/jpeg', 'image/webp']
     if (!ALLOWED.includes(file.type)) {
       setUploadError('Formato não suportado. Use PNG, JPEG ou WEBP.')
@@ -156,19 +172,15 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
       setUploadError('Arquivo muito grande. Máximo 10 MB.')
       return
     }
-
     const reader = new FileReader()
-    reader.onload = (ev) => {
+    reader.onload = ev => {
       const dataUrl = ev.target?.result as string
-      // Preview
       setUploadedPreview(dataUrl)
-      // Extrai só o base64 puro (sem "data:image/png;base64,")
-      const base64 = dataUrl.split(',')[1] || ''
-      setUploadedBase64(base64)
+      setUploadedBase64(dataUrl.split(',')[1] || '')
       setUploadedMime(file.type)
+      setUploadedName(file.name)
     }
     reader.readAsDataURL(file)
-    // Limpa o input pra permitir re-selecionar o mesmo arquivo
     e.target.value = ''
   }
 
@@ -176,35 +188,73 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
     setUploadedBase64(null)
     setUploadedPreview(null)
     setUploadedMime('image/png')
+    setUploadedName('foto-upload')
     setUploadError(null)
+  }
+
+  // Quando troca de aba de foto, limpa a seleção da outra aba
+  const handlePhotoSourceChange = (src: PhotoSource) => {
+    setPhotoSource(src)
+    if (src === 'gallery') {
+      handleRemoveUpload()
+    } else {
+      setSelectedPhotoId(null)
+    }
   }
 
   // ── Derived ──
   const selectedPrompt = prompts.find(p => p.id === selectedPromptId) || null
   const selectedPhoto  = photos.find(p => p.id === selectedPhotoId)  || null
-  const canConfirm     = !!selectedPrompt && !!selectedPhoto
 
+  const hasPhoto =
+    photoSource === 'gallery'
+      ? !!selectedPhoto
+      : !!uploadedBase64
+
+  const canConfirm = !!selectedPrompt && hasPhoto
+
+  // ── Confirm: gera 1 resultado por parte ──
   const handleConfirm = () => {
-    if (!selectedPrompt || !selectedPhoto) return
-    onConfirm({
-      promptId:   selectedPrompt.id,
-      promptName: selectedPrompt.name,
-      photoId:    selectedPhoto.id,
-      photoName:  selectedPhoto.photo_name,
-      photoUrl:   selectedPhoto.url,
-      driveFileId: selectedPhoto.drive_file_id ?? undefined,
-      modelVersion,
-      ...(uploadedBase64 ? { uploadedImageBase64: uploadedBase64, uploadedImageMime: uploadedMime } : {}),
-    })
+    if (!selectedPrompt || !hasPhoto) return
+
+    const basePhotoInfo =
+      photoSource === 'gallery' && selectedPhoto
+        ? {
+            photoId:    selectedPhoto.id,
+            photoName:  selectedPhoto.photo_name,
+            photoUrl:   selectedPhoto.url,
+            driveFileId: selectedPhoto.drive_file_id ?? undefined,
+          }
+        : {
+            photoId:    undefined,
+            photoName:  uploadedName,
+            photoUrl:   uploadedPreview!,
+            uploadedPhotoBase64: uploadedBase64!,
+            uploadedPhotoMime:   uploadedMime,
+          }
+
+    const results: AddPageResult[] = selectedPrompt.parts.map(part => ({
+      promptId:    selectedPrompt.id,
+      promptName:  selectedPrompt.name,
+      partId:      part.id,
+      partLabel:   part.label,
+      partPrompt:  part.prompt,
+      modelVersion: selectedPrompt.model,
+      ...basePhotoInfo,
+    }))
+
+    onConfirm(results)
   }
 
-  // Agrupa fotos por categoria
+  // Agrupa fotos por categoria (galeria)
   const grouped: Record<string, { title: string; photos: ClientPhoto[] }> = {}
   for (const p of photos) {
     const key = p.category_id || '__none__'
     if (!grouped[key]) grouped[key] = { title: p.category_title || 'Outras fotos', photos: [] }
     grouped[key].photos.push(p)
   }
+
+  // ─── Render ───────────────────────────────────────────────────────
 
   return (
     <div
@@ -220,7 +270,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <div className="min-w-0">
             <p className="font-semibold text-gray-900 flex items-center gap-1.5">
-              <Sparkles className="h-4 w-4 text-fuchsia-500" /> Adicionar página à composição
+              <Sparkles className="h-4 w-4 text-fuchsia-500" /> Adicionar à composição
             </p>
             <p className="text-xs text-gray-500 mt-0.5 truncate">
               Cliente: <span className="font-medium text-gray-700">{clientName}</span>
@@ -234,7 +284,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0 space-y-5">
 
-          {/* ═══ Passo 1: Prompt ═══ */}
+          {/* ═══ Passo 1: Prompt PAI ═══ */}
           <div>
             <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 text-fuchsia-500" />
@@ -263,33 +313,65 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-fuchsia-400"
                 >
                   <option value="">— Escolha um prompt —</option>
-                  {prompts.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} · {p.size} · {p.quality}</option>
-                  ))}
+                  {prompts.map(p => {
+                    const cnt = Array.isArray(p.parts) ? p.parts.length : 0
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {p.name} · {cnt} parte{cnt !== 1 ? 's' : ''} · {p.size} · {p.quality}
+                      </option>
+                    )
+                  })}
                 </select>
 
+                {/* Preview das partes + info de referência */}
                 {selectedPrompt && (
                   <div className="mt-2 border border-fuchsia-200 bg-fuchsia-50/40 rounded-xl overflow-hidden">
+                    {/* Sumário */}
                     <button
                       type="button"
                       onClick={() => setPromptOpen(o => !o)}
                       className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-fuchsia-100/40 transition-colors"
                     >
+                      <Layers className="h-3.5 w-3.5 text-fuchsia-500 flex-shrink-0" />
                       <span className="text-[11px] uppercase tracking-wider font-semibold text-fuchsia-700">
-                        Ver texto do prompt
+                        {selectedPrompt.parts.length} parte{selectedPrompt.parts.length !== 1 ? 's' : ''} — {selectedPrompt.parts.length} imagem{selectedPrompt.parts.length !== 1 ? 's' : ''} serão geradas
                       </span>
-                      <span className="text-[11px] text-gray-500 ml-auto">
-                        {selectedPrompt.prompt.length.toLocaleString('pt-BR')} caracteres
-                      </span>
+                      {selectedPrompt.reference_image_url && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold ml-auto">
+                          + ref. complementar
+                        </span>
+                      )}
                       {promptOpen
                         ? <ChevronUp className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
                         : <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />}
                     </button>
+
+                    {/* Detalhes das partes */}
                     {promptOpen && (
-                      <div className="px-3 pb-3 pt-1 border-t border-fuchsia-200 bg-white">
-                        <pre className="text-xs text-gray-700 whitespace-pre-wrap break-words font-mono leading-relaxed max-h-48 overflow-y-auto">
-                          {selectedPrompt.prompt}
-                        </pre>
+                      <div className="border-t border-fuchsia-200 bg-white divide-y divide-gray-100">
+                        {/* Imagem de referência (se houver) */}
+                        {selectedPrompt.reference_image_url && (
+                          <div className="px-3 py-2 flex items-center gap-2">
+                            <img
+                              src={selectedPrompt.reference_image_url}
+                              alt="Referência"
+                              className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-blue-200"
+                            />
+                            <p className="text-[11px] text-blue-700 font-medium">
+                              Imagem de referência complementar — enviada junto com todas as partes
+                            </p>
+                          </div>
+                        )}
+                        {selectedPrompt.parts.map((part, idx) => (
+                          <div key={part.id} className="px-3 py-2">
+                            <p className="text-[11px] font-bold text-fuchsia-700 mb-0.5">
+                              {idx + 1}. {part.label}
+                            </p>
+                            <p className="text-[11px] text-gray-600 font-mono line-clamp-2 whitespace-pre-wrap break-words">
+                              {part.prompt}
+                            </p>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -298,149 +380,155 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
             )}
           </div>
 
-          {/* ═══ Passo 2: Foto da galeria ═══ */}
+          {/* ═══ Passo 2: Foto base ═══ */}
           <div>
             <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
               <ImageIcon className="h-3.5 w-3.5 text-gray-500" />
               Foto base <span className="text-rose-500">*</span>
-              <span className="text-gray-400 font-normal">(da galeria do cliente)</span>
             </p>
 
-            {loadingPhotos ? (
-              <div className="flex justify-center py-12">
-                <div className="animate-spin h-7 w-7 border-2 border-fuchsia-400 border-t-transparent rounded-full" />
-              </div>
-            ) : photosError ? (
-              <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-                <p className="text-xs text-red-700">{photosError}</p>
-              </div>
-            ) : photos.length === 0 ? (
-              <div className="text-center py-12 text-sm text-gray-500 border border-dashed border-gray-300 rounded-xl">
-                <ImageIcon className="h-8 w-8 mx-auto mb-2 text-gray-300" />
-                Nenhuma foto enviada por esse cliente ainda.
-              </div>
-            ) : (
-              <div className="space-y-5">
-                {Object.entries(grouped).map(([key, group]) => (
-                  <div key={key}>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
-                      {group.title}
-                    </p>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
-                      {group.photos.map(p => {
-                        const selected = p.id === selectedPhotoId
-                        return (
-                          <button
-                            key={p.id}
-                            type="button"
-                            onClick={() => setSelectedPhotoId(p.id)}
-                            className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all ${
-                              selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-transparent hover:border-gray-300'
-                            }`}
-                          >
-                            <img src={p.url} alt={p.photo_name} loading="lazy" className="w-full h-full object-cover" />
-                            {selected && (
-                              <div className="absolute top-1 right-1 h-6 w-6 rounded-full bg-fuchsia-500 text-white flex items-center justify-center shadow-lg">
-                                <Check className="h-3.5 w-3.5" />
-                              </div>
-                            )}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+            {/* Tabs: galeria / upload */}
+            <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit mb-3">
+              <button
+                type="button"
+                onClick={() => handlePhotoSourceChange('gallery')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  photoSource === 'gallery'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Da galeria do cliente
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePhotoSourceChange('upload')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  photoSource === 'upload'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Fazer upload
+              </button>
+            </div>
 
-          {/* ═══ Passo 3: Imagem de referência extra (OPCIONAL) ═══ */}
-          <div>
-            <p className="text-xs font-semibold text-gray-700 mb-1 flex items-center gap-1.5">
-              <UploadCloud className="h-3.5 w-3.5 text-gray-500" />
-              Imagem de referência extra
-              <span className="text-gray-400 font-normal">(opcional)</span>
-            </p>
-            <p className="text-[11px] text-gray-500 mb-2">
-              Envie uma imagem adicional para orientar a geração (ex.: estilo, composição, produto).
-              Formatos aceitos: PNG, JPEG, WEBP · Máx 10 MB.
-            </p>
-
-            {uploadError && (
-              <div className="mb-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-                <p className="text-xs text-red-700">{uploadError}</p>
-              </div>
-            )}
-
-            {uploadedPreview ? (
-              <div className="flex items-center gap-3 p-2 border border-gray-200 rounded-xl bg-gray-50">
-                <img
-                  src={uploadedPreview}
-                  alt="Referência extra"
-                  className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200"
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-gray-800">Imagem selecionada</p>
-                  <p className="text-[11px] text-gray-500 mt-0.5">{uploadedMime}</p>
-                </div>
-                <Btn variant="danger" size="sm" onClick={handleRemoveUpload}>
-                  <Trash2 className="h-3.5 w-3.5" /> Remover
-                </Btn>
-              </div>
-            ) : (
+            {/* ── Galeria ── */}
+            {photoSource === 'gallery' && (
               <>
+                {loadingPhotos ? (
+                  <div className="flex justify-center py-12">
+                    <div className="animate-spin h-7 w-7 border-2 border-fuchsia-400 border-t-transparent rounded-full" />
+                  </div>
+                ) : photosError ? (
+                  <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-red-700">{photosError}</p>
+                  </div>
+                ) : photos.length === 0 ? (
+                  <div className="text-center py-12 text-sm text-gray-500 border border-dashed border-gray-300 rounded-xl">
+                    <ImageIcon className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                    Nenhuma foto enviada por esse cliente ainda.
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    {Object.entries(grouped).map(([key, group]) => (
+                      <div key={key}>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                          {group.title}
+                        </p>
+                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+                          {group.photos.map(p => {
+                            const selected = p.id === selectedPhotoId
+                            return (
+                              <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => setSelectedPhotoId(p.id)}
+                                className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all ${
+                                  selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-transparent hover:border-gray-300'
+                                }`}
+                              >
+                                <img src={p.url} alt={p.photo_name} loading="lazy" className="w-full h-full object-cover" />
+                                {selected && (
+                                  <div className="absolute top-1 right-1 h-6 w-6 rounded-full bg-fuchsia-500 text-white flex items-center justify-center shadow-lg">
+                                    <Check className="h-3.5 w-3.5" />
+                                  </div>
+                                )}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── Upload de foto ── */}
+            {photoSource === 'upload' && (
+              <div>
+                {uploadError && (
+                  <div className="mb-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-red-700">{uploadError}</p>
+                  </div>
+                )}
+
                 <input
-                  ref={fileInputRef}
+                  ref={photoFileRef}
                   type="file"
                   accept="image/png,image/jpeg,image/webp"
                   className="hidden"
-                  onChange={handleFileChange}
+                  onChange={handlePhotoFileChange}
                 />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full flex flex-col items-center gap-2 py-6 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 hover:border-fuchsia-400 hover:text-fuchsia-600 hover:bg-fuchsia-50/30 transition-colors"
-                >
-                  <UploadCloud className="h-6 w-6" />
-                  <span className="text-xs font-medium">Clique para selecionar imagem</span>
-                </button>
-              </>
+
+                {uploadedPreview ? (
+                  <div className="flex items-center gap-3 p-3 border border-gray-200 rounded-xl bg-gray-50">
+                    <img
+                      src={uploadedPreview}
+                      alt="Foto selecionada"
+                      className="w-20 h-20 rounded-lg object-cover flex-shrink-0 border border-gray-200"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-gray-800 truncate">{uploadedName}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">{uploadedMime}</p>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <button type="button" onClick={() => photoFileRef.current?.click()}
+                        className="text-[11px] px-2.5 py-1 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium">
+                        Trocar
+                      </button>
+                      <Btn variant="danger" size="sm" onClick={handleRemoveUpload}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Btn>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => photoFileRef.current?.click()}
+                    className="w-full flex flex-col items-center gap-2 py-10 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 hover:border-fuchsia-400 hover:text-fuchsia-600 hover:bg-fuchsia-50/30 transition-colors"
+                  >
+                    <UploadCloud className="h-8 w-8" />
+                    <span className="text-sm font-medium">Clique para selecionar a foto base</span>
+                    <span className="text-xs text-gray-400">PNG, JPEG, WEBP · Máx 10 MB</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
-          {/* ═══ Passo 4: Modelo ═══ */}
-          <div>
-            <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
-              <Cpu className="h-3.5 w-3.5 text-gray-500" />
-              Modelo de geração <span className="text-rose-500">*</span>
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {MODELS.map(m => (
-                <button
-                  key={m.value}
-                  type="button"
-                  onClick={() => setModelVersion(m.value)}
-                  className={`flex flex-col items-start px-3 py-2.5 rounded-xl border-2 text-left transition-all ${
-                    modelVersion === m.value
-                      ? 'border-fuchsia-500 bg-fuchsia-50 ring-2 ring-fuchsia-200'
-                      : 'border-gray-200 hover:border-gray-300 bg-white'
-                  }`}
-                >
-                  <span className={`text-sm font-semibold ${modelVersion === m.value ? 'text-fuchsia-800' : 'text-gray-800'}`}>
-                    {m.label}
-                  </span>
-                  <span className="text-[11px] text-gray-500 mt-0.5">{m.desc}</span>
-                  {modelVersion === m.value && (
-                    <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-fuchsia-700 bg-fuchsia-100 px-1.5 py-0.5 rounded-full">
-                      <Check className="h-2.5 w-2.5" /> selecionado
-                    </span>
-                  )}
-                </button>
-              ))}
+          {/* Banner: quantas imagens vão ser adicionadas */}
+          {selectedPrompt && hasPhoto && (
+            <div className="bg-fuchsia-50 border border-fuchsia-200 rounded-xl px-4 py-3 flex items-center gap-3">
+              <Sparkles className="h-5 w-5 text-fuchsia-500 flex-shrink-0" />
+              <p className="text-sm text-fuchsia-800">
+                <strong>{selectedPrompt.parts.length} página{selectedPrompt.parts.length !== 1 ? 's' : ''}</strong> vão ser adicionadas à fila de geração — uma por parte do prompt.
+              </p>
             </div>
-          </div>
+          )}
 
         </div>
 
@@ -448,7 +536,10 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
         <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex gap-2 justify-end flex-shrink-0">
           <Btn variant="outline" onClick={onClose}>Cancelar</Btn>
           <Btn variant="primary" onClick={handleConfirm} disabled={!canConfirm}>
-            <Check className="h-3.5 w-3.5" /> Adicionar página
+            <Check className="h-3.5 w-3.5" />
+            {selectedPrompt
+              ? `Adicionar ${selectedPrompt.parts.length} página${selectedPrompt.parts.length !== 1 ? 's' : ''}`
+              : 'Adicionar'}
           </Btn>
         </div>
       </div>

@@ -4,12 +4,17 @@
 //
 // Fluxo:
 //   1. Escolhe um cliente
-//   2. Adiciona N páginas (cada uma = prompt + foto)
-//   3. Gera cada imagem individualmente (botão por linha) OU clica "Gerar pendentes"
-//      → preview da imagem gerada aparece inline no card
+//   2. Clica "Adicionar" → AddPageDialog retorna N páginas (1 por parte do prompt)
+//   3. Gera cada imagem individualmente OU "Gerar pendentes"
+//      → preview inline no card
 //   4. Reordena/remove se quiser
-//   5. Clica "Finalizar e Gerar PDF" → baixa todas as imagens prontas e monta o PDF
-//      → salva no histórico do cliente (client_generated_documents)
+//   5. "Finalizar e Gerar PDF" → baixa todas as imagens prontas e monta o PDF
+//
+// Mudanças vs versão anterior:
+//   • CompositionPage agora tem partId + partLabel (sem modelOverride nem uploadedImageBase64)
+//   • handleAdd aceita AddPageResult[] e cria múltiplas páginas de uma vez
+//   • generateCompositionImage passa partId pra o backend saber qual sub-prompt usar
+//   • Fotos podem ser da galeria ou upload (uploadedPhotoBase64)
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -18,6 +23,7 @@ import {
   FileText, RefreshCw, Image as ImageIcon, Wand2, Eye,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
+import { adminService } from '../../../../lib/services'
 import { AddPageDialog, AddPageResult } from './AddPageDialog'
 import { generateCompositionPdf, fetchAllAsBytes } from './generateCompositionPdf'
 import type { ClientGeneratedDocument } from '../types'
@@ -55,23 +61,24 @@ const Btn = ({
 type PageStatus = 'pending' | 'generating' | 'done' | 'error'
 
 interface CompositionPage {
-  id:                   string          // uuid local (react key)
-  promptId:             string
-  promptName:           string
-  photoId:              string
-  photoName:            string
-  photoUrl:             string          // thumbnail original (galeria do cliente)
+  id:          string           // uuid local (react key)
+  promptId:    string
+  promptName:  string
+  partId:      string           // id da parte específica dentro do prompt
+  partLabel:   string           // ex: "Parte 1", "Outono manhã"
+  partPrompt:  string           // texto do prompt desta parte
+  // Foto base — galeria ou upload
+  photoId?:    string           // presente se veio da galeria
+  photoName:   string
+  photoUrl:    string           // thumbnail (galeria) ou data URL (upload)
+  driveFileId?: string
+  uploadedPhotoBase64?: string  // presente se veio de upload
+  uploadedPhotoMime?:   string
+  // Status
   status:               PageStatus
-  storagePath?:         string          // populado quando done
-  generatedImageUrl?:   string          // URL assinada da imagem gerada (preview)
+  storagePath?:         string
+  generatedImageUrl?:   string
   errorMsg?:            string
-  /** Imagem extra de referência em base64 puro */
-  uploadedImageBase64?: string
-  uploadedImageMime?:   string
-  /** Sobrescreve o model do prompt para esta página */
-  modelOverride?:       string
-  /** Drive file ID — presente quando a foto base veio do Google Drive */
-  driveFileId?:         string
 }
 
 interface ClientLite {
@@ -80,30 +87,25 @@ interface ClientLite {
   email:     string | null
 }
 
-// helpers
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
 
 function buildFileName(clientName: string): string {
-  const clean = (s: string) =>
-    s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-     .replace(/[^a-zA-Z0-9 _-]+/g, '')
-     .trim().replace(/\s+/g, '_')
-     .slice(0, 40)
-  const d = new Date()
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`
-  return `composicao_ia_${clean(clientName) || 'cliente'}_${stamp}.pdf`
+  const clean = clientName
+    .replace(/[\\/:*?"<>|]/g, '')
+    .trim()
+    .slice(0, 60) || 'Cliente'
+  return `Dossiê ${clean}.pdf`
 }
 
 // ─── Component ────────────────────────────────────────────────────────
 
 interface AiCompositionsManagerProps {
-  /** Quando passado (ex: de dentro do ClientsManager), pula o seletor de cliente. */
   clientId?:   string
   clientName?: string
+  onGoToDocuments?: () => void
 }
 
-export function AiCompositionsManager({ clientId: propClientId, clientName: propClientName }: AiCompositionsManagerProps = {}) {
+export function AiCompositionsManager({ clientId: propClientId, clientName: propClientName, onGoToDocuments }: AiCompositionsManagerProps = {}) {
   const isEmbedded = !!propClientId
 
   // ── Clientes (só no modo global) ──
@@ -117,13 +119,15 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
   // ── UI state ──
   const [showAdd, setShowAdd]           = useState(false)
-  const [runningBatch, setRunningBatch] = useState(false)   // "Gerar pendentes"
-  const [generatingId, setGeneratingId] = useState<string | null>(null) // geração individual
+  const [runningBatch, setRunningBatch] = useState(false)
+  const [generatingId, setGeneratingId] = useState<string | null>(null)
   const [buildingPdf, setBuildingPdf]   = useState(false)
+  const [savingDoc, setSavingDoc]       = useState(false)
   const [globalError, setGlobalError]   = useState<string | null>(null)
   const [savedDoc, setSavedDoc]         = useState<ClientGeneratedDocument | null>(null)
+  const [pdfBlob, setPdfBlob]           = useState<Blob | null>(null)
+  const [saveError, setSaveError]       = useState<string | null>(null)
 
-  // Ref pra compositionId ser estável durante o batch
   const compositionIdRef = useRef<string>('')
 
   // ── Load clientes ──
@@ -144,16 +148,67 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     return clients.find(c => c.id === selectedClientId) || null
   }, [isEmbedded, propClientId, propClientName, clients, selectedClientId])
 
-  // Trocar cliente reseta composição
+  // ── Load localStorage no modo EMBEDDED (on mount) ──
+  useEffect(() => {
+    if (!isEmbedded || !propClientId) return
+    try {
+      const raw = localStorage.getItem(`ai_composition_${propClientId}`)
+      if (raw) {
+        const { pages: saved, compositionId } = JSON.parse(raw)
+        if (Array.isArray(saved) && saved.length > 0) {
+          setPages(saved)
+          compositionIdRef.current = compositionId || ''
+        }
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // só no mount
+
+  // ── Restore pages from localStorage when client changes (modo GLOBAL) ──
   useEffect(() => {
     if (isEmbedded) return
-    setPages([])
     setSavedDoc(null)
+    setPdfBlob(null)
     setGlobalError(null)
+
+    if (!selectedClientId) {
+      setPages([])
+      compositionIdRef.current = ''
+      return
+    }
+
+    try {
+      const raw = localStorage.getItem(`ai_composition_${selectedClientId}`)
+      if (raw) {
+        const { pages: saved, compositionId } = JSON.parse(raw)
+        if (Array.isArray(saved) && saved.length > 0) {
+          setPages(saved)
+          compositionIdRef.current = compositionId || ''
+          return
+        }
+      }
+    } catch {}
+    setPages([])
     compositionIdRef.current = ''
   }, [selectedClientId, isEmbedded])
 
-  // ── Garante compositionId estável ──
+  // ── Persist pages to localStorage sempre que mudarem ──
+  useEffect(() => {
+    const clientId = isEmbedded ? propClientId : selectedClientId
+    if (!clientId || pages.length === 0) return
+    try {
+      const toSave = pages.map(p => ({
+        ...p,
+        uploadedPhotoBase64: undefined,
+        uploadedPhotoMime:   undefined,
+      }))
+      localStorage.setItem(
+        `ai_composition_${clientId}`,
+        JSON.stringify({ pages: toSave, compositionId: compositionIdRef.current })
+      )
+    } catch {}
+  }, [pages, selectedClientId, isEmbedded, propClientId])
+
   const getCompositionId = () => {
     if (!compositionIdRef.current && selectedClient) {
       compositionIdRef.current = `${selectedClient.id}_${Date.now()}_${uid()}`
@@ -161,7 +216,6 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     return compositionIdRef.current
   }
 
-  // ── Helpers de mutation ──
   const patchPage = (id: string, patch: Partial<CompositionPage>) =>
     setPages(prev => prev.map(p => p.id === id ? { ...p, ...patch } : p))
 
@@ -184,22 +238,22 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
     try {
       const res = await (documentsService as any).generateCompositionImage({
-        promptId:             page.promptId,
-        clientId:             selectedClient.id,
-        photoId:              page.photoId,
+        promptId:      page.promptId,
+        partId:        page.partId,
+        promptOverride: page.partPrompt,  // texto já resolvido — evita a edge function ler prompt.prompt vazio
+        clientId:      selectedClient.id,
+        photoId:       page.photoId,
         compositionId,
         index,
-        ...(page.uploadedImageBase64 ? { uploadedImageBase64: page.uploadedImageBase64, uploadedImageMime: page.uploadedImageMime } : {}),
-        ...(page.modelOverride ? { modelOverride: page.modelOverride } : {}),
-        ...(page.driveFileId   ? { driveFileId:   page.driveFileId   } : {}),
+        ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
+        ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
       })
-      // Busca URL assinada pra mostrar o preview
       const signedUrl = await (documentsService as any).getSignedCompositionImageUrl(res.storagePath)
       patchPage(pageId, {
-        status:            'done',
-        storagePath:       res.storagePath,
+        status:           'done',
+        storagePath:      res.storagePath,
         generatedImageUrl: signedUrl,
-        errorMsg:          undefined,
+        errorMsg:         undefined,
       })
     } catch (e: any) {
       patchPage(pageId, { status: 'error', errorMsg: e?.message || 'Erro na geração' })
@@ -221,8 +275,6 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     setSavedDoc(null)
 
     const compositionId = getCompositionId()
-
-    // Trabalha com snapshot mutável pra não capturar stale state no loop
     let snapshot = [...pages]
 
     const commit = (mutator: (snap: CompositionPage[]) => CompositionPage[]) => {
@@ -240,15 +292,16 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
       try {
         const res = await (documentsService as any).generateCompositionImage({
-          promptId:      page.promptId,
-          clientId:      selectedClient.id,
-          photoId:       page.photoId,
+          promptId:       page.promptId,
+          partId:         page.partId,
+          promptOverride: page.partPrompt,
+          clientId:       selectedClient.id,
+          photoId:        page.photoId,
           compositionId,
-          index:         idx,
-          ...(page.uploadedImageBase64 ? { uploadedImageBase64: page.uploadedImageBase64, uploadedImageMime: page.uploadedImageMime } : {}),
-          ...(page.modelOverride ? { modelOverride: page.modelOverride } : {}),
+          index:          idx,
+          ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
+          ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
         })
-        // Busca signed URL pra preview inline
         const signedUrl = await (documentsService as any)
           .getSignedCompositionImageUrl(res.storagePath)
           .catch(() => undefined as string | undefined)
@@ -262,7 +315,6 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         commit(snap => snap.map(p =>
           p.id === page.id ? { ...p, status: 'error', errorMsg: e?.message || 'Erro na geração' } : p
         ))
-        // Não aborta o lote — segue pra próxima
       }
     }
 
@@ -277,7 +329,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     }
   }
 
-  // ── Finalizar: montar o PDF com as páginas done ──
+  // ── Finalizar: apenas monta o blob (sem salvar) ──
   const handleFinalizePdf = async () => {
     if (!selectedClient) return
     const donePages = pages.filter(p => p.status === 'done' && p.storagePath)
@@ -285,10 +337,10 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
     setBuildingPdf(true)
     setGlobalError(null)
+    setPdfBlob(null)
     setSavedDoc(null)
 
     try {
-      // 1. Signed URLs em ordem da lista (só as done)
       const ordered = pages.filter(p => p.status === 'done' && p.storagePath)
       const signedUrls: string[] = []
       for (const p of ordered) {
@@ -296,55 +348,65 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
           ?? await (documentsService as any).getSignedCompositionImageUrl(p.storagePath)
         signedUrls.push(url)
       }
-      // 2. Download e montagem
       const images = await fetchAllAsBytes(signedUrls)
       const blob   = await generateCompositionPdf(images)
-      // 3. Salva no histórico
-      const fileName = buildFileName(selectedClient.full_name)
-      const doc = await (documentsService as any).saveGeneratedDocument({
-        clientId:   selectedClient.id,
-        templateId: null,
-        fileName,
-        blob,
-        mappings: [],
-        source:   'ai_composition',
-      })
-      setSavedDoc(doc)
+      setPdfBlob(blob)
     } catch (e: any) {
-      setGlobalError(e?.message || 'Erro ao montar / salvar o PDF')
+      setGlobalError(e?.message || 'Erro ao montar o PDF')
     } finally {
       setBuildingPdf(false)
     }
   }
 
-  // ── Download ──
-  const handleDownload = async () => {
-    if (!savedDoc) return
+  // ── Baixar PDF direto (sem salvar no banco) ──
+  const handleDownloadPdf = () => {
+    if (!pdfBlob || !selectedClient) return
+    const fileName = buildFileName(selectedClient.full_name)
+    const url = URL.createObjectURL(pdfBlob)
+    const a   = document.createElement('a')
+    a.href = url; a.download = fileName; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // ── Salvar em Resultados (client_result_files via adminService) ──
+  const handleSaveToResults = async () => {
+    if (!pdfBlob || !selectedClient) return
+    setSavingDoc(true)
+    setSaveError(null)
     try {
-      const blob = await documentsService.downloadGeneratedDoc(savedDoc.storage_path)
-      const url  = URL.createObjectURL(blob)
-      const a    = document.createElement('a')
-      a.href = url; a.download = savedDoc.file_name; a.click()
-      URL.revokeObjectURL(url)
+      const fileName = buildFileName(selectedClient.full_name)
+      const file = new File([pdfBlob], fileName, { type: 'application/pdf' })
+      await adminService.uploadResultFile(selectedClient.id, file)
+      setSavedDoc({ id: 'ok' } as any) // marca como salvo pro banner mudar
     } catch (e: any) {
-      alert(e?.message || 'Erro ao baixar')
+      const msg = e?.message || String(e) || 'Erro desconhecido ao salvar'
+      console.error('[AiCompositionsManager] handleSaveToResults error:', e)
+      setSaveError(msg)
+    } finally {
+      setSavingDoc(false)
     }
   }
 
-  // ── Handlers de lista ──
-  const handleAdd = (r: AddPageResult) => {
-    setPages(prev => [...prev, {
-      id:         uid(),
-      promptId:   r.promptId,
-      promptName: r.promptName,
-      photoId:    r.photoId,
-      photoName:  r.photoName,
-      photoUrl:   r.photoUrl,
-      status:     'pending',
-      ...(r.driveFileId ? { driveFileId: r.driveFileId } : {}),
-      ...(r.uploadedImageBase64 ? { uploadedImageBase64: r.uploadedImageBase64, uploadedImageMime: r.uploadedImageMime } : {}),
-      modelOverride: r.modelVersion !== 'gpt-image-1' ? r.modelVersion : undefined,
-    }])
+
+
+  // ── Adicionar páginas (array — 1 por parte do prompt) ──
+  const handleAddPages = (results: AddPageResult[]) => {
+    const newPages: CompositionPage[] = results.map(r => ({
+      id:          uid(),
+      promptId:    r.promptId,
+      promptName:  r.promptName,
+      partId:      r.partId,
+      partLabel:   r.partLabel,
+      partPrompt:  r.partPrompt,
+      photoId:     r.photoId,
+      photoName:   r.photoName,
+      photoUrl:    r.photoUrl,
+      driveFileId: r.driveFileId,
+      uploadedPhotoBase64: r.uploadedPhotoBase64,
+      uploadedPhotoMime:   r.uploadedPhotoMime,
+      status:      'pending',
+    }))
+    setPages(prev => [...prev, ...newPages])
     setShowAdd(false)
     setSavedDoc(null)
   }
@@ -371,8 +433,13 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
   const handleClearAll = () => {
     if (isBusy) return
     if (!confirm('Limpar todas as páginas? As imagens já geradas ficam no storage.')) return
+    const clientId = isEmbedded ? propClientId : selectedClientId
+    if (clientId) {
+      try { localStorage.removeItem(`ai_composition_${clientId}`) } catch {}
+    }
     setPages([])
     setSavedDoc(null)
+    setPdfBlob(null)
     setGlobalError(null)
     compositionIdRef.current = ''
   }
@@ -392,10 +459,10 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     return { done, erred, pending, gen, total: pages.length }
   }, [pages])
 
-  const isBusy       = runningBatch || !!generatingId || buildingPdf
-  const hasPending   = stats.pending > 0 || stats.erred > 0
-  const canBatch     = !isBusy && hasPending && pages.length > 0
-  const canFinalize  = !isBusy && stats.done > 0
+  const isBusy      = runningBatch || !!generatingId || buildingPdf || savingDoc
+  const hasPending  = stats.pending > 0 || stats.erred > 0
+  const canBatch    = !isBusy && hasPending && pages.length > 0
+  const canFinalize = !isBusy && stats.done > 0
 
   // ─── Render ───────────────────────────────────────────────────────
 
@@ -410,7 +477,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
           <div>
             <h2 className="text-base font-semibold text-gray-900">Composições IA</h2>
             <p className="text-sm text-gray-500">
-              Adicione páginas (prompt + foto), gere cada imagem e finalize como PDF.
+              Selecione um prompt (com N partes) + foto e gere todas as imagens de uma vez.
             </p>
           </div>
         </div>
@@ -457,24 +524,18 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         {selectedClient && (
           <section className="space-y-3">
 
-            {/* Cabeçalho da lista */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
                 <p className="text-sm font-semibold text-gray-900">Páginas da composição</p>
                 <p className="text-xs text-gray-500">
                   {stats.total === 0
-                    ? 'Adicione pelo menos uma página pra começar.'
+                    ? 'Adicione um prompt pra começar. Cada parte gera uma página.'
                     : `${stats.total} página${stats.total !== 1 ? 's' : ''} · ${stats.done} gerada${stats.done !== 1 ? 's' : ''}${stats.erred > 0 ? ` · ${stats.erred} com erro` : ''}${stats.pending > 0 ? ` · ${stats.pending} aguardando` : ''}`
                   }
                 </p>
               </div>
-              <Btn
-                variant="outline"
-                size="sm"
-                onClick={() => setShowAdd(true)}
-                disabled={isBusy}
-              >
-                <Plus className="h-4 w-4" /> Adicionar página
+              <Btn variant="outline" size="sm" onClick={() => setShowAdd(true)} disabled={isBusy}>
+                <Plus className="h-4 w-4" /> Adicionar
               </Btn>
             </div>
 
@@ -486,7 +547,8 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
                 </div>
                 <p className="text-sm font-medium text-gray-700">Nenhuma página ainda</p>
                 <p className="text-xs text-gray-500 mt-1">
-                  Clique em "Adicionar página" pra escolher um prompt + foto da galeria do cliente.
+                  Clique em "Adicionar", escolha um prompt com suas partes e a foto da cliente.<br />
+                  O sistema vai enfileirar uma imagem pra cada parte automaticamente.
                 </p>
               </div>
             ) : (
@@ -509,7 +571,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
               </ol>
             )}
 
-            {/* ═══ Erro global ═══ */}
+            {/* Erro global */}
             {globalError && (
               <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
@@ -520,26 +582,62 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
               </div>
             )}
 
-            {/* ═══ PDF pronto ═══ */}
-            {savedDoc && !buildingPdf && (
-              <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 flex items-center gap-3 flex-wrap">
-                <div className="h-10 w-10 rounded-lg bg-green-500/15 text-green-700 flex items-center justify-center flex-shrink-0">
-                  <FileText className="h-4 w-4" />
+            {/* PDF pronto — botões de ação */}
+            {pdfBlob && !buildingPdf && (
+              <div className="space-y-2">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3 flex-wrap">
+                  <div className="h-10 w-10 rounded-lg bg-emerald-500/15 text-emerald-700 flex items-center justify-center flex-shrink-0">
+                    <FileText className="h-4 w-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-emerald-800">
+                      {savedDoc ? 'PDF salvo nos Resultados!' : 'PDF pronto!'}
+                    </p>
+                    <p className="text-xs text-emerald-700 mt-0.5">
+                      {savedDoc
+                        ? 'O arquivo já aparece na aba Resultado → Arquivos PDF.'
+                        : 'Baixe agora ou salve diretamente nos Resultados da cliente.'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+                    <Btn variant="outline" size="sm" onClick={handleDownloadPdf}>
+                      <Download className="h-3.5 w-3.5" /> Baixar PDF
+                    </Btn>
+                    {!savedDoc && (
+                      <Btn variant="success" size="sm" onClick={handleSaveToResults} loading={savingDoc} disabled={savingDoc}>
+                        <FileText className="h-3.5 w-3.5" />
+                        {savingDoc ? 'Salvando…' : 'Salvar em Resultados'}
+                      </Btn>
+                    )}
+                    {savedDoc && onGoToDocuments && (
+                      <Btn variant="outline" size="sm" onClick={onGoToDocuments}>
+                        <FileText className="h-3.5 w-3.5" /> Ver Resultado
+                      </Btn>
+                    )}
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-green-800">PDF gerado e salvo no histórico</p>
-                  <p className="text-xs text-green-700 mt-0.5 truncate">{savedDoc.file_name}</p>
-                </div>
-                <Btn variant="outline" size="sm" onClick={handleDownload}>
-                  <Download className="h-3.5 w-3.5" /> Baixar agora
-                </Btn>
+                {saveError && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-red-700">Erro ao salvar nos Resultados</p>
+                      <p className="text-xs text-red-600 mt-0.5 break-words">{saveError}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSaveError(null)}
+                      className="ml-auto text-red-400 hover:text-red-600 flex-shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* ═══ Barra de ações ═══ */}
+            {/* Barra de ações */}
             {pages.length > 0 && (
               <div className="flex items-center justify-between gap-3 flex-wrap border-t border-gray-100 pt-4">
-                {/* Esquerda: limpar */}
                 <Btn
                   variant="ghost"
                   size="sm"
@@ -550,52 +648,36 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
                   <Trash2 className="h-3.5 w-3.5" /> Limpar tudo
                 </Btn>
 
-                {/* Direita: gerar pendentes + finalizar PDF */}
                 <div className="flex items-center gap-2 flex-wrap">
-                  {/* "Gerar pendentes" só aparece se tiver algum pendente/erro */}
                   {hasPending && (
-                    <Btn
-                      variant="outline"
-                      onClick={handleGenerateBatch}
-                      loading={runningBatch}
-                      disabled={!canBatch}
-                    >
+                    <Btn variant="outline" onClick={handleGenerateBatch} loading={runningBatch} disabled={!canBatch}>
                       <Play className="h-4 w-4" />
                       {runningBatch
-                        ? `Gerando…`
+                        ? 'Gerando…'
                         : `Gerar pendentes (${stats.pending + stats.erred})`}
                     </Btn>
                   )}
-
-                  {/* "Finalizar e Gerar PDF" — ativado assim que qualquer página estiver pronta */}
-                  <Btn
-                    variant="success"
-                    onClick={handleFinalizePdf}
-                    loading={buildingPdf}
-                    disabled={!canFinalize}
-                  >
+                  <Btn variant="success" onClick={handleFinalizePdf} loading={buildingPdf} disabled={!canFinalize}>
                     <FileText className="h-4 w-4" />
-                    {buildingPdf
-                      ? 'Montando PDF…'
-                      : `Finalizar e Gerar PDF (${stats.done})`}
+                    {buildingPdf ? 'Montando PDF…' : `Montar PDF (${stats.done} imagem${stats.done !== 1 ? 'ns' : ''})`}
                   </Btn>
                 </div>
               </div>
             )}
 
-            {/* ═══ Banner de progresso ═══ */}
-            {(runningBatch || buildingPdf || generatingId) && (
+            {/* Banner de progresso */}
+            {(runningBatch || buildingPdf || generatingId || savingDoc) && (
               <div className="bg-fuchsia-50 border border-fuchsia-200 rounded-xl px-4 py-3 flex items-start gap-3">
                 <Loader2 className="h-5 w-5 animate-spin text-fuchsia-500 mt-0.5 flex-shrink-0" />
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-fuchsia-800">
-                    {buildingPdf
-                      ? 'Montando o PDF final…'
-                      : 'Gerando imagem com a OpenAI…'}
+                    {buildingPdf ? 'Montando o PDF final…' : savingDoc ? 'Salvando nos Resultados…' : 'Gerando imagem com a OpenAI…'}
                   </p>
                   <p className="text-xs text-fuchsia-700 mt-0.5">
                     {buildingPdf
                       ? 'Baixando imagens e empacotando. Aguarde…'
+                      : savingDoc
+                      ? 'Enviando o PDF para o perfil da cliente…'
                       : 'Cada imagem leva 15–30s. Não feche essa aba.'}
                   </p>
                 </div>
@@ -616,13 +698,13 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         )}
       </div>
 
-      {/* ═══ Modal: adicionar página ═══ */}
+      {/* Modal: adicionar páginas */}
       {showAdd && selectedClient && (
         <AddPageDialog
           clientId={selectedClient.id}
           clientName={selectedClient.full_name}
           onClose={() => setShowAdd(false)}
-          onConfirm={handleAdd}
+          onConfirm={handleAddPages}
         />
       )}
     </div>
@@ -637,11 +719,11 @@ function PageRow({
   page, index, total, isBusy, isThisGenerating,
   onGenerate, onMoveUp, onMoveDown, onRemove, onReset,
 }: {
-  page:              CompositionPage
-  index:             number
-  total:             number
-  isBusy:            boolean
-  isThisGenerating:  boolean
+  page:             CompositionPage
+  index:            number
+  total:            number
+  isBusy:           boolean
+  isThisGenerating: boolean
   onGenerate:  () => void
   onMoveUp:    () => void
   onMoveDown:  () => void
@@ -688,7 +770,7 @@ function PageRow({
             {index + 1}
           </div>
 
-          {/* Thumbnail: mostra gerada quando done, original caso contrário */}
+          {/* Thumbnail */}
           <div className="relative w-14 h-14 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0 group">
             <img
               src={page.status === 'done' && page.generatedImageUrl ? page.generatedImageUrl : page.photoUrl}
@@ -696,7 +778,6 @@ function PageRow({
               loading="lazy"
               className="w-full h-full object-cover"
             />
-            {/* Overlay "ver ampliado" quando done */}
             {page.status === 'done' && page.generatedImageUrl && (
               <button
                 type="button"
@@ -707,7 +788,6 @@ function PageRow({
                 <Eye className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow" />
               </button>
             )}
-            {/* Spinner se gerando */}
             {isThisGenerating && (
               <div className="absolute inset-0 bg-fuchsia-900/50 flex items-center justify-center">
                 <Loader2 className="h-5 w-5 text-white animate-spin" />
@@ -715,13 +795,16 @@ function PageRow({
             )}
           </div>
 
-          {/* Texto */}
+          {/* Texto — mostra promptName + partLabel */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-sm font-medium text-gray-900 truncate">{page.promptName}</p>
+              <p className="text-sm font-medium text-gray-900 truncate">
+                {page.promptName}
+                <span className="text-gray-400 font-normal"> · </span>
+                <span className="text-fuchsia-700">{page.partLabel}</span>
+              </p>
               {statusBadge[page.status]}
             </div>
-            <p className="text-xs text-gray-500 truncate">Foto: {page.photoName}</p>
             {page.status === 'error' && page.errorMsg && (
               <p className="text-xs text-red-600 mt-0.5 break-words line-clamp-2">{page.errorMsg}</p>
             )}
@@ -729,7 +812,18 @@ function PageRow({
 
           {/* Ações */}
           <div className="flex items-center gap-0.5 flex-shrink-0">
-            {/* Gerar (pending ou error) */}
+            {page.status === 'done' && page.generatedImageUrl && (
+              <a
+                href={page.generatedImageUrl}
+                download={`${page.promptName} - ${page.partLabel}.png`}
+                target="_blank"
+                rel="noreferrer"
+                title="Baixar imagem gerada"
+                className="p-2 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors inline-flex items-center"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </a>
+            )}
             {(page.status === 'pending' || page.status === 'error') && (
               <button
                 type="button"
@@ -744,77 +838,44 @@ function PageRow({
                 }
               </button>
             )}
-
-            {/* Reset (error) */}
             {page.status === 'error' && (
-              <button
-                type="button"
-                onClick={onReset}
-                disabled={isBusy}
-                title="Resetar pra tentar de novo"
-                className="p-2 rounded-lg text-amber-600 hover:bg-amber-50 disabled:opacity-30 transition-colors"
-              >
+              <button type="button" onClick={onReset} disabled={isBusy} title="Resetar pra tentar de novo"
+                className="p-2 rounded-lg text-amber-600 hover:bg-amber-50 disabled:opacity-30 transition-colors">
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
             )}
-
-            {/* Regenerar (done) */}
             {page.status === 'done' && (
-              <button
-                type="button"
-                onClick={onReset}
-                disabled={isBusy}
-                title="Regenerar (descarta imagem atual)"
-                className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-fuchsia-600 disabled:opacity-30 transition-colors"
-              >
+              <button type="button" onClick={onReset} disabled={isBusy} title="Regenerar"
+                className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-fuchsia-600 disabled:opacity-30 transition-colors">
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={onMoveUp}
-              disabled={isBusy || index === 0}
-              title="Mover para cima"
-              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors"
-            >
+            <button type="button" onClick={onMoveUp} disabled={isBusy || index === 0} title="Mover para cima"
+              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors">
               <ArrowUp className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={onMoveDown}
-              disabled={isBusy || index === total - 1}
-              title="Mover para baixo"
-              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors"
-            >
+            <button type="button" onClick={onMoveDown} disabled={isBusy || index === total - 1} title="Mover para baixo"
+              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors">
               <ArrowDown className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={onRemove}
-              disabled={isBusy}
-              title="Remover esta página"
-              className="p-2 rounded-lg text-red-500 hover:bg-red-50 disabled:opacity-30 transition-colors"
-            >
+            <button type="button" onClick={onRemove} disabled={isBusy} title="Remover esta página"
+              className="p-2 rounded-lg text-red-500 hover:bg-red-50 disabled:opacity-30 transition-colors">
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
       </li>
 
-      {/* ── Modal de preview da imagem gerada ── */}
+      {/* Modal de preview */}
       {showPreview && page.generatedImageUrl && (
         <div
           className="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4"
           onClick={() => setShowPreview(false)}
         >
-          <div
-            className="relative max-w-2xl w-full"
-            onClick={e => e.stopPropagation()}
-          >
+          <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
             <img
               src={page.generatedImageUrl}
-              alt={`Imagem gerada — ${page.promptName}`}
+              alt={`Imagem gerada — ${page.promptName} · ${page.partLabel}`}
               className="w-full h-auto rounded-2xl shadow-2xl"
             />
             <button
@@ -824,7 +885,7 @@ function PageRow({
               <X className="h-4 w-4" />
             </button>
             <p className="mt-3 text-center text-sm text-white/70">
-              {page.promptName} · Foto: {page.photoName}
+              {page.promptName} · {page.partLabel} · Foto: {page.photoName}
             </p>
           </div>
         </div>

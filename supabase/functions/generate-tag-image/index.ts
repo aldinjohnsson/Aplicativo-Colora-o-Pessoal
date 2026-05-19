@@ -49,14 +49,18 @@ interface CompositionRef {
 }
 
 interface RequestBody {
-  promptId:     string
-  clientId:     string
-  photoId:      string
+  promptId:        string
+  clientId:        string
+  photoId:         string
+  // Texto do prompt já resolvido pelo frontend (ex: texto da Parte N dentro
+  // do array parts). Sobrescreve prompt.prompt do banco, que pode estar vazio
+  // quando o texto real fica dentro do array parts de cada prompt composto.
+  promptOverride?: string
   // Modo TAG (existente). Se vier, escreve em client_tag_values.
-  tagId?:       string
+  tagId?:          string
   // Modo COMPOSITION (novo). Se vier (e tagId NÃO vier), só sobe arquivo
   // numa pasta separada e devolve o storagePath, sem mexer em DB.
-  composition?: CompositionRef
+  composition?:    CompositionRef
 }
 
 // Sanitiza string pra uso seguro em path de storage
@@ -95,7 +99,7 @@ serve(async (req) => {
 
     // ── 2. Parse body ───────────────────────────────────────────────
     const body: Partial<RequestBody> = await req.json().catch(() => ({}))
-    const { promptId, clientId, photoId, tagId, composition } = body
+    const { promptId, clientId, photoId, promptOverride, tagId, composition } = body
 
     if (!promptId || !clientId || !photoId) {
       return jsonRes({ error: 'Missing required fields: promptId, clientId, photoId' }, 400)
@@ -112,24 +116,106 @@ serve(async (req) => {
     }
 
     // ── 3. Carrega prompt + foto ────────────────────────────────────
+    // FIX: adicionado reference_image_path ao SELECT
     const [{ data: prompt, error: pErr }, { data: photo, error: phErr }] = await Promise.all([
       admin.from('ai_image_prompts')
-        .select('id, name, prompt, model, size, quality, is_active')
+        .select('id, name, prompt, model, size, quality, is_active, reference_image_path')
         .eq('id', promptId).single(),
       admin.from('client_photos')
-        .select('id, storage_path, photo_name, photo_type, client_id')
+        .select('id, storage_path, photo_name, photo_type, client_id, drive_file_id')
         .eq('id', photoId).single(),
     ])
     if (pErr || !prompt)   return jsonRes({ error: 'Prompt not found' }, 404)
     if (!prompt.is_active) return jsonRes({ error: 'Prompt is inactive' }, 400)
+    // Valida depois de resolver promptOverride — o campo prompt.prompt pode estar
+    // vazio intencionalmente quando o texto real vem no array parts (enviado
+    // pelo frontend como promptOverride). Só bloqueia se ambos estiverem vazios.
+    const resolvedPromptText = (promptOverride && promptOverride.trim())
+      ? promptOverride.trim()
+      : (prompt.prompt || '').trim()
+
+    if (!resolvedPromptText) {
+      // Diagnóstico: informa exatamente o que chegou pra facilitar debug
+      console.error('Empty prompt debug', JSON.stringify({
+        promptName:      prompt.name,
+        promptDotPrompt: prompt.prompt,
+        promptOverride:  promptOverride ?? null,
+        bodyKeys:        Object.keys(body),
+      }))
+      return jsonRes({
+        error:
+          `O texto da parte está vazio. ` +
+          `Vá em Prompts IA → edite "${prompt.name}" → preencha o textarea de cada parte. ` +
+          `(prompt.prompt="${prompt.prompt}", promptOverride="${promptOverride ?? ''}")`,
+      }, 400)
+    }
     if (phErr || !photo)   return jsonRes({ error: 'Photo not found' }, 404)
 
-    // ── 4. Baixa a foto do storage ──────────────────────────────────
-    const { data: photoBlob, error: dlErr } = await admin.storage
-      .from('client-photos')
-      .download(photo.storage_path)
-    if (dlErr || !photoBlob) {
-      return jsonRes({ error: `Failed to download photo: ${dlErr?.message || 'unknown'}` }, 500)
+    // ── 4. Baixa a foto da galeria (Drive → Supabase Storage como fallback) ────
+    //
+    // Fotos novas são salvas no Google Drive (drive_file_id preenchido).
+    // Fotos antigas podem ainda estar no Supabase Storage (storage_path).
+    // Tentamos Drive primeiro; se falhar ou não houver drive_file_id,
+    // tentamos o bucket client-photos.
+    let photoBlob: Blob | null = null
+    let photoMime = photo.photo_type || 'image/jpeg'
+
+    if (photo.drive_file_id) {
+      // Download via URL pública do Drive
+      const driveUrl = `https://drive.google.com/uc?export=download&id=${photo.drive_file_id}`
+      try {
+        const driveRes = await fetch(driveUrl)
+        if (driveRes.ok) {
+          photoBlob = await driveRes.blob()
+          photoMime = driveRes.headers.get('content-type') || photoMime
+        } else {
+          console.warn(`Drive download failed (HTTP ${driveRes.status}), trying Supabase Storage…`)
+        }
+      } catch (e) {
+        console.warn('Drive download threw, trying Supabase Storage…', e)
+      }
+    }
+
+    // Fallback: Supabase Storage
+    if (!photoBlob && photo.storage_path) {
+      const { data: sb, error: dlErr } = await admin.storage
+        .from('client-photos')
+        .download(photo.storage_path)
+      if (dlErr || !sb) {
+        return jsonRes({
+          error: `Failed to download photo: ${dlErr?.message || 'Object not found'}. ` +
+                 `A foto pode não estar mais disponível no storage. ` +
+                 `Verifique se o Google Drive está conectado e a foto foi enviada corretamente.`,
+        }, 500)
+      }
+      photoBlob = sb
+      photoMime = photo.photo_type || sb.type || 'image/jpeg'
+    }
+
+    if (!photoBlob) {
+      return jsonRes({
+        error: 'Não foi possível baixar a foto. Verifique se o Google Drive está conectado.',
+      }, 500)
+    }
+
+    // ── 4b. Baixa a imagem de referência do prompt (se houver) ──────
+    // FIX: novo bloco — baixa do bucket ai-prompt-references
+    let refBlob: Blob | null = null
+
+    if (prompt.reference_image_path) {
+      const { data: refData, error: refErr } = await admin.storage
+        .from('ai-prompt-references')
+        .download(prompt.reference_image_path)
+
+      if (refErr || !refData) {
+        // Loga o aviso mas NÃO aborta — gera mesmo sem a referência
+        console.warn(
+          `Imagem de referência do prompt não encontrada (${prompt.reference_image_path}): ` +
+          `${refErr?.message ?? 'objeto não encontrado'}. Gerando sem ela.`
+        )
+      } else {
+        refBlob = refData
+      }
     }
 
     // ── 5. Resolve OpenAI key (per-admin, fallback env) ─────────────
@@ -155,17 +241,34 @@ serve(async (req) => {
     }
 
     // ── 6. Chama OpenAI images/edits ────────────────────────────────
+    //
+    // FIX: quando há imagem de referência no prompt, enviamos DUAS imagens:
+    //   image[0] → imagem de referência do prompt (cartela, exemplo, etc.)
+    //   image[1] → foto da galeria do cliente
+    //
+    // Quando não há referência, comportamento idêntico ao original
+    // (campo "image" simples para retrocompatibilidade).
     const photoBytes = new Uint8Array(await photoBlob.arrayBuffer())
-    const photoMime  = photo.photo_type || photoBlob.type || 'image/jpeg'
     const photoFile  = new Blob([photoBytes], { type: photoMime })
 
     const form = new FormData()
     form.append('model',   prompt.model   || 'gpt-image-1')
-    form.append('prompt',  prompt.prompt)
+    form.append('prompt',  resolvedPromptText)
     form.append('size',    prompt.size    || '1024x1024')
     form.append('quality', prompt.quality || 'medium')
     form.append('n',       '1')
-    form.append('image',   photoFile, photo.photo_name || 'input.jpg')
+
+    if (refBlob) {
+      // Duas imagens: referência primeiro, depois a foto do cliente
+      const refBytes = new Uint8Array(await refBlob.arrayBuffer())
+      const refFile  = new Blob([refBytes], { type: 'image/jpeg' })
+      form.append('image[]', refFile,    'reference.jpg')
+      form.append('image[]', photoFile,  photo.photo_name || 'client.jpg')
+      console.log(`Gerando com imagem de referência: ${prompt.reference_image_path}`)
+    } else {
+      // Sem referência: campo simples (compatibilidade original)
+      form.append('image', photoFile, photo.photo_name || 'input.jpg')
+    }
 
     const openaiRes = await fetch('https://api.openai.com/v1/images/edits', {
       method:  'POST',
@@ -235,11 +338,12 @@ serve(async (req) => {
       }
 
       return jsonRes({
-        success:    true,
-        mode:       'tag',
+        success:           true,
+        mode:              'tag',
         storagePath,
-        size:       outBytes.length,
-        promptName: prompt.name,
+        size:              outBytes.length,
+        promptName:        prompt.name,
+        usedReferenceImage: !!refBlob,
       })
     }
 
@@ -257,11 +361,12 @@ serve(async (req) => {
     if (upErr) return jsonRes({ error: `Upload failed: ${upErr.message}` }, 500)
 
     return jsonRes({
-      success:    true,
-      mode:       'composition',
+      success:            true,
+      mode:               'composition',
       storagePath,
-      size:       outBytes.length,
-      promptName: prompt.name,
+      size:               outBytes.length,
+      promptName:         prompt.name,
+      usedReferenceImage: !!refBlob,
     })
 
   } catch (err) {

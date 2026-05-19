@@ -2818,7 +2818,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [copied, setCopied] = useState(false)
-  const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'documents' | 'ai' | 'chat' | 'compositions'>('overview')
+  const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'documents' | 'ai' | 'chat'>('overview')
+  const [docsSubTab, setDocsSubTab] = useState<'docs' | 'compositions'>('docs')
   const [showFormModal, setShowFormModal] = useState(false)
   const [resultForm, setResultForm] = useState({ observations: '' })
   const [savingResult, setSavingResult] = useState(false)
@@ -3539,7 +3540,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               { id: 'photos', label: `Fotos (${photos.length})` },
               { id: 'result', label: 'Resultado' },
               { id: 'documents', label: 'Documentos' },
-              { id: 'compositions', label: '🪄 Comp. IA' },
               { id: 'ai', label: '✨ IA' },
               { id: 'chat', label: '💬 Chat IA' },
             ].map(({ id, label }) => (
@@ -3804,13 +3804,36 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             </div>
           )}
 
-          {tab === 'documents' && <ClientDocumentsTab clientId={clientId!} />}
+          {tab === 'documents' && (
+            <div className="space-y-4">
+              {/* Sub-abas */}
+              <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: t.surface2 }}>
+                {[
+                  { id: 'docs',         label: 'Documentos' },
+                  { id: 'compositions', label: '🪄 Comp. IA' },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    onClick={() => setDocsSubTab(id as any)}
+                    className="px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors"
+                    style={docsSubTab === id
+                      ? { background: t.surface, color: t.text, boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }
+                      : { background: 'transparent', color: t.text3 }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
 
-          {tab === 'compositions' && (
-            <AiCompositionsManager
-              clientId={clientId!}
-              clientName={client.full_name}
-            />
+              {docsSubTab === 'docs' && <ClientDocumentsTab clientId={clientId!} />}
+              {docsSubTab === 'compositions' && (
+                <AiCompositionsManager
+                  clientId={clientId!}
+                  clientName={client.full_name}
+                  onGoToDocuments={() => setDocsSubTab('docs')}
+                />
+              )}
+            </div>
           )}
 
           {tab === 'result' && (

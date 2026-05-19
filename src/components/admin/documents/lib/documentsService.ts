@@ -871,12 +871,20 @@ export const documentsService = {
 
   // ════════════════════════════════════════════════════════════════════
   //  AI Image Prompts — catálogo de prompts pra geração via gpt-image-1
+  //
+  //  Nova estrutura:
+  //   • parts: AiPromptPart[]  — cada parte vira 1 imagem na fila
+  //   • reference_image_path   — imagem complementar global do prompt
+  //   • O campo `prompt` é mantido por retrocompatibilidade (pode ser '')
   // ════════════════════════════════════════════════════════════════════
 
   async listAiImagePrompts(opts?: { includeInactive?: boolean }): Promise<Array<{
     id: string
     name: string
     prompt: string
+    parts: Array<{ id: string; label: string; prompt: string }>
+    reference_image_path: string | null
+    reference_image_url:  string | null
     model: string
     size: string
     quality: string
@@ -888,27 +896,47 @@ export const documentsService = {
     if (!opts?.includeInactive) q = q.eq('is_active', true)
     const { data, error } = await q
     if (error) throw error
-    return (data || []) as any[]
+
+    // Enriquece com URL pública da imagem de referência
+    return ((data || []) as any[]).map((row: any) => {
+      let reference_image_url: string | null = null
+      if (row.reference_image_path) {
+        const { data: urlData } = supabase.storage
+          .from('ai-prompt-references')
+          .getPublicUrl(row.reference_image_path)
+        reference_image_url = urlData?.publicUrl ?? null
+      }
+      return {
+        ...row,
+        parts: Array.isArray(row.parts) ? row.parts : [],
+        reference_image_path: row.reference_image_path ?? null,
+        reference_image_url,
+      }
+    })
   },
 
   async createAiImagePrompt(input: {
     name: string
-    prompt: string
+    prompt?: string
+    parts?: Array<{ id: string; label: string; prompt: string }>
+    reference_image_path?: string | null
     model?: string
     size?: string
     quality?: string
-  }): Promise<{ id: string; name: string; prompt: string; model: string; size: string; quality: string; is_active: boolean }> {
+  }): Promise<{ id: string; name: string; parts: any[]; model: string; size: string; quality: string; is_active: boolean }> {
     const { data, error } = await supabase
       .from('ai_image_prompts')
       .insert({
-        name:    input.name.trim(),
-        prompt:  input.prompt,
-        model:   input.model   || 'gpt-image-1',
-        size:    input.size    || '1024x1024',
-        quality: input.quality || 'medium',
+        name:                 input.name.trim(),
+        prompt:               input.prompt ?? '',
+        parts:                input.parts ?? [],
+        reference_image_path: input.reference_image_path ?? null,
+        model:                input.model   || 'gpt-image-1',
+        size:                 input.size    || '1024x1024',
+        quality:              input.quality || 'medium',
         is_active: true,
       })
-      .select('id, name, prompt, model, size, quality, is_active')
+      .select('id, name, prompt, parts, reference_image_path, model, size, quality, is_active')
       .single()
     if (error) throw error
     return data as any
@@ -917,6 +945,8 @@ export const documentsService = {
   async updateAiImagePrompt(id: string, updates: Partial<{
     name: string
     prompt: string
+    parts: Array<{ id: string; label: string; prompt: string }>
+    reference_image_path: string | null
     model: string
     size: string
     quality: string
@@ -929,8 +959,59 @@ export const documentsService = {
   },
 
   async deleteAiImagePrompt(id: string): Promise<void> {
+    // Remove imagem de referência do storage antes de deletar o registro
+    const { data: row } = await supabase
+      .from('ai_image_prompts')
+      .select('reference_image_path')
+      .eq('id', id)
+      .single()
+    if (row?.reference_image_path) {
+      await supabase.storage
+        .from('ai-prompt-references')
+        .remove([row.reference_image_path])
+        .catch(() => {})
+    }
     const { error } = await supabase.from('ai_image_prompts').delete().eq('id', id)
     if (error) throw error
+  },
+
+  /**
+   * Faz upload da imagem de referência complementar de um prompt.
+   * Salva no bucket `ai-prompt-references`.
+   * Retorna { path, url } — `path` é o que você grava em `reference_image_path`.
+   *
+   * @param file      — arquivo a fazer upload
+   * @param oldPath   — path anterior (será deletado antes do novo upload)
+   */
+  async uploadPromptReferenceImage(
+    file: File,
+    oldPath?: string | null,
+  ): Promise<{ path: string; url: string }> {
+    // Remove imagem anterior se existir
+    if (oldPath) {
+      await supabase.storage
+        .from('ai-prompt-references')
+        .remove([oldPath])
+        .catch(() => {})
+    }
+
+    const ext = file.name.includes('.')
+      ? file.name.slice(file.name.lastIndexOf('.')).toLowerCase().replace(/[^a-z0-9.]/g, '')
+      : '.png'
+    // Usa prefixo aleatório — promptId não está disponível no momento do upload (modo create)
+    const prefix = Math.random().toString(36).slice(2, 10)
+    const path = `refs/${prefix}_${Date.now()}${ext}`
+
+    const { error: upErr } = await supabase.storage
+      .from('ai-prompt-references')
+      .upload(path, file, { contentType: file.type, upsert: true })
+    if (upErr) throw upErr
+
+    const { data: urlData } = supabase.storage
+      .from('ai-prompt-references')
+      .getPublicUrl(path)
+
+    return { path, url: urlData?.publicUrl ?? '' }
   },
 
   // ════════════════════════════════════════════════════════════════════
@@ -954,6 +1035,8 @@ export const documentsService = {
     uploadedImageMime?:   string
     /** Se fornecido, sobrescreve o model salvo no prompt */
     modelOverride?:       string
+    /** Texto do prompt já resolvido (parte específica). Evita a edge function ler o campo prompt vazio. */
+    promptOverride?:      string
     /** Drive file ID da foto base — obrigatório quando a foto veio do Google Drive */
     driveFileId?:         string
   }): Promise<CompositionImageResult> {
@@ -980,6 +1063,9 @@ export const documentsService = {
     }
     if (input.modelOverride) {
       body.modelOverride = input.modelOverride
+    }
+    if (input.promptOverride) {
+      body.promptOverride = input.promptOverride
     }
     if (input.driveFileId) {
       body.driveFileId = input.driveFileId
