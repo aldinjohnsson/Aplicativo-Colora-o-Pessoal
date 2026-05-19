@@ -48,6 +48,7 @@ interface ClientPhoto {
   photo_name: string
   storage_path: string
   url: string
+  drive_file_id: string | null
   category_id: string | null
   category_title: string | null
 }
@@ -66,6 +67,8 @@ export interface AddPageResult {
   photoId:    string
   photoName:  string
   photoUrl:   string
+  /** Drive file ID — presente apenas quando a foto veio do Google Drive */
+  driveFileId?: string
   /** Imagem extra de referência em base64 puro (sem prefixo data:…) — opcional */
   uploadedImageBase64?: string
   uploadedImageMime?:   string
@@ -189,6 +192,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
       photoId:    selectedPhoto.id,
       photoName:  selectedPhoto.photo_name,
       photoUrl:   selectedPhoto.url,
+      driveFileId: selectedPhoto.drive_file_id ?? undefined,
       modelVersion,
       ...(uploadedBase64 ? { uploadedImageBase64: uploadedBase64, uploadedImageMime: uploadedMime } : {}),
     })

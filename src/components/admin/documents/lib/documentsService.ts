@@ -4,6 +4,7 @@
 // Centraliza todas as chamadas Supabase.
 
 import { supabase } from '../../../../lib/supabase'
+import { driveStorage } from '../../../../lib/driveStorage'
 import type {
   DocumentTag,
   DocumentTagInput,
@@ -603,17 +604,19 @@ export const documentsService = {
 
   async listClientPhotos(clientId: string): Promise<Array<{
     id: string; photo_name: string; storage_path: string; url: string;
+    drive_file_id: string | null;
     category_id: string | null; category_title: string | null;
   }>> {
     const { data, error } = await supabase
       .from('client_photos')
-      .select('id, photo_name, storage_path, category_id, uploaded_at')
+      .select('id, photo_name, storage_path, drive_file_id, category_id, uploaded_at')
       .eq('client_id', clientId)
       .order('uploaded_at', { ascending: true })
     if (error) throw error
 
     const rows = (data || []) as Array<{
       id: string; photo_name: string; storage_path: string;
+      drive_file_id: string | null;
       category_id: string | null; uploaded_at: string
     }>
 
@@ -627,7 +630,11 @@ export const documentsService = {
 
     return rows.map(r => ({
       id: r.id, photo_name: r.photo_name, storage_path: r.storage_path,
-      url: this.getClientPhotoUrl(r.storage_path),
+      drive_file_id: r.drive_file_id ?? null,
+      // Fotos do Drive usam a URL de thumbnail do Drive; as do Supabase usam getPublicUrl
+      url: r.drive_file_id
+        ? driveStorage.viewUrl(r.drive_file_id)
+        : this.getClientPhotoUrl(r.storage_path),
       category_id: r.category_id,
       category_title: r.category_id ? (catsMap[r.category_id] || null) : null,
     }))
@@ -947,6 +954,8 @@ export const documentsService = {
     uploadedImageMime?:   string
     /** Se fornecido, sobrescreve o model salvo no prompt */
     modelOverride?:       string
+    /** Drive file ID da foto base — obrigatório quando a foto veio do Google Drive */
+    driveFileId?:         string
   }): Promise<CompositionImageResult> {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) throw new Error('Usuário não autenticado')
@@ -971,6 +980,9 @@ export const documentsService = {
     }
     if (input.modelOverride) {
       body.modelOverride = input.modelOverride
+    }
+    if (input.driveFileId) {
+      body.driveFileId = input.driveFileId
     }
 
     const res = await fetch(`${supabaseUrl}/functions/v1/generate-tag-image`, {

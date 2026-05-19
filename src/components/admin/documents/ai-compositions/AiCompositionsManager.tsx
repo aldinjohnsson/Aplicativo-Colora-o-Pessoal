@@ -70,6 +70,8 @@ interface CompositionPage {
   uploadedImageMime?:   string
   /** Sobrescreve o model do prompt para esta página */
   modelOverride?:       string
+  /** Drive file ID — presente quando a foto base veio do Google Drive */
+  driveFileId?:         string
 }
 
 interface ClientLite {
@@ -189,6 +191,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         index,
         ...(page.uploadedImageBase64 ? { uploadedImageBase64: page.uploadedImageBase64, uploadedImageMime: page.uploadedImageMime } : {}),
         ...(page.modelOverride ? { modelOverride: page.modelOverride } : {}),
+        ...(page.driveFileId   ? { driveFileId:   page.driveFileId   } : {}),
       })
       // Busca URL assinada pra mostrar o preview
       const signedUrl = await (documentsService as any).getSignedCompositionImageUrl(res.storagePath)
@@ -338,6 +341,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
       photoName:  r.photoName,
       photoUrl:   r.photoUrl,
       status:     'pending',
+      ...(r.driveFileId ? { driveFileId: r.driveFileId } : {}),
       ...(r.uploadedImageBase64 ? { uploadedImageBase64: r.uploadedImageBase64, uploadedImageMime: r.uploadedImageMime } : {}),
       modelOverride: r.modelVersion !== 'gpt-image-1' ? r.modelVersion : undefined,
     }])
