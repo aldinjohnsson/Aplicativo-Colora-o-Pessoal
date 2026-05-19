@@ -18,6 +18,22 @@ import type {
 import { extractPdfMetadata } from './pdfUtils'
 
 // ══════════════════════════════════════════════════════════════════════
+// Tipos de composition
+// ══════════════════════════════════════════════════════════════════════
+
+export interface CompositionImageResult {
+  storagePath: string
+  size?:       number
+  promptName?: string
+}
+
+export interface ClientLite {
+  id:        string
+  full_name: string
+  email:     string | null
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // Helpers
 // ══════════════════════════════════════════════════════════════════════
 
@@ -796,13 +812,14 @@ export const documentsService = {
   },
 
   async saveGeneratedDocument(input: {
-    clientId: string
-    templateId: string
-    fileName: string
-    blob: Blob
-    mappings: DocumentMapping[]
+    clientId:   string
+    templateId: string | null
+    fileName:   string
+    blob:       Blob
+    mappings?:  DocumentMapping[]
+    source?:    'template' | 'ai_composition'
   }): Promise<ClientGeneratedDocument> {
-    const { clientId, templateId, fileName, blob, mappings } = input
+    const { clientId, templateId, fileName, blob, mappings = [], source = 'template' } = input
     const storagePath = `${clientId}/${Date.now()}_${safeFileName(fileName)}`
 
     const up = await supabase.storage.from('document-generated').upload(
@@ -820,13 +837,15 @@ export const documentsService = {
     const { data: row, error } = await supabase
       .from('client_generated_documents')
       .insert({
-        client_id: clientId,
-        template_id: templateId,
+        client_id:    clientId,
+        template_id:  templateId,          // agora pode ser null
         storage_path: storagePath,
-        file_name: fileName,
-        file_size: blob.size,
-        mappings: mappings as any,
+        file_name:    fileName,
+        file_size:    blob.size,
+        mappings:     mappings as any,
         generated_by: generatedBy,
+        source:       source,              // campo novo
+        generated_at: new Date().toISOString(),
       })
       .select().single()
 
@@ -905,6 +924,108 @@ export const documentsService = {
   async deleteAiImagePrompt(id: string): Promise<void> {
     const { error } = await supabase.from('ai_image_prompts').delete().eq('id', id)
     if (error) throw error
+  },
+
+  // ════════════════════════════════════════════════════════════════════
+  //  Composition — geração de imagens sem amarrar tag
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * Gera UMA imagem no modo composition (sem amarrar a tag).
+   * Chama a Edge Function generate-tag-image no modo composition.
+   * Retorna o `storagePath` (relativo ao bucket `client-tag-images`).
+   */
+  async generateCompositionImage(input: {
+    promptId:             string
+    clientId:             string
+    photoId:              string
+    compositionId:        string    // qualquer string única — agrupa as imagens da mesma sessão
+    index:                number    // posição da imagem na composição (pra nome de arquivo)
+    /** Imagem extra de referência em base64 puro (sem prefixo data:…) */
+    uploadedImageBase64?: string
+    /** MIME da imagem extra, ex: 'image/png' */
+    uploadedImageMime?:   string
+    /** Se fornecido, sobrescreve o model salvo no prompt */
+    modelOverride?:       string
+  }): Promise<CompositionImageResult> {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) throw new Error('Usuário não autenticado')
+
+    const supabaseUrl = (supabase as any).supabaseUrl || import.meta.env.VITE_SUPABASE_URL
+    if (!supabaseUrl) throw new Error('SUPABASE_URL não disponível')
+
+    const body: Record<string, any> = {
+      promptId: input.promptId,
+      clientId: input.clientId,
+      photoId:  input.photoId,
+      composition: {
+        compositionId: input.compositionId,
+        index:         input.index,
+      },
+    }
+    if (input.uploadedImageBase64) {
+      body.uploadedImage = {
+        base64: input.uploadedImageBase64,
+        mime:   input.uploadedImageMime || 'image/png',
+      }
+    }
+    if (input.modelOverride) {
+      body.modelOverride = input.modelOverride
+    }
+
+    const res = await fetch(`${supabaseUrl}/functions/v1/generate-tag-image`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err?.error || `Falha ao gerar imagem (HTTP ${res.status})`)
+    }
+    const data = await res.json()
+    if (!data?.storagePath) throw new Error('Edge function não retornou storagePath')
+    return {
+      storagePath: data.storagePath,
+      size:        data.size,
+      promptName:  data.promptName,
+    }
+  },
+
+  /**
+   * URL temporária (1h) pra baixar uma imagem da composição.
+   * Reusa o bucket `client-tag-images`.
+   */
+  async getSignedCompositionImageUrl(storagePath: string): Promise<string> {
+    const { data, error } = await supabase.storage
+      .from('client-tag-images')
+      .createSignedUrl(storagePath, 60 * 60)
+    if (error || !data?.signedUrl) throw error || new Error('Falha ao gerar URL assinada')
+    return data.signedUrl
+  },
+
+  /**
+   * Remove imagens de composição do storage (cleanup).
+   * Não lança em erro individual de path.
+   */
+  async deleteCompositionImages(storagePaths: string[]): Promise<void> {
+    if (!storagePaths.length) return
+    await supabase.storage.from('client-tag-images').remove(storagePaths).catch(() => {})
+  },
+
+  /**
+   * Lista de clientes pro seletor (ordenado por nome).
+   */
+  async listClientsLight(): Promise<ClientLite[]> {
+    const { data, error } = await supabase
+      .from('clients')
+      .select('id, full_name, email')
+      .order('full_name', { ascending: true })
+    if (error) throw error
+    return (data as ClientLite[]) || []
   },
 
   // ────────────────────────────────────────────────────────────────────

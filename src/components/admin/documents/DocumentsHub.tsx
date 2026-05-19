@@ -3,20 +3,21 @@
 // Entrypoint da feature "Gerador de Documento".
 // Usa rotas aninhadas para separar o hub (com sub-abas) do editor.
 //
-//   /admin/documents                     → hub com tabs [Tags | Templates]
-//   /admin/documents/templates/:id       → editor de um template específico
+//   /admin/documents                       → hub com tabs [Tags | Templates | Prompts IA | Composições IA]
+//   /admin/documents/templates/:id         → editor de um template específico
 //
 // O AdminDashboard registra /documents/* apontando para este componente.
 
 import React from 'react'
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { FileText, Tag as TagIcon, Layers, Sparkles } from 'lucide-react'
+import { FileText, Tag as TagIcon, Layers, Sparkles, Wand2 } from 'lucide-react'
 import { TagsManager } from './tags/TagsManager'
 import { TemplatesList } from './templates/TemplatesList'
 import { TemplateEditor } from './templates/editor/TemplateEditor'
 import { AiImagePromptsManager } from './prompts/AiImagePromptsManager'
+import { AiCompositionsManager } from './ai-compositions/AiCompositionsManager'
 
-type Tab = 'tags' | 'templates' | 'prompts'
+type Tab = 'tags' | 'templates' | 'prompts' | 'compositions'
 
 // ─── Shell (header + tabs) ───────────────────────────────────────────
 
@@ -24,9 +25,10 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
   const navigate = useNavigate()
 
   const TABS: { id: Tab; label: string; icon: any; to: string }[] = [
-    { id: 'tags',      label: 'Tags',       icon: TagIcon,   to: '/admin/documents/tags' },
-    { id: 'templates', label: 'Templates',  icon: Layers,    to: '/admin/documents/templates' },
-    { id: 'prompts',   label: 'Prompts IA', icon: Sparkles,  to: '/admin/documents/prompts' },
+    { id: 'tags',         label: 'Tags',          icon: TagIcon,  to: '/admin/documents/tags' },
+    { id: 'templates',    label: 'Templates',     icon: Layers,   to: '/admin/documents/templates' },
+    { id: 'prompts',      label: 'Prompts IA',    icon: Sparkles, to: '/admin/documents/prompts' },
+    { id: 'compositions', label: 'Composições IA', icon: Wand2,    to: '/admin/documents/compositions' },
   ]
 
   return (
@@ -40,7 +42,7 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
           <div>
             <h1 className="text-xl font-bold text-gray-900">Gerador de Documento</h1>
             <p className="text-xs text-gray-500">
-              Crie tags reutilizáveis e monte templates de PDF para gerar documentos personalizados por cliente.
+              Crie tags reutilizáveis, monte templates de PDF, gere imagens com IA e empacote tudo em documentos personalizados.
             </p>
           </div>
         </div>
@@ -49,7 +51,7 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
       {/* Body scrollable */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto w-full p-4 sm:p-6 space-y-5">
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
             {TABS.map(({ id, label, icon: Icon, to }) => (
               <button
                 key={id}
@@ -64,9 +66,10 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
             ))}
           </div>
 
-          {tab === 'tags' && <TagsManager />}
-          {tab === 'templates' && <TemplatesList />}
-          {tab === 'prompts' && <AiImagePromptsManager />}
+          {tab === 'tags'         && <TagsManager />}
+          {tab === 'templates'    && <TemplatesList />}
+          {tab === 'prompts'      && <AiImagePromptsManager />}
+          {tab === 'compositions' && <AiCompositionsManager />}
         </div>
       </div>
     </div>
@@ -81,8 +84,9 @@ export function DocumentsHub() {
   // Detecta a aba só pra colorir o destaque.
   const path = location.pathname
   const tab: Tab =
-    path.includes('/documents/templates') ? 'templates' :
-    path.includes('/documents/prompts')   ? 'prompts' :
+    path.includes('/documents/templates')    ? 'templates' :
+    path.includes('/documents/prompts')      ? 'prompts' :
+    path.includes('/documents/compositions') ? 'compositions' :
     'tags'
 
   return (
@@ -91,9 +95,10 @@ export function DocumentsHub() {
       <Route path="templates/:templateId" element={<TemplateEditor />} />
 
       {/* Rotas que usam o shell com abas */}
-      <Route path="tags"      element={<DocumentsHubShell tab="tags" />} />
-      <Route path="templates" element={<DocumentsHubShell tab="templates" />} />
-      <Route path="prompts"   element={<DocumentsHubShell tab="prompts" />} />
+      <Route path="tags"         element={<DocumentsHubShell tab="tags" />} />
+      <Route path="templates"    element={<DocumentsHubShell tab="templates" />} />
+      <Route path="prompts"      element={<DocumentsHubShell tab="prompts" />} />
+      <Route path="compositions" element={<DocumentsHubShell tab="compositions" />} />
 
       {/* Default: redireciona para Tags */}
       <Route path="*" element={<DocumentsHubShell tab={tab} />} />

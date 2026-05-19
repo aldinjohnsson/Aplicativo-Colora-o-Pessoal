@@ -27,6 +27,7 @@ import { RejectionModal } from './RejectionModal'
 import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
+import { AiCompositionsManager } from './documents/ai-compositions/AiCompositionsManager'
 import { cleanClientFiles } from '../../services/cleanupService'
 
 // ─── HEIC → JPEG (conversão no navegador) ─────────────────────────────────
@@ -2817,7 +2818,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const [copied, setCopied] = useState(false)
-  const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'documents' | 'ai' | 'chat'>('overview')
+  const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'documents' | 'ai' | 'chat' | 'compositions'>('overview')
   const [showFormModal, setShowFormModal] = useState(false)
   const [resultForm, setResultForm] = useState({ observations: '' })
   const [savingResult, setSavingResult] = useState(false)
@@ -3538,6 +3539,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               { id: 'photos', label: `Fotos (${photos.length})` },
               { id: 'result', label: 'Resultado' },
               { id: 'documents', label: 'Documentos' },
+              { id: 'compositions', label: '🪄 Comp. IA' },
               { id: 'ai', label: '✨ IA' },
               { id: 'chat', label: '💬 Chat IA' },
             ].map(({ id, label }) => (
@@ -3803,6 +3805,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           )}
 
           {tab === 'documents' && <ClientDocumentsTab clientId={clientId!} />}
+
+          {tab === 'compositions' && (
+            <AiCompositionsManager
+              clientId={clientId!}
+              clientName={client.full_name}
+            />
+          )}
 
           {tab === 'result' && (
             <div className="space-y-5">
