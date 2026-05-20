@@ -2513,11 +2513,13 @@ function PhotosView({ clientId, photos, photoCategories, clientToken }: { client
     setUploadingToCategory(categoryId ?? 'uploading')
     try {
       for (const file of Array.from(files)) {
-        await driveStorage.uploadPhoto({
-          portalToken: clientToken,
+        // Usa adminUploadPhoto (autenticado via JWT) em vez de uploadPhoto
+        // (portal da cliente). Isso evita que o RPC save_client_photo_drive
+        // rejeite o upload por causa do status atual da cliente.
+        await driveStorage.adminUploadPhoto({
+          clientId: clientId,
           file,
           categoryId,
-          kind: 'photo',
         })
       }
       await loadPhotos()

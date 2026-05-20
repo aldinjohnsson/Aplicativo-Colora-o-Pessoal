@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { formatContrastValue, type ContrastLayoutData } from '../lib/contrastLayout'
+import { driveStorage } from '../../../../lib/driveStorage'
 
 // Re-export pra não quebrar imports antigos (ex: ClientsManager.tsx).
 export { formatContrastValue }
@@ -30,7 +31,7 @@ const H = 950
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-interface ClientPhoto { id: string; url: string; thumb?: string }
+interface ClientPhoto { id: string; url: string; thumb?: string; driveFileId?: string | null }
 
 interface Props {
   clientId:   string
@@ -220,6 +221,7 @@ export function ContrastLayoutDialog({
 }: Props) {
   const [step, setStep]                 = useState<'pick' | 'edit'>(initial?.photoId ? 'edit' : 'pick')
   const [photos, setPhotos]             = useState<ClientPhoto[]>([])
+  const [blobUrls, setBlobUrls]         = useState<Record<string, string>>({})
   const [photoLoading, setPhotoLoading] = useState(true)
   const [photoError, setPhotoError]     = useState<string | null>(null)
   const [loadedImg, setLoadedImg]       = useState<HTMLImageElement | null>(null)
@@ -251,7 +253,33 @@ export function ContrastLayoutDialog({
     let cancelled = false
     setPhotoLoading(true)
     documentsService.listClientPhotos(clientId)
-      .then(list => { if (!cancelled) setPhotos(list as ClientPhoto[]) })
+      .then(async list => {
+        if (cancelled) return
+        const mapped: ClientPhoto[] = list.map(p => ({
+          id: p.id,
+          url: p.url,
+          driveFileId: (p as any).drive_file_id ?? null,
+        }))
+        setPhotos(mapped)
+
+        // Pré-carrega thumbnails de fotos do Drive como blob: URL
+        // pra evitar falha de auth/CORS no <img src> do grid.
+        const drivePhotos = mapped.filter(p => p.driveFileId)
+        if (drivePhotos.length === 0) return
+
+        const entries = await Promise.allSettled(
+          drivePhotos.map(async p => {
+            const blob = await driveStorage.fetchPhotoBlob(p.driveFileId!)
+            return { id: p.id, blobUrl: URL.createObjectURL(blob) }
+          })
+        )
+        if (cancelled) return
+        const map: Record<string, string> = {}
+        for (const r of entries) {
+          if (r.status === 'fulfilled') map[r.value.id] = r.value.blobUrl
+        }
+        setBlobUrls(map)
+      })
       .catch(e  => { if (!cancelled) setPhotoError(e?.message || 'Erro ao carregar fotos') })
       .finally(() => { if (!cancelled) setPhotoLoading(false) })
     return () => { cancelled = true }
@@ -264,7 +292,7 @@ export function ContrastLayoutDialog({
     if (!selectedPhotoId || photos.length === 0) return
     const photo = photos.find(p => p.id === selectedPhotoId)
     if (photo) {
-      void selectPhoto(photo.url, photo.id)
+      void selectPhoto(photo.url, photo.id, photo.driveFileId)
     } else {
       // foto salva não existe mais → volta pra step pick
       setSelectedPhotoId(null)
@@ -292,19 +320,26 @@ export function ContrastLayoutDialog({
 
   // ── Seleciona foto ───────────────────────────────────────────────
   //
-  // IMPORTANTE: fazemos fetch() da imagem e criamos um blob: URL
-  // same-origin. Isso impede o canvas de ficar "tainted" por CORS,
-  // o que faria canvas.toBlob() retornar null silenciosamente.
+  // Fotos do Drive: baixa via proxy do Edge Function (/drive/photo-proxy)
+  // pra evitar bloqueio CORS. O blob: URL mantém o canvas sem "taint".
+  // Fotos legadas (Storage): fetch direto ainda funciona (URL pública).
 
-  const selectPhoto = async (url: string, photoId: string) => {
+  const selectPhoto = async (url: string, photoId: string, driveFileId?: string | null) => {
     setLoadingImg(true)
     setPhotoError(null)
     try {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const blob = await res.blob()
+      let blob: Blob
 
-      // Revoga URL anterior
+      if (driveFileId) {
+        // Foto do Drive: proxy via Edge Function (/drive/photo-proxy)
+        blob = await driveStorage.fetchPhotoBlob(driveFileId)
+      } else {
+        // Foto legada (Supabase Storage): URL pública, sem CORS
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        blob = await res.blob()
+      }
+
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
       const objectUrl = URL.createObjectURL(blob)
       objectUrlRef.current = objectUrl
@@ -385,9 +420,9 @@ export function ContrastLayoutDialog({
           )}
           <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
             {photos.map(p => (
-              <button key={p.id} onClick={() => selectPhoto(p.url, p.id)} disabled={loadingImg}
+              <button key={p.id} onClick={() => selectPhoto(p.url, p.id, p.driveFileId)} disabled={loadingImg}
                 className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-rose-400 transition-colors relative group disabled:opacity-50">
-                <img src={p.thumb || p.url} alt="" className="w-full h-full object-cover" />
+                <img src={blobUrls[p.id] || p.thumb || p.url} alt="" className="w-full h-full object-cover" />
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
               </button>
             ))}

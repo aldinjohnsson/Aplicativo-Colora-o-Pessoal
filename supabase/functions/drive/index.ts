@@ -8,7 +8,8 @@
 //   GET  /status       — admin: retorna se está conectado
 //   POST /disconnect   — admin: remove credenciais
 //   POST /set-root     — admin: define pasta raiz no Drive
-//   POST /upload       — cliente anônimo: envia foto, sobe pro Drive (público)
+//   POST /upload       — cliente (portal_token) ou admin (kind=admin_photo + JWT): envia foto pro Drive
+//   GET  /photo-proxy  — admin (JWT): proxy de download de foto do Drive sem CORS
 //   POST /cleanup      — cron: apaga pastas de clientes finalizados há 21+ dias
 //
 // Env vars necessárias:
@@ -376,16 +377,89 @@ Deno.serve(async (req: Request) => {
 
     // ─── POST /upload ──────────────────────────────────────────────────────
     if (req.method === 'POST' && path === '/upload') {
-      const form = await req.formData()
-      const portalToken = String(form.get('portal_token') ?? '')
-      const kind        = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image'
-      const categoryId  = form.get('category_id') ? String(form.get('category_id')) : null
-      const file        = form.get('file') as File | null
+      const form       = await req.formData()
+      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo'
+      const categoryId = form.get('category_id') ? String(form.get('category_id')) : null
+      const file       = form.get('file') as File | null
 
-      if (!portalToken)        return json({ error: 'portal_token obrigatório' }, 400)
       if (!(file instanceof File)) return json({ error: 'file obrigatório' }, 400)
 
       const sb = adminSb()
+
+      // ── Caminho admin (kind='admin_photo') ─────────────────────────────
+      // Autenticado via JWT do admin; usa client_id diretamente; insere em
+      // client_photos sem passar pelo RPC save_client_photo_drive (que checa
+      // status da cliente e bloquearia uploads fora da janela de envio).
+      if (kind === 'admin_photo') {
+        const authUser = await getAuthUser(req)
+        if (!authUser) return json({ error: 'Não autenticado' }, 401)
+
+        const clientId = form.get('client_id') ? String(form.get('client_id')) : null
+        if (!clientId) return json({ error: 'client_id obrigatório' }, 400)
+
+        const { data: client } = await sb
+          .from('clients')
+          .select('id, admin_id, full_name, drive_folder_id')
+          .eq('id', clientId)
+          .maybeSingle()
+        if (!client) return json({ error: 'Cliente não encontrado' }, 404)
+        if (client.admin_id !== authUser.id) return json({ error: 'Acesso negado' }, 403)
+
+        let accessToken: string, rootFolderId: string | null
+        try {
+          const t = await getAdminToken(sb, authUser.id)
+          accessToken  = t.accessToken
+          rootFolderId = t.rootFolderId
+        } catch (e: any) {
+          return json({ error: e.message }, 412)
+        }
+
+        // Pasta do cliente (com permissão pública). Se já existe, reusa.
+        let clientFolderId = client.drive_folder_id
+        if (!clientFolderId) {
+          const folderName = sanitizeFolderName(client.full_name || `cliente-${client.id}`)
+          clientFolderId = await findOrCreateFolder(accessToken, folderName, rootFolderId, /* makePublic */ true)
+          await sb.from('clients').update({ drive_folder_id: clientFolderId }).eq('id', client.id)
+        }
+
+        const safeName = `${Date.now()}_admin_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const bytes    = new Uint8Array(await file.arrayBuffer())
+        const uploaded = await uploadToDrive(accessToken, {
+          name:     safeName,
+          mimeType: file.type || 'application/octet-stream',
+          parents:  [clientFolderId],
+          body:     bytes,
+        })
+        await makeAnyoneReader(accessToken, uploaded.id)
+
+        const { error: insErr } = await sb.from('client_photos').insert({
+          client_id:     client.id,
+          photo_name:    safeName,
+          photo_type:    file.type,
+          photo_size:    file.size,
+          drive_file_id: uploaded.id,
+          category_id:   categoryId,
+          is_ai_photo:   false,
+        })
+        if (insErr) {
+          try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
+          return json({ error: insErr.message }, 500)
+        }
+
+        return json({
+          ok:           true,
+          driveFileId:  uploaded.id,
+          driveFolderId: clientFolderId,
+          photoName:    safeName,
+          url:          `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
+          downloadUrl:  `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+        })
+      }
+
+      // ── Caminho cliente (portal_token) ─────────────────────────────────
+      const portalToken = String(form.get('portal_token') ?? '')
+      if (!portalToken) return json({ error: 'portal_token obrigatório' }, 400)
+
       const { data: client } = await sb
         .from('clients')
         .select('id, admin_id, full_name, drive_folder_id')
@@ -417,7 +491,7 @@ Deno.serve(async (req: Request) => {
       }
 
       const safeName = `${Date.now()}_${kind === 'ai_photo' ? 'ai_' : ''}${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-      const bytes = new Uint8Array(await file.arrayBuffer())
+      const bytes    = new Uint8Array(await file.arrayBuffer())
       const uploaded = await uploadToDrive(accessToken, {
         name:     safeName,
         mimeType: file.type || 'application/octet-stream',
@@ -428,13 +502,13 @@ Deno.serve(async (req: Request) => {
       // Registra no DB
       if (kind === 'photo' || kind === 'ai_photo') {
         const { data: rpcData, error: rpcErr } = await sb.rpc('save_client_photo_drive', {
-          p_token: portalToken,
-          p_photo_name: safeName,
-          p_photo_type: file.type,
-          p_photo_size: file.size,
+          p_token:         portalToken,
+          p_photo_name:    safeName,
+          p_photo_type:    file.type,
+          p_photo_size:    file.size,
           p_drive_file_id: uploaded.id,
-          p_category_id: categoryId,
-          p_is_ai_photo: kind === 'ai_photo',
+          p_category_id:   categoryId,
+          p_is_ai_photo:   kind === 'ai_photo',
         })
         if (rpcErr || rpcData?.error) {
           try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
@@ -442,11 +516,11 @@ Deno.serve(async (req: Request) => {
         }
       } else if (kind === 'result_file') {
         const { error: insErr } = await sb.from('client_result_files').insert({
-          client_id: client.id,
-          file_name: file.name,
-          file_size: file.size,
+          client_id:     client.id,
+          file_name:     file.name,
+          file_size:     file.size,
           drive_file_id: uploaded.id,
-          storage_path: null,
+          storage_path:  null,
         })
         if (insErr) {
           try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
@@ -455,16 +529,58 @@ Deno.serve(async (req: Request) => {
       }
 
       // URL pública pra exibir direto no <img>
-      const viewUrl  = `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`
+      const viewUrl     = `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`
       const downloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`
 
       return json({
-        ok: true,
-        driveFileId:   uploaded.id,
+        ok:           true,
+        driveFileId:  uploaded.id,
         driveFolderId: targetFolderId,
-        photoName:     safeName,
-        url:           viewUrl,
+        photoName:    safeName,
+        url:          viewUrl,
         downloadUrl,
+      })
+    }
+
+    // ─── GET /photo-proxy ──────────────────────────────────────────────────
+    // Proxy autenticado pra baixar fotos do Drive sem CORS no browser.
+    // O browser não consegue fazer fetch() direto de drive.google.com
+    // (CORS + auth), então o frontend passa o driveFileId e a Edge Function
+    // busca com o access_token do admin e devolve o blob.
+    // Usado por driveStorage.fetchPhotoBlob() — necessário pra evitar
+    // "canvas tainted" ao desenhar a imagem no <canvas> da ferramenta de contraste.
+    if (req.method === 'GET' && path === '/photo-proxy') {
+      const user = await getAuthUser(req)
+      if (!user) return json({ error: 'Não autenticado' }, 401)
+
+      const fileId = url.searchParams.get('id')
+      if (!fileId) return json({ error: 'id obrigatório' }, 400)
+
+      const sb = adminSb()
+      let accessToken: string
+      try {
+        const t = await getAdminToken(sb, user.id)
+        accessToken = t.accessToken
+      } catch (e: any) {
+        return json({ error: e.message }, 412)
+      }
+
+      const driveRes = await fetch(
+        `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      )
+      if (!driveRes.ok) {
+        return json({ error: `Drive: ${driveRes.status}` }, driveRes.status as number)
+      }
+
+      const contentType = driveRes.headers.get('content-type') || 'image/jpeg'
+      return new Response(driveRes.body, {
+        status: 200,
+        headers: {
+          ...CORS,
+          'Content-Type':  contentType,
+          'Cache-Control': 'private, max-age=300',
+        },
       })
     }
 

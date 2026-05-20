@@ -145,6 +145,49 @@ export const driveStorage = {
     return r.json()
   },
 
+  /**
+   * Upload de foto feito pelo admin no painel — autenticado com JWT.
+   *
+   * Diferenças em relação a uploadPhoto():
+   *  - Usa authedFetch (envia Authorization header com token da sessão admin).
+   *  - Passa client_id em vez de portal_token.
+   *  - A Edge Function usa kind='admin_photo' → insert direto em client_photos,
+   *    sem chamar o RPC save_client_photo_drive que checa status da cliente.
+   *    Isso permite que o admin adicione fotos em qualquer etapa do fluxo.
+   */
+  async adminUploadPhoto(opts: {
+    clientId: string
+    file: File
+    categoryId: string | null
+  }): Promise<DriveUploadResult> {
+    const fd = new FormData()
+    fd.append('client_id', opts.clientId)
+    fd.append('kind', 'admin_photo')
+    if (opts.categoryId) fd.append('category_id', opts.categoryId)
+    fd.append('file', opts.file)
+
+    const r = await authedFetch('/upload', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Upload falhou: HTTP ${r.status}`)
+    }
+    return r.json()
+  },
+
+  // ─── Photo proxy ──────────────────────────────────────────────────────
+  //
+  // Baixa uma foto do Drive pelo servidor (Edge Function) para evitar
+  // bloqueio CORS ao fazer fetch() direto de drive.google.com no browser.
+
+  async fetchPhotoBlob(driveFileId: string): Promise<Blob> {
+    const r = await authedFetch(`/photo-proxy?id=${encodeURIComponent(driveFileId)}`)
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Erro ao baixar foto: HTTP ${r.status}`)
+    }
+    return r.blob()
+  },
+
   // ─── URLs ──────────────────────────────────────────────────────────────
 
   /** URL pra usar em <img src> direto (Drive público). */
