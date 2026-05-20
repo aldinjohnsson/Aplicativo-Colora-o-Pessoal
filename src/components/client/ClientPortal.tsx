@@ -1751,6 +1751,30 @@ function ResultScreen({
   const [aiRefPhotos, setAiRefPhotos] = useState<RefPhoto[]>([])
   const [aiFolderConfig, setAiFolderConfig] = useState<any>(null)
   const [loadingPrompt, setLoadingPrompt] = useState(true)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+
+  const handleDownload = async (file: any) => {
+    if (downloadingId) return
+    setDownloadingId(file.id)
+    try {
+      const url = clientService.getResultFileUrl(file)
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = file.file_name
+      anchor.click()
+      URL.revokeObjectURL(objectUrl)
+    } catch (err) {
+      console.error('Erro ao baixar arquivo:', err)
+      // fallback: abre na aba mesmo
+      window.open(clientService.getResultFileUrl(file), '_blank')
+    } finally {
+      setDownloadingId(null)
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -1938,22 +1962,24 @@ function ResultScreen({
           </h3>
           <div className="space-y-2">
             {files.map((file: any) => (
-              <a
+              <button
                 key={file.id}
-                href={clientService.getResultFileUrl(file)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-100 transition-all group"
+                onClick={() => handleDownload(file)}
+                disabled={downloadingId === file.id}
+                className="w-full flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-100 transition-all group disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <div className="w-10 h-10 bg-gradient-to-br from-red-400 to-rose-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
                   <FileText className="h-4 w-4 text-white" />
                 </div>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 text-left">
                   <p className="text-sm font-medium text-gray-800 truncate">{file.file_name}</p>
                   <p className="text-xs text-gray-400 mt-0.5">{(file.file_size / 1024).toFixed(0)} KB</p>
                 </div>
-                <Download className="h-4 w-4 text-gray-300 group-hover:text-rose-400 transition-colors flex-shrink-0" />
-              </a>
+                {downloadingId === file.id
+                  ? <div className="animate-spin h-4 w-4 border-2 border-rose-400 border-t-transparent rounded-full flex-shrink-0" />
+                  : <Download className="h-4 w-4 text-gray-300 group-hover:text-rose-400 transition-colors flex-shrink-0" />
+                }
+              </button>
             ))}
           </div>
         </div>
