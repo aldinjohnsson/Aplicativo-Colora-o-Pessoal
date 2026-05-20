@@ -1772,7 +1772,7 @@ export const clientService = {
       try {
         const { data: filesRows } = await supabase
           .from('client_result_files')
-          .select('id, file_name, storage_path, file_size')
+          .select('id, file_name, storage_path, drive_file_id, file_size')
           .eq('client_id', portalData.client.id)
           .order('uploaded_at')
         portalData.result.files = filesRows || []

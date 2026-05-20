@@ -1758,15 +1758,37 @@ function ResultScreen({
     setDownloadingId(file.id)
     try {
       const url = clientService.getResultFileUrl(file)
+
+      // Arquivos do Google Drive não podem ser baixados via fetch:
+      // o Google retorna uma página HTML de confirmação antivírus para
+      // arquivos grandes (> ~25 MB). Abrimos diretamente no browser,
+      // que trata o redirect e inicia o download corretamente.
+      if (file.drive_file_id) {
+        window.open(url, '_blank')
+        return
+      }
+
       const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const blob = await res.blob()
+
+      // Garante content-type correto independente do header devolvido pelo storage
+      const rawBlob = await res.blob()
+      const blob = rawBlob.type === 'application/pdf'
+        ? rawBlob
+        : new Blob([rawBlob], { type: 'application/pdf' })
+
       const objectUrl = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = objectUrl
       anchor.download = file.file_name
+      document.body.appendChild(anchor)
       anchor.click()
-      URL.revokeObjectURL(objectUrl)
+      document.body.removeChild(anchor)
+
+      // ✅ NÃO revogar imediatamente: o browser ainda lê os bytes do blob
+      // de forma assíncrona após o click. Revogar na mesma tick trunca
+      // PDFs grandes (10–30 MB), resultando em arquivo corrompido no disco.
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000)
     } catch (err) {
       console.error('Erro ao baixar arquivo:', err)
       // fallback: abre na aba mesmo

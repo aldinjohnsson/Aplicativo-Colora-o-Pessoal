@@ -52,16 +52,39 @@ export async function generateCompositionPdf(images: CompositionImage[]): Promis
 }
 
 /**
- * Baixa todas as imagens (urls assinadas) em paralelo controlado.
- * Devolve no MESMO ORDEM da entrada.
+ * Detecta o tipo real da imagem pelos magic bytes do arquivo.
+ * Ignora o Content-Type do response, que pode vir errado do Supabase
+ * storage (ex: application/octet-stream ao invés de image/png), o que
+ * faria pdf-lib chamar embedJpg() com dados PNG e gerar um PDF inválido.
+ *
+ *   PNG  → 89 50 4E 47  (‰PNG)
+ *   JPEG → FF D8 FF
+ *   Fallback → 'image/png'  (a edge function sempre gera PNG)
+ */
+function detectImageMime(buf: ArrayBuffer): string {
+  const view = new Uint8Array(buf, 0, 4)
+  if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) {
+    return 'image/png'
+  }
+  if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) {
+    return 'image/jpeg'
+  }
+  return 'image/png' // fallback seguro — edge function sempre devolve PNG
+}
+
+/**
+ * Baixa todas as imagens (urls assinadas) em sequência.
+ * Devolve na MESMA ORDEM da entrada.
+ * O tipo MIME é determinado pelos magic bytes do arquivo, não pelo
+ * Content-Type do servidor (que pode estar errado).
  */
 export async function fetchAllAsBytes(urls: string[]): Promise<CompositionImage[]> {
   const out: CompositionImage[] = []
   for (const url of urls) {
     const res = await fetch(url)
     if (!res.ok) throw new Error(`Falha ao baixar imagem (HTTP ${res.status})`)
-    const mime  = res.headers.get('content-type') || 'image/png'
     const bytes = await res.arrayBuffer()
+    const mime  = detectImageMime(bytes)
     out.push({ bytes, mime })
   }
   return out
