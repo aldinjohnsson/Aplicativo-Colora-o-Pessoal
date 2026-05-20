@@ -53,10 +53,11 @@ function strokeRR(ctx: CanvasRenderingContext2D, x: number, y: number, w: number
 //   28              borda superior do retângulo decorativo
 //   75              título
 //   93              linha horizontal
-//   97  → 125       bracket "X a Y" → topo da escala (scaleY)
-//   153             fundo da escala (scaleY+28)
-//   173             números 1–10
-//   192             topo das fotos (photoY)
+//   97  → 122       bracket "X a Y" → topo do bracket (bY=scaleY-28)
+//   150             topo da escala (scaleY)
+//   178             fundo da escala (scaleY+28)
+//   198             números 1–10 (scaleY+48)
+//   217             topo das fotos (photoY = scaleY+67)
 //   852             fundo das fotos (192 + 660)
 //   884             label "Preto e branco / Colorida"
 //   922             borda inferior do retângulo decorativo
@@ -94,8 +95,9 @@ function drawLayout(
   ctx.strokeStyle = '#DAD7CF'; ctx.lineWidth = 1
   ctx.beginPath(); ctx.moveTo(120, 93); ctx.lineTo(W - 120, 93); ctx.stroke()
 
-  // Escala de profundidade — scaleY era 158, agora 125
-  const sx = 180, sw = W - 360, segW = sw / 10, scaleY = 125
+  // Escala de profundidade — scaleY=150 para dar espaço ao bracket acima
+  // Gradiente: 1 (esquerda) = mais claro → 10 (direita) = mais escuro
+  const sx = 180, sw = W - 360, segW = sw / 10, scaleY = 150
   const bx1 = sx + (cMin - 1) * segW, bx2 = sx + cMax * segW, bY = scaleY - 28
 
   ctx.strokeStyle = '#2A2A2A'; ctx.lineWidth = 2
@@ -108,13 +110,14 @@ function drawLayout(
   ctx.textAlign = 'center'; ctx.fillText(`${cMin} a ${cMax}`, (bx1 + bx2) / 2, bY - 8)
 
   const grad = ctx.createLinearGradient(sx, 0, sx + sw, 0)
-  grad.addColorStop(0, '#0A0A0A'); grad.addColorStop(1, '#F0F0F0')
+  grad.addColorStop(0, '#F0F0F0'); grad.addColorStop(1, '#0A0A0A')
   ctx.fillStyle = grad; fillRR(ctx, sx, scaleY, sw, 28, 2)
   ctx.strokeStyle = '#BBBBBB'; ctx.lineWidth = 1; strokeRR(ctx, sx, scaleY, sw, 28, 2)
 
-  ctx.strokeStyle = '#AAAAAA'; ctx.lineWidth = 1
+  ctx.lineWidth = 1
   for (let i = 1; i < 10; i++) {
     const tx = sx + i * segW
+    ctx.strokeStyle = i >= 5 ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.15)'
     ctx.beginPath(); ctx.moveTo(tx, scaleY); ctx.lineTo(tx, scaleY + 28); ctx.stroke()
   }
   ctx.font = '400 20px Helvetica,Arial,sans-serif'
