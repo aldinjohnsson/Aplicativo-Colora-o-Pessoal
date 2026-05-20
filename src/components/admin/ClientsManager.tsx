@@ -4323,6 +4323,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               resultObservations={result?.observations || ''}
               unlimited
               chatStorageKey={`mscolors_chat_admin_${clientId}`}
+              onSavePdf={async (blob, fileName) => {
+                // Salva o PDF gerado pelo chat IA direto em
+                // client_result_files (aba Resultado → Arquivos PDF).
+                // Após o upload damos um reload pra lista atualizar na hora.
+                const file = new File([blob], fileName, { type: 'application/pdf' })
+                await adminService.uploadResultFile(clientId!, file)
+                await load()
+              }}
             />
           )}
         </div>

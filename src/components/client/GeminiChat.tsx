@@ -8,14 +8,14 @@ import React, { useState, useRef, useEffect } from 'react'
 import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
-  FileText, CheckSquare, Square
+  FileText, CheckSquare, Square, Save, CheckCircle2
 } from 'lucide-react'
 import {
   chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64,
   GeminiMessage, GeminiResponsePart, MaterialData,
 } from '../../lib/geminiService'
 import { supabase } from '../../lib/supabase'
-import { downloadStylePDF, ItemLayout } from '../../lib/templatePDFGenerator'
+import { buildStylePdfBlob, ItemLayout } from '../../lib/templatePDFGenerator'
 
 interface ChatMsg {
   id: string; role: 'user' | 'assistant'; text: string
@@ -49,6 +49,11 @@ interface GeminiChatProps {
   /** Chave customizada para persistência no localStorage. Útil para o admin
    *  manter um histórico separado do chat real da cliente. */
   chatStorageKey?: string
+  /** Quando provido, exibe o botão "Salvar em Resultado" no modal de PDF.
+   *  Recebe o Blob do PDF montado e o nome do arquivo já formatado.
+   *  Atualmente passado apenas pelo ClientsManager (admin); o portal da
+   *  cliente não passa essa prop, então não vê o botão. */
+  onSavePdf?: (blob: Blob, fileName: string) => Promise<void>
 }
 
 const uid = () => Math.random().toString(36).slice(2)
@@ -82,7 +87,7 @@ async function uploadChatImage(clientId: string, msgId: string, idx: number, bas
 
 const WELCOME = (name: string) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, onSavePdf }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -107,6 +112,14 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [showPdfModal, setShowPdfModal] = useState(false)
   const [pdfSelected, setPdfSelected] = useState<Set<string>>(new Set())
   const [pdfGenerating, setPdfGenerating] = useState(false)
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null)
+  const [pdfSaving, setPdfSaving] = useState(false)
+  const [pdfSaveSuccess, setPdfSaveSuccess] = useState(false)
+  const [pdfSaveError, setPdfSaveError] = useState<string | null>(null)
+  // Object URLs criados pro preview do PDF. Acumulamos e revogamos no unmount
+  // (revogar enquanto a aba ainda mostra o PDF pode quebrar a visualização
+  // em alguns browsers).
+  const pdfUrlsRef = useRef<string[]>([])
 
   const lastCtx = useRef<any>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -409,33 +422,115 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     }
   }
 
-  const generatePDF = async () => {
+  // Extrai e prepara os items prontos pro template PDF a partir das mensagens
+  // selecionadas no modal. Reutilizado pelo download e pelo "Salvar em
+  // Resultado" — single source of truth pra não divergir os dois fluxos.
+  const buildPdfItems = async (): Promise<any[]> => {
     const selected = imageMsgs.filter(m => pdfSelected.has(m.id))
-    if (!selected.length) return
-    setPdfGenerating(true)
+    if (!selected.length) return []
+    const freshLayoutMap = new Map<string, ItemLayout>()
     try {
-      const freshLayoutMap = new Map<string, ItemLayout>()
-      try {
-        if (folderConfig?.folderName) {
-          const { data: rows } = await supabase.from('ai_folders').select('config').eq('name', folderConfig.folderName).limit(1)
-          const raw = rows?.[0]?.config; const cfg = typeof raw === 'string' ? JSON.parse(raw) : raw
-          for (const cat of cfg?.categories ?? []) {
-            for (const p of cat?.prompts ?? []) {
-              if (p?.id && p?.pdfLayout) {
-                const refText = (cat.type === 'cabelo' ? p.tintReference : p.reference) || ''
-                freshLayoutMap.set(p.id, pdfSyncLayout(p.pdfLayout, refText))
-              }
+      if (folderConfig?.folderName) {
+        const { data: rows } = await supabase.from('ai_folders').select('config').eq('name', folderConfig.folderName).limit(1)
+        const raw = rows?.[0]?.config; const cfg = typeof raw === 'string' ? JSON.parse(raw) : raw
+        for (const cat of cfg?.categories ?? []) {
+          for (const p of cat?.prompts ?? []) {
+            if (p?.id && p?.pdfLayout) {
+              const refText = (cat.type === 'cabelo' ? p.tintReference : p.reference) || ''
+              freshLayoutMap.set(p.id, pdfSyncLayout(p.pdfLayout, refText))
             }
           }
         }
-      } catch {}
-      const getLayout = (promptId?: string): ItemLayout | undefined => (promptId ? freshLayoutMap.get(promptId) : undefined) ?? findPromptLayout(promptId)
-      const items = await Promise.all(selected.map(async (msg) => { const dataUrl = await getImgDataUrl(msg); if (!dataUrl) return null; return { dataUrl, label: msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada', caption: msg.pdfMeta?.caption, section: msg.pdfMeta?.section, layout: getLayout(msg.pdfMeta?.promptId) } }))
-      const validItems = items.filter(Boolean) as any[]
-      if (validItems.length === 0) return
-      await downloadStylePDF({ clientName, items: validItems })
-    } catch (e: any) { alert('Erro ao gerar PDF: ' + e.message) } finally { setPdfGenerating(false) }
+      }
+    } catch {}
+    const getLayout = (promptId?: string): ItemLayout | undefined =>
+      (promptId ? freshLayoutMap.get(promptId) : undefined) ?? findPromptLayout(promptId)
+    const items = await Promise.all(selected.map(async (msg) => {
+      const dataUrl = await getImgDataUrl(msg); if (!dataUrl) return null
+      return {
+        dataUrl,
+        label:   msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada',
+        caption: msg.pdfMeta?.caption,
+        section: msg.pdfMeta?.section,
+        layout:  getLayout(msg.pdfMeta?.promptId),
+      }
+    }))
+    return items.filter(Boolean) as any[]
   }
+
+  // Etapa 1 — monta o PDF, guarda o Blob em estado e abre em nova aba
+  // pra cliente conferir ANTES de decidir entre baixar ou salvar.
+  // Se o popup for bloqueado pelo browser, cai pra download direto (mesmo
+  // efeito visual: cliente vê o arquivo no seu computador).
+  const handleGeneratePdf = async () => {
+    setPdfGenerating(true)
+    setPdfSaveSuccess(false)
+    setPdfSaveError(null)
+    try {
+      const validItems = await buildPdfItems()
+      if (validItems.length === 0) return
+      const blob = await buildStylePdfBlob({ clientName, items: validItems })
+      setPdfBlob(blob)
+      const url = URL.createObjectURL(blob)
+      pdfUrlsRef.current.push(url)
+      const win = window.open(url, '_blank')
+      if (!win) {
+        // Popup bloqueado — dispara download como fallback
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${clientName} - Simulações IA.pdf`
+        document.body.appendChild(a); a.click()
+        document.body.removeChild(a)
+      }
+    } catch (e: any) {
+      alert('Erro ao gerar PDF: ' + e.message)
+    } finally {
+      setPdfGenerating(false)
+    }
+  }
+
+  // Etapa 2a — baixa o PDF já gerado (sem rebuildar). Reusa o blob em memória.
+  const handleDownloadPdf = () => {
+    if (!pdfBlob) return
+    const url = URL.createObjectURL(pdfBlob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${clientName} - Simulações IA.pdf`
+    document.body.appendChild(a); a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  // Etapa 2b — salva o PDF já gerado em client_result_files via prop.
+  // Só ativo quando o caller passou `onSavePdf` (hoje só o ClientsManager).
+  const handleSavePdfToResult = async () => {
+    if (!onSavePdf || !pdfBlob) return
+    setPdfSaving(true)
+    setPdfSaveError(null)
+    try {
+      const fileName = `${clientName} - Simulações IA.pdf`
+      await onSavePdf(pdfBlob, fileName)
+      setPdfSaveSuccess(true)
+    } catch (e: any) {
+      setPdfSaveError(e?.message || String(e) || 'Erro ao salvar')
+    } finally {
+      setPdfSaving(false)
+    }
+  }
+
+  // Invalidar o PDF gerado se a seleção mudar — força nova geração pra
+  // refletir as imagens atualmente selecionadas.
+  useEffect(() => {
+    setPdfBlob(null)
+    setPdfSaveSuccess(false)
+    setPdfSaveError(null)
+  }, [pdfSelected])
+
+  // Limpa todos os Object URLs criados pelo preview no unmount.
+  useEffect(() => () => {
+    pdfUrlsRef.current.forEach(URL.revokeObjectURL)
+    pdfUrlsRef.current = []
+  }, [])
 
   const imageMsgs = messages.filter(m => m.role === 'assistant' && !m.loading && !m.error && (m.responseParts?.some(p => p.type === 'image' && p.imageBase64) || m.savedImageUrls?.length))
 
@@ -668,16 +763,78 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 </div>
               ))}
             </div>
-            <div className="px-4 sm:px-5 py-4 border-t border-gray-100 flex gap-2">
-              <button onClick={() => setShowPdfModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Cancelar</button>
-              <button
-                onClick={generatePDF}
-                disabled={pdfSelected.size === 0 || pdfGenerating}
-                className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {pdfGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                {pdfGenerating ? 'Gerando...' : 'Baixar PDF'}
-              </button>
+            {/* Banner de status — muda conforme a etapa do fluxo */}
+            {(pdfBlob || pdfSaveError) && (
+              <div className="px-4 sm:px-5 pt-3">
+                {pdfSaveSuccess ? (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-emerald-800">PDF salvo nos Resultados!</p>
+                      <p className="text-[11px] text-emerald-700 mt-0.5">Já aparece na aba <strong>Resultado → Arquivos PDF</strong>.</p>
+                    </div>
+                  </div>
+                ) : pdfBlob ? (
+                  <div className="bg-violet-50 border border-violet-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-violet-600 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-violet-800">PDF gerado! Confira em uma nova aba.</p>
+                      <p className="text-[11px] text-violet-700 mt-0.5">
+                        {onSavePdf ? 'Se ficou bom, salve nos Resultados ou baixe.' : 'Clique em Baixar pra salvar o arquivo.'}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+                {pdfSaveError && (
+                  <div className="mt-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-red-700">Erro ao salvar nos Resultados</p>
+                      <p className="text-[11px] text-red-600 mt-0.5 break-words">{pdfSaveError}</p>
+                    </div>
+                    <button onClick={() => setPdfSaveError(null)} className="text-red-400 hover:text-red-600 flex-shrink-0">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="px-4 sm:px-5 py-4 border-t border-gray-100">
+              {/* ── Etapa 1: ainda não gerou o PDF ─────────────────────────── */}
+              {!pdfBlob && (
+                <button
+                  onClick={handleGeneratePdf}
+                  disabled={pdfSelected.size === 0 || pdfGenerating}
+                  className="w-full py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {pdfGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                  {pdfGenerating ? 'Gerando...' : 'Gerar PDF'}
+                </button>
+              )}
+
+              {/* ── Etapa 2: PDF gerado, mostra ações ──────────────────────── */}
+              {pdfBlob && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDownloadPdf}
+                    disabled={pdfSaving}
+                    className="flex-1 py-2.5 border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    <Download className="h-4 w-4" /> Baixar
+                  </button>
+                  {onSavePdf && !pdfSaveSuccess && (
+                    <button
+                      onClick={handleSavePdfToResult}
+                      disabled={pdfSaving}
+                      className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {pdfSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                      {pdfSaving ? 'Salvando...' : 'Salvar em Resultado'}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -710,8 +867,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           </div>
           {refBase64 && referencePhotoUrl && <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full overflow-hidden border-2 border-white/40 flex-shrink-0"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>}
           <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse" /><span className="hidden sm:inline">Online</span></span>
-          {imageMsgs.length > 0 && (
-            <button onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setShowPdfModal(true) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors flex-shrink-0">
+          {onSavePdf && imageMsgs.length > 0 && (
+            <button onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors flex-shrink-0">
               <FileText className="h-3.5 w-3.5" /><span className="hidden sm:inline">PDF</span>
             </button>
           )}
@@ -750,6 +907,24 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <img src={pendingImage.preview} alt="" className="w-10 h-10 sm:w-12 sm:h-12 object-cover rounded-lg flex-shrink-0" />
             <p className="text-xs text-violet-800 truncate flex-1">{pendingImage.file.name}</p>
             <button onClick={() => { URL.revokeObjectURL(pendingImage.preview); setPendingImage(null) }}><X className="h-4 w-4 text-violet-400" /></button>
+          </div>
+        )}
+
+        {/* CTA prominente de Gerar PDF (modo cliente — quando NÃO recebe
+            onSavePdf). No admin do ClientsManager o acesso vem pela pílula
+            "PDF" do header, que já tem o fluxo de salvar em Resultados. */}
+        {!onSavePdf && imageMsgs.length > 0 && (
+          <div className="px-3 sm:px-4 pb-2 flex-shrink-0">
+            <button
+              onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }}
+              className="w-full py-3 px-4 bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500 hover:from-violet-600 hover:via-purple-600 hover:to-fuchsia-600 text-white rounded-2xl font-semibold text-sm shadow-lg shadow-purple-500/30 hover:shadow-xl hover:shadow-purple-500/40 transition-all flex items-center justify-center gap-2.5 group"
+            >
+              <span className="w-7 h-7 rounded-full bg-white/25 flex items-center justify-center group-hover:bg-white/35 transition-colors">
+                <FileText className="h-4 w-4" />
+              </span>
+              <span>Gerar PDF das simulações</span>
+              <span className="bg-white/25 px-2 py-0.5 rounded-full text-xs font-bold">{imageMsgs.length}</span>
+            </button>
           </div>
         )}
 

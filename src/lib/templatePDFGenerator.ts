@@ -1231,14 +1231,27 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
   return { templateBytes: bytes.buffer, style: settings?.pdfStyle as PdfStyleConfig | undefined }
 }
 
+// ─── Build (Blob) ─────────────────────────────────────────────────────────────
+//
+// Monta o PDF e devolve um Blob, sem disparar download. Útil pra quando o
+// caller precisa enviar o PDF pra outro lugar — por exemplo, salvar em
+// client_result_files via adminService.uploadResultFile (feature "Salvar em
+// Resultado" do chat IA no ClientsManager).
+
+export async function buildStylePdfBlob({
+  clientName, items, styleOverride,
+}: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig }): Promise<Blob> {
+  const { templateBytes, style } = await loadTemplateFromSettings()
+  const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style)
+  return new Blob([pdfBytes], { type: 'application/pdf' })
+}
+
 // ─── Download ─────────────────────────────────────────────────────────────────
 
 export async function downloadStylePDF({
   clientName, items, styleOverride,
 }: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig }): Promise<void> {
-  const { templateBytes, style } = await loadTemplateFromSettings()
-  const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style)
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+  const blob = await buildStylePdfBlob({ clientName, items, styleOverride })
   const url  = URL.createObjectURL(blob)
   const a    = document.createElement('a')
   a.href = url; a.download = `Simulações MS Color IA - ${clientName.replace(/\s+/g, '-').toLowerCase()}.pdf`
