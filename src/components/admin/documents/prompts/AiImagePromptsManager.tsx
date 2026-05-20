@@ -13,9 +13,10 @@ import React, { useEffect, useRef, useState } from 'react'
 import {
   Plus, Sparkles, Trash2, X, Edit2, AlertCircle, ChevronDown, ChevronUp,
   Eye, EyeOff, Save, Loader2, GripVertical, Image as ImageIcon,
-  UploadCloud, ArrowUp, ArrowDown, Layers,
+  UploadCloud, ArrowUp, ArrowDown, Layers, Braces,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
+import { supabase } from '../../../../lib/supabase'
 
 // ── Btn ────────────────────────────────────────────────────────────────
 
@@ -400,6 +401,65 @@ function PromptFormDialog({
   const [saving, setSaving] = useState(false)
   const [err, setErr]       = useState<string | null>(null)
 
+  // ── Variáveis de prompt (ai_info_templates) ────────────────────────
+  // Lista os nomes das tags cadastradas em Configurações → Informações da
+  // análise. Usado pelo picker "Inserir variável" acima de cada textarea.
+  const [varLabels, setVarLabels] = useState<string[]>([])
+  const [varPickerOpenIdx, setVarPickerOpenIdx] = useState<number | null>(null)
+  const textareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    supabase
+      .from('ai_info_templates')
+      .select('name, sort_order')
+      .order('sort_order', { ascending: true })
+      .then(({ data }) => {
+        if (cancelled) return
+        const labels = ((data || []) as Array<{ name: string | null }>)
+          .map(t => (t.name || '').trim())
+          .filter(Boolean)
+        // Variável built-in da Ferramenta de Contraste — sem cadastro de tag.
+        if (!labels.some(l => l.toLowerCase() === 'contraste')) {
+          labels.push('Contraste')
+        }
+        setVarLabels(labels)
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  // Fecha picker ao clicar fora
+  useEffect(() => {
+    if (varPickerOpenIdx === null) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('[data-var-picker]')) setVarPickerOpenIdx(null)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [varPickerOpenIdx])
+
+  /** Insere `{{Label}}` na posição atual do cursor da textarea da parte. */
+  const insertVar = (partIdx: number, label: string) => {
+    const ta = textareaRefs.current[partIdx]
+    const current = draft.parts[partIdx]?.prompt ?? ''
+    const placeholder = `{{${label}}}`
+    if (ta) {
+      const start = ta.selectionStart ?? current.length
+      const end   = ta.selectionEnd   ?? current.length
+      const next  = current.slice(0, start) + placeholder + current.slice(end)
+      patchPart(partIdx, { prompt: next })
+      requestAnimationFrame(() => {
+        ta.focus()
+        const pos = start + placeholder.length
+        ta.setSelectionRange(pos, pos)
+      })
+    } else {
+      patchPart(partIdx, { prompt: current + placeholder })
+    }
+    setVarPickerOpenIdx(null)
+  }
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', h)
@@ -598,8 +658,49 @@ function PromptFormDialog({
                         </button>
                       </div>
                     </div>
+
+                    {/* Barra do picker de variáveis (Inserir {{Label}}) */}
+                    <div className="px-3 py-1.5 border-b border-gray-100 bg-violet-50/40 flex items-center gap-2 relative" data-var-picker>
+                      <button
+                        type="button"
+                        onClick={() => setVarPickerOpenIdx(varPickerOpenIdx === idx ? null : idx)}
+                        disabled={varLabels.length === 0}
+                        className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 disabled:opacity-50 disabled:cursor-not-allowed font-medium border border-violet-200"
+                      >
+                        <Braces className="h-3 w-3" /> Inserir variável
+                        <ChevronDown className="h-3 w-3 opacity-60" />
+                      </button>
+                      <span className="text-[10px] text-gray-500 truncate flex-1">
+                        {varLabels.length === 0
+                          ? <>Cadastre tags em <strong>Configurações → Informações da análise</strong>.</>
+                          : <>Será substituída pelo valor da cliente na hora da geração.</>}
+                      </span>
+                      {varPickerOpenIdx === idx && varLabels.length > 0 && (
+                        <div
+                          data-var-picker
+                          className="absolute top-full left-3 mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-64 max-h-72 overflow-y-auto"
+                        >
+                          <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wide bg-gray-50 border-b border-gray-100 sticky top-0">
+                            Informações da análise
+                          </div>
+                          {varLabels.map(label => (
+                            <button
+                              key={label}
+                              type="button"
+                              onClick={() => insertVar(idx, label)}
+                              className="w-full px-3 py-1.5 text-left text-xs hover:bg-violet-50 hover:text-violet-700 flex items-center justify-between gap-2 border-b border-gray-50 last:border-0"
+                            >
+                              <span className="truncate font-medium">{label}</span>
+                              <span className="text-[10px] text-gray-400 font-mono whitespace-nowrap">{`{{${label}}}`}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     {/* Textarea do prompt */}
                     <textarea
+                      ref={el => { textareaRefs.current[idx] = el }}
                       value={part.prompt}
                       onChange={e => patchPart(idx, { prompt: e.target.value })}
                       rows={5}

@@ -1,14 +1,27 @@
 // src/components/admin/documents/client/ContrastLayoutDialog.tsx
+//
+// Ferramenta de Contraste — modal usado a partir da aba Resultado do
+// ClientsManager. Não persiste sozinha; devolve o estado completo + o
+// valor formatado ("Alto (8 a 10)") pro caller via `onSave`.
+//
+// O caller (ClientsManager) é responsável por gravar o estado em
+// `clients.contrast_layout`. O valor formatado é exposto automaticamente
+// como variável built-in {{Contraste}} pelo documentsService.getTextImportSources
+// — não precisa cadastrar tag em TagsManager.
 
 import React, {
   useCallback, useEffect, useRef, useState,
 } from 'react'
 import {
   X, Download, ChevronLeft, Loader2,
-  Image as ImageIcon, Check, AlertCircle,
+  Image as ImageIcon, Check, AlertCircle, Save,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
-import type { DocumentTag, ClientTagValue } from '../types'
+import { formatContrastValue, type ContrastLayoutData } from '../lib/contrastLayout'
+
+// Re-export pra não quebrar imports antigos (ex: ClientsManager.tsx).
+export { formatContrastValue }
+export type { ContrastLayoutData }
 
 // ── Canvas constants ───────────────────────────────────────────────────
 
@@ -20,12 +33,20 @@ const H = 950
 interface ClientPhoto { id: string; url: string; thumb?: string }
 
 interface Props {
-  clientId: string
+  clientId:   string
   clientName: string
-  imageTags?: DocumentTag[]
-  tagValues?: ClientTagValue[]
-  onClose: () => void
-  onTagValueSaved?: (tagId: string) => void
+  /** Estado anterior (modo editar). Null/undefined = abre limpo. */
+  initial?:   ContrastLayoutData | null
+  onClose:    () => void
+  /** Recebe o estado novo + a string formatada ("Alto (8 a 10)"). */
+  onSave:     (data: ContrastLayoutData, formatted: string) => Promise<void>
+}
+
+const LABEL_OPTIONS = ['baixo', 'médio', 'médio alto', 'alto', 'muito alto'] as const
+
+/** "médio alto" → "Médio Alto" — usado só no <select> de label (UI). */
+function titleCase(s: string): string {
+  return s.split(/\s+/).map(w => w ? w[0].toUpperCase() + w.slice(1) : '').join(' ')
 }
 
 // ── Canvas helpers ─────────────────────────────────────────────────────
@@ -195,25 +216,25 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 // ── Component ──────────────────────────────────────────────────────────
 
 export function ContrastLayoutDialog({
-  clientId, clientName, imageTags = [], tagValues = [], onClose, onTagValueSaved,
+  clientId, clientName, initial = null, onClose, onSave,
 }: Props) {
-  const [step, setStep]                 = useState<'pick' | 'edit'>('pick')
+  const [step, setStep]                 = useState<'pick' | 'edit'>(initial?.photoId ? 'edit' : 'pick')
   const [photos, setPhotos]             = useState<ClientPhoto[]>([])
   const [photoLoading, setPhotoLoading] = useState(true)
   const [photoError, setPhotoError]     = useState<string | null>(null)
   const [loadedImg, setLoadedImg]       = useState<HTMLImageElement | null>(null)
   const [loadingImg, setLoadingImg]     = useState(false)
+  const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(initial?.photoId ?? null)
 
-  const [cMin, setCMin]   = useState(2)
-  const [cMax, setCMax]   = useState(9)
-  const [zoom, setZoom]   = useState(108)
-  const [yOff, setYOff]   = useState(0)
-  const [label, setLabel] = useState('médio alto')
+  const [cMin, setCMin]   = useState(initial?.cMin   ?? 2)
+  const [cMax, setCMax]   = useState(initial?.cMax   ?? 9)
+  const [zoom, setZoom]   = useState(initial?.zoom   ?? 108)
+  const [yOff, setYOff]   = useState(initial?.yOff   ?? 0)
+  const [label, setLabel] = useState(initial?.label  ?? 'médio alto')
 
-  const [savingTag, setSavingTag]         = useState(false)
-  const [savedTag, setSavedTag]           = useState<string | null>(null)
-  const [saveTagError, setSaveTagError]   = useState<string | null>(null)
-  const [showTagPicker, setShowTagPicker] = useState(false)
+  const [saving, setSaving]         = useState(false)
+  const [saveError, setSaveError]   = useState<string | null>(null)
+  const [saved, setSaved]           = useState(false)
 
   // Ref para o objectURL da foto — evita taint de canvas por CORS
   const objectUrlRef = useRef<string | null>(null)
@@ -235,6 +256,22 @@ export function ContrastLayoutDialog({
       .finally(() => { if (!cancelled) setPhotoLoading(false) })
     return () => { cancelled = true }
   }, [clientId])
+
+  // Se abriu em modo edit (initial.photoId presente), tenta carregar a
+  // foto automaticamente assim que a lista de fotos chega.
+  useEffect(() => {
+    if (step !== 'edit' || loadedImg || loadingImg) return
+    if (!selectedPhotoId || photos.length === 0) return
+    const photo = photos.find(p => p.id === selectedPhotoId)
+    if (photo) {
+      void selectPhoto(photo.url, photo.id)
+    } else {
+      // foto salva não existe mais → volta pra step pick
+      setSelectedPhotoId(null)
+      setStep('pick')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos, step])
 
   // ── Redesenha ao mudar controles ─────────────────────────────────
 
@@ -259,7 +296,7 @@ export function ContrastLayoutDialog({
   // same-origin. Isso impede o canvas de ficar "tainted" por CORS,
   // o que faria canvas.toBlob() retornar null silenciosamente.
 
-  const selectPhoto = async (url: string) => {
+  const selectPhoto = async (url: string, photoId: string) => {
     setLoadingImg(true)
     setPhotoError(null)
     try {
@@ -273,7 +310,7 @@ export function ContrastLayoutDialog({
       objectUrlRef.current = objectUrl
 
       const i = new Image()
-      i.onload  = () => { setLoadedImg(i); setLoadingImg(false); setStep('edit') }
+      i.onload  = () => { setLoadedImg(i); setLoadingImg(false); setSelectedPhotoId(photoId); setStep('edit') }
       i.onerror = () => { setLoadingImg(false); setPhotoError('Não foi possível carregar a foto.') }
       i.src = objectUrl
     } catch (e: any) {
@@ -292,41 +329,30 @@ export function ContrastLayoutDialog({
     a.click()
   }
 
-  // ── Salvar como valor de tag ─────────────────────────────────────
+  // ── Salvar (devolve ao caller) ───────────────────────────────────
 
-  const handleSaveAsTag = async (tag: DocumentTag) => {
-    if (!canvasRef.current) return
-    setSavingTag(true)
-    setSaveTagError(null)
-
+  const handleSave = async () => {
+    if (!selectedPhotoId) {
+      setSaveError('Selecione uma foto primeiro.')
+      return
+    }
+    setSaving(true)
+    setSaveError(null)
     try {
-      // Envolve o callback de toBlob em Promise para poder usar await
-      const blob = await new Promise<Blob | null>(resolve =>
-        canvasRef.current!.toBlob(resolve, 'image/png'),
-      )
-
-      if (!blob) {
-        // Isso só acontece se o canvas ainda estiver tainted (não deveria
-        // ocorrer com o fetch() acima, mas tratamos por segurança).
-        setSaveTagError('Falha ao exportar o canvas. Tente selecionar a foto novamente.')
-        return
+      const data: ContrastLayoutData = {
+        photoId: selectedPhotoId,
+        cMin, cMax, zoom, yOff, label,
+        savedAt: new Date().toISOString(),
       }
-
-      const file = new File(
-        [blob],
-        `layout-contraste-${Date.now()}.png`,
-        { type: 'image/png' },
-      )
-
-      await documentsService.setClientTagImageUpload(clientId, tag.id, file)
-
-      setSavedTag(tag.id)
-      setShowTagPicker(false)
-      onTagValueSaved?.(tag.id)
+      const formatted = formatContrastValue(label, cMin, cMax)
+      await onSave(data, formatted)
+      setSaved(true)
+      // fecha sozinho após 600ms — UX igual ao banner de save do GeminiChat
+      setTimeout(onClose, 600)
     } catch (e: any) {
-      setSaveTagError(e?.message || 'Erro ao salvar imagem como tag.')
+      setSaveError(e?.message || 'Erro ao salvar.')
     } finally {
-      setSavingTag(false)
+      setSaving(false)
     }
   }
 
@@ -359,7 +385,7 @@ export function ContrastLayoutDialog({
           )}
           <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
             {photos.map(p => (
-              <button key={p.id} onClick={() => selectPhoto(p.url)} disabled={loadingImg}
+              <button key={p.id} onClick={() => selectPhoto(p.url, p.id)} disabled={loadingImg}
                 className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-rose-400 transition-colors relative group disabled:opacity-50">
                 <img src={p.thumb || p.url} alt="" className="w-full h-full object-cover" />
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
@@ -393,8 +419,8 @@ export function ContrastLayoutDialog({
           <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Tipo de contraste</label>
           <select value={label} onChange={e => setLabel(e.target.value)}
             className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-rose-400">
-            {['médio alto', 'alto', 'médio', 'baixo', 'muito alto'].map(v => (
-              <option key={v} value={v}>{v}</option>
+            {LABEL_OPTIONS.map(v => (
+              <option key={v} value={v}>{titleCase(v)}</option>
             ))}
           </select>
         </div>
@@ -430,46 +456,26 @@ export function ContrastLayoutDialog({
         </div>
         <p className="text-[11px] text-gray-400 mt-1.5 text-right">{W}×{H}px · PNG</p>
 
-        {saveTagError && (
+        {/* Preview do valor que será gravado na tag "Contraste" */}
+        <div className="mt-3 bg-violet-50 border border-violet-200 rounded-xl px-4 py-2.5 flex items-center gap-2">
+          <Save className="h-4 w-4 text-violet-600 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] font-semibold text-violet-700 uppercase tracking-wide">Valor da tag "Contraste"</p>
+            <p className="text-sm font-mono text-violet-900 break-words">{formatContrastValue(label, cMin, cMax)}</p>
+          </div>
+        </div>
+
+        {saveError && (
           <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-start gap-2">
             <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-red-700">{saveTagError}</p>
+            <p className="text-sm text-red-700">{saveError}</p>
           </div>
         )}
 
-        {savedTag && (
+        {saved && (
           <div className="mt-3 bg-green-50 border border-green-200 rounded-xl px-4 py-2 flex items-center gap-2">
             <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
-            <p className="text-sm text-green-700">Imagem salva como valor da tag com sucesso.</p>
-          </div>
-        )}
-
-        {showTagPicker && imageTags.length > 0 && (
-          <div className="mt-3 border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden">
-            <p className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
-              Salvar como valor de qual tag?
-            </p>
-            <div className="divide-y divide-gray-100 max-h-48 overflow-y-auto">
-              {imageTags.map(tag => {
-                const alreadySet = tagValues.some(v => v.tag_id === tag.id && (v.image_storage_path || v.photo_id))
-                return (
-                  <button key={tag.id} onClick={() => handleSaveAsTag(tag)} disabled={savingTag}
-                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-rose-50 text-left transition-colors disabled:opacity-50">
-                    <ImageIcon className="h-4 w-4 text-rose-400 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{tag.name}</p>
-                      {alreadySet && <p className="text-[11px] text-amber-600">Já tem valor — será substituído</p>}
-                    </div>
-                    {savingTag && <Loader2 className="h-4 w-4 text-rose-400 animate-spin" />}
-                  </button>
-                )
-              })}
-            </div>
-            <div className="px-4 py-2 border-t border-gray-100">
-              <button onClick={() => setShowTagPicker(false)} className="text-xs text-gray-500 hover:text-gray-700">
-                Cancelar
-              </button>
-            </div>
+            <p className="text-sm text-green-700">Salvo! Fechando…</p>
           </div>
         )}
       </div>
@@ -478,13 +484,11 @@ export function ContrastLayoutDialog({
 
   const renderFooter = () => step === 'edit' && (
     <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex gap-2 justify-end flex-wrap">
-      {imageTags.length > 0 && !savedTag && (
-        <Btn variant="outline" onClick={() => setShowTagPicker(v => !v)} disabled={savingTag}>
-          <ImageIcon className="h-3.5 w-3.5" /> Usar como tag
-        </Btn>
-      )}
-      <Btn variant="primary" onClick={handleDownload}>
+      <Btn variant="outline" onClick={handleDownload} disabled={saving}>
         <Download className="h-3.5 w-3.5" /> Baixar PNG
+      </Btn>
+      <Btn variant="primary" onClick={handleSave} loading={saving} disabled={saving || saved}>
+        <Save className="h-3.5 w-3.5" /> {saved ? 'Salvo' : 'Salvar'}
       </Btn>
     </div>
   )
@@ -495,11 +499,11 @@ export function ContrastLayoutDialog({
         style={{ maxWidth: 860, maxHeight: '92vh' }} onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <div>
-            <p className="font-semibold text-gray-900">Gerador de Layout — Análise de Contraste</p>
+            <p className="font-semibold text-gray-900">Ferramenta de Contraste</p>
             <p className="text-xs text-gray-500 mt-0.5">
               {step === 'pick'
-                ? `Escolha uma foto de ${clientName} para o layout`
-                : 'Ajuste os parâmetros, baixe ou salve como tag'}
+                ? `Escolha uma foto de ${clientName} para começar`
+                : 'Ajuste a faixa de contraste e salve. O valor vira tag pra usar em prompts.'}
             </p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">

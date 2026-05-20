@@ -28,6 +28,7 @@ import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
 import { AiCompositionsManager } from './documents/ai-compositions/AiCompositionsManager'
+import { ContrastLayoutDialog, type ContrastLayoutData, formatContrastValue } from './documents/client/ContrastLayoutDialog'
 import { cleanClientFiles } from '../../services/cleanupService'
 
 // ─── HEIC → JPEG (conversão no navegador) ─────────────────────────────────
@@ -2832,6 +2833,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [linkedFolderConfig, setLinkedFolderConfig] = useState<any>(null)
   const [savingAI, setSavingAI] = useState(false)
   const [aiSaveStatus, setAiSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  // ── Ferramenta de Contraste ───────────────────────────────────────────
+  // Estado salvo em clients.contrast_layout (JSONB). O valor formatado
+  // ("Alto (8 a 10)") vai pra tag "Contraste" no clients.ai_info_tags,
+  // que dispara o auto-save existente do clientTags.
+  const [contrastLayout, setContrastLayout] = useState<ContrastLayoutData | null>(null)
+  const [contrastDialogOpen, setContrastDialogOpen] = useState(false)
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
@@ -2921,6 +2928,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     if (folderId) { const fc = folders.find((f: any) => f.id === folderId); setLinkedFolderConfig(fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null) }
     const savedTags: any[] = detail.client.ai_info_tags || []
     setClientTags(tpls.map((t: any) => { const saved = savedTags.find((s: any) => s.templateId === t.id); return { templateId: t.id, name: t.name, value: saved?.value || '' } }))
+    // carrega estado da ferramenta de contraste (gravado em clients.contrast_layout)
+    const cl = (detail.client as any).contrast_layout
+    setContrastLayout(cl && typeof cl === 'object' ? cl as ContrastLayoutData : null)
     // marca a baseline pro auto-save (assim o primeiro render não dispara save)
     savedAiTagsRef.current = JSON.stringify(
       tpls.map((t: any) => { const saved = savedTags.find((s: any) => s.templateId === t.id); return { templateId: t.id, name: t.name, value: saved?.value || '' } })
@@ -2960,6 +2970,26 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientTags])
+
+  /**
+   * Persiste o estado da Ferramenta de Contraste em clients.contrast_layout.
+   * O valor formatado (ex: "Alto (8 a 10)") é exposto automaticamente como
+   * variável built-in `{{Contraste}}` via documentsService.getTextImportSources.
+   * Não precisa de tag cadastrada em TagsManager.
+   *
+   * O parâmetro `formatted` permanece na assinatura pra compatibilidade com
+   * o ContrastLayoutDialog, mas não é gravado aqui — a fonte de verdade é
+   * `data` (a edge consumindo getTextImportSources sempre recalcula a string).
+   */
+  const handleSaveContrastLayout = async (data: ContrastLayoutData, _formatted: string) => {
+    if (!clientId) return
+    const { error } = await supabase
+      .from('clients')
+      .update({ contrast_layout: data })
+      .eq('id', clientId)
+    if (error) throw error
+    setContrastLayout(data)
+  }
 
   const handleSaveNotes = async () => {
     setSavingNotes(true)
@@ -4066,6 +4096,62 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                     })}
                   </div>
                 </div>
+              )}
+
+              {/* ── Ferramenta de Contraste ──────────────────────────────── */}
+              {(() => {
+                const hasSaved = !!contrastLayout?.photoId
+                const formattedValue = contrastLayout
+                  ? formatContrastValue(contrastLayout.label, contrastLayout.cMin, contrastLayout.cMax)
+                  : null
+                return (
+                  <div className="rounded-xl p-5 space-y-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
+                        <SlidersHorizontal className="h-4 w-4 text-rose-500" /> Ferramenta de Contraste
+                      </h3>
+                      <Btn
+                        variant="primary"
+                        size="sm"
+                        onClick={() => setContrastDialogOpen(true)}
+                      >
+                        {hasSaved ? (<><Pencil className="h-3.5 w-3.5" /> Editar</>) : (<><Plus className="h-3.5 w-3.5" /> Abrir ferramenta</>)}
+                      </Btn>
+                    </div>
+
+                    {hasSaved ? (
+                      <div className="flex items-center gap-3 p-3 rounded-lg" style={{ background: t.surface2, border: `1px solid ${t.border}` }}>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: t.text3 }}>
+                            Valor atual <span className="ml-1 normal-case font-normal" style={{ color: t.text3 }}>— disponível como <code>{'{{Contraste}}'}</code> nos prompts</span>
+                          </p>
+                          <p className="text-base font-mono mt-0.5 break-words" style={{ color: t.text }}>
+                            {formattedValue}
+                          </p>
+                          {contrastLayout?.savedAt && (
+                            <p className="text-[10px] mt-1" style={{ color: t.text3 }}>
+                              Atualizado em {new Date(contrastLayout.savedAt).toLocaleString('pt-BR')}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-sm py-4 text-center rounded-lg" style={{ color: t.text3, border: `1px dashed ${t.border}` }}>
+                        Ferramenta ainda não configurada para esta cliente.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {contrastDialogOpen && data?.client && (
+                <ContrastLayoutDialog
+                  clientId={clientId!}
+                  clientName={data.client.full_name}
+                  initial={contrastLayout}
+                  onClose={() => setContrastDialogOpen(false)}
+                  onSave={handleSaveContrastLayout}
+                />
               )}
 
               <div className="rounded-xl p-5 space-y-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>

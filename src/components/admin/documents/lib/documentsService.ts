@@ -17,6 +17,7 @@ import type {
   ElementStyle,
 } from '../types'
 import { extractPdfMetadata } from './pdfUtils'
+import { formatContrastValue } from './contrastLayout'
 
 // ══════════════════════════════════════════════════════════════════════
 // Tipos de composition
@@ -263,7 +264,7 @@ export const documentsService = {
     // 1. Dados básicos do cliente
     const { data: client } = await supabase
       .from('clients')
-      .select('full_name, email, phone, plan_id, ai_info_tags')
+      .select('full_name, email, phone, plan_id, ai_info_tags, contrast_layout')
       .eq('id', clientId).single()
 
     if (client) {
@@ -311,6 +312,24 @@ export const documentsService = {
           value: val && val.trim() ? val : null,
         })
       }
+    }
+
+    // 3.5 Built-in: Contraste (Ferramenta de Contraste — clients.contrast_layout)
+    //     Sempre presente como variável {{Contraste}}, mesmo sem cadastrar tag.
+    //     Valor null quando a ferramenta ainda não foi configurada pra cliente.
+    {
+      const cl: any = (client as any)?.contrast_layout
+      let value: string | null = null
+      if (cl && typeof cl === 'object' && cl.photoId && typeof cl.label === 'string') {
+        value = formatContrastValue(cl.label, Number(cl.cMin), Number(cl.cMax))
+      }
+      options.push({
+        key:        'ai_info:_contrast',     // prefixo ai_info: pro filtro do AddPageDialog
+        label:      'Contraste',
+        group:      'form',
+        groupLabel: 'Informações da análise',
+        value,
+      })
     }
 
     // 4. Campos do formulário do plano

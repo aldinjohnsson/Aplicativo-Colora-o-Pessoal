@@ -21,6 +21,7 @@ import {
   ChevronDown, ChevronUp, UploadCloud, Trash2, Layers,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
+import { substitutePromptVars, type PromptVarSource } from '../lib/promptVars'
 import type { AiPromptPart } from '../prompts/AiImagePromptsManager'
 
 // ── Btn ───────────────────────────────────────────────────────────────
@@ -125,6 +126,25 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   const [uploadedPreview, setUploadedPreview]   = useState<string | null>(null)
   const [uploadedName, setUploadedName]         = useState<string>('foto-upload')
   const [uploadError, setUploadError]           = useState<string | null>(null)
+
+  // ── Variáveis de prompt da cliente (ai_info_templates) ─────────────
+  // Carregadas pra substituir `{{Label}}` no partPrompt antes do confirm.
+  // Tags sem valor preenchido viram string vazia (silenciosamente).
+  const [promptVarSources, setPromptVarSources] = useState<PromptVarSource[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    documentsService.getTextImportSources(clientId)
+      .then((sources: any[]) => {
+        if (cancelled) return
+        const aiInfo = (sources || [])
+          .filter(s => typeof s?.key === 'string' && s.key.startsWith('ai_info:'))
+          .map(s => ({ label: s.label, value: s.value }) as PromptVarSource)
+        setPromptVarSources(aiInfo)
+      })
+      .catch(() => { if (!cancelled) setPromptVarSources([]) })
+    return () => { cancelled = true }
+  }, [clientId])
 
   // ── Esc fecha ──
   useEffect(() => {
@@ -238,7 +258,9 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
       promptName:  selectedPrompt.name,
       partId:      part.id,
       partLabel:   part.label,
-      partPrompt:  part.prompt,
+      // Resolve {{Label}} contra ai_info_templates da cliente. Tags sem
+      // valor (ou não cadastradas) viram string vazia.
+      partPrompt:  substitutePromptVars(part.prompt, promptVarSources),
       modelVersion: selectedPrompt.model,
       ...basePhotoInfo,
     }))
