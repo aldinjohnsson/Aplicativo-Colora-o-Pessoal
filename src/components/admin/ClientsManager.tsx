@@ -968,7 +968,7 @@ function KanbanColumn({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)', minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+      <div data-col-scroller={statusKey} style={{ flex: 1, overflowY: 'auto', padding: '10px', paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)', minHeight: 0, WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
         {clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '30px 12px', color: t.text3 }}>
             <p style={{ fontSize: 12, margin: 0 }}>
@@ -1354,6 +1354,55 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     }
     document.addEventListener('dragend', h)
     return () => document.removeEventListener('dragend', h)
+  }, [])
+
+  // ── Restaura scroll do kanban ao voltar de um card ───────────────────
+  const scrollRestoreRef = useRef<Record<string, number> | null>(null)
+  useEffect(() => {
+    const saved = sessionStorage.getItem('kanban-scroll')
+    if (saved) {
+      try { scrollRestoreRef.current = JSON.parse(saved) } catch {}
+      sessionStorage.removeItem('kanban-scroll')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (loading) return  // aguarda dados + board renderizado
+    const positions = scrollRestoreRef.current
+    if (!positions) return
+    scrollRestoreRef.current = null
+
+    const restore = () => {
+      if (boardRef.current && positions.__board__ != null) {
+        boardRef.current.scrollLeft = positions.__board__
+      }
+      const colScrollers = boardRef.current?.querySelectorAll('[data-col-scroller]')
+      colScrollers?.forEach(el => {
+        const key = (el as HTMLElement).dataset.colScroller
+        if (key && positions[key] != null) {
+          (el as HTMLElement).scrollTop = positions[key]
+        }
+      })
+    }
+
+    // Duplo timeout: primeiro frame já aplica o horizontal;
+    // segundo garante que as colunas já têm altura calculada (vertical)
+    const t1 = setTimeout(restore, 0)
+    const t2 = setTimeout(restore, 120)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [loading])
+
+  // Salva posições de scroll antes de navegar para um card
+  const saveScrollPositions = useCallback(() => {
+    const positions: Record<string, number> = {
+      __board__: boardRef.current?.scrollLeft ?? 0,
+    }
+    const colScrollers = boardRef.current?.querySelectorAll('[data-col-scroller]')
+    colScrollers?.forEach(el => {
+      const key = (el as HTMLElement).dataset.colScroller
+      if (key) positions[key] = (el as HTMLElement).scrollTop
+    })
+    sessionStorage.setItem('kanban-scroll', JSON.stringify(positions))
   }, [])
 
   // ── Board pan handlers (desktop click-to-scroll via document listeners) ──
@@ -1903,7 +1952,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       theme={t}
                       collapsed={!!collapsed[key]}
                       onToggleCollapse={() => toggleCollapse(key)}
-                      onView={id => navigate(`/admin/clients/${id}`)}
+                      onView={id => { saveScrollPositions(); navigate(`/admin/clients/${id}`) }}
                       onArchive={handleArchive}
                       onDelete={handleDelete}
                       onStar={handleStar}
@@ -2008,8 +2057,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 }
 
 // ─── Form Response Modal ──────────────────────────────────────────────────
-function FormResponseModal({ formSubmission, planForm, onClose }: {
-  formSubmission: any; planForm: any; onClose: () => void
+function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
+  formSubmission: any; planForm: any; clientId: string; onClose: () => void
 }) {
   const formData = formSubmission?.form_data || {}
   const fields: any[] = (planForm?.fields || []).sort((a: any, b: any) => a.order - b.order)
@@ -2186,7 +2235,30 @@ function FormResponseModal({ formSubmission, planForm, onClose }: {
         pdf.text(pg, pageW - margin - pdf.getTextWidth(pg), pageH - 10)
       }
 
+      // Download local
       pdf.save('Formulario.pdf')
+
+      // Upload para o Drive na subpasta "Formulário"
+      try {
+        const pdfBlob = pdf.output('blob')
+        const pdfFile = new File([pdfBlob], 'Formulario.pdf', { type: 'application/pdf' })
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session && clientId) {
+          const form = new FormData()
+          form.append('kind', 'admin_photo')
+          form.append('client_id', clientId)
+          form.append('subfolder', 'Formulário')
+          form.append('file', pdfFile)
+          await fetch(`${(supabase as any).supabaseUrl}/functions/v1/drive/upload`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${session.access_token}` },
+            body: form,
+          })
+        }
+      } catch (uploadErr) {
+        // Falha silenciosa: o download local já foi feito com sucesso
+        console.warn('PDF gerado localmente, mas não foi possível enviar ao Drive:', uploadErr)
+      }
     } catch (err) {
       console.error('Erro ao gerar PDF:', err)
       alert('Erro ao gerar PDF. Tente novamente.')
@@ -2513,14 +2585,26 @@ function PhotosView({ clientId, photos, photoCategories, clientToken }: { client
     setUploadingToCategory(categoryId ?? 'uploading')
     try {
       for (const file of Array.from(files)) {
-        // Usa adminUploadPhoto (autenticado via JWT) em vez de uploadPhoto
-        // (portal da cliente). Isso evita que o RPC save_client_photo_drive
-        // rejeite o upload por causa do status atual da cliente.
-        await driveStorage.adminUploadPhoto({
-          clientId: clientId,
-          file,
-          categoryId,
-        })
+        try {
+          // Tenta primeiro via Drive (admin_photo ignora restrição de status)
+          await driveStorage.adminUploadPhoto({ clientId, file, categoryId })
+        } catch {
+          // Fallback: Supabase Storage direto — funciona em qualquer etapa
+          // independente de Drive configurado ou não
+          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+          const path = `${clientId}/admin_${Date.now()}_${safeName}`
+          const { error: storageErr } = await supabase.storage
+            .from('client-photos')
+            .upload(path, file, { contentType: file.type, upsert: true })
+          if (storageErr) throw storageErr
+          const { error: dbErr } = await supabase.from('client_photos').insert({
+            client_id: clientId,
+            storage_path: path,
+            photo_name: file.name,
+            category_id: categoryId,
+          })
+          if (dbErr) throw dbErr
+        }
       }
       await loadPhotos()
     } catch (e: any) {
@@ -2861,13 +2945,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
   const [savingName, setSavingName] = useState(false)
-
-  // Fotos de referência escolhidas manualmente no chat admin
-  // null = usa as derivadas automaticamente; array = override do admin para a sessão
-  const [adminChatRefPhotos, setAdminChatRefPhotos] = useState<
-    { type: string; label: string; storagePath: string; url: string }[] | null
-  >(null)
-  const [showRefPhotoPicker, setShowRefPhotoPicker] = useState(false)
 
   // Qual dropdown de tag-imagem está aberto (apenas 1 por vez, igual select nativo)
   const [openImagePicker, setOpenImagePicker] = useState<string | null>(null)
@@ -3352,9 +3429,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     return derived
   })()
 
-  // Fotos efetivas para o GeminiChat: override manual do admin > auto-derivadas
-  const effectiveAdminRefPhotos = adminChatRefPhotos ?? adminAiRefPhotos
-  const adminAiRefPhotoUrl = effectiveAdminRefPhotos.find(p => p.type === 'geral')?.url || effectiveAdminRefPhotos[0]?.url || null
+  // URL "geral" das fotos de referência (vindas da aba IA): usada como capa do chat
+  const adminAiRefPhotoUrl = adminAiRefPhotos.find(p => p.type === 'geral')?.url || adminAiRefPhotos[0]?.url || null
   const adminResultFileUrls = (resultFiles || []).map((f: any) => ({
     url: adminService.getResultFileUrl(f),
     name: f.file_name,
@@ -4249,148 +4325,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             </div>
           </div>
 
-          {/* ── Painel de fotos de referência para o chat ─────────────────── */}
-          {(() => {
-            // Todas as fotos não-IA agrupadas por categoria, para o picker
-            const allCatPhotos = (photoCategories || [])
-              .filter((cat: any) => !cat.is_ai_simulation)
-              .map((cat: any) => ({
-                cat,
-                catPhotos: (photos || [])
-                  .filter((p: any) => p.category_id === cat.id && (p.storage_path || p.drive_file_id))
-                  .map((p: any) => ({
-                    ...p,
-                    url: p.drive_file_id
-                      ? driveStorage.viewUrl(p.drive_file_id)
-                      : supabase.storage.from('client-photos').getPublicUrl(p.storage_path).data.publicUrl,
-                    // Identificador único independente de storage_path poder ser null
-                    _photoKey: p.drive_file_id || p.storage_path || p.id,
-                  })),
-              }))
-              .filter(({ catPhotos }) => catPhotos.length > 0)
-
-            if (allCatPhotos.length === 0) return null
-
-            const TYPE_LABEL: Record<string, string> = { cabelo: '💇 Cabelo', roupa: '👗 Roupa', geral: '🧍 Geral/Rosto' }
-
-            return (
-              <div className="rounded-xl overflow-hidden" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
-                {/* Header */}
-                <button
-                  onClick={() => setShowRefPhotoPicker(v => !v)}
-                  className="w-full flex items-center gap-3 p-3 text-left transition-colors"
-                  style={{ borderBottom: showRefPhotoPicker ? `1px solid ${t.border}` : 'none' }}
-                >
-                  <Camera className="h-4 w-4 flex-shrink-0" style={{ color: t.accent }} />
-                  <span className="text-sm font-semibold flex-1" style={{ color: t.text }}>
-                    Fotos de referência do chat
-                  </span>
-                  {/* Miniaturas das fotos selecionadas */}
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    {effectiveAdminRefPhotos.slice(0, 3).map((rp, i) => (
-                      <div key={i} className="w-7 h-7 rounded-lg overflow-hidden border-2" style={{ borderColor: t.accent }}>
-                        <img src={rp.url} alt="" className="w-full h-full object-cover" />
-                      </div>
-                    ))}
-                    {effectiveAdminRefPhotos.length === 0 && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                        Nenhuma foto
-                      </span>
-                    )}
-                  </div>
-                  <ChevronDown className={`h-4 w-4 flex-shrink-0 transition-transform ${showRefPhotoPicker ? 'rotate-180' : ''}`} style={{ color: t.text3 }} />
-                </button>
-
-                {showRefPhotoPicker && (
-                  <div className="p-3 space-y-3">
-                    <p className="text-xs" style={{ color: t.text3 }}>
-                      Selecione qual foto de cada categoria será usada como referência nas gerações do chat. A seleção vale apenas para esta sessão.
-                    </p>
-
-                    {/* Fotos atualmente selecionadas */}
-                    {effectiveAdminRefPhotos.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {effectiveAdminRefPhotos.map((rp, i) => (
-                          <div key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium"
-                            style={{ background: t.accentLight, color: t.accent, border: `1px solid ${t.accent}30` }}>
-                            <div className="w-5 h-5 rounded overflow-hidden flex-shrink-0">
-                              <img src={rp.url} alt="" className="w-full h-full object-cover" />
-                            </div>
-                            <span>{TYPE_LABEL[rp.type] || rp.type}: {rp.label}</span>
-                            <button
-                              onClick={() => {
-                                const next = effectiveAdminRefPhotos.filter((_, j) => j !== i)
-                                setAdminChatRefPhotos(next)
-                              }}
-                              className="ml-0.5 opacity-60 hover:opacity-100"
-                            ><X className="h-3 w-3" /></button>
-                          </div>
-                        ))}
-                        {adminChatRefPhotos !== null && (
-                          <button
-                            onClick={() => setAdminChatRefPhotos(null)}
-                            className="text-xs px-2 py-1 rounded-lg border"
-                            style={{ color: t.text3, borderColor: t.border }}
-                          >↺ Restaurar auto</button>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Picker: fotos por categoria */}
-                    {allCatPhotos.map(({ cat, catPhotos }) => (
-                      <div key={cat.id}>
-                        <p className="text-xs font-semibold mb-1.5" style={{ color: t.text2 }}>
-                          {cat.title} <span className="font-normal" style={{ color: t.text3 }}>→ {TYPE_LABEL[inferRefType(cat.title)]}</span>
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {catPhotos.map((photo: any) => {
-                            const type = inferRefType(cat.title)
-                            const isSelected = effectiveAdminRefPhotos.some(r => r.storagePath === photo._photoKey)
-                            return (
-                              <button
-                                key={photo.id}
-                                onClick={() => {
-                                  const base = adminChatRefPhotos ?? adminAiRefPhotos
-                                  // Remove qualquer foto do mesmo tipo e adiciona esta
-                                  const next = base.filter(r => r.type !== type)
-                                  next.push({
-                                    type,
-                                    label: cat.title,
-                                    storagePath: photo._photoKey,
-                                    url: photo.url,
-                                  })
-                                  // Garante 'geral' presente
-                                  if (!next.find(r => r.type === 'geral')) {
-                                    next.unshift({ ...next[0], type: 'geral', label: `${next[0].label} (principal)` })
-                                  }
-                                  setAdminChatRefPhotos(next)
-                                }}
-                                className="relative rounded-lg overflow-hidden flex-shrink-0 transition-all"
-                                style={{
-                                  width: 52, height: 52,
-                                  outline: isSelected ? `2.5px solid ${t.accent}` : '2px solid transparent',
-                                  outlineOffset: 1,
-                                }}
-                                title={`Usar esta foto como referência de ${TYPE_LABEL[type] || type}`}
-                              >
-                                <img src={photo.url} alt="" className="w-full h-full object-cover" />
-                                {isSelected && (
-                                  <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.35)' }}>
-                                    <Check className="h-4 w-4 text-white drop-shadow" />
-                                  </div>
-                                )}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          })()}
-
           {!adminAiSystemPrompt ? (
             <div className="rounded-xl p-6 text-center" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
               <Wand2 className="h-8 w-8 mx-auto mb-2" style={{ color: t.text3 }} />
@@ -4404,7 +4338,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               clientName={client.full_name}
               systemPrompt={adminAiSystemPrompt}
               referencePhotoUrl={adminAiRefPhotoUrl}
-              referencePhotos={effectiveAdminRefPhotos}
+              referencePhotos={adminAiRefPhotos}
               folderConfig={linkedFolderConfig}
               clientId={clientId!}
               resultFileUrls={adminResultFileUrls}
@@ -4425,7 +4359,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       )}
 
       {showFormModal && formSubmission && (
-        <FormResponseModal formSubmission={formSubmission} planForm={planForm} onClose={() => setShowFormModal(false)} />
+        <FormResponseModal formSubmission={formSubmission} planForm={planForm} clientId={client.id} onClose={() => setShowFormModal(false)} />
       )}
       {/* Modal de rejeição de Foto IA */}
       {showAiPhotoRejectionModal && (

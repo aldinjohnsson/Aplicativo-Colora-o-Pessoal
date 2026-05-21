@@ -405,54 +405,89 @@ Deno.serve(async (req: Request) => {
         if (!client) return json({ error: 'Cliente não encontrado' }, 404)
         if (client.admin_id !== authUser.id) return json({ error: 'Acesso negado' }, 403)
 
-        let accessToken: string, rootFolderId: string | null
+        // Tenta conectar ao Drive; se não estiver configurado, usa Supabase Storage
+        let accessToken: string | null = null
+        let rootFolderId: string | null = null
         try {
           const t = await getAdminToken(sb, authUser.id)
           accessToken  = t.accessToken
           rootFolderId = t.rootFolderId
-        } catch (e: any) {
-          return json({ error: e.message }, 412)
-        }
-
-        // Pasta do cliente (com permissão pública). Se já existe, reusa.
-        let clientFolderId = client.drive_folder_id
-        if (!clientFolderId) {
-          const folderName = sanitizeFolderName(client.full_name || `cliente-${client.id}`)
-          clientFolderId = await findOrCreateFolder(accessToken, folderName, rootFolderId, /* makePublic */ true)
-          await sb.from('clients').update({ drive_folder_id: clientFolderId }).eq('id', client.id)
+        } catch {
+          // Drive não conectado — continua sem ele (cai no fallback abaixo)
         }
 
         const safeName = `${Date.now()}_admin_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
         const bytes    = new Uint8Array(await file.arrayBuffer())
-        const uploaded = await uploadToDrive(accessToken, {
-          name:     safeName,
-          mimeType: file.type || 'application/octet-stream',
-          parents:  [clientFolderId],
-          body:     bytes,
-        })
-        await makeAnyoneReader(accessToken, uploaded.id)
 
-        const { error: insErr } = await sb.from('client_photos').insert({
-          client_id:     client.id,
-          photo_name:    safeName,
-          photo_type:    file.type,
-          photo_size:    file.size,
-          drive_file_id: uploaded.id,
-          category_id:   categoryId,
-          is_ai_photo:   false,
-        })
-        if (insErr) {
-          try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
-          return json({ error: insErr.message }, 500)
+        // ── Caminho Drive ──────────────────────────────────────────────────
+        if (accessToken) {
+          let clientFolderId = client.drive_folder_id
+          if (!clientFolderId) {
+            const folderName = sanitizeFolderName(client.full_name || `cliente-${client.id}`)
+            clientFolderId = await findOrCreateFolder(accessToken, folderName, rootFolderId, /* makePublic */ true)
+            await sb.from('clients').update({ drive_folder_id: clientFolderId }).eq('id', client.id)
+          }
+
+          const uploaded = await uploadToDrive(accessToken, {
+            name:     safeName,
+            mimeType: file.type || 'application/octet-stream',
+            parents:  [clientFolderId],
+            body:     bytes,
+          })
+          await makeAnyoneReader(accessToken, uploaded.id)
+
+          const { error: insErr } = await sb.from('client_photos').insert({
+            client_id:     client.id,
+            photo_name:    safeName,
+            photo_type:    file.type,
+            photo_size:    file.size,
+            drive_file_id: uploaded.id,
+            category_id:   categoryId,
+            is_ai_photo:   false,
+          })
+          if (insErr) {
+            try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
+            return json({ error: insErr.message }, 500)
+          }
+
+          return json({
+            ok:            true,
+            driveFileId:   uploaded.id,
+            driveFolderId: clientFolderId,
+            photoName:     safeName,
+            url:           `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
+            downloadUrl:   `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+          })
         }
 
+        // ── Fallback: Supabase Storage (Drive não configurado) ─────────────
+        // Usa service role key → bypassa qualquer RLS policy
+        const storagePath = `${client.id}/${safeName}`
+        const { error: storageErr } = await sb.storage
+          .from('client-photos')
+          .upload(storagePath, bytes, { contentType: file.type || 'application/octet-stream', upsert: true })
+        if (storageErr) return json({ error: storageErr.message }, 500)
+
+        const { data: { publicUrl } } = sb.storage.from('client-photos').getPublicUrl(storagePath)
+
+        const { error: insErr } = await sb.from('client_photos').insert({
+          client_id:    client.id,
+          photo_name:   safeName,
+          photo_type:   file.type,
+          photo_size:   file.size,
+          storage_path: storagePath,
+          category_id:  categoryId,
+          is_ai_photo:  false,
+        })
+        if (insErr) return json({ error: insErr.message }, 500)
+
         return json({
-          ok:           true,
-          driveFileId:  uploaded.id,
-          driveFolderId: clientFolderId,
-          photoName:    safeName,
-          url:          `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
-          downloadUrl:  `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+          ok:            true,
+          driveFileId:   null,
+          driveFolderId: null,
+          photoName:     safeName,
+          url:           publicUrl,
+          downloadUrl:   publicUrl,
         })
       }
 

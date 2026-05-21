@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react'
 import {
   Wand2, Save, CheckCircle, Camera, Trash2,
-  Coins, Plus, Minus, Send, Lock, Unlock, RefreshCw, MessageSquare
+  Coins, Plus, Minus, Lock, Unlock, RefreshCw, MessageSquare
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { photoTypesService, PhotoType } from './PhotoTypesManager'
@@ -11,8 +11,6 @@ interface AIPromptConfigProps {
   clientId: string
   clientName: string
   isReleased: boolean
-  onRelease: () => void
-  releasingResult: boolean
   chatEnabled: boolean
   onChatEnabledChange: (v: boolean) => void
   onSaveChatEnabled: () => Promise<void>
@@ -27,7 +25,7 @@ export interface RefPhoto {
   url: string
 }
 
-export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, releasingResult, chatEnabled, onChatEnabledChange, onSaveChatEnabled }: AIPromptConfigProps) {
+export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, onChatEnabledChange, onSaveChatEnabled }: AIPromptConfigProps) {
   const [photoTypes, setPhotoTypes] = useState<PhotoType[]>([])
   const [refPhotos, setRefPhotos] = useState<RefPhoto[]>([])
   const [uploadingTypeId, setUploadingTypeId] = useState<string | null>(null)
@@ -328,7 +326,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
             <p className="text-xs text-gray-500">
               {isReleased
                 ? `A cliente já pode acessar o resultado${chatEnabled ? ' e o chat IA' : ''}`
-                : 'A cliente ainda não vê o resultado. Libere quando estiver pronto.'}
+                : 'A liberação é feita via Controle de Etapas (conclusão ou liberação parcial).'}
             </p>
           </div>
         </div>
@@ -355,42 +353,28 @@ export function AIPromptConfig({ clientId, clientName, isReleased, onRelease, re
               A cliente verá apenas os materiais (pasta, PDFs, observações), sem chat.
             </p>
           )}
-          {/* Botão salvar — só aparece quando o resultado já foi liberado */}
-          {isReleased && (
-            <button
-              onClick={async () => {
-                setSavingChat(true)
-                try {
-                  await onSaveChatEnabled()
-                  setChatSaved(true)
-                  setTimeout(() => setChatSaved(false), 2500)
-                } finally { setSavingChat(false) }
-              }}
-              disabled={savingChat}
-              className="w-full py-2 bg-violet-600 text-white rounded-lg text-xs font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
-            >
-              {savingChat
-                ? <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full" />
-                : chatSaved
-                  ? <CheckCircle className="h-3.5 w-3.5" />
-                  : <Save className="h-3.5 w-3.5" />}
-              {savingChat ? 'Salvando...' : chatSaved ? 'Salvo!' : 'Salvar configuração do chat'}
-            </button>
-          )}
+          {/* Botão salvar — sempre visível para permitir salvar antes ou depois da liberação */}
+          <button
+            onClick={async () => {
+              setSavingChat(true)
+              try {
+                await onSaveChatEnabled()
+                setChatSaved(true)
+                setTimeout(() => setChatSaved(false), 2500)
+              } finally { setSavingChat(false) }
+            }}
+            disabled={savingChat}
+            className="w-full py-2 bg-violet-600 text-white rounded-lg text-xs font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
+          >
+            {savingChat
+              ? <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full" />
+              : chatSaved
+                ? <CheckCircle className="h-3.5 w-3.5" />
+                : <Save className="h-3.5 w-3.5" />}
+            {savingChat ? 'Salvando...' : chatSaved ? 'Salvo!' : 'Salvar configuração do chat'}
+          </button>
         </div>
 
-        {!isReleased && (
-          <button
-            onClick={onRelease}
-            disabled={releasingResult}
-            className="w-full py-2.5 bg-green-600 text-white rounded-xl text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {releasingResult
-              ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-              : <Send className="h-4 w-4" />}
-            {releasingResult ? 'Liberando...' : 'Salvar e Liberar para a Cliente'}
-          </button>
-        )}
       </div>
     </div>
   )
