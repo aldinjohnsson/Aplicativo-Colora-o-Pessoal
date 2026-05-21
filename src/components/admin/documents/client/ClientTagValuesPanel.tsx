@@ -15,8 +15,8 @@ import { createPortal } from 'react-dom'
 import {
   Tag as TagIcon, Type as TypeIcon, Image as ImageIcon,
   Download as DownloadIcon, ChevronDown, Check,
-  AlertCircle, Trash2, Loader2, Inbox, RefreshCw,
-  Link2, ExternalLink, Sparkles, Wand2,
+  AlertCircle, Loader2, Inbox, RefreshCw,
+  Sparkles,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import type {
@@ -120,6 +120,8 @@ export function ClientTagValuesPanel({ clientId }: Props) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const [isExpanded, setIsExpanded] = useState(false)
+
   const reload = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -207,99 +209,106 @@ export function ClientTagValuesPanel({ clientId }: Props) {
 
   return (
     <section className="bg-white border border-gray-200 rounded-xl overflow-visible">
-      {/* Header */}
-      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 flex-wrap">
+      {/* Header — clicável para expandir/colapsar */}
+      <button
+        type="button"
+        onClick={() => setIsExpanded(v => !v)}
+        className="w-full px-5 py-4 flex items-start justify-between gap-3 flex-wrap text-left hover:bg-gray-50/60 transition-colors"
+      >
         <div>
           <h3 className="font-semibold text-gray-900 flex items-center gap-2">
             <TagIcon className="h-4 w-4 text-rose-500" />
-            Valores das tags para este cliente
+            Tags da cliente
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Esses dados entram automaticamente em qualquer template de PDF gerado.
+            Dados usados automaticamente em qualquer PDF gerado.
           </p>
         </div>
-        {tags.length > 0 && (
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 pt-0.5">
+          {tags.length > 0 && (
             <div className="text-[11px] font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1">
               {filledCount}/{tags.length} preenchida{tags.length !== 1 ? 's' : ''}
             </div>
-            <button
-              onClick={reload}
-              title="Recarregar"
-              className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
+          )}
+          <button
+            onClick={e => { e.stopPropagation(); reload() }}
+            title="Recarregar"
+            className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+        </div>
+      </button>
 
-      {/* Body */}
-      <div className="p-4 sm:p-5">
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2 mb-4">
-            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-red-700">{error}</p>
-          </div>
-        )}
-
-        {tags.length === 0 ? (
-          <div className="text-center py-10">
-            <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center mx-auto mb-3">
-              <Inbox className="h-5 w-5 text-gray-400" />
+      {/* Body — visível só quando expandido */}
+      {isExpanded && (
+        <div className="border-t border-gray-100 p-4 sm:p-5">
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2 mb-4">
+              <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+              <p className="text-sm text-red-700">{error}</p>
             </div>
-            <p className="text-sm font-medium text-gray-700">Nenhuma tag cadastrada</p>
-            <p className="text-xs text-gray-500 mt-1">
-              Crie tags em <span className="text-rose-600">Documentos → Tags</span> para começar.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {tags.map(tag => {
-              const link = parseTagLink(tag)
-              if (link?.kind === 'ai_generated') {
-                return (
-                  <GeneratedTagRow
-                    key={tag.id}
-                    clientId={clientId}
-                    tag={tag}
-                    value={valuesByTag[tag.id]}
-                    onUpdate={v => updateLocal(tag.id, v)}
-                  />
-                )
-              }
-              if (link) {
-                return (
-                  <LinkedTagRow
-                    key={tag.id}
-                    clientId={clientId}
-                    tag={tag}
-                    link={link}
-                    aiInfoLink={link.kind === 'ai_info_image' ? aiInfoLinks[link.templateId] : null}
-                    textSources={textSources}
-                  />
-                )
-              }
-              return tag.type === 'text'
-                ? <TextTagRow
-                    key={tag.id}
-                    tag={tag}
-                    clientId={clientId}
-                    value={valuesByTag[tag.id]}
-                    sources={textSources}
-                    onUpdate={v => updateLocal(tag.id, v)}
-                  />
-                : <ImageTagRow
-                    key={tag.id}
-                    tag={tag}
-                    clientId={clientId}
-                    value={valuesByTag[tag.id]}
-                    onUpdate={v => updateLocal(tag.id, v)}
-                  />
-            })}
-          </div>
-        )}
-      </div>
+          )}
+
+          {tags.length === 0 ? (
+            <div className="text-center py-10">
+              <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center mx-auto mb-3">
+                <Inbox className="h-5 w-5 text-gray-400" />
+              </div>
+              <p className="text-sm font-medium text-gray-700">Nenhuma tag cadastrada</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Crie tags em <span className="text-rose-600">Documentos → Tags</span> para começar.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {tags.map(tag => {
+                const link = parseTagLink(tag)
+                if (link?.kind === 'ai_generated') {
+                  return (
+                    <GeneratedTagRow
+                      key={tag.id}
+                      clientId={clientId}
+                      tag={tag}
+                      value={valuesByTag[tag.id]}
+                      onUpdate={v => updateLocal(tag.id, v)}
+                    />
+                  )
+                }
+                if (link) {
+                  return (
+                    <LinkedTagRow
+                      key={tag.id}
+                      clientId={clientId}
+                      tag={tag}
+                      link={link}
+                      aiInfoLink={link.kind === 'ai_info_image' ? aiInfoLinks[link.templateId] : null}
+                      textSources={textSources}
+                    />
+                  )
+                }
+                return tag.type === 'text'
+                  ? <TextTagRow
+                      key={tag.id}
+                      tag={tag}
+                      clientId={clientId}
+                      value={valuesByTag[tag.id]}
+                      sources={textSources}
+                      onUpdate={v => updateLocal(tag.id, v)}
+                    />
+                  : <ImageTagRow
+                      key={tag.id}
+                      tag={tag}
+                      clientId={clientId}
+                      value={valuesByTag[tag.id]}
+                      onUpdate={v => updateLocal(tag.id, v)}
+                    />
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   )
 }
@@ -680,51 +689,36 @@ function ImageTagRow({
 
   return (
     <>
-      <TagRowShell
-        icon={ImageIcon}
-        iconColor="text-violet-600 bg-violet-50"
-        title={tag.name}
-        description={tag.description}
-        status={status}
-        tone={hasValue ? 'filled' : 'default'}
+      <div
+        className={`flex items-center gap-3 px-3 py-3 rounded-xl border transition-colors cursor-pointer
+          ${hasValue ? 'border-gray-200 hover:border-rose-300 hover:bg-rose-50/30' : 'border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/20'}`}
+        onClick={() => setShowDialog(true)}
+        title="Clique para alterar imagem"
       >
-        <div className="flex items-center gap-4">
-          <div className="h-24 w-24 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
-            {loadingThumb ? (
-              <Loader2 className="h-5 w-5 text-gray-400 animate-spin" />
-            ) : thumbUrl ? (
-              <img src={thumbUrl} alt={tag.name} className="h-full w-full object-cover" />
-            ) : (
-              <ImageIcon className="h-7 w-7 text-gray-300" />
-            )}
-          </div>
-
-          <div className="flex-1 min-w-0">
-            {hasValue ? (
-              <p className="text-xs text-gray-500">{sourceLabel}</p>
-            ) : (
-              <p className="text-xs text-gray-400 italic">Nenhuma imagem selecionada</p>
-            )}
-            <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <button
-                onClick={() => setShowDialog(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
-              >
-                {hasValue ? 'Trocar imagem' : 'Escolher imagem'}
-              </button>
-              {hasValue && (
-                <button
-                  onClick={handleClear}
-                  className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-md hover:bg-red-50 transition-colors"
-                  title="Remover imagem"
-                >
-                  <Trash2 className="h-3 w-3" /> Remover
-                </button>
-              )}
-            </div>
-          </div>
+        {/* Thumbnail */}
+        <div className="h-14 w-14 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
+          {loadingThumb ? (
+            <Loader2 className="h-4 w-4 text-gray-300 animate-spin" />
+          ) : thumbUrl ? (
+            <img src={thumbUrl} alt={tag.name} className="h-full w-full object-cover" />
+          ) : (
+            <ImageIcon className="h-6 w-6 text-gray-300" />
+          )}
         </div>
-      </TagRowShell>
+
+        {/* Name + status */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-900">
+            {tag.name}
+            {!hasValue && <span className="ml-1.5 text-[11px] font-normal text-gray-400 italic">não definida</span>}
+          </p>
+          {hasValue && sourceLabel && (
+            <p className="text-[11px] text-gray-400 mt-0.5">{sourceLabel}</p>
+          )}
+        </div>
+
+        <StatusDot status={status} />
+      </div>
 
       {showDialog && (
         <TagValueImageDialog
@@ -756,72 +750,35 @@ function LinkedTagRow({
   aiInfoLink: AiInfoLink | null      // só pra link.kind === 'ai_info_image'
   textSources: TextImportSourceOption[]
 }) {
-  const goToResult = () => {
-    window.location.href = `/admin/clients/${clientId}#result`
-  }
-
   // ── Caminho A: imagem vinculada a AI Info ──
   if (link?.kind === 'ai_info_image') {
-    const missingValue = !aiInfoLink
-    const missingImage = !!aiInfoLink && !aiInfoLink.imageUrl
     const hasResolved  = !!aiInfoLink && !!aiInfoLink.imageUrl
 
     return (
-      <TagRowShell
-        icon={ImageIcon}
-        iconColor="text-violet-600 bg-violet-50"
-        title={tag.name}
-        description={tag.description}
-        status="idle"
-        tone={hasResolved ? 'filled' : 'default'}
-      >
-        <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
-          <Link2 className="h-3 w-3" />
-          Automático · via Configurações
+      <div className={`flex items-center gap-3 px-3 py-3 rounded-xl border
+        ${hasResolved ? 'border-gray-200' : 'border-dashed border-gray-200'}`}>
+        {/* Thumbnail */}
+        <div className="h-14 w-14 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
+          {aiInfoLink?.imageUrl ? (
+            <img src={aiInfoLink.imageUrl} alt={aiInfoLink.selectedLabel} className="h-full w-full object-cover" />
+          ) : (
+            <ImageIcon className="h-6 w-6 text-gray-300" />
+          )}
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="h-24 w-24 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
-            {aiInfoLink?.imageUrl ? (
-              <img src={aiInfoLink.imageUrl} alt={aiInfoLink.selectedLabel} className="h-full w-full object-cover" />
-            ) : (
-              <ImageIcon className="h-7 w-7 text-gray-300" />
+        {/* Name + label */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-900">
+            {tag.name}
+            {!hasResolved && (
+              <span className="ml-1.5 text-[11px] font-normal text-amber-600 italic">não definida</span>
             )}
-          </div>
-
-          <div className="flex-1 min-w-0">
-            {missingValue && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
-                <AlertCircle className="h-3.5 w-3.5" />
-                Cliente ainda não selecionou opção em Resultado
-              </p>
-            )}
-            {missingImage && aiInfoLink && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
-                <AlertCircle className="h-3.5 w-3.5" />
-                A opção <strong className="mx-1">"{aiInfoLink.selectedLabel}"</strong> não tem imagem cadastrada
-              </p>
-            )}
-            {hasResolved && aiInfoLink && (
-              <>
-                <p className="text-[11px] uppercase tracking-wide text-violet-600 font-semibold">
-                  {aiInfoLink.templateName}
-                </p>
-                <p className="text-sm font-medium text-gray-800 mt-0.5">
-                  {aiInfoLink.selectedLabel}
-                </p>
-              </>
-            )}
-            <button
-              onClick={goToResult}
-              className="mt-2 inline-flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 hover:underline"
-            >
-              <ExternalLink className="h-3 w-3" />
-              {hasResolved ? 'Trocar em Resultado' : 'Selecionar em Resultado'}
-            </button>
-          </div>
+          </p>
+          {hasResolved && aiInfoLink && (
+            <p className="text-[11px] text-gray-500 mt-0.5 truncate">{aiInfoLink.selectedLabel}</p>
+          )}
         </div>
-      </TagRowShell>
+      </div>
     )
   }
 
@@ -845,11 +802,6 @@ function LinkedTagRow({
         status="idle"
         tone={hasValue ? 'filled' : 'default'}
       >
-        <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
-          <Link2 className="h-3 w-3" />
-          Automático · {groupLabel || 'via Configurações'}
-        </div>
-
         <div className="space-y-2">
           {!source ? (
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
@@ -864,22 +816,10 @@ function LinkedTagRow({
                 : `Sem valor em ${groupLabel || 'origem'} → ${sourceLabel}`}
             </p>
           ) : (
-            <>
-              <div className="px-3 py-2.5 rounded-lg bg-gray-50 border border-gray-200 text-sm text-gray-800 whitespace-pre-wrap break-words">
-                {value}
-              </div>
-              <p className="text-[11px] text-gray-500">
-                Vem de: <span className="font-medium text-gray-700">{groupLabel} → {sourceLabel}</span>
-              </p>
-            </>
+            <div className="px-3 py-2.5 rounded-lg bg-gray-50 border border-gray-200 text-sm text-gray-800 whitespace-pre-wrap break-words">
+              {value}
+            </div>
           )}
-          <button
-            onClick={goToResult}
-            className="inline-flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 hover:underline"
-          >
-            <ExternalLink className="h-3 w-3" />
-            Abrir Resultado
-          </button>
         </div>
       </TagRowShell>
     )
@@ -909,7 +849,6 @@ function GeneratedTagRow({
   onUpdate: (next: ClientTagValue | undefined) => void
 }) {
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [removing, setRemoving]     = useState(false)
   const [imgUrl, setImgUrl]         = useState<string | null>(null)
 
   const hasImage = !!value?.image_storage_path
@@ -937,85 +876,38 @@ function GeneratedTagRow({
     }
   }
 
-  const handleRemove = async () => {
-    if (!hasImage || !value) return
-    if (!confirm('Remover a imagem gerada? Você precisará gerar de novo pra incluir no PDF.')) return
-    setRemoving(true)
-    try {
-      await documentsService.clearClientTagValue(clientId, tag.id)
-      onUpdate(undefined)
-    } catch (e: any) {
-      alert(e?.message || 'Erro ao remover')
-    } finally {
-      setRemoving(false)
-    }
-  }
-
   return (
     <>
-      <TagRowShell
-        icon={Sparkles}
-        iconColor="text-fuchsia-600 bg-fuchsia-50"
-        title={tag.name}
-        description={tag.description}
-        status="idle"
-        tone={hasImage ? 'filled' : 'default'}
+      <div
+        className={`flex items-center gap-3 px-3 py-3 rounded-xl border transition-colors cursor-pointer
+          ${hasImage ? 'border-gray-200 hover:border-fuchsia-300 hover:bg-fuchsia-50/20' : 'border-dashed border-gray-200 hover:border-fuchsia-300 hover:bg-fuchsia-50/20'}`}
+        onClick={() => setDialogOpen(true)}
+        title={hasImage ? 'Clique para regenerar' : 'Clique para gerar'}
       >
-        <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200">
-          <Sparkles className="h-3 w-3" />
-          Gerada por IA
+        {/* Thumbnail */}
+        <div className="h-14 w-14 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
+          {hasImage ? (
+            imgUrl ? (
+              <img src={imgUrl} alt={tag.name} className="h-full w-full object-cover" />
+            ) : (
+              <Loader2 className="h-4 w-4 text-gray-300 animate-spin" />
+            )
+          ) : (
+            <Sparkles className="h-5 w-5 text-fuchsia-300" />
+          )}
         </div>
 
-        {hasImage ? (
-          <div className="flex items-start gap-4 flex-wrap">
-            <div className="h-32 w-32 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
-              {imgUrl ? (
-                <img src={imgUrl} alt={tag.name} className="h-full w-full object-cover" />
-              ) : (
-                <Loader2 className="h-5 w-5 text-gray-300 animate-spin" />
-              )}
-            </div>
-            <div className="flex-1 min-w-[200px] space-y-2">
-              <p className="text-xs text-gray-600">
-                Imagem gerada e pronta pra entrar no PDF.
-              </p>
-              <div className="flex gap-2 flex-wrap">
-                <button
-                  onClick={() => setDialogOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-fuchsia-600 text-white hover:bg-fuchsia-700"
-                >
-                  <Wand2 className="h-3.5 w-3.5" /> Regenerar
-                </button>
-                <button
-                  onClick={handleRemove}
-                  disabled={removing}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {removing
-                    ? <div className="animate-spin h-3 w-3 border-2 border-current border-t-transparent rounded-full" />
-                    : <Trash2 className="h-3.5 w-3.5" />}
-                  Remover
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 inline-flex items-center gap-1.5">
-              <AlertCircle className="h-3.5 w-3.5" />
-              Nenhuma imagem gerada ainda
-            </p>
-            <div>
-              <button
-                onClick={() => setDialogOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-fuchsia-600 text-white hover:bg-fuchsia-700"
-              >
-                <Wand2 className="h-4 w-4" /> Gerar imagem
-              </button>
-            </div>
-          </div>
-        )}
-      </TagRowShell>
+        {/* Name + status */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-900">
+            {tag.name}
+            {!hasImage && <span className="ml-1.5 text-[11px] font-normal text-gray-400 italic">não gerada</span>}
+          </p>
+          {hasImage && (
+            <p className="text-[11px] text-fuchsia-600 mt-0.5">Gerada por IA</p>
+          )}
+        </div>
+      </div>
 
       {dialogOpen && (
         <GenerateAiImageDialog

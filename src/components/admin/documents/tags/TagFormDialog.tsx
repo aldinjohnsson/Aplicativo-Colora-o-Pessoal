@@ -23,7 +23,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  X, Type as TypeIcon, Image as ImageIcon, AlertCircle, Link2, Tag as TagIcon, Sparkles,
+  X, Type as TypeIcon, Image as ImageIcon, AlertCircle, Link2, Tag as TagIcon,
 } from 'lucide-react'
 import { documentsService, isValidSlug, toSlug } from '../lib/documentsService'
 import type { DocumentTag, DocumentTagType } from '../types'
@@ -63,7 +63,7 @@ interface ImportSource {
   acceptedTagTypes: Array<'text' | 'image'>
 }
 
-type Origin = 'manual' | 'import_source' | 'ai_generated'
+type Origin = 'manual' | 'import_source'
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
@@ -79,10 +79,7 @@ function readOriginFromTag(tag: DocumentTag | null | undefined): {
   if (!hint || typeof hint !== 'object') return { origin: 'manual', sourceKey: '' }
 
   if (hint.source === 'ai_generated') {
-    // Não lemos promptId mais — ele agora é escolhido por cliente no modal
-    // de geração. Tags antigas com promptId perdem essa info no próximo save,
-    // sem impacto (era só uma sugestão padrão).
-    return { origin: 'ai_generated', sourceKey: '' }
+    return { origin: 'manual', sourceKey: '' }
   }
   if (hint.source === 'import_source' && typeof hint.key === 'string' && hint.key) {
     return { origin: 'import_source', sourceKey: hint.key }
@@ -206,11 +203,6 @@ export function TagFormDialog({ mode, tag, onClose, onSaved }: TagFormDialogProp
     setError(null)
     if (next === 'manual') setSourceKey('')
     if (next === 'import_source') { /* nada extra */ }
-    if (next === 'ai_generated') {
-      setSourceKey('')
-      // Tag tipo imagem é o único válido pra geração por IA
-      setType('image')
-    }
   }
 
   // ── Validação ─────────────────────────────────────────────────────
@@ -227,9 +219,6 @@ export function TagFormDialog({ mode, tag, onClose, onSaved }: TagFormDialogProp
       if (!s.acceptedTagTypes.includes(type)) {
         return 'A fonte selecionada não é compatível com o tipo da tag.'
       }
-    }
-    if (origin === 'ai_generated') {
-      if (type !== 'image') return 'Geração por IA só funciona com tag tipo Imagem.'
     }
     return null
   }
@@ -264,9 +253,7 @@ export function TagFormDialog({ mode, tag, onClose, onSaved }: TagFormDialogProp
       const default_hint =
         origin === 'import_source' && sourceKey
           ? { source: 'import_source', key: sourceKey }
-          : origin === 'ai_generated'
-            ? { source: 'ai_generated' }
-            : {}
+          : {}
 
       const payload = {
         name: name.trim(),
@@ -367,25 +354,6 @@ export function TagFormDialog({ mode, tag, onClose, onSaved }: TagFormDialogProp
                   </div>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => handleSetOrigin('ai_generated')}
-                  className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg border text-sm transition-all text-left ${
-                    origin === 'ai_generated'
-                      ? 'border-rose-500 bg-rose-50 ring-1 ring-rose-200'
-                      : 'border-gray-200 bg-white hover:border-gray-300'
-                  }`}
-                >
-                  <Sparkles className={`h-4 w-4 mt-0.5 flex-shrink-0 ${origin === 'ai_generated' ? 'text-rose-600' : 'text-gray-400'}`} />
-                  <div className="min-w-0">
-                    <p className={`font-medium text-xs ${origin === 'ai_generated' ? 'text-rose-700' : 'text-gray-700'}`}>
-                      Gerada por IA <span className="text-gray-400 font-normal">(só tag de imagem)</span>
-                    </p>
-                    <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">
-                      OpenAI gpt-image-1 cria a imagem. O <strong>prompt</strong> e a <strong>foto base</strong> são escolhidos por cliente na aba Documentos.
-                    </p>
-                  </div>
-                </button>
               </div>
             </div>
 
@@ -492,20 +460,16 @@ export function TagFormDialog({ mode, tag, onClose, onSaved }: TagFormDialogProp
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1.5">
                 Tipo <span className="text-rose-500">*</span>
-                {origin === 'ai_generated' && (
-                  <span className="text-gray-400 font-normal ml-1">(travado em imagem)</span>
-                )}
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => origin !== 'ai_generated' && setType('text')}
-                  disabled={origin === 'ai_generated'}
+                  onClick={() => setType('text')}
                   className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all ${
                     type === 'text'
                       ? 'border-rose-500 bg-rose-50 text-rose-700'
                       : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
-                  } ${origin === 'ai_generated' ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  }`}
                 >
                   <TypeIcon className="h-4 w-4" /> Texto
                 </button>

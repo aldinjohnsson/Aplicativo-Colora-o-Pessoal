@@ -659,7 +659,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
                   )}
                   <Btn variant="success" onClick={handleFinalizePdf} loading={buildingPdf} disabled={!canFinalize}>
                     <FileText className="h-4 w-4" />
-                    {buildingPdf ? 'Montando PDF…' : `Montar PDF (${stats.done} imagem${stats.done !== 1 ? 'ns' : ''})`}
+                    {buildingPdf ? 'Montando PDF…' : `Montar PDF (${stats.done} ${stats.done !== 1 ? 'imagens' : 'imagem'})`}
                   </Btn>
                 </div>
               </div>

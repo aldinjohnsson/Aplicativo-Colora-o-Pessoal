@@ -737,11 +737,24 @@ export const documentsService = {
   },
 
   async deleteTemplate(id: string): Promise<void> {
-    const { data: files } = await supabase.storage.from('document-templates').list(id)
-    if (files && files.length > 0) {
-      await supabase.storage.from('document-templates')
-        .remove(files.map(f => `${id}/${f.name}`)).catch(() => {})
-    }
+    // 1. Apaga elementos posicionados
+    await supabase.from('document_template_elements').delete().eq('template_id', id)
+      .then(({ error }) => { if (error) console.warn('Erro ao apagar elementos:', error.message) })
+
+    // 2. Apaga documentos gerados vinculados (FK client_generated_documents_template_id_fkey)
+    await supabase.from('client_generated_documents').delete().eq('template_id', id)
+      .then(({ error }) => { if (error) console.warn('Erro ao apagar docs gerados:', error.message) })
+
+    // 3. Apaga arquivos do Storage (silencioso — PDF pode já ter sumido)
+    try {
+      const { data: files } = await supabase.storage.from('document-templates').list(id)
+      if (files && files.length > 0) {
+        await supabase.storage.from('document-templates')
+          .remove(files.map(f => `${id}/${f.name}`)).catch(() => {})
+      }
+    } catch { /* pasta inexistente — ignora */ }
+
+    // 4. Apaga o registro do template
     const { error } = await supabase.from('document_templates').delete().eq('id', id)
     if (error) throw error
   },

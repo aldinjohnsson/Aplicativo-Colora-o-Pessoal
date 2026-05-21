@@ -1,10 +1,82 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
+import { adminService } from '../../lib/services'
+
+// ── Modal de instrução de API Key ────────────────────────────────────────────
+
+interface ApiKeyStep { text: string; highlight?: boolean }
+
+interface ApiKeyHelpModalProps {
+  title: string
+  subtitle: string
+  steps: ApiKeyStep[]
+  url: string
+  urlLabel: string
+  accentColor: string
+  onClose: () => void
+}
+
+function ApiKeyHelpModal({ title, subtitle, steps, url, urlLabel, accentColor, onClose }: ApiKeyHelpModalProps) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3"
+          style={{ background: `${accentColor}10` }}>
+          <div>
+            <p className="font-semibold text-gray-900 text-base">{title}</p>
+            <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 mt-0.5 flex-shrink-0">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Steps */}
+        <div className="px-5 py-4 space-y-3">
+          {steps.map((step, i) => (
+            <div key={i} className="flex gap-3 items-start">
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5"
+                style={{ background: accentColor }}
+              >
+                {i + 1}
+              </div>
+              <p className={`text-sm leading-relaxed ${step.highlight ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>
+                {step.text}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <div className="px-5 pb-5">
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            style={{ background: accentColor }}
+          >
+            <ExternalLink className="h-4 w-4" />
+            {urlLabel}
+          </a>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ── Tipo de estilo do PDF ───────────────────────────────────────────────────
 
@@ -327,8 +399,14 @@ export default function SettingsEditor() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+  const [showGeminiHelp, setShowGeminiHelp] = useState(false)
+  const [showOpenAIHelp, setShowOpenAIHelp] = useState(false)
 
-  useEffect(() => { loadSettings() }, [])
+  useEffect(() => {
+    loadSettings()
+    adminService.getCurrentAdmin().then(a => setIsSuperAdmin(a?.role === 'super_admin'))
+  }, [])
 
   const loadSettings = async () => {
     setLoading(true)
@@ -423,11 +501,19 @@ export default function SettingsEditor() {
           </div>
         </div>
 
-        <div className="px-6 py-5 space-y-4">
+        <div className="px-6 py-5 space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Chave da API Gemini
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-sm font-medium text-gray-700">Chave da API Gemini</label>
+              <button
+                type="button"
+                onClick={() => setShowGeminiHelp(true)}
+                className="inline-flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 font-medium"
+              >
+                <HelpCircle className="h-3.5 w-3.5" />
+                Como obter?
+              </button>
+            </div>
             <div className="relative">
               <input
                 type="password"
@@ -442,19 +528,12 @@ export default function SettingsEditor() {
                 </span>
               )}
             </div>
-            <p className="text-xs text-gray-500 mt-1.5">
-              Obtenha sua chave gratuita em{' '}
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
-                className="text-violet-600 hover:underline font-medium">
-                aistudio.google.com
-              </a>
-            </p>
           </div>
 
           {settings.geminiApiKey && (
-            <div className="bg-violet-50 border border-violet-100 rounded-xl p-4">
+            <div className="bg-violet-50 border border-violet-100 rounded-xl p-3">
               <p className="text-sm text-violet-700">
-                ✓ IA ativada — suas clientes poderão conversar com a consultora de coloração pessoal e receber sugestões personalizadas.
+                ✓ IA ativada — suas clientes poderão conversar com a consultora de coloração pessoal.
               </p>
             </div>
           )}
@@ -478,11 +557,19 @@ export default function SettingsEditor() {
           </div>
         </div>
 
-        <div className="px-6 py-5 space-y-4">
+        <div className="px-6 py-5 space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Chave da API OpenAI
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-sm font-medium text-gray-700">Chave da API OpenAI</label>
+              <button
+                type="button"
+                onClick={() => setShowOpenAIHelp(true)}
+                className="inline-flex items-center gap-1 text-xs text-fuchsia-600 hover:text-fuchsia-800 font-medium"
+              >
+                <HelpCircle className="h-3.5 w-3.5" />
+                Como obter?
+              </button>
+            </div>
             <div className="relative">
               <input
                 type="password"
@@ -499,38 +586,12 @@ export default function SettingsEditor() {
                 </span>
               )}
             </div>
-            <p className="text-xs text-gray-500 mt-1.5">
-              Crie em{' '}
-              <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"
-                className="text-fuchsia-600 hover:underline font-medium">
-                platform.openai.com/api-keys
-              </a>
-              {' · '}
-              <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener noreferrer"
-                className="text-fuchsia-600 hover:underline font-medium">
-                Billing
-              </a>
-            </p>
           </div>
 
-          {settings.openaiApiKey ? (
-            <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-xl p-4 space-y-2">
+          {settings.openaiApiKey && (
+            <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-xl p-3">
               <p className="text-sm text-fuchsia-700">
-                ✓ Geração de imagem ativada. Cada chamada usa <strong>sua conta OpenAI</strong>.
-              </p>
-              <p className="text-xs text-fuchsia-600">
-                ⚠️ <strong>gpt-image-1</strong> exige verificação de identidade na sua organização OpenAI{' '}
-                (<a href="https://platform.openai.com/settings/organization/general" target="_blank" rel="noopener noreferrer" className="underline font-medium">Settings → General → Verify</a>).
-                Sem isso, as chamadas voltam com erro 403.
-              </p>
-              <p className="text-xs text-fuchsia-600">
-                💰 Custo estimado por imagem: ~US$ 0,04 (medium) a ~US$ 0,19 (high quality).
-              </p>
-            </div>
-          ) : (
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
-              <p className="text-sm text-gray-600">
-                Sem chave configurada, as tags do tipo "Gerada por IA" não conseguem gerar imagens.
+                ✓ Geração de imagem ativada. Cada imagem gerada usa créditos da sua conta OpenAI.
               </p>
             </div>
           )}
@@ -629,11 +690,11 @@ export default function SettingsEditor() {
         </div>
       </div>
 
-      {/* Tipos de fotos */}
-      <PhotoTypesManager />
+      {/* Tipos de fotos — apenas super admin gerencia */}
+      {isSuperAdmin && <PhotoTypesManager />}
 
-      {/* Tags de Informação IA */}
-      <TagsManager />
+      {/* Tags de Informação IA — apenas super admin gerencia */}
+      {isSuperAdmin && <TagsManager />}
 
       {/* PDF Modelo */}
       <PdfTemplateSection
@@ -644,6 +705,44 @@ export default function SettingsEditor() {
           settingsStorageService.saveSettings(updated)
         }}
       />
+
+      {/* ── Modais de ajuda de API Key ────────────────────────── */}
+      {showGeminiHelp && (
+        <ApiKeyHelpModal
+          title="Como obter a chave Gemini"
+          subtitle="Gratuita · Google AI Studio"
+          accentColor="#7c3aed"
+          url="https://aistudio.google.com/apikey"
+          urlLabel="Abrir Google AI Studio"
+          onClose={() => setShowGeminiHelp(false)}
+          steps={[
+            { text: 'Acesse o Google AI Studio pelo botão abaixo' },
+            { text: 'Faça login com sua conta Google' },
+            { text: 'Clique em "Create API key" no menu lateral esquerdo' },
+            { text: 'Selecione um projeto existente ou crie um novo' },
+            { text: 'Copie a chave gerada e cole no campo acima', highlight: true },
+          ]}
+        />
+      )}
+
+      {showOpenAIHelp && (
+        <ApiKeyHelpModal
+          title="Como obter a chave OpenAI"
+          subtitle="Requer conta com créditos · platform.openai.com"
+          accentColor="#c026d3"
+          url="https://platform.openai.com/api-keys"
+          urlLabel="Abrir OpenAI Platform"
+          onClose={() => setShowOpenAIHelp(false)}
+          steps={[
+            { text: 'Acesse a OpenAI Platform pelo botão abaixo' },
+            { text: 'Faça login ou crie sua conta' },
+            { text: 'No menu lateral, clique em "API keys"' },
+            { text: 'Clique em "Create new secret key" e dê um nome' },
+            { text: 'Copie a chave imediatamente, ela não será exibida novamente', highlight: true },
+            { text: 'Certifique-se de ter créditos em Billing → Overview para as chamadas funcionarem' },
+          ]}
+        />
+      )}
 
     </div>
   )

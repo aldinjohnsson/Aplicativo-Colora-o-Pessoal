@@ -15,10 +15,10 @@
 //   • Campo "Imagem de referência extra"  (agora mora no cadastro do prompt)
 //   • Seletor de modelo               (vem do prompt)
 
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   X, Sparkles, Check, AlertCircle, Image as ImageIcon,
-  ChevronDown, ChevronUp, UploadCloud, Trash2, Layers,
+  ChevronDown, ChevronUp, Layers, FolderOpen, ChevronLeft,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { substitutePromptVars, type PromptVarSource } from '../lib/promptVars'
@@ -79,13 +79,11 @@ export interface AddPageResult {
   partId:      string
   partLabel:   string
   partPrompt:  string   // texto do prompt desta parte — enviado direto à edge function
-  // Foto base — galeria ou upload
-  photoId?:    string         // presente se veio da galeria
+  // Foto base — apenas galeria
+  photoId:     string
   photoName:   string
   photoUrl:    string         // thumbnail pra preview no card
   driveFileId?: string
-  uploadedPhotoBase64?: string  // presente se foi feito upload
-  uploadedPhotoMime?:   string
   // Modelo vem do prompt
   modelVersion: string
 }
@@ -96,8 +94,6 @@ interface Props {
   onClose:    () => void
   onConfirm:  (results: AddPageResult[]) => void   // ← array, uma entrada por parte
 }
-
-type PhotoSource = 'gallery' | 'upload'
 
 // ─── Component ────────────────────────────────────────────────────────
 
@@ -111,21 +107,13 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   const [promptOpen, setPromptOpen]             = useState(false)
 
   // ── Foto base ──
-  const [photoSource, setPhotoSource]           = useState<PhotoSource>('gallery')
-
-  // Galeria
+  // photoStep: 'category' = escolher categoria primeiro; 'photos' = escolher foto
+  const [photoStep, setPhotoStep]               = useState<'category' | 'photos'>('category')
   const [photos, setPhotos]                     = useState<ClientPhoto[]>([])
   const [loadingPhotos, setLoadingPhotos]       = useState(true)
   const [photosError, setPhotosError]           = useState<string | null>(null)
   const [selectedPhotoId, setSelectedPhotoId]   = useState<string | null>(null)
-
-  // Upload
-  const photoFileRef                            = useRef<HTMLInputElement>(null)
-  const [uploadedBase64, setUploadedBase64]     = useState<string | null>(null)
-  const [uploadedMime, setUploadedMime]         = useState<string>('image/png')
-  const [uploadedPreview, setUploadedPreview]   = useState<string | null>(null)
-  const [uploadedName, setUploadedName]         = useState<string>('foto-upload')
-  const [uploadError, setUploadError]           = useState<string | null>(null)
+  const [selectedCategory, setSelectedCategory] = useState<string | null | undefined>(undefined)
 
   // ── Variáveis de prompt da cliente (ai_info_templates) ─────────────
   // Carregadas pra substituir `{{Label}}` no partPrompt antes do confirm.
@@ -178,102 +166,58 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
 
   useEffect(() => { setPromptOpen(false) }, [selectedPromptId])
 
-  // ── Upload de foto ──
-  const handlePhotoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setUploadError(null)
-    const ALLOWED = ['image/png', 'image/jpeg', 'image/webp']
-    if (!ALLOWED.includes(file.type)) {
-      setUploadError('Formato não suportado. Use PNG, JPEG ou WEBP.')
-      return
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      setUploadError('Arquivo muito grande. Máximo 10 MB.')
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = ev => {
-      const dataUrl = ev.target?.result as string
-      setUploadedPreview(dataUrl)
-      setUploadedBase64(dataUrl.split(',')[1] || '')
-      setUploadedMime(file.type)
-      setUploadedName(file.name)
-    }
-    reader.readAsDataURL(file)
-    e.target.value = ''
-  }
-
-  const handleRemoveUpload = () => {
-    setUploadedBase64(null)
-    setUploadedPreview(null)
-    setUploadedMime('image/png')
-    setUploadedName('foto-upload')
-    setUploadError(null)
-  }
-
-  // Quando troca de aba de foto, limpa a seleção da outra aba
-  const handlePhotoSourceChange = (src: PhotoSource) => {
-    setPhotoSource(src)
-    if (src === 'gallery') {
-      handleRemoveUpload()
-    } else {
-      setSelectedPhotoId(null)
-    }
-  }
-
   // ── Derived ──
   const selectedPrompt = prompts.find(p => p.id === selectedPromptId) || null
   const selectedPhoto  = photos.find(p => p.id === selectedPhotoId)  || null
 
-  const hasPhoto =
-    photoSource === 'gallery'
-      ? !!selectedPhoto
-      : !!uploadedBase64
-
+  const hasPhoto = !!selectedPhoto
   const canConfirm = !!selectedPrompt && hasPhoto
 
+  // Agrupa fotos por categoria
+  const grouped: Record<string, { title: string; photos: ClientPhoto[] }> = {}
+  for (const p of photos) {
+    const key = p.category_id || '__none__'
+    if (!grouped[key]) grouped[key] = { title: p.category_title || 'Sem categoria', photos: [] }
+    grouped[key].photos.push(p)
+  }
+
+  // Lista de categorias com contagem
+  const categories = Object.entries(grouped).map(([key, g]) => ({
+    key,
+    title: g.title,
+    count: g.photos.length,
+  })).sort((a, b) => {
+    if (a.key === '__none__') return 1
+    if (b.key === '__none__') return -1
+    return a.title.localeCompare(b.title)
+  })
+
+  // Fotos da categoria selecionada
+  const visiblePhotos = selectedCategory === undefined
+    ? []
+    : photos.filter(p =>
+        selectedCategory === '__none__'
+          ? p.category_id === null
+          : p.category_id === selectedCategory
+      )
   // ── Confirm: gera 1 resultado por parte ──
   const handleConfirm = () => {
-    if (!selectedPrompt || !hasPhoto) return
-
-    const basePhotoInfo =
-      photoSource === 'gallery' && selectedPhoto
-        ? {
-            photoId:    selectedPhoto.id,
-            photoName:  selectedPhoto.photo_name,
-            photoUrl:   selectedPhoto.url,
-            driveFileId: selectedPhoto.drive_file_id ?? undefined,
-          }
-        : {
-            photoId:    undefined,
-            photoName:  uploadedName,
-            photoUrl:   uploadedPreview!,
-            uploadedPhotoBase64: uploadedBase64!,
-            uploadedPhotoMime:   uploadedMime,
-          }
+    if (!selectedPrompt || !selectedPhoto) return
 
     const results: AddPageResult[] = selectedPrompt.parts.map(part => ({
       promptId:    selectedPrompt.id,
       promptName:  selectedPrompt.name,
       partId:      part.id,
       partLabel:   part.label,
-      // Resolve {{Label}} contra ai_info_templates da cliente. Tags sem
-      // valor (ou não cadastradas) viram string vazia.
       partPrompt:  substitutePromptVars(part.prompt, promptVarSources),
       modelVersion: selectedPrompt.model,
-      ...basePhotoInfo,
+      photoId:     selectedPhoto.id,
+      photoName:   selectedPhoto.photo_name,
+      photoUrl:    selectedPhoto.url,
+      driveFileId: selectedPhoto.drive_file_id ?? undefined,
     }))
 
     onConfirm(results)
-  }
-
-  // Agrupa fotos por categoria (galeria)
-  const grouped: Record<string, { title: string; photos: ClientPhoto[] }> = {}
-  for (const p of photos) {
-    const key = p.category_id || '__none__'
-    if (!grouped[key]) grouped[key] = { title: p.category_title || 'Outras fotos', photos: [] }
-    grouped[key].photos.push(p)
   }
 
   // ─── Render ───────────────────────────────────────────────────────
@@ -409,134 +353,97 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
               Foto base <span className="text-rose-500">*</span>
             </p>
 
-            {/* Tabs: galeria / upload */}
-            <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit mb-3">
-              <button
-                type="button"
-                onClick={() => handlePhotoSourceChange('gallery')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  photoSource === 'gallery'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Da galeria do cliente
-              </button>
-              <button
-                type="button"
-                onClick={() => handlePhotoSourceChange('upload')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  photoSource === 'upload'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Fazer upload
-              </button>
-            </div>
-
-            {/* ── Galeria ── */}
-            {photoSource === 'gallery' && (
-              <>
-                {loadingPhotos ? (
-                  <div className="flex justify-center py-12">
-                    <div className="animate-spin h-7 w-7 border-2 border-fuchsia-400 border-t-transparent rounded-full" />
-                  </div>
-                ) : photosError ? (
-                  <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <p className="text-xs text-red-700">{photosError}</p>
-                  </div>
-                ) : photos.length === 0 ? (
-                  <div className="text-center py-12 text-sm text-gray-500 border border-dashed border-gray-300 rounded-xl">
-                    <ImageIcon className="h-8 w-8 mx-auto mb-2 text-gray-300" />
-                    Nenhuma foto enviada por esse cliente ainda.
-                  </div>
-                ) : (
-                  <div className="space-y-5">
-                    {Object.entries(grouped).map(([key, group]) => (
-                      <div key={key}>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
-                          {group.title}
-                        </p>
-                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
-                          {group.photos.map(p => {
-                            const selected = p.id === selectedPhotoId
-                            return (
-                              <button
-                                key={p.id}
-                                type="button"
-                                onClick={() => setSelectedPhotoId(p.id)}
-                                className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all ${
-                                  selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-transparent hover:border-gray-300'
-                                }`}
-                              >
-                                <img src={p.url} alt={p.photo_name} loading="lazy" className="w-full h-full object-cover" />
-                                {selected && (
-                                  <div className="absolute top-1 right-1 h-6 w-6 rounded-full bg-fuchsia-500 text-white flex items-center justify-center shadow-lg">
-                                    <Check className="h-3.5 w-3.5" />
-                                  </div>
-                                )}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* ── Upload de foto ── */}
-            {photoSource === 'upload' && (
+            {loadingPhotos ? (
+              <div className="flex justify-center py-12">
+                <div className="animate-spin h-7 w-7 border-2 border-fuchsia-400 border-t-transparent rounded-full" />
+              </div>
+            ) : photosError ? (
+              <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-red-700">{photosError}</p>
+              </div>
+            ) : photos.length === 0 ? (
+              <div className="border border-dashed border-amber-300 bg-amber-50/40 rounded-xl p-4 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-amber-800">
+                  Nenhuma foto encontrada para esta cliente. Vá até a aba <strong>Fotos</strong> do perfil da cliente e adicione as fotos antes de gerar composições.
+                </p>
+              </div>
+            ) : photoStep === 'category' ? (
+              /* ── Step: escolher categoria ── */
               <div>
-                {uploadError && (
-                  <div className="mb-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <p className="text-xs text-red-700">{uploadError}</p>
-                  </div>
-                )}
-
-                <input
-                  ref={photoFileRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  onChange={handlePhotoFileChange}
-                />
-
-                {uploadedPreview ? (
-                  <div className="flex items-center gap-3 p-3 border border-gray-200 rounded-xl bg-gray-50">
-                    <img
-                      src={uploadedPreview}
-                      alt="Foto selecionada"
-                      className="w-20 h-20 rounded-lg object-cover flex-shrink-0 border border-gray-200"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-gray-800 truncate">{uploadedName}</p>
-                      <p className="text-[11px] text-gray-500 mt-0.5">{uploadedMime}</p>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <button type="button" onClick={() => photoFileRef.current?.click()}
-                        className="text-[11px] px-2.5 py-1 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium">
-                        Trocar
-                      </button>
-                      <Btn variant="danger" size="sm" onClick={handleRemoveUpload}>
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Btn>
-                    </div>
-                  </div>
-                ) : (
+                <p className="text-xs text-gray-500 mb-2">De qual categoria você quer buscar a foto?</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {categories.map(cat => (
+                    <button
+                      key={cat.key}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCategory(cat.key === '__none__' ? '__none__' : cat.key)
+                        setSelectedPhotoId(null)
+                        setPhotoStep('photos')
+                      }}
+                      className="flex items-center gap-3 px-4 py-3 rounded-xl border border-gray-200 bg-white hover:border-fuchsia-300 hover:bg-fuchsia-50/40 transition-colors text-left group"
+                    >
+                      <div className="h-9 w-9 rounded-lg bg-fuchsia-50 text-fuchsia-400 flex items-center justify-center flex-shrink-0 group-hover:bg-fuchsia-100">
+                        <FolderOpen className="h-4 w-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate group-hover:text-fuchsia-700">
+                          {cat.title}
+                        </p>
+                        <p className="text-xs text-gray-400">{cat.count} foto{cat.count !== 1 ? 's' : ''}</p>
+                      </div>
+                      <span className="text-gray-300 group-hover:text-fuchsia-400 text-lg leading-none">→</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              /* ── Step: escolher foto da categoria ── */
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-gray-500">
+                    {selectedPhotoId ? (
+                      <span className="text-fuchsia-600 font-medium">✓ Foto selecionada</span>
+                    ) : 'Clique em uma foto para selecioná-la'}
+                  </p>
                   <button
                     type="button"
-                    onClick={() => photoFileRef.current?.click()}
-                    className="w-full flex flex-col items-center gap-2 py-10 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 hover:border-fuchsia-400 hover:text-fuchsia-600 hover:bg-fuchsia-50/30 transition-colors"
+                    onClick={() => { setPhotoStep('category'); setSelectedPhotoId(null) }}
+                    className="text-xs text-gray-400 hover:text-fuchsia-600 flex items-center gap-1"
                   >
-                    <UploadCloud className="h-8 w-8" />
-                    <span className="text-sm font-medium">Clique para selecionar a foto base</span>
-                    <span className="text-xs text-gray-400">PNG, JPEG, WEBP · Máx 10 MB</span>
+                    <ChevronLeft className="h-3 w-3" /> Categorias
                   </button>
+                </div>
+                {visiblePhotos.length === 0 ? (
+                  <div className="text-center py-8 text-sm text-gray-500 border border-dashed border-gray-300 rounded-xl">
+                    <ImageIcon className="h-7 w-7 mx-auto mb-2 text-gray-300" />
+                    Nenhuma foto nesta categoria.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+                    {visiblePhotos.map(p => {
+                      const selected = p.id === selectedPhotoId
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setSelectedPhotoId(p.id)}
+                          className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all ${
+                            selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-transparent hover:border-gray-300'
+                          }`}
+                        >
+                          <img src={p.url} alt={p.photo_name} loading="lazy" className="w-full h-full object-cover" />
+                          {selected && (
+                            <div className="absolute top-1 right-1 h-6 w-6 rounded-full bg-fuchsia-500 text-white flex items-center justify-center shadow-lg">
+                              <Check className="h-3.5 w-3.5" />
+                            </div>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
             )}

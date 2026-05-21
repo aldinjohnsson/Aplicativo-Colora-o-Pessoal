@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Plus, Layers, Eye, EyeOff, Trash2, AlertCircle,
+  Plus, Layers, Eye, EyeOff, Trash2, AlertCircle, AlertTriangle,
   FileText, ExternalLink, Loader2, Inbox, Pencil,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
@@ -372,6 +372,7 @@ function TemplateCard({
 }) {
   const [thumb, setThumb] = useState<string | null>(null)
   const [thumbError, setThumbError] = useState(false)
+  const isBroken = thumbError
 
   // Gera thumbnail: baixa o PDF, renderiza a primeira página em dataURL
   useEffect(() => {
@@ -401,7 +402,11 @@ function TemplateCard({
 
   return (
     <div className={`group bg-white border rounded-xl overflow-hidden flex flex-col transition-all ${
-      template.is_active ? 'border-gray-200 hover:border-rose-300 hover:shadow-md' : 'border-gray-100 opacity-70'
+      isBroken
+        ? 'border-red-200 bg-red-50/30'
+        : template.is_active
+          ? 'border-gray-200 hover:border-rose-300 hover:shadow-md'
+          : 'border-gray-100 opacity-70'
     }`}>
       {/* Thumbnail */}
       <button
@@ -416,9 +421,10 @@ function TemplateCard({
             className="absolute inset-0 w-full h-full object-contain"
           />
         ) : thumbError ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400">
-            <FileText className="h-8 w-8 mb-1" />
-            <span className="text-xs">Preview indisponível</span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 bg-red-50/60">
+            <AlertTriangle className="h-8 w-8 mb-1" />
+            <span className="text-xs font-medium">PDF inacessível</span>
+            <span className="text-[10px] text-red-300 mt-0.5">Clique em excluir para remover</span>
           </div>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-gray-400">
@@ -449,30 +455,42 @@ function TemplateCard({
 
         {/* Actions */}
         <div className="flex items-center gap-1 mt-3 flex-wrap">
-          <Btn variant="outline" size="sm" onClick={onOpen} className="flex-1">
-            <ExternalLink className="h-3.5 w-3.5" /> Abrir editor
-          </Btn>
-          <button
-            onClick={onEdit}
-            title="Renomear"
-            className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onToggle}
-            title={template.is_active ? 'Desativar' : 'Ativar'}
-            className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
-          >
-            {template.is_active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-          </button>
-          <button
-            onClick={onDelete}
-            title="Excluir"
-            className="p-2 rounded-lg text-red-500 hover:bg-red-50"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
+          {isBroken ? (
+            /* Quando o PDF está quebrado: só mostra excluir em destaque */
+            <button
+              onClick={onDelete}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded-lg font-medium bg-red-600 text-white hover:bg-red-700 transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Excluir template
+            </button>
+          ) : (
+            <>
+              <Btn variant="outline" size="sm" onClick={onOpen} className="flex-1">
+                <ExternalLink className="h-3.5 w-3.5" /> Abrir editor
+              </Btn>
+              <button
+                onClick={onEdit}
+                title="Renomear"
+                className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
+              <button
+                onClick={onToggle}
+                title={template.is_active ? 'Desativar' : 'Ativar'}
+                className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+              >
+                {template.is_active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              </button>
+              <button
+                onClick={onDelete}
+                title="Excluir"
+                className="p-2 rounded-lg text-red-500 hover:bg-red-50"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

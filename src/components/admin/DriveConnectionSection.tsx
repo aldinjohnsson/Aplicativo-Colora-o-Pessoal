@@ -101,42 +101,83 @@ export function DriveConnectionSection() {
               <span>As pastas dos clientes são excluídas automaticamente <strong>21 dias após a análise ser entregue</strong>.</span>
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-gray-700">
-                <Folder className="inline h-4 w-4 mr-1 -mt-0.5 text-gray-400" />
-                Pasta raiz no Drive (opcional)
-              </label>
-              <p className="text-xs text-gray-500">
-                Dentro dela vão ser criadas subpastas com o nome de cada cliente.
-                Se deixar vazio, ficam direto na raiz do "Meu Drive".
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">
-                <input
-                  type="text"
-                  placeholder="Nome (ex: Clientes 2026)"
-                  value={rootInput.name}
-                  onChange={e => setRootInput(s => ({ ...s, name: e.target.value }))}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
-                />
-                <input
-                  type="text"
-                  placeholder="ID da pasta (ex: 1aBcDeF...)"
-                  value={rootInput.id}
-                  onChange={e => setRootInput(s => ({ ...s, id: e.target.value }))}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
-                />
+            {/* ── Pasta raiz ─────────────────────────────────────── */}
+            <div className="border border-gray-200 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Folder className="h-4 w-4 text-gray-500" />
+                  <span className="text-sm font-medium text-gray-700">Pasta raiz no Drive</span>
+                  <span className="text-xs text-gray-400 bg-gray-200 rounded-full px-2 py-0.5">opcional</span>
+                </div>
+                <a
+                  href="https://drive.google.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-green-700 font-medium hover:underline"
+                >
+                  Abrir Google Drive
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
               </div>
-              <p className="text-xs text-gray-400">
-                Pra pegar o ID: abra a pasta no Drive, copie da URL — o trecho depois de <code>/folders/</code>.
-              </p>
-              <button
-                onClick={handleSaveRoot}
-                disabled={busy}
-                className="inline-flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50"
-              >
-                {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                Salvar pasta raiz
-              </button>
+
+              <div className="px-4 py-4 space-y-4">
+                {/* Passos */}
+                <div className="space-y-2.5">
+                  {[
+                    { n: 1, text: 'Crie uma pasta no Google Drive onde as fotos das clientes serão salvas (ex: "Clientes Coloração")' },
+                    { n: 2, text: 'Abra essa pasta no Drive — a URL vai ficar assim:' },
+                    { n: 3, text: 'Copie o ID que aparece depois de /folders/ e cole no campo abaixo' },
+                  ].map(step => (
+                    <div key={step.n} className="flex gap-3 items-start">
+                      <div className="w-5 h-5 rounded-full bg-green-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
+                        {step.n}
+                      </div>
+                      <p className="text-xs text-gray-600 leading-relaxed">{step.text}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Exemplo visual de URL */}
+                <div className="bg-gray-900 rounded-lg px-3 py-2.5 font-mono text-xs leading-relaxed break-all select-all">
+                  <span className="text-gray-400">drive.google.com/drive/folders/</span>
+                  <span className="text-green-400 font-semibold">1aBcDeFgHiJkLmNoPqRsTuVwXyZ</span>
+                </div>
+
+                {/* Input + botão */}
+                <div className="flex gap-2 items-center">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      placeholder="Cole o ID aqui (ex: 1aBcDeFgHiJkL…)"
+                      value={rootInput.id}
+                      onChange={e => setRootInput(s => ({ ...s, id: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent pr-24"
+                    />
+                    {rootInput.id && (
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium">
+                        ✓ preenchido
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleSaveRoot}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    Salvar
+                  </button>
+                </div>
+
+                {rootInput.id && (
+                  <p className="text-xs text-gray-500">
+                    As subpastas de cada cliente serão criadas dentro dessa pasta.
+                    Se deixar vazio, ficam direto em "Meu Drive".
+                  </p>
+                )}
+              </div>
             </div>
           </>
         ) : (

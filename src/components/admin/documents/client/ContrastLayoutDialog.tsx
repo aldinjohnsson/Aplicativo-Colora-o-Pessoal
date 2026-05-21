@@ -14,7 +14,7 @@ import React, {
 } from 'react'
 import {
   X, Download, ChevronLeft, Loader2,
-  Image as ImageIcon, Check, AlertCircle, Save,
+  Image as ImageIcon, Check, AlertCircle, Save, FolderOpen,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { formatContrastValue, type ContrastLayoutData } from '../lib/contrastLayout'
@@ -31,7 +31,8 @@ const H = 950
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-interface ClientPhoto { id: string; url: string; thumb?: string; driveFileId?: string | null }
+interface ClientPhoto { id: string; url: string; thumb?: string; driveFileId?: string | null; categoryId?: string | null; categoryTitle?: string | null }
+interface PhotoCategory { id: string | null; title: string; count: number }
 
 interface Props {
   clientId:   string
@@ -219,10 +220,13 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 export function ContrastLayoutDialog({
   clientId, clientName, initial = null, onClose, onSave,
 }: Props) {
-  const [step, setStep]                 = useState<'pick' | 'edit'>(initial?.photoId ? 'edit' : 'pick')
+  const [step, setStep]                 = useState<'category' | 'pick' | 'edit'>(initial?.photoId ? 'edit' : 'category')
   const [photos, setPhotos]             = useState<ClientPhoto[]>([])
+  const [categories, setCategories]     = useState<PhotoCategory[]>([])
+  const [selectedCategory, setSelectedCategory] = useState<string | null | undefined>(undefined) // undefined = não escolhida ainda
   const [blobUrls, setBlobUrls]         = useState<Record<string, string>>({})
   const [photoLoading, setPhotoLoading] = useState(true)
+  const [blobLoading, setBlobLoading]   = useState(false)
   const [photoError, setPhotoError]     = useState<string | null>(null)
   const [loadedImg, setLoadedImg]       = useState<HTMLImageElement | null>(null)
   const [loadingImg, setLoadingImg]     = useState(false)
@@ -247,43 +251,76 @@ export function ContrastLayoutDialog({
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
   }, [])
 
-  // ── Carrega fotos ────────────────────────────────────────────────
+  // ── Carrega metadados das fotos (sem blobs) ──────────────────────
 
   useEffect(() => {
     let cancelled = false
     setPhotoLoading(true)
     documentsService.listClientPhotos(clientId)
-      .then(async list => {
+      .then(list => {
         if (cancelled) return
         const mapped: ClientPhoto[] = list.map(p => ({
           id: p.id,
           url: p.url,
           driveFileId: (p as any).drive_file_id ?? null,
+          categoryId: (p as any).category_id ?? null,
+          categoryTitle: (p as any).category_title ?? null,
         }))
         setPhotos(mapped)
 
-        // Pré-carrega thumbnails de fotos do Drive como blob: URL
-        // pra evitar falha de auth/CORS no <img src> do grid.
-        const drivePhotos = mapped.filter(p => p.driveFileId)
-        if (drivePhotos.length === 0) return
-
-        const entries = await Promise.allSettled(
-          drivePhotos.map(async p => {
-            const blob = await driveStorage.fetchPhotoBlob(p.driveFileId!)
-            return { id: p.id, blobUrl: URL.createObjectURL(blob) }
-          })
-        )
-        if (cancelled) return
-        const map: Record<string, string> = {}
-        for (const r of entries) {
-          if (r.status === 'fulfilled') map[r.value.id] = r.value.blobUrl
+        // Monta lista de categorias com contagem
+        const catMap: Record<string, PhotoCategory> = {}
+        for (const p of mapped) {
+          const key = p.categoryId ?? '__none__'
+          if (!catMap[key]) {
+            catMap[key] = {
+              id: p.categoryId ?? null,
+              title: p.categoryTitle ?? 'Sem categoria',
+              count: 0,
+            }
+          }
+          catMap[key].count++
         }
-        setBlobUrls(map)
+        setCategories(Object.values(catMap).sort((a, b) => {
+          if (a.id === null) return 1   // "Sem categoria" vai pro final
+          if (b.id === null) return -1
+          return a.title.localeCompare(b.title)
+        }))
       })
-      .catch(e  => { if (!cancelled) setPhotoError(e?.message || 'Erro ao carregar fotos') })
+      .catch(e => { if (!cancelled) setPhotoError(e?.message || 'Erro ao carregar fotos') })
       .finally(() => { if (!cancelled) setPhotoLoading(false) })
     return () => { cancelled = true }
   }, [clientId])
+
+  // ── Quando categoria é selecionada, carrega blobs apenas das fotos dela ──
+
+  useEffect(() => {
+    if (selectedCategory === undefined) return   // ainda não escolheu
+    let cancelled = false
+    const subset = photos.filter(p =>
+      selectedCategory === '__none__'
+        ? p.categoryId === null
+        : p.categoryId === selectedCategory
+    )
+    const driveSubset = subset.filter(p => p.driveFileId)
+    if (driveSubset.length === 0) return
+
+    setBlobLoading(true)
+    Promise.allSettled(
+      driveSubset.map(async p => {
+        const blob = await driveStorage.fetchPhotoBlob(p.driveFileId!)
+        return { id: p.id, blobUrl: URL.createObjectURL(blob) }
+      })
+    ).then(entries => {
+      if (cancelled) return
+      const map: Record<string, string> = {}
+      for (const r of entries) {
+        if (r.status === 'fulfilled') map[r.value.id] = r.value.blobUrl
+      }
+      setBlobUrls(prev => ({ ...prev, ...map }))
+    }).finally(() => { if (!cancelled) setBlobLoading(false) })
+    return () => { cancelled = true }
+  }, [selectedCategory, photos])
 
   // Se abriu em modo edit (initial.photoId presente), tenta carregar a
   // foto automaticamente assim que a lista de fotos chega.
@@ -294,9 +331,8 @@ export function ContrastLayoutDialog({
     if (photo) {
       void selectPhoto(photo.url, photo.id, photo.driveFileId)
     } else {
-      // foto salva não existe mais → volta pra step pick
       setSelectedPhotoId(null)
-      setStep('pick')
+      setStep('category')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos, step])
@@ -391,9 +427,14 @@ export function ContrastLayoutDialog({
     }
   }
 
-  // ── Step: pick ───────────────────────────────────────────────────
+  // ── Step: category ───────────────────────────────────────────────
 
-  const renderPick = () => (
+  const handleSelectCategory = (catId: string | null) => {
+    setSelectedCategory(catId ?? '__none__')
+    setStep('pick')
+  }
+
+  const renderCategory = () => (
     <div className="flex-1 overflow-y-auto px-5 py-4">
       {photoLoading ? (
         <div className="flex justify-center py-12">
@@ -404,7 +445,7 @@ export function ContrastLayoutDialog({
           <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
           <p className="text-sm text-red-700">{photoError}</p>
         </div>
-      ) : photos.length === 0 ? (
+      ) : categories.length === 0 ? (
         <div className="border border-dashed border-gray-300 rounded-xl p-10 text-center">
           <ImageIcon className="h-6 w-6 text-gray-400 mx-auto mb-2" />
           <p className="text-sm font-medium text-gray-700">Nenhuma foto encontrada</p>
@@ -412,14 +453,81 @@ export function ContrastLayoutDialog({
         </div>
       ) : (
         <>
-          <p className="text-xs text-gray-500 mb-3">Clique em uma foto para usá-la no layout.</p>
-          {loadingImg && (
-            <div className="flex items-center gap-2 mb-3 text-sm text-rose-600">
-              <Loader2 className="h-4 w-4 animate-spin" /> Baixando foto...
-            </div>
-          )}
+          <p className="text-xs text-gray-500 mb-3">De qual categoria você quer escolher a foto?</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {categories.map(cat => (
+              <button
+                key={cat.id ?? '__none__'}
+                onClick={() => handleSelectCategory(cat.id)}
+                className="flex items-center gap-3 px-4 py-3.5 rounded-xl border border-gray-200 bg-white hover:border-rose-300 hover:bg-rose-50/40 transition-colors text-left group"
+              >
+                <div className="h-9 w-9 rounded-lg bg-rose-50 text-rose-400 flex items-center justify-center flex-shrink-0 group-hover:bg-rose-100">
+                  <FolderOpen className="h-4.5 w-4.5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate group-hover:text-rose-700">
+                    {cat.title}
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {cat.count} foto{cat.count !== 1 ? 's' : ''}
+                  </p>
+                </div>
+                <span className="text-gray-300 group-hover:text-rose-400 text-lg leading-none">→</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+
+  // ── Step: pick ───────────────────────────────────────────────────
+
+  const renderPick = () => {
+    const visiblePhotos = selectedCategory === undefined
+      ? photos
+      : photos.filter(p =>
+          selectedCategory === '__none__'
+            ? p.categoryId === null
+            : p.categoryId === selectedCategory
+        )
+
+    return (
+    <div className="flex-1 overflow-y-auto px-5 py-4">
+      {blobLoading && (
+        <div className="flex items-center gap-2 mb-3 text-sm text-rose-600">
+          <Loader2 className="h-4 w-4 animate-spin" /> Carregando fotos...
+        </div>
+      )}
+      {loadingImg && (
+        <div className="flex items-center gap-2 mb-3 text-sm text-rose-600">
+          <Loader2 className="h-4 w-4 animate-spin" /> Baixando foto...
+        </div>
+      )}
+      {photoError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2 mb-3">
+          <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-red-700">{photoError}</p>
+        </div>
+      )}
+      {visiblePhotos.length === 0 && !blobLoading ? (
+        <div className="border border-dashed border-gray-300 rounded-xl p-10 text-center">
+          <ImageIcon className="h-6 w-6 text-gray-400 mx-auto mb-2" />
+          <p className="text-sm font-medium text-gray-700">Nenhuma foto nesta categoria</p>
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs text-gray-500">Clique em uma foto para usá-la no layout.</p>
+            <button
+              onClick={() => setStep('category')}
+              className="text-xs text-gray-400 hover:text-rose-600 flex items-center gap-1"
+            >
+              <ChevronLeft className="h-3 w-3" /> Categorias
+            </button>
+          </div>
           <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-            {photos.map(p => (
+            {visiblePhotos.map(p => (
               <button key={p.id} onClick={() => selectPhoto(p.url, p.id, p.driveFileId)} disabled={loadingImg}
                 className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-rose-400 transition-colors relative group disabled:opacity-50">
                 <img src={blobUrls[p.id] || p.thumb || p.url} alt="" className="w-full h-full object-cover" />
@@ -430,7 +538,8 @@ export function ContrastLayoutDialog({
         </>
       )}
     </div>
-  )
+    )
+  }
 
   // ── Step: edit ───────────────────────────────────────────────────
 
@@ -478,7 +587,7 @@ export function ContrastLayoutDialog({
             onChange={e => setYOff(Number(e.target.value))} className="w-28 accent-rose-500" />
         </div>
 
-        <button onClick={() => setStep('pick')}
+        <button onClick={() => setStep('category')}
           className="ml-auto text-xs text-gray-500 hover:text-gray-800 flex items-center gap-1 underline">
           <ChevronLeft className="h-3 w-3" /> Trocar foto
         </button>
@@ -536,7 +645,9 @@ export function ContrastLayoutDialog({
           <div>
             <p className="font-semibold text-gray-900">Ferramenta de Contraste</p>
             <p className="text-xs text-gray-500 mt-0.5">
-              {step === 'pick'
+              {step === 'category'
+                ? `Escolha a categoria de fotos de ${clientName}`
+                : step === 'pick'
                 ? `Escolha uma foto de ${clientName} para começar`
                 : 'Ajuste a faixa de contraste e salve. O valor vira tag pra usar em prompts.'}
             </p>
@@ -545,7 +656,7 @@ export function ContrastLayoutDialog({
             <X className="h-4 w-4" />
           </button>
         </div>
-        {step === 'pick' ? renderPick() : renderEdit()}
+        {step === 'category' ? renderCategory() : step === 'pick' ? renderPick() : renderEdit()}
         {renderFooter()}
       </div>
     </div>

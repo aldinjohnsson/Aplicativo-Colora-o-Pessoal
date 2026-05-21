@@ -8,28 +8,35 @@
 //
 // O AdminDashboard registra /documents/* apontando para este componente.
 
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { FileText, Tag as TagIcon, Layers, Sparkles, Wand2 } from 'lucide-react'
+import { FileText, Tag as TagIcon, Layers, Sparkles } from 'lucide-react'
+import { adminService } from '../../../lib/services'
 import { TagsManager } from './tags/TagsManager'
 import { TemplatesList } from './templates/TemplatesList'
 import { TemplateEditor } from './templates/editor/TemplateEditor'
 import { AiImagePromptsManager } from './prompts/AiImagePromptsManager'
-import { AiCompositionsManager } from './ai-compositions/AiCompositionsManager'
 
-type Tab = 'tags' | 'templates' | 'prompts' | 'compositions'
+type Tab = 'tags' | 'templates' | 'prompts'
 
 // ─── Shell (header + tabs) ───────────────────────────────────────────
 
 function DocumentsHubShell({ tab }: { tab: Tab }) {
   const navigate = useNavigate()
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
 
-  const TABS: { id: Tab; label: string; icon: any; to: string }[] = [
-    { id: 'tags',         label: 'Tags',          icon: TagIcon,  to: '/admin/documents/tags' },
-    { id: 'templates',    label: 'Templates',     icon: Layers,   to: '/admin/documents/templates' },
-    { id: 'prompts',      label: 'Prompts IA',    icon: Sparkles, to: '/admin/documents/prompts' },
-    { id: 'compositions', label: 'Composições IA', icon: Wand2,    to: '/admin/documents/compositions' },
+  useEffect(() => {
+    adminService.getCurrentAdmin().then(a => {
+      setIsSuperAdmin(a.role === 'super_admin')
+    }).catch(() => {})
+  }, [])
+
+  const ALL_TABS: { id: Tab; label: string; icon: any; to: string; superAdminOnly?: boolean }[] = [
+    { id: 'tags',      label: 'Tags',       icon: TagIcon,  to: '/admin/documents/tags' },
+    { id: 'templates', label: 'Templates',  icon: Layers,   to: '/admin/documents/templates' },
+    { id: 'prompts',   label: 'Prompts IA', icon: Sparkles, to: '/admin/documents/prompts', superAdminOnly: true },
   ]
+  const TABS = ALL_TABS.filter(t => !t.superAdminOnly || isSuperAdmin)
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
@@ -68,8 +75,7 @@ function DocumentsHubShell({ tab }: { tab: Tab }) {
 
           {tab === 'tags'         && <TagsManager />}
           {tab === 'templates'    && <TemplatesList />}
-          {tab === 'prompts'      && <AiImagePromptsManager />}
-          {tab === 'compositions' && <AiCompositionsManager />}
+          {tab === 'prompts'      && isSuperAdmin && <AiImagePromptsManager />}
         </div>
       </div>
     </div>
@@ -86,7 +92,6 @@ export function DocumentsHub() {
   const tab: Tab =
     path.includes('/documents/templates')    ? 'templates' :
     path.includes('/documents/prompts')      ? 'prompts' :
-    path.includes('/documents/compositions') ? 'compositions' :
     'tags'
 
   return (
@@ -98,7 +103,6 @@ export function DocumentsHub() {
       <Route path="tags"         element={<DocumentsHubShell tab="tags" />} />
       <Route path="templates"    element={<DocumentsHubShell tab="templates" />} />
       <Route path="prompts"      element={<DocumentsHubShell tab="prompts" />} />
-      <Route path="compositions" element={<DocumentsHubShell tab="compositions" />} />
 
       {/* Default: redireciona para Tags */}
       <Route path="*" element={<DocumentsHubShell tab={tab} />} />

@@ -784,6 +784,8 @@ function KanbanColumn({
   columnLabels = {},
   formObsIds,
   aiPhotoPendingIds,
+  sortOrder = 'recent',
+  onSortChange,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -799,6 +801,8 @@ function KanbanColumn({
   columnLabels?: Record<string, string>
   formObsIds?: Set<string>
   aiPhotoPendingIds?: Set<string>
+  sortOrder?: string
+  onSortChange?: (sort: string) => void
 }) {
   const obsIds: Set<string> = formObsIds ?? new Set<string>()
   const cfg = STATUSES[statusKey]
@@ -812,6 +816,30 @@ function KanbanColumn({
     : 0
   const [compact, setCompact] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [sortDropOpen, setSortDropOpen] = useState(false)
+  const sortBtnRef = useRef<HTMLButtonElement>(null)
+  const sortDropRef = useRef<HTMLDivElement>(null)
+  const [sortDropPos, setSortDropPos] = useState<{ top: number; left: number } | null>(null)
+
+  // Close sort dropdown on outside click
+  useEffect(() => {
+    if (!sortDropOpen) return
+    const h = (e: MouseEvent) => {
+      if (
+        sortBtnRef.current && !sortBtnRef.current.contains(e.target as Node) &&
+        sortDropRef.current && !sortDropRef.current.contains(e.target as Node)
+      ) setSortDropOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [sortDropOpen])
+
+  const SORT_OPTIONS = [
+    { key: 'recent',    label: 'Recentes primeiro' },
+    { key: 'oldest',    label: 'Antigas primeiro' },
+    { key: 'name_asc',  label: 'Nome A→Z' },
+    { key: 'name_desc', label: 'Nome Z→A' },
+  ]
 
   // ── Inline label editing ──────────────────────────────────────────────
   const [editingLabel, setEditingLabel] = useState(false)
@@ -840,23 +868,30 @@ function KanbanColumn({
     return (
       <div onClick={onToggleCollapse} title={`Expandir: ${cfg.label}`}
         style={{
-          flexShrink: 0, width: 44, background: t.colBg, borderRadius: 12,
+          flexShrink: 0, width: 36, background: t.colBg, borderRadius: 12,
           border: `1px solid ${t.border}`, cursor: 'pointer',
           display: 'flex', flexDirection: 'column', alignItems: 'center',
-          padding: '14px 0', gap: 10,
+          padding: '12px 0 14px', gap: 8, transition: 'background 0.15s, border 0.15s',
         }}
+        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = t.surface2 }}
+        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = t.colBg }}
       >
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: cfg.color }} />
-        <span style={{ fontSize: 11, fontWeight: 700, color: t.text2, writingMode: 'vertical-rl', textOrientation: 'mixed', letterSpacing: 1, transform: 'rotate(180deg)', userSelect: 'none' }}>
+        <div style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, flexShrink: 0 }} />
+        <span style={{
+          fontSize: 11, fontWeight: 700, color: t.text2,
+          writingMode: 'vertical-rl', textOrientation: 'mixed',
+          letterSpacing: 1, transform: 'rotate(180deg)', userSelect: 'none',
+          flex: 1,
+        }}>
           {displayLabel}
         </span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: t.accent, background: t.accentLight, borderRadius: 20, padding: '2px 6px', minWidth: 22, textAlign: 'center' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: t.accent, background: t.accentLight, borderRadius: 20, padding: '2px 5px', minWidth: 20, textAlign: 'center' }}>
           {clients.length}
         </span>
-        {dangerCount > 0 && <span style={{ fontSize: 10, color: '#ef4444' }}>⚠{dangerCount}</span>}
-        {reviewCount > 0 && <span style={{ fontSize: 10, color: '#ec4899' }}>📸{reviewCount}</span>}
-        {aiReviewCount > 0 && <span style={{ fontSize: 10, color: '#f97316' }}>✨{aiReviewCount}</span>}
-        <ChevronRight size={13} color={t.text3} />
+        {dangerCount > 0 && <span style={{ fontSize: 9, color: '#ef4444' }}>⚠{dangerCount}</span>}
+        {reviewCount > 0 && <span style={{ fontSize: 9, color: '#ec4899' }}>📸{reviewCount}</span>}
+        {aiReviewCount > 0 && <span style={{ fontSize: 9, color: '#f97316' }}>✨{aiReviewCount}</span>}
+        <ChevronRight size={12} color={t.text3} style={{ opacity: 0.6 }} />
       </div>
     )
   }
@@ -956,10 +991,90 @@ function KanbanColumn({
             <span style={{ fontSize: 10, fontWeight: 700, color: '#9d174d', background: '#fce7f3', borderRadius: 20, padding: '1px 6px' }}>📸 revisar</span>
           )}
           <button onClick={() => setCompact(v => !v)} title={compact ? 'Modo normal' : 'Modo compacto'}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: t.text3, opacity: 0.7, borderRadius: 4, display: 'flex' }}
+            style={{ background: compact ? t.accentLight : 'none', border: 'none', cursor: 'pointer', padding: 2, color: compact ? t.accent : t.text3, opacity: compact ? 1 : 0.7, borderRadius: 4, display: 'flex' }}
             onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.opacity = '1'}
-            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'}
+            onMouseLeave={e => { if (!compact) (e.currentTarget as HTMLButtonElement).style.opacity = '0.7' }}
           ><Layers size={13} /></button>
+
+          {/* Sort button — only shown when onSortChange is provided (completed column) */}
+          {onSortChange && (
+            <div style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+              <button
+                ref={sortBtnRef}
+                onClick={e => {
+                  e.stopPropagation()
+                  if (sortDropOpen) { setSortDropOpen(false); return }
+                  const rect = sortBtnRef.current?.getBoundingClientRect()
+                  if (rect) {
+                    const dropWidth = 196
+                    const left = Math.max(8, Math.min(rect.right - dropWidth, window.innerWidth - dropWidth - 8))
+                    setSortDropPos({ top: rect.bottom + 4, left })
+                  }
+                  setSortDropOpen(true)
+                }}
+                title="Ordenar por"
+                style={{
+                  background: sortDropOpen ? t.accentLight : 'none',
+                  border: 'none', cursor: 'pointer', padding: 2,
+                  color: sortDropOpen ? t.accent : t.text3,
+                  opacity: sortDropOpen ? 1 : 0.7, borderRadius: 4, display: 'flex',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1' }}
+                onMouseLeave={e => { if (!sortDropOpen) (e.currentTarget as HTMLButtonElement).style.opacity = '0.7' }}
+              >
+                {/* Sort icon: two lines with arrows */}
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M1.5 3.5h10M1.5 6.5h7M1.5 9.5h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                </svg>
+              </button>
+              {sortDropOpen && sortDropPos && createPortal(
+                <div
+                  ref={sortDropRef}
+                  style={{
+                    position: 'fixed', top: sortDropPos.top, left: sortDropPos.left,
+                    background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10,
+                    boxShadow: '0 8px 28px rgba(0,0,0,0.18)', zIndex: 9999, width: 196,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div style={{ padding: '8px 12px 6px', borderBottom: `1px solid ${t.border}` }}>
+                    <p style={{ margin: 0, fontSize: 10, fontWeight: 700, color: t.text3, textTransform: 'uppercase', letterSpacing: 0.9 }}>
+                      Ordenar por
+                    </p>
+                  </div>
+                  <div style={{ padding: '4px 6px 6px' }}>
+                    {SORT_OPTIONS.map(opt => (
+                      <button
+                        key={opt.key}
+                        onClick={() => { onSortChange(opt.key); setSortDropOpen(false) }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                          padding: '8px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                          background: sortOrder === opt.key ? t.accentLight : 'none',
+                          color: sortOrder === opt.key ? t.accent : t.text2,
+                          fontSize: 12, fontWeight: sortOrder === opt.key ? 700 : 400,
+                          textAlign: 'left', transition: 'background 0.1s',
+                        }}
+                        onMouseEnter={e => { if (sortOrder !== opt.key) (e.currentTarget as HTMLButtonElement).style.background = t.surface2 }}
+                        onMouseLeave={e => { if (sortOrder !== opt.key) (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+                      >
+                        {sortOrder === opt.key && (
+                          <div style={{ width: 6, height: 6, borderRadius: '50%', background: t.accent, flexShrink: 0 }} />
+                        )}
+                        {sortOrder !== opt.key && (
+                          <div style={{ width: 6, height: 6, borderRadius: '50%', background: t.border, flexShrink: 0 }} />
+                        )}
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>,
+                document.body
+              )}
+            </div>
+          )}
+
           <button onClick={onToggleCollapse} title="Recolher coluna"
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: t.text3, opacity: 0.7, borderRadius: 4, display: 'flex' }}
             onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.opacity = '1'}
@@ -1056,15 +1171,7 @@ function KanbanSidebar({
         display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 30,
       }}>
         <div style={{ width: 220, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ padding: '12px 12px 8px' }}>
-            <div style={{ position: 'relative' }}>
-              <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: t.text3 }} />
-              <input value={search} onChange={e => onSearch(e.target.value)} placeholder="Buscar cliente..."
-                style={{ width: '100%', padding: '7px 10px 7px 30px', borderRadius: 8, border: `1px solid ${t.border}`, background: t.surface2, fontSize: 12, color: t.text, outline: 'none', boxSizing: 'border-box' as const }} />
-            </div>
-          </div>
-
-          <div style={{ padding: '4px 8px', flex: 1, overflowY: 'auto' }}>
+          <div style={{ padding: '4px 8px', flex: 1, overflowY: 'auto', paddingTop: 10 }}>
             {navBtn('all', 'Todas as clientes', total)}
             {navBtn('danger', 'Prazo crítico', dangerCount, '#ef4444', <AlertTriangle size={14} />)}
             {navBtn('photos_submitted', 'Aguardando revisão', counts['photos_submitted'] || 0, '#9d174d', <Camera size={14} />)}
@@ -1305,6 +1412,17 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [form, setForm] = useState({ full_name: '', email: '', phone: '', birth_date: '', plan_id: '', notes: '' })
   const [themeOpen, setThemeOpen] = useState(false)
   const themeRef = useRef<HTMLDivElement>(null)
+  const searchWrapRef = useRef<HTMLDivElement>(null)
+  // ── Sort preference for "completed" column (persisted in localStorage) ──
+  const [completedSort, setCompletedSort] = useState<string>(
+    () => localStorage.getItem('kanban-sort-completed') || 'recent'
+  )
+  const handleCompletedSortChange = useCallback((sort: string) => {
+    setCompletedSort(sort)
+    localStorage.setItem('kanban-sort-completed', sort)
+  }, [])
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const [searchDropOpen, setSearchDropOpen] = useState(false)
   const navigate = useNavigate()
 
   // ── Drag & Drop state ──────────────────────────────────────────────────
@@ -1337,6 +1455,17 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   }, [])
   useEffect(() => {
     const h = (e: MouseEvent) => { if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  // Fecha dropdown de busca ao clicar fora
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) {
+        setSearchDropOpen(false)
+      }
+    }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [])
@@ -1780,8 +1909,20 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const filteredActive = useMemo(() => {
     let list = activeClients
     if (search.trim()) {
-      const q = search.toLowerCase()
-      list = list.filter(c => c.full_name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q) || (c.phone && c.phone.toLowerCase().includes(q)))
+      const qRaw = search.toLowerCase()
+      const qDigits = search.replace(/\D/g, '')
+      list = list.filter(c => {
+        const planName = ((c as any).plan?.name || '').toLowerCase()
+        const phone = (c.phone || '').toLowerCase()
+        const phoneDigits = phone.replace(/\D/g, '')
+        return (
+          c.full_name.toLowerCase().includes(qRaw) ||
+          c.email.toLowerCase().includes(qRaw) ||
+          phone.includes(qRaw) ||
+          (qDigits.length >= 4 && phoneDigits.includes(qDigits)) ||
+          planName.includes(qRaw)
+        )
+      })
     }
     if (filter === 'danger') list = list.filter(c => getDeadlineInfo(c, deadlines[c.id])?.urgency === 'danger')
     else if (COL_ORDER.includes(filter)) list = list.filter(c => c.status === filter)
@@ -1793,14 +1934,27 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     COL_ORDER.forEach(s => { groups[s] = [] })
     filteredActive.forEach(c => { if (groups[c.status]) groups[c.status].push(c) })
     Object.keys(groups).forEach(status => {
-      groups[status].sort((a, b) => {
-        const dlA = deadlines[a.id]; const dlB = deadlines[b.id]
-        if (dlA && !dlB) return -1; if (!dlA && dlB) return 1; if (!dlA && !dlB) return 0
-        return new Date(dlA.deadline_date).getTime() - new Date(dlB.deadline_date).getTime()
-      })
+      if (status === 'completed') {
+        // Apply the user-selected sort for the completed column
+        groups[status].sort((a, b) => {
+          if (completedSort === 'name_asc') return a.full_name.localeCompare(b.full_name, 'pt-BR')
+          if (completedSort === 'name_desc') return b.full_name.localeCompare(a.full_name, 'pt-BR')
+          // For date sorts: use created_at (most reliable timestamp)
+          const dateA = new Date((a as any).created_at || 0).getTime()
+          const dateB = new Date((b as any).created_at || 0).getTime()
+          if (completedSort === 'oldest') return dateA - dateB
+          return dateB - dateA // 'recent' (default)
+        })
+      } else {
+        groups[status].sort((a, b) => {
+          const dlA = deadlines[a.id]; const dlB = deadlines[b.id]
+          if (dlA && !dlB) return -1; if (!dlA && dlB) return 1; if (!dlA && !dlB) return 0
+          return new Date(dlA.deadline_date).getTime() - new Date(dlB.deadline_date).getTime()
+        })
+      }
     })
     return groups
-  }, [filteredActive, deadlines])
+  }, [filteredActive, deadlines, completedSort])
 
   const isArchiveView = filter === 'archived'
   const btnStyle = (active: boolean) => ({
@@ -1825,7 +1979,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         />
       )}
       {/* Toolbar */}
-      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
+      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
+        {/* Hamburger — junto ao menu lateral */}
         <button onClick={onOpenNav} title="Menu de navegação"
           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, transition: 'background 0.15s' }}
           onMouseEnter={e => (e.currentTarget.style.background = t.surface2)}
@@ -1841,9 +1996,10 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         </div>
         <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />
 
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 0, overflow: 'hidden' }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3, flexShrink: 0 }}>Clientes</span>
-          <span style={{ fontSize: 12, color: t.text3, marginLeft: 6, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {/* Título + contagem */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 0, flexShrink: 0 }}>
+          <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3 }}>Clientes</span>
+          <span style={{ fontSize: 12, color: t.text3, marginLeft: 6, fontWeight: 500 }}>
             {activeClients.length} ativa{activeClients.length !== 1 ? 's' : ''}
             {filteredActive.length !== activeClients.length && !isArchiveView &&
               <span style={{ color: t.accent, marginLeft: 4 }}>· {filteredActive.length} filtrada{filteredActive.length !== 1 ? 's' : ''}</span>
@@ -1851,20 +2007,143 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           </span>
         </div>
 
-        {!isArchiveView && viewMode === 'board' && (
-          <div style={{ alignItems: 'center', gap: 6, flexShrink: 0 }} className="hidden md:flex">
-            {COL_ORDER.map(key => {
-              const cfg = STATUSES[key]
-              const count = groupedByStatus[key]?.length || 0
+        {/* Barra de busca com dropdown ao vivo */}
+        <div ref={searchWrapRef} style={{ flex: 1, position: 'relative', maxWidth: 520 }}>
+          <Search size={14} style={{ position: 'absolute', left: 11, top: 16, color: t.text3, pointerEvents: 'none', zIndex: 1 }} />
+          <input
+            ref={searchInputRef}
+            value={search}
+            onChange={e => { setSearch(e.target.value); setSearchDropOpen(true) }}
+            onFocus={() => { if (search.trim()) setSearchDropOpen(true) }}
+            placeholder="Buscar por nome, e-mail, telefone, plano…"
+            style={{
+              width: '100%', padding: '8px 32px 8px 32px',
+              borderRadius: searchDropOpen && search.trim() ? '9px 9px 0 0' : 9,
+              border: `1.5px solid ${searchDropOpen && search.trim() ? t.accent : search ? t.accent : t.border}`,
+              background: t.surface2, fontSize: 13, color: t.text,
+              outline: 'none', boxSizing: 'border-box' as const,
+              transition: 'border-color 0.15s, border-radius 0.1s',
+              boxShadow: searchDropOpen && search.trim() ? `0 0 0 3px ${t.accent}22` : search ? `0 0 0 3px ${t.accent}18` : 'none',
+            }}
+            onKeyDown={e => { if (e.key === 'Escape') { setSearchDropOpen(false); searchInputRef.current?.blur() } }}
+          />
+          {search && (
+            <button onClick={() => { setSearch(''); setSearchDropOpen(false) }} title="Limpar busca"
+              style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: t.text3, padding: 2, borderRadius: 4, display: 'flex', alignItems: 'center', zIndex: 2 }}>
+              <X size={13} />
+            </button>
+          )}
+
+          {/* Dropdown de resultados */}
+          {searchDropOpen && search.trim() && (() => {
+            const q = search.toLowerCase()
+            const qDigits = search.replace(/\D/g, '')
+            const hits = activeClients.filter(c => {
+              const planName = ((c as any).plan?.name || '').toLowerCase()
+              const phone = (c.phone || '').toLowerCase()
+              const phoneDigits = phone.replace(/\D/g, '')
               return (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: cfg.color }} />
-                  <span style={{ fontSize: 11, fontWeight: count > 0 ? 700 : 400, color: count > 0 ? t.text : t.text3 }}>{count}</span>
-                </div>
+                c.full_name.toLowerCase().includes(q) ||
+                c.email.toLowerCase().includes(q) ||
+                phone.includes(q) ||
+                (qDigits.length >= 4 && phoneDigits.includes(qDigits)) ||
+                planName.includes(q)
               )
-            })}
-          </div>
-        )}
+            }).slice(0, 8)
+
+            const highlight = (text: string) => {
+              const idx = text.toLowerCase().indexOf(q)
+              if (idx === -1) return <span>{text}</span>
+              return <span>{text.slice(0, idx)}<mark style={{ background: t.accentLight, color: t.accent, padding: 0, borderRadius: 2 }}>{text.slice(idx, idx + q.length)}</mark>{text.slice(idx + q.length)}</span>
+            }
+
+            return (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 500,
+                background: t.surface, border: `1.5px solid ${t.accent}`,
+                borderTop: 'none', borderRadius: '0 0 10px 10px',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+                overflow: 'hidden', maxHeight: 380, overflowY: 'auto',
+              }}>
+                {hits.length === 0 ? (
+                  <div style={{ padding: '14px 16px', fontSize: 13, color: t.text3, textAlign: 'center' }}>
+                    Nenhuma cliente encontrada
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ padding: '6px 14px 4px', fontSize: 10, fontWeight: 700, color: t.text3, textTransform: 'uppercase', letterSpacing: 1 }}>
+                      Clientes — {hits.length} resultado{hits.length !== 1 ? 's' : ''}
+                    </div>
+                    {hits.map(c => {
+                      const planName = (c as any).plan?.name
+                      const statusCfg = STATUSES[c.status]
+                      const [bg] = getAvatarColor(c.full_name)
+                      const initials = c.full_name.trim().split(/\s+/).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase()
+                      return (
+                        <button
+                          key={c.id}
+                          onMouseDown={e => {
+                            e.preventDefault()
+                            setSearch('')
+                            setSearchDropOpen(false)
+                            navigate(`/admin/clients/${c.id}`)
+                          }}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 10,
+                            width: '100%', padding: '9px 14px', border: 'none',
+                            background: 'none', cursor: 'pointer', textAlign: 'left',
+                            transition: 'background 0.1s',
+                          }}
+                          onMouseEnter={e => (e.currentTarget.style.background = t.surface2)}
+                          onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                        >
+                          {/* Avatar */}
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                            {initials}
+                          </div>
+                          {/* Info */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: t.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {highlight(c.full_name)}
+                            </div>
+                            <div style={{ fontSize: 11, color: t.text3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {c.email}{c.phone ? ` · ${c.phone}` : ''}
+                            </div>
+                          </div>
+                          {/* Status + Plano */}
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
+                            {planName && (
+                              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: t.accentLight, color: t.accent, fontWeight: 600 }}>
+                                {planName}
+                              </span>
+                            )}
+                            {statusCfg && (
+                              <span style={{ fontSize: 10, display: 'flex', alignItems: 'center', gap: 3, color: t.text3 }}>
+                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: statusCfg.color, display: 'inline-block' }} />
+                                {statusCfg.label}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      )
+                    })}
+                    {activeClients.filter(c => {
+                      const planName = ((c as any).plan?.name || '').toLowerCase()
+                      const phone = (c.phone || '').toLowerCase()
+                      return c.full_name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q) || phone.includes(q) || planName.includes(q)
+                    }).length > 8 && (
+                      <div style={{ padding: '8px 14px', fontSize: 11, color: t.text3, borderTop: `1px solid ${t.border}`, textAlign: 'center' }}>
+                        Mostrando os 8 primeiros resultados — refine a busca para ver mais
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+
+        <div style={{ flex: 1 }} />
 
         <div ref={themeRef} style={{ position: 'relative', flexShrink: 0 }}>
           <button onClick={() => setThemeOpen(v => !v)} title="Tema"
@@ -1968,6 +2247,10 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       columnLabels={columnLabels}
                       formObsIds={formObsIds}
                       aiPhotoPendingIds={aiPhotoPendingIds}
+                      {...(key === 'completed' ? {
+                        sortOrder: completedSort,
+                        onSortChange: handleCompletedSortChange,
+                      } : {})}
                     />
                   ))}
                 </div>
@@ -3918,7 +4201,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: t.surface2 }}>
                 {[
                   { id: 'docs',         label: 'Documentos' },
-                  { id: 'compositions', label: '🪄 Comp. IA' },
+                  { id: 'compositions', label: '✨ Geração por IA' },
                 ].map(({ id, label }) => (
                   <button
                     key={id}

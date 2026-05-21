@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   FolderOpen, Plus, Trash2, Save, CheckCircle, AlertCircle,
   ChevronDown, ChevronUp, X, Scissors, Palette, Shirt, Gem,
-  Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera, Layout
+  Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera, Layout, RotateCcw
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { CategoryTypeModal, usePhotoTypes } from './CategoryTypeModal'
@@ -249,6 +249,30 @@ export function FoldersManager() {
       setAutoSaving(false)
     }
   }
+
+  // ── Reset all PDF layouts ─────────────────────────────────────────────────
+  const handleResetAllLayouts = async () => {
+    const count = config.categories.reduce(
+      (acc, cat) => acc + cat.prompts.filter(p => p.pdfLayout).length, 0
+    )
+    if (count === 0) return
+    const ok = await askConfirm({
+      title: 'Resetar todos os layouts PDF?',
+      message: `${count} prompt${count > 1 ? 's têm' : ' tem'} layout configurado. Todos serão removidos e o autosave será acionado.`,
+      confirmLabel: 'Sim, resetar todos',
+      danger: true,
+    })
+    if (!ok) return
+    setConfig(prev => ({
+      ...prev,
+      categories: prev.categories.map(cat => ({
+        ...cat,
+        prompts: cat.prompts.map(p => ({ ...p, pdfLayout: undefined }))
+      }))
+    }))
+    await forceAutoSave()
+  }
+
 
   const { types: photoTypes } = usePhotoTypes()
   const [typeModalOpen, setTypeModalOpen] = useState(false)
@@ -1473,11 +1497,29 @@ export function FoldersManager() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="font-semibold text-gray-900 text-sm">Categorias</h3>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {config.categories.length === 0 && (
               <button onClick={() => setConfig(prev => ({ ...prev, categories: DEFAULT_CATS.map(c => ({ ...c, id: uid() })) }))}
                 className="text-xs px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg"><Sparkles className="h-3 w-3 inline mr-1" />Padrão</button>
             )}
+            {(() => {
+              const hasAny = config.categories.some(cat => cat.prompts.some(p => p.pdfLayout))
+              return (
+                <button
+                  onClick={handleResetAllLayouts}
+                  disabled={!hasAny}
+                  className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 border rounded-lg transition-colors ${
+                    hasAny
+                      ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                      : 'bg-gray-50 text-gray-300 border-gray-200 cursor-not-allowed'
+                  }`}
+                  title={hasAny ? 'Remove o layout PDF de todos os prompts desta pasta' : 'Nenhum prompt tem layout PDF configurado'}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Resetar todos layouts
+                </button>
+              )
+            })()}
             <button onClick={handleAddCategoryClick} className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg"><Plus className="h-3 w-3 inline mr-1" />Categoria</button>
           </div>
         </div>
@@ -1585,6 +1627,20 @@ export function FoldersManager() {
                           <div className="w-8 h-8 rounded bg-gray-100 flex items-center justify-center flex-shrink-0"><Image className="h-4 w-4 text-gray-300" /></div>
                         )}
                         <span className="text-sm text-gray-800 font-medium flex-1 truncate min-w-0">{prompt.name || '(sem nome)'}</span>
+                        {prompt.pdfLayout && (
+                          <button
+                            onClick={async e => {
+                              e.stopPropagation()
+                              updatePrompt(cat.id, prompt.id, { pdfLayout: undefined })
+                              await forceAutoSave()
+                            }}
+                            className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 bg-violet-100 text-violet-600 rounded hover:bg-red-100 hover:text-red-600 transition-colors flex-shrink-0"
+                            title="Remover layout PDF deste prompt"
+                          >
+                            <Layout className="h-3 w-3" />
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        )}
                         <button onClick={e => { e.stopPropagation(); removePrompt(cat.id, prompt.id) }} className="text-gray-300 hover:text-red-500 flex-shrink-0"><Trash2 className="h-3 w-3" /></button>
                         {activePrompt === prompt.id ? <ChevronUp className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />}
                       </div>
