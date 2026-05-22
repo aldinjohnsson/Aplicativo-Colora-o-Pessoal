@@ -517,10 +517,12 @@ Deno.serve(async (req: Request) => {
         await sb.from('clients').update({ drive_folder_id: clientFolderId }).eq('id', client.id)
       }
 
-      // Resultados vão numa subpasta dentro do cliente
+      // Resultados e imagens de formulário vão em subpastas separadas dentro do cliente
       let targetFolderId = clientFolderId
       if (kind === 'result_file') {
         targetFolderId = await findOrCreateFolder(accessToken, 'Resultados', clientFolderId, false)
+      } else if (kind === 'form_image') {
+        targetFolderId = await findOrCreateFolder(accessToken, 'Formulário', clientFolderId, false)
       }
 
       const safeName = `${Date.now()}_${kind === 'ai_photo' ? 'ai_' : ''}${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`

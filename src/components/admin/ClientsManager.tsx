@@ -787,6 +787,7 @@ function KanbanColumn({
   aiPhotoPendingIds,
   sortOrder = 'recent',
   onSortChange,
+  forceCompact,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -804,6 +805,7 @@ function KanbanColumn({
   aiPhotoPendingIds?: Set<string>
   sortOrder?: string
   onSortChange?: (sort: string) => void
+  forceCompact?: boolean
 }) {
   const obsIds: Set<string> = formObsIds ?? new Set<string>()
   const cfg = STATUSES[statusKey]
@@ -815,7 +817,9 @@ function KanbanColumn({
   const aiReviewCount = statusKey === 'awaiting_ai_photo' && aiPhotoPendingIds
     ? clients.filter(c => aiPhotoPendingIds.has(c.id)).length
     : 0
-  const [compact, setCompact] = useState(false)
+  const [compactLocal, setCompactLocal] = useState(false)
+  // forceCompact (from global toolbar) overrides the per-column toggle
+  const compact = forceCompact !== undefined ? forceCompact : compactLocal
   const [isDragOver, setIsDragOver] = useState(false)
   const [sortDropOpen, setSortDropOpen] = useState(false)
   const sortBtnRef = useRef<HTMLButtonElement>(null)
@@ -904,13 +908,13 @@ function KanbanColumn({
       onDrop={e => { e.preventDefault(); setIsDragOver(false); onDrop?.(statusKey) }}
       style={{
         flexShrink: 0,
-        width: 'clamp(240px, calc(100vw - 24px), 310px)',
+        width: compact ? 'clamp(190px, calc(100vw - 24px), 240px)' : 'clamp(240px, calc(100vw - 24px), 310px)',
         background: isDragOver ? cfg.bg : t.colBg,
         borderRadius: 12,
         border: isDragOver ? `2px dashed ${cfg.color}` : `1px solid ${t.border}`,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
-        transition: 'background 0.15s, border 0.15s',
+        transition: 'background 0.15s, border 0.15s, width 0.2s',
       }}
     >
       <div style={{ padding: '10px 12px 8px', borderBottom: `1px solid ${t.border}`, background: isDragOver ? cfg.bg : t.colBg, position: 'sticky', top: 0, zIndex: 2, transition: 'background 0.15s' }}>
@@ -991,8 +995,8 @@ function KanbanColumn({
           {reviewCount > 0 && (
             <span style={{ fontSize: 10, fontWeight: 700, color: '#9d174d', background: '#fce7f3', borderRadius: 20, padding: '1px 6px' }}>📸 revisar</span>
           )}
-          <button onClick={() => setCompact(v => !v)} title={compact ? 'Modo normal' : 'Modo compacto'}
-            style={{ background: compact ? t.accentLight : 'none', border: 'none', cursor: 'pointer', padding: 2, color: compact ? t.accent : t.text3, opacity: compact ? 1 : 0.7, borderRadius: 4, display: 'flex' }}
+          <button onClick={() => setCompactLocal(v => !v)} title={compact ? 'Modo normal' : 'Modo compacto'}
+            style={{ background: compact ? t.accentLight : 'none', border: 'none', cursor: 'pointer', padding: 2, color: compact ? t.accent : t.text3, opacity: compact ? 1 : 0.7, borderRadius: 4, display: forceCompact ? 'none' : 'flex' }}
             onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.opacity = '1'}
             onMouseLeave={e => { if (!compact) (e.currentTarget as HTMLButtonElement).style.opacity = '0.7' }}
           ><Layers size={13} /></button>
@@ -1468,7 +1472,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'board' | 'list'>('board')
+  const [viewMode, setViewMode] = useState<'board' | 'board-compact' | 'list'>(() => {
+    const saved = localStorage.getItem('kanban-view-mode')
+    if (saved === 'board' || saved === 'board-compact' || saved === 'list') return saved
+    return 'board'
+  })
   const [creating, setCreating] = useState(false)
   const [showManualModal, setShowManualModal] = useState(false)
   const [form, setForm] = useState({ full_name: '', email: '', phone: '', birth_date: '', plan_id: '', notes: '' })
@@ -1512,6 +1520,10 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [columnLabels, setColumnLabels] = useState<Record<string, string>>({})
 
   useEffect(() => { load() }, [])
+  // Persiste a preferência de visualização sempre que o usuário mudar
+  useEffect(() => {
+    localStorage.setItem('kanban-view-mode', viewMode)
+  }, [viewMode])
   useEffect(() => {
     adminService.getColumnLabels().then(setColumnLabels).catch(console.error)
   }, [])
@@ -2267,6 +2279,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
 
         <div style={{ display: 'flex', background: t.surface2, borderRadius: 8, padding: 2, flexShrink: 0 }}>
           <button onClick={() => setViewMode('board')} title="Kanban" style={btnStyle(viewMode === 'board')}><LayoutGrid size={15} /></button>
+          <button onClick={() => setViewMode('board-compact')} title="Kanban compacto" style={btnStyle(viewMode === 'board-compact')}><Layers size={15} /></button>
           <button onClick={() => setViewMode('list')} title="Lista" style={btnStyle(viewMode === 'list')}><List size={15} /></button>
         </div>
 
@@ -2305,7 +2318,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
             </div>
           )}
 
-          {!isArchiveView && viewMode === 'board' && (
+          {!isArchiveView && (viewMode === 'board' || viewMode === 'board-compact') && (
             <>
               {filteredActive.length === 0 && !search && filter === 'all' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: t.text3 }}>
@@ -2324,7 +2337,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                     overflowY: 'hidden',
                     padding: '14px 12px 16px',
                     display: 'flex',
-                    gap: 10,
+                    gap: viewMode === 'board-compact' ? 6 : 10,
                     alignItems: 'stretch',
                     cursor: isPanning ? 'grabbing' : 'default',
                     userSelect: isPanning ? 'none' : undefined,
@@ -2357,6 +2370,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       columnLabels={columnLabels}
                       formObsIds={formObsIds}
                       aiPhotoPendingIds={aiPhotoPendingIds}
+                      forceCompact={viewMode === 'board-compact' ? true : undefined}
                       {...(key === 'completed' ? {
                         sortOrder: completedSort,
                         onSortChange: handleCompletedSortChange,
