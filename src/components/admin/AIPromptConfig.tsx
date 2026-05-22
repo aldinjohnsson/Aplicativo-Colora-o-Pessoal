@@ -2,9 +2,11 @@
 import React, { useState, useEffect } from 'react'
 import {
   Wand2, Save, CheckCircle, Camera, Trash2,
-  Coins, Plus, Minus, Lock, Unlock, RefreshCw, MessageSquare
+  Coins, Plus, Minus, Lock, Unlock, RefreshCw, MessageSquare,
+  X, FolderOpen, Loader2
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 import { photoTypesService, PhotoType } from './PhotoTypesManager'
 
 interface AIPromptConfigProps {
@@ -14,6 +16,12 @@ interface AIPromptConfigProps {
   chatEnabled: boolean
   onChatEnabledChange: (v: boolean) => void
   onSaveChatEnabled: () => Promise<void>
+  /** Fotos já carregadas da cliente (vêm do load() do ClientDetail) */
+  clientPhotos?: any[]
+  /** Categorias de fotos da cliente */
+  photoCategories?: any[]
+  /** Chamado após salvar/trocar/remover foto de referência para forçar reload no pai */
+  onAfterSaveRefPhotos?: () => void
 }
 
 // ── Foto de referência vinculada a um type ──────────────────
@@ -25,10 +33,16 @@ export interface RefPhoto {
   url: string
 }
 
-export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, onChatEnabledChange, onSaveChatEnabled }: AIPromptConfigProps) {
+export function AIPromptConfig({
+  clientId, clientName, isReleased, chatEnabled,
+  onChatEnabledChange, onSaveChatEnabled,
+  clientPhotos, photoCategories, onAfterSaveRefPhotos,
+}: AIPromptConfigProps) {
   const [photoTypes, setPhotoTypes] = useState<PhotoType[]>([])
   const [refPhotos, setRefPhotos] = useState<RefPhoto[]>([])
   const [uploadingTypeId, setUploadingTypeId] = useState<string | null>(null)
+  /** typeId da categoria IA em que o usuário clicou "+ Adicionar" / "Trocar" via galeria */
+  const [galleryPickerTypeId, setGalleryPickerTypeId] = useState<string | null>(null)
 
   const [creditsImage, setCreditsImage] = useState(0)
   const [creditsText, setCreditsText] = useState(0)
@@ -84,6 +98,20 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
 
   // ── Fotos ──────────────────────────────────────────────────
 
+  /** Salva uma foto já existente na galeria como referência de IA (sem upload) */
+  const handleSaveRefPhoto = async (type: PhotoType, picked: { url: string; storagePath: string }) => {
+    const newPhoto: RefPhoto = { typeId: type.id, typeName: type.name, storagePath: picked.storagePath, url: picked.url }
+    const updated = [...refPhotos.filter(p => p.typeId !== type.id), newPhoto]
+    setRefPhotos(updated)
+    await supabase.from('clients').update({
+      ai_reference_photos: updated,
+      ...(type.id === 'geral' ? { ai_reference_photo_path: picked.storagePath } : {}),
+    }).eq('id', clientId)
+    setSaveStatus('saved')
+    setTimeout(() => setSaveStatus('idle'), 2000)
+    onAfterSaveRefPhotos?.()
+  }
+
   const handlePhotoUpload = async (type: PhotoType, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -106,6 +134,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
 
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
+      onAfterSaveRefPhotos?.()
     } catch (err: any) {
       alert('Erro ao enviar foto: ' + err.message)
     } finally { setUploadingTypeId(null) }
@@ -122,6 +151,7 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
       ai_reference_photos: updated,
       ...(typeId === 'geral' ? { ai_reference_photo_path: null } : {}),
     }).eq('id', clientId)
+    onAfterSaveRefPhotos?.()
   }
 
   // ── Créditos ────────────────────────────────────────────────
@@ -212,10 +242,20 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
                     <div className="flex items-center gap-2">
                       <img src={photo.url} alt="" className="w-12 h-12 rounded-lg object-cover border-2 border-violet-200" />
                       <div className="flex flex-col gap-1">
-                        <label className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg cursor-pointer text-center whitespace-nowrap">
-                          <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(type, e)} />
-                          {isUploading ? '...' : 'Trocar'}
-                        </label>
+                        {/* Trocar via galeria (se clientPhotos disponível) ou upload */}
+                        {clientPhotos ? (
+                          <button
+                            onClick={() => setGalleryPickerTypeId(type.id)}
+                            className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg cursor-pointer text-center whitespace-nowrap"
+                          >
+                            Trocar
+                          </button>
+                        ) : (
+                          <label className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg cursor-pointer text-center whitespace-nowrap">
+                            <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(type, e)} />
+                            {isUploading ? '...' : 'Trocar'}
+                          </label>
+                        )}
                         <button
                           onClick={() => handleDeletePhoto(type.id)}
                           className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
@@ -225,10 +265,20 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
                       </div>
                     </div>
                   ) : (
-                    <label className={`text-xs px-3 py-2 border border-dashed border-violet-300 rounded-lg cursor-pointer hover:bg-violet-50 text-violet-600 whitespace-nowrap ${isUploading ? 'opacity-60' : ''}`}>
-                      <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(type, e)} />
-                      {isUploading ? 'Enviando...' : '+ Adicionar'}
-                    </label>
+                    /* Adicionar via galeria (se clientPhotos disponível) ou upload */
+                    clientPhotos ? (
+                      <button
+                        onClick={() => setGalleryPickerTypeId(type.id)}
+                        className="text-xs px-3 py-2 border border-dashed border-violet-300 rounded-lg cursor-pointer hover:bg-violet-50 text-violet-600 whitespace-nowrap"
+                      >
+                        + Adicionar
+                      </button>
+                    ) : (
+                      <label className={`text-xs px-3 py-2 border border-dashed border-violet-300 rounded-lg cursor-pointer hover:bg-violet-50 text-violet-600 whitespace-nowrap ${isUploading ? 'opacity-60' : ''}`}>
+                        <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(type, e)} />
+                        {isUploading ? 'Enviando...' : '+ Adicionar'}
+                      </label>
+                    )
                   )}
                 </div>
               </div>
@@ -313,6 +363,23 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
         </div>
       </div>
 
+      {/* ── GalleryPhotoPicker modal ── */}
+      {galleryPickerTypeId && (
+        <GalleryPhotoPicker
+          typeId={galleryPickerTypeId}
+          typeName={photoTypes.find(t => t.id === galleryPickerTypeId)?.name || galleryPickerTypeId}
+          clientPhotos={clientPhotos || []}
+          photoCategories={photoCategories || []}
+          onClose={() => setGalleryPickerTypeId(null)}
+          onSelect={async (picked) => {
+            const type = photoTypes.find(t => t.id === galleryPickerTypeId)
+            setGalleryPickerTypeId(null)
+            if (!type) return
+            await handleSaveRefPhoto(type, picked)
+          }}
+        />
+      )}
+
       {/* ── Liberar para a cliente ── */}
       <div className={`rounded-xl p-4 border space-y-3 ${isReleased ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
         <div className="flex items-center gap-3">
@@ -372,6 +439,239 @@ export function AIPromptConfig({ clientId, clientName, isReleased, chatEnabled, 
                 ? <CheckCircle className="h-3.5 w-3.5" />
                 : <Save className="h-3.5 w-3.5" />}
             {savingChat ? 'Salvando...' : chatSaved ? 'Salvo!' : 'Salvar configuração do chat'}
+          </button>
+        </div>
+
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// DriveImage — carrega foto do Drive via proxy autenticado (evita CORS)
+// ══════════════════════════════════════════════════════════════════════════
+
+interface DriveImageProps {
+  photo: any
+  alt: string
+  className?: string
+}
+
+function DriveImage({ photo, alt, className }: DriveImageProps) {
+  const [src, setSrc] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+
+    if (photo.drive_file_id) {
+      // Busca via proxy autenticado para evitar bloqueio CORS/auth do Drive
+      driveStorage.fetchPhotoBlob(photo.drive_file_id)
+        .then(blob => {
+          if (cancelled) return
+          objectUrl = URL.createObjectURL(blob)
+          setSrc(objectUrl)
+        })
+        .catch(() => {
+          if (!cancelled) setError(true)
+        })
+    } else if (photo.storage_path) {
+      // Legado: Supabase Storage — URL pública direta
+      const url = supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl
+      setSrc(url)
+    } else if (photo.url) {
+      setSrc(photo.url)
+    } else {
+      setError(true)
+    }
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [photo.drive_file_id, photo.storage_path, photo.url])
+
+  if (error) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-gray-100`}>
+        <Camera className="h-5 w-5 text-gray-300" />
+      </div>
+    )
+  }
+
+  if (!src) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-gray-100 animate-pulse`}>
+        <Loader2 className="h-4 w-4 text-gray-300 animate-spin" />
+      </div>
+    )
+  }
+
+  return <img src={src} alt={alt} className={className} />
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// GalleryPhotoPicker — seleciona foto da galeria da cliente por categoria
+// ══════════════════════════════════════════════════════════════════════════
+
+interface GalleryPhotoPickerProps {
+  typeId: string
+  typeName: string
+  clientPhotos: any[]
+  photoCategories: any[]
+  onClose: () => void
+  onSelect: (picked: { url: string; storagePath: string }) => void
+}
+
+function GalleryPhotoPicker({
+  typeId, typeName, clientPhotos, photoCategories, onClose, onSelect,
+}: GalleryPhotoPickerProps) {
+  const [selectedCatId, setSelectedCatId] = useState<string | null>(null)
+
+  const catName = (cat: any) => cat.title || cat.name || 'Sem nome'
+
+  // Categorias que têm pelo menos uma foto
+  const catsWithPhotos = photoCategories.filter((cat: any) =>
+    clientPhotos.some((p: any) => p.category_id === cat.id)
+  )
+
+  // Fotos da categoria selecionada com pelo menos uma origem válida
+  const photosInCat = selectedCatId
+    ? clientPhotos.filter((p: any) =>
+        p.category_id === selectedCatId &&
+        !!(p.drive_file_id || p.storage_path || p.url)
+      )
+    : []
+
+  const selectedCat = photoCategories.find(c => c.id === selectedCatId)
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            {selectedCatId && (
+              <button
+                onClick={() => setSelectedCatId(null)}
+                className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 -ml-1 mr-0.5 transition-colors"
+                aria-label="Voltar"
+              >
+                ←
+              </button>
+            )}
+            <div>
+              <p className="font-semibold text-sm text-gray-900">
+                {selectedCatId
+                  ? <>Escolher foto — <span className="text-violet-600">{catName(selectedCat)}</span></>
+                  : <>Adicionar à composição</>
+                }
+              </p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {selectedCatId
+                  ? 'Toque na foto para usar como referência'
+                  : 'De qual categoria você quer buscar a foto?'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Conteúdo */}
+        <div className="flex-1 overflow-y-auto">
+
+          {/* ── Etapa 1: tiles de categoria ── */}
+          {!selectedCatId && (
+            <div className="p-4 space-y-3">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1">
+                Categoria de fotos:
+              </p>
+              {catsWithPhotos.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                  <FolderOpen className="h-10 w-10 mb-2 opacity-30" />
+                  <p className="text-sm">Nenhuma foto cadastrada para esta cliente</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  {catsWithPhotos.map((cat: any) => {
+                    const count = clientPhotos.filter((p: any) => p.category_id === cat.id).length
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => setSelectedCatId(cat.id)}
+                        className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
+                      >
+                        <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                          <FolderOpen className="h-4 w-4 text-pink-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-800 leading-snug truncate">{catName(cat)}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{count} foto{count !== 1 ? 's' : ''}</p>
+                        </div>
+                        <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Etapa 2: grid de fotos da categoria ── */}
+          {selectedCatId && (
+            <div className="p-4">
+              {photosInCat.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                  <Camera className="h-10 w-10 mb-2 opacity-30" />
+                  <p className="text-sm">Nenhuma foto nesta categoria.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {photosInCat.map((photo: any) => (
+                    <button
+                      key={photo.id}
+                      onClick={() => {
+                        // Para fotos do Drive, a URL usada é a do proxy (blob será gerado no uso)
+                        // Passamos a viewUrl como referência salva no DB; o DriveImage já resolveu o blob localmente
+                        const url = photo.drive_file_id
+                          ? driveStorage.viewUrl(photo.drive_file_id)
+                          : photo.url || (photo.storage_path
+                              ? supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl
+                              : '')
+                        onSelect({ url, storagePath: photo.storage_path || '' })
+                      }}
+                      className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-violet-500 focus:outline-none focus:border-violet-500 transition-all group bg-gray-100"
+                    >
+                      <DriveImage
+                        photo={photo}
+                        alt={photo.photo_name || ''}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-100">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          >
+            Cancelar
           </button>
         </div>
 

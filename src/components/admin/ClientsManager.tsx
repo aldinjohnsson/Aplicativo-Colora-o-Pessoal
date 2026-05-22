@@ -4685,6 +4685,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               chatEnabled={chatEnabled}
               onChatEnabledChange={setChatEnabled}
               onSaveChatEnabled={handleSaveChatEnabled}
+              clientPhotos={photos}
+              photoCategories={photoCategories}
+              onAfterSaveRefPhotos={load}
             />
           </div>
         </div>
