@@ -2995,6 +2995,8 @@ function PhotosView({ clientId, photos, photoCategories, clientToken }: { client
             storage_path: path,
             photo_name: file.name,
             category_id: categoryId,
+            photo_type: file.type,   // ← MIME type (ex: "image/jpeg")
+            photo_size: file.size,   // ← tamanho em bytes
           })
           if (dbErr) throw dbErr
         }
