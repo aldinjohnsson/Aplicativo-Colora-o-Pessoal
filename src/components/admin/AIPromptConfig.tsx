@@ -31,6 +31,8 @@ export interface RefPhoto {
   typeName: string
   storagePath: string
   url: string
+  /** Quando a foto está no Drive da admin, em vez do Supabase Storage. */
+  driveFileId?: string | null
 }
 
 export function AIPromptConfig({
@@ -82,6 +84,7 @@ export function AIPromptConfig({
           typeName: p.typeName || p.label || p.type || 'Geral',
           storagePath: p.storagePath,
           url: p.url,
+          driveFileId: p.driveFileId || null,
         }))
         setRefPhotos(photos)
       } else if (client?.ai_reference_photo_path) {
@@ -99,8 +102,14 @@ export function AIPromptConfig({
   // ── Fotos ──────────────────────────────────────────────────
 
   /** Salva uma foto já existente na galeria como referência de IA (sem upload) */
-  const handleSaveRefPhoto = async (type: PhotoType, picked: { url: string; storagePath: string }) => {
-    const newPhoto: RefPhoto = { typeId: type.id, typeName: type.name, storagePath: picked.storagePath, url: picked.url }
+  const handleSaveRefPhoto = async (type: PhotoType, picked: { url: string; storagePath: string; driveFileId?: string | null }) => {
+    const newPhoto: RefPhoto = {
+      typeId: type.id,
+      typeName: type.name,
+      storagePath: picked.storagePath,
+      url: picked.url,
+      driveFileId: picked.driveFileId || null,
+    }
     const updated = [...refPhotos.filter(p => p.typeId !== type.id), newPhoto]
     setRefPhotos(updated)
     await supabase.from('clients').update({
@@ -144,7 +153,12 @@ export function AIPromptConfig({
     if (!confirm('Remover esta foto de referência?')) return
     const photo = refPhotos.find(p => p.typeId === typeId)
     if (!photo) return
-    try { await supabase.storage.from('client-photos').remove([photo.storagePath]) } catch {}
+    // Só apaga do Supabase Storage se for foto legada (sem driveFileId)
+    // Fotos do Drive: só removemos a referência aqui; o arquivo continua no
+    // Drive (já que pode estar referenciado na galeria também).
+    if (!photo.driveFileId && photo.storagePath) {
+      try { await supabase.storage.from('client-photos').remove([photo.storagePath]) } catch {}
+    }
     const updated = refPhotos.filter(p => p.typeId !== typeId)
     setRefPhotos(updated)
     await supabase.from('clients').update({
@@ -521,7 +535,7 @@ interface GalleryPhotoPickerProps {
   clientPhotos: any[]
   photoCategories: any[]
   onClose: () => void
-  onSelect: (picked: { url: string; storagePath: string }) => void
+  onSelect: (picked: { url: string; storagePath: string; driveFileId?: string | null }) => void
 }
 
 function GalleryPhotoPicker({
@@ -641,14 +655,20 @@ function GalleryPhotoPicker({
                     <button
                       key={photo.id}
                       onClick={() => {
-                        // Para fotos do Drive, a URL usada é a do proxy (blob será gerado no uso)
-                        // Passamos a viewUrl como referência salva no DB; o DriveImage já resolveu o blob localmente
+                        // Para fotos do Drive, salvamos o drive_file_id pra que o
+                        // chat consiga puxar via proxy autenticado (drive.google.com
+                        // não envia CORS headers, então fetch direto falha).
+                        // A `url` (thumbnail) ainda é salva pra <img> em listagens.
                         const url = photo.drive_file_id
                           ? driveStorage.viewUrl(photo.drive_file_id)
                           : photo.url || (photo.storage_path
                               ? supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl
                               : '')
-                        onSelect({ url, storagePath: photo.storage_path || '' })
+                        onSelect({
+                          url,
+                          storagePath: photo.storage_path || '',
+                          driveFileId: photo.drive_file_id || null,
+                        })
                       }}
                       className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-violet-500 focus:outline-none focus:border-violet-500 transition-all group bg-gray-100"
                     >

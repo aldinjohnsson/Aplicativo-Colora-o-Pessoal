@@ -2977,31 +2977,69 @@ function PhotosView({ clientId, photos, photoCategories, clientToken }: { client
     if (!files || files.length === 0) return
     setUploadingToCategory(categoryId ?? 'uploading')
     try {
+      // Checa uma vez se o Drive está conectado. Se estiver, qualquer erro
+      // na chamada de upload é considerado erro de verdade (NÃO faz fallback
+      // silencioso pro Supabase Storage) — assim o admin vê o que aconteceu.
+      // Se Drive não estiver conectado, cai direto pro fallback Supabase.
+      let driveConnected = false
+      try {
+        const status = await driveStorage.getStatus()
+        driveConnected = !!status.connected
+      } catch (e) {
+        console.warn('[handleAdminUpload] driveStorage.getStatus falhou:', e)
+        driveConnected = false
+      }
+
+      const driveErrors: string[] = []
       for (const file of Array.from(files)) {
-        try {
-          // Tenta primeiro via Drive (admin_photo ignora restrição de status)
-          await driveStorage.adminUploadPhoto({ clientId, file, categoryId })
-        } catch {
-          // Fallback: Supabase Storage direto — funciona em qualquer etapa
-          // independente de Drive configurado ou não
-          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-          const path = `${clientId}/admin_${Date.now()}_${safeName}`
-          const { error: storageErr } = await supabase.storage
-            .from('client-photos')
-            .upload(path, file, { contentType: file.type, upsert: true })
-          if (storageErr) throw storageErr
-          const { error: dbErr } = await supabase.from('client_photos').insert({
-            client_id: clientId,
-            storage_path: path,
-            photo_name: file.name,
-            category_id: categoryId,
-            photo_type: file.type,   // ← MIME type (ex: "image/jpeg")
-            photo_size: file.size,   // ← tamanho em bytes
-          })
-          if (dbErr) throw dbErr
+        if (driveConnected) {
+          try {
+            const result = await driveStorage.adminUploadPhoto({ clientId, file, categoryId })
+            // A Edge Function pode ter caído no fallback Supabase do lado servidor
+            // (drive_file_id volta null). Avisa pra não ficar invisível.
+            if (!result.driveFileId) {
+              console.warn(
+                `[handleAdminUpload] "${file.name}" foi salva no Supabase Storage pelo servidor ` +
+                `(Edge Function não conseguiu autenticar no Drive). Verifique a conexão do Drive em Configurações.`
+              )
+              driveErrors.push(`${file.name}: servidor não conseguiu autenticar no Drive (foto salva no Supabase)`)
+            }
+            continue
+          } catch (e: any) {
+            console.error(`[handleAdminUpload] Falha no upload Drive de "${file.name}":`, e)
+            driveErrors.push(`${file.name}: ${e?.message || 'erro desconhecido'}`)
+            // Não cai pro fallback Supabase: se o Drive está conectado, o erro é real
+            // e o admin precisa ver. Pula esse arquivo.
+            continue
+          }
         }
+
+        // Drive NÃO conectado: usa Supabase Storage direto (igual ao legado)
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        const path = `${clientId}/admin_${Date.now()}_${safeName}`
+        const { error: storageErr } = await supabase.storage
+          .from('client-photos')
+          .upload(path, file, { contentType: file.type, upsert: true })
+        if (storageErr) throw storageErr
+        const { error: dbErr } = await supabase.from('client_photos').insert({
+          client_id: clientId,
+          storage_path: path,
+          photo_name: file.name,
+          category_id: categoryId,
+          photo_type: file.type,
+          photo_size: file.size,
+        })
+        if (dbErr) throw dbErr
       }
       await loadPhotos()
+      if (driveErrors.length > 0) {
+        alert(
+          `Drive falhou em ${driveErrors.length} foto(s):\n\n${driveErrors.join('\n')}\n\n` +
+          `Veja o console pra detalhes. ` +
+          `Se Drive estiver desconectado, reconecte em Configurações; ` +
+          `enquanto isso, desconecte o Drive pra usar Supabase Storage como fallback.`
+        )
+      }
     } catch (e: any) {
       alert(`Erro ao fazer upload: ${e.message}`)
     } finally {
@@ -3781,22 +3819,33 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   // 2. ai_reference_photo_path legado
   // 3. Fallback automático a partir das fotos enviadas pela cliente
   //    → permite usar o chat antes de liberar o resultado
-  const adminAiRefPhotos: { type: string; label: string; storagePath: string; url: string }[] = (() => {
+  const adminAiRefPhotos: { type: string; label: string; storagePath: string; url: string; driveFileId?: string | null }[] = (() => {
     if (Array.isArray(client.ai_reference_photos) && client.ai_reference_photos.length > 0) {
-      return client.ai_reference_photos.map((p: any) => ({
-        type: (p.typeId || p.type || 'geral') as string,
-        label: p.typeName || p.label || p.typeId || p.type || 'Geral',
-        storagePath: p.storagePath,
-        url: supabase.storage.from('client-photos').getPublicUrl(p.storagePath).data.publicUrl,
-      }))
+      return client.ai_reference_photos.map((p: any) => {
+        // Fotos salvas com driveFileId: usar Drive thumbnail como URL e
+        // carregar driveFileId pra que o chat use o proxy autenticado (evita CORS).
+        const driveFileId: string | null = p.driveFileId || null
+        const url = driveFileId
+          ? driveStorage.viewUrl(driveFileId)
+          : (p.storagePath
+              ? supabase.storage.from('client-photos').getPublicUrl(p.storagePath).data.publicUrl
+              : (p.url || ''))
+        return {
+          type: (p.typeId || p.type || 'geral') as string,
+          label: p.typeName || p.label || p.typeId || p.type || 'Geral',
+          storagePath: p.storagePath || '',
+          url,
+          driveFileId,
+        }
+      })
     }
     if (client.ai_reference_photo_path) {
       const url = supabase.storage.from('client-photos').getPublicUrl(client.ai_reference_photo_path).data.publicUrl
-      return [{ type: 'geral', label: 'Foto Geral/Rosto', storagePath: client.ai_reference_photo_path, url }]
+      return [{ type: 'geral', label: 'Foto Geral/Rosto', storagePath: client.ai_reference_photo_path, url, driveFileId: null }]
     }
     // Fallback: deriva das fotos enviadas, uma por categoria
     const seen = new Set<string>()
-    const derived: { type: string; label: string; storagePath: string; url: string }[] = []
+    const derived: { type: string; label: string; storagePath: string; url: string; driveFileId: string | null }[] = []
     for (const cat of (photoCategories || [])) {
       if ((cat as any).is_ai_simulation) continue
       const catPhotos = (photos || []).filter((p: any) => p.category_id === cat.id && (p.storage_path || p.drive_file_id))
@@ -3814,6 +3863,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           label: cat.title,
           storagePath: photoKey,
           url: photoUrl,
+          driveFileId: photo.drive_file_id || null,
         })
       }
     }
@@ -3825,7 +3875,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   })()
 
   // URL "geral" das fotos de referência (vindas da aba IA): usada como capa do chat
-  const adminAiRefPhotoUrl = adminAiRefPhotos.find(p => p.type === 'geral')?.url || adminAiRefPhotos[0]?.url || null
+  const adminAiRefPhotoGeral = adminAiRefPhotos.find(p => p.type === 'geral') || adminAiRefPhotos[0] || null
+  const adminAiRefPhotoUrl = adminAiRefPhotoGeral?.url || null
+  const adminAiRefPhotoDriveFileId = adminAiRefPhotoGeral?.driveFileId || null
   const adminResultFileUrls = (resultFiles || []).map((f: any) => ({
     url: adminService.getResultFileUrl(f),
     name: f.file_name,
@@ -4737,6 +4789,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               clientName={client.full_name}
               systemPrompt={adminAiSystemPrompt}
               referencePhotoUrl={adminAiRefPhotoUrl}
+              referencePhotoDriveFileId={adminAiRefPhotoDriveFileId}
               referencePhotos={adminAiRefPhotos}
               folderConfig={linkedFolderConfig}
               clientId={clientId!}

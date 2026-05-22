@@ -15,7 +15,35 @@ import {
   GeminiMessage, GeminiResponsePart, MaterialData,
 } from '../../lib/geminiService'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 import { buildStylePdfBlob, ItemLayout } from '../../lib/templatePDFGenerator'
+
+// Carrega a foto pra base64 preferindo o proxy autenticado do Drive (evita
+// CORS em drive.google.com/thumbnail). Cai pra fetch direto da URL quando
+// driveFileId não está disponível (fotos legadas no Supabase Storage).
+async function photoToBase64(
+  source: { driveFileId?: string | null; url: string }
+): Promise<{ base64: string; mimeType: string } | null> {
+  if (source.driveFileId) {
+    try {
+      const blob = await driveStorage.fetchPhotoBlob(source.driveFileId)
+      return await new Promise<{ base64: string; mimeType: string } | null>((res, rej) => {
+        const r = new FileReader()
+        r.onload = () => res({
+          base64: (r.result as string).split(',')[1],
+          mimeType: blob.type || 'image/jpeg',
+        })
+        r.onerror = rej
+        r.readAsDataURL(blob)
+      })
+    } catch (e) {
+      console.error('[GeminiChat] proxy Drive falhou, tentando URL direta:', e)
+      // Fallback: tenta a URL direta (provavelmente vai falhar por CORS, mas
+      // dá pra debugar olhando a aba Network)
+    }
+  }
+  return urlToBase64(source.url)
+}
 
 interface ChatMsg {
   id: string; role: 'user' | 'assistant'; text: string
@@ -34,11 +62,12 @@ interface Prompt { id: string; name: string; instructions: string; images: Promp
 interface Category { id: string; name: string; icon: string; type: string; refPhotoType?: string; prompts: Prompt[] }
 interface FolderConfig { folderName: string; baseInstructions: string; categories: Category[] }
 interface ResultFile { url: string; name: string }
-interface RefPhoto { type: string; label: string; storagePath: string; url: string }
+interface RefPhoto { type: string; label: string; storagePath: string; url: string; driveFileId?: string | null }
 
 interface GeminiChatProps {
   clientName: string; systemPrompt: string
   referencePhotoUrl?: string | null
+  referencePhotoDriveFileId?: string | null
   referencePhotos?: RefPhoto[]
   folderConfig?: FolderConfig | null
   clientId?: string
@@ -87,7 +116,7 @@ async function uploadChatImage(clientId: string, msgId: string, idx: number, bas
 
 const WELCOME = (name: string) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, onSavePdf }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, onSavePdf }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -141,19 +170,21 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     : systemPrompt || ''
 
   useEffect(() => {
-    if (!referencePhotoUrl) return
+    if (!referencePhotoUrl && !referencePhotoDriveFileId) return
     setLoadingRef(true)
-    urlToBase64(referencePhotoUrl).then(r => { if (r) { setRefBase64(r.base64); setRefMime(r.mimeType) } }).finally(() => setLoadingRef(false))
-  }, [referencePhotoUrl])
+    photoToBase64({ driveFileId: referencePhotoDriveFileId, url: referencePhotoUrl || '' })
+      .then(r => { if (r) { setRefBase64(r.base64); setRefMime(r.mimeType) } })
+      .finally(() => setLoadingRef(false))
+  }, [referencePhotoUrl, referencePhotoDriveFileId])
 
   useEffect(() => {
     if (!referencePhotos.length) return
-    Promise.all(referencePhotos.map(async p => { const r = await urlToBase64(p.url); return r ? { type: p.type, base64: r.base64, mime: r.mimeType } : null }))
+    Promise.all(referencePhotos.map(async p => { const r = await photoToBase64({ driveFileId: p.driveFileId, url: p.url }); return r ? { type: p.type, base64: r.base64, mime: r.mimeType } : null }))
       .then(results => {
         const map: Record<string, { base64: string; mime: string }> = {}
         results.forEach(r => { if (r) map[r.type] = { base64: r.base64, mime: r.mime } })
         setRefPhotoMap(map)
-        if (!referencePhotoUrl && map['geral']) { setRefBase64(map['geral'].base64); setRefMime(map['geral'].mime) }
+        if (!referencePhotoUrl && !referencePhotoDriveFileId && map['geral']) { setRefBase64(map['geral'].base64); setRefMime(map['geral'].mime) }
       })
   }, [referencePhotos])
 

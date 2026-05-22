@@ -443,7 +443,6 @@ Deno.serve(async (req: Request) => {
             photo_size:    file.size,
             drive_file_id: uploaded.id,
             category_id:   categoryId,
-            is_ai_photo:   false,
           })
           if (insErr) {
             try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
@@ -477,7 +476,6 @@ Deno.serve(async (req: Request) => {
           photo_size:   file.size,
           storage_path: storagePath,
           category_id:  categoryId,
-          is_ai_photo:  false,
         })
         if (insErr) return json({ error: insErr.message }, 500)
 
