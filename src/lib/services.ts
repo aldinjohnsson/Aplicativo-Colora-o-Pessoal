@@ -159,18 +159,18 @@ export const adminService = {
       .single()
 
     if (!adminData) {
-      await supabase.auth.signOut()
+      await supabase.auth.signOut({ scope: 'local' })
       throw new Error('Acesso não autorizado. Usuário não é administrador.')
     }
 
     // Checagem de licença — super_admin sempre passa
     if (adminData.role !== 'super_admin') {
       if (!adminData.license_active) {
-        await supabase.auth.signOut()
+        await supabase.auth.signOut({ scope: 'local' })
         throw new Error('Sua licença está inativa. Entre em contato com o suporte.')
       }
       if (adminData.license_expires_at && new Date(adminData.license_expires_at) < new Date()) {
-        await supabase.auth.signOut()
+        await supabase.auth.signOut({ scope: 'local' })
         throw new Error('Sua licença está vencida. Entre em contato com o suporte para renovar.')
       }
     }
@@ -179,7 +179,7 @@ export const adminService = {
   },
 
   async logout() {
-    await supabase.auth.signOut()
+    await supabase.auth.signOut({ scope: 'local' })
   },
 
   async getSession() {
@@ -193,7 +193,7 @@ export const adminService = {
       .single()
 
     if (!adminData) {
-      await supabase.auth.signOut()
+      await supabase.auth.signOut({ scope: 'local' })
       return null
     }
 
@@ -202,7 +202,7 @@ export const adminService = {
       const inactive = !adminData.license_active
       const expired = adminData.license_expires_at && new Date(adminData.license_expires_at) < new Date()
       if (inactive || expired) {
-        await supabase.auth.signOut()
+        await supabase.auth.signOut({ scope: 'local' })
         return null
       }
     }
