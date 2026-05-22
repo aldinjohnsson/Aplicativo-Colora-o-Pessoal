@@ -1164,12 +1164,25 @@ function KanbanSidebar({
         <div style={{ position: 'fixed', inset: 0, zIndex: 29, background: 'rgba(0,0,0,0.4)' }}
         className="sm:hidden" onClick={onToggle} />
       )}
+      {/* Outer wrapper: controls the animated width.
+          Never goes fully to 0 — stays at 13px so the toggle button
+          (right: -13px, width: 26px) remains centered on the edge. */}
       <div style={{
-        width: sidebarOpen ? 220 : 0, flexShrink: 0, background: t.sidebar,
-        borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none', overflow: 'hidden',
+        width: sidebarOpen ? 220 : 13, flexShrink: 0,
         transition: 'width 0.25s cubic-bezier(0.4,0,0.2,1)',
-        display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 30,
+        position: 'relative', zIndex: 30,
       }}>
+        {/* Inner panel: fills the outer width and clips content */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, bottom: 0, width: 220,
+          background: t.sidebar,
+          borderRight: sidebarOpen ? `1px solid ${t.border}` : 'none',
+          overflow: 'hidden',
+          display: 'flex', flexDirection: 'column',
+          transition: 'opacity 0.2s',
+          opacity: sidebarOpen ? 1 : 0,
+          pointerEvents: sidebarOpen ? 'auto' : 'none',
+        }}>
         <div style={{ width: 220, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ padding: '4px 8px', flex: 1, overflowY: 'auto', paddingTop: 10 }}>
             {navBtn('all', 'Todas as clientes', total)}
@@ -1221,7 +1234,53 @@ function KanbanSidebar({
             </div>
           </div>
         </div>
-      </div>
+        </div>{/* end inner panel */}
+
+        {/* ── Floating edge toggle button ────────────────────────────────
+            Always visible, sits on the right border of the sidebar.
+            On mobile it inherits the same behaviour (sidebar slides in as
+            a drawer, button still floats at the edge). */}
+        <button
+          onClick={onToggle}
+          title={sidebarOpen ? 'Recolher menu' : 'Expandir menu'}
+          style={{
+            position: 'absolute',
+            right: -13,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: 26,
+            height: 26,
+            borderRadius: '50%',
+            background: t.sidebar,
+            border: `1.5px solid ${t.border}`,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.13)',
+            zIndex: 32,
+            color: t.text2,
+            transition: 'background 0.15s, color 0.15s, box-shadow 0.15s',
+            flexShrink: 0,
+          }}
+          onMouseEnter={e => {
+            const el = e.currentTarget as HTMLButtonElement
+            el.style.background = t.surface2
+            el.style.color = t.accent
+            el.style.boxShadow = '0 4px 14px rgba(0,0,0,0.18)'
+          }}
+          onMouseLeave={e => {
+            const el = e.currentTarget as HTMLButtonElement
+            el.style.background = t.sidebar
+            el.style.color = t.text2
+            el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.13)'
+          }}
+        >
+          {sidebarOpen
+            ? <ChevronLeft size={14} strokeWidth={2.5} />
+            : <ChevronRight size={14} strokeWidth={2.5} />}
+        </button>
+      </div>{/* end outer wrapper */}
     </>
   )
 }
@@ -1401,7 +1460,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [aiPhotoPendingIds, setAiPhotoPendingIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(window.innerWidth >= 768)
   const { theme: t, themeName, setThemeName, isDark } = useTheme()
-  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
@@ -1457,6 +1517,13 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     const h = (e: MouseEvent) => { if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false) }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  // Detecta mudança de viewport (mobile/desktop) para reorganizar o toolbar
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 640)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
   }, [])
 
   // Fecha dropdown de busca ao clicar fora
@@ -1979,7 +2046,18 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         />
       )}
       {/* Toolbar */}
-      <div style={{ background: t.surface, borderBottom: `2px solid ${t.border}`, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, height: 52 }}>
+      <div style={{
+        background: t.surface,
+        borderBottom: `2px solid ${t.border}`,
+        padding: isMobile ? '8px 10px' : '0 10px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        rowGap: 8,
+        flexShrink: 0,
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
+        minHeight: 52,
+      }}>
         {/* Hamburger — junto ao menu lateral */}
         <button onClick={onOpenNav} title="Menu de navegação"
           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: t.text2, display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, transition: 'background 0.15s' }}
@@ -1994,21 +2072,26 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(135deg, #e91e63, #ff6090)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(233,30,99,0.3)' }}>
           <Palette size={14} color="white" />
         </div>
-        <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />
+        {!isMobile && <div style={{ width: 1, height: 22, background: t.border, flexShrink: 0, margin: '0 2px' }} />}
 
         {/* Título + contagem */}
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 0, flexShrink: 0 }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: t.text, letterSpacing: -0.3 }}>Clientes</span>
-          <span style={{ fontSize: 12, color: t.text3, marginLeft: 6, fontWeight: 500 }}>
-            {activeClients.length} ativa{activeClients.length !== 1 ? 's' : ''}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+          <span style={{ fontSize: isMobile ? 15 : 16, fontWeight: 800, color: t.text, letterSpacing: -0.3, flexShrink: 0 }}>Clientes</span>
+          <span style={{ fontSize: isMobile ? 11 : 12, color: t.text3, marginLeft: 6, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+            {activeClients.length}{isMobile ? '' : ` ativa${activeClients.length !== 1 ? 's' : ''}`}
             {filteredActive.length !== activeClients.length && !isArchiveView &&
-              <span style={{ color: t.accent, marginLeft: 4 }}>· {filteredActive.length} filtrada{filteredActive.length !== 1 ? 's' : ''}</span>
+              <span style={{ color: t.accent, marginLeft: 4 }}>· {filteredActive.length}{isMobile ? '' : ` filtrada${filteredActive.length !== 1 ? 's' : ''}`}</span>
             }
           </span>
         </div>
 
         {/* Barra de busca com dropdown ao vivo */}
-        <div ref={searchWrapRef} style={{ flex: 1, position: 'relative', maxWidth: 520 }}>
+        <div ref={searchWrapRef} style={{
+          flex: isMobile ? '1 0 100%' : 1,
+          position: 'relative',
+          maxWidth: isMobile ? '100%' : 520,
+          order: isMobile ? 10 : 0,
+        }}>
           <Search size={14} style={{ position: 'absolute', left: 11, top: 16, color: t.text3, pointerEvents: 'none', zIndex: 1 }} />
           <input
             ref={searchInputRef}
@@ -2173,12 +2256,6 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           <button onClick={() => setViewMode('board')} title="Kanban" style={btnStyle(viewMode === 'board')}><LayoutGrid size={15} /></button>
           <button onClick={() => setViewMode('list')} title="Lista" style={btnStyle(viewMode === 'list')}><List size={15} /></button>
         </div>
-
-        <button onClick={() => setSidebarOpen(v => !v)} title={sidebarOpen ? 'Fechar painel' : 'Abrir painel de filtros'}
-          style={{ background: sidebarOpen ? t.accentLight : 'none', border: `1px solid ${sidebarOpen ? t.accent + '40' : t.border}`, cursor: 'pointer', padding: '6px 8px', borderRadius: 8, color: sidebarOpen ? t.accent : t.text2, display: 'flex', flexShrink: 0, transition: 'all 0.15s' }}
-          onMouseEnter={e => (e.currentTarget.style.background = sidebarOpen ? t.accentLight : t.surface2)}
-          onMouseLeave={e => (e.currentTarget.style.background = sidebarOpen ? t.accentLight : 'none')}
-        ><SlidersHorizontal size={16} /></button>
       </div>
 
       {/* Body */}
@@ -3889,12 +3966,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   <p className="text-xs text-gray-500">Compartilhe este link para o cliente acessar o portal</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0 self-end sm:self-auto">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full sm:w-auto sm:flex-shrink-0">
                 <Btn 
                   variant="outline" 
                   size="sm" 
                   onClick={copyLink}
-                  className="bg-white hover:bg-violet-50 border-violet-300 flex-1 sm:flex-none justify-center"
+                  className="bg-white hover:bg-violet-50 border-violet-300 w-full sm:w-auto justify-center whitespace-nowrap"
                 >
                   {copied ? (
                     <>
@@ -3908,11 +3985,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                     </>
                   )}
                 </Btn>
-                <a href={portalLink} target="_blank" rel="noopener noreferrer" className="flex-1 sm:flex-none">
+                <a href={portalLink} target="_blank" rel="noopener noreferrer" className="w-full sm:w-auto">
                   <Btn 
                     variant="outline" 
                     size="sm"
-                    className="bg-white hover:bg-violet-50 border-violet-300 w-full justify-center"
+                    className="bg-white hover:bg-violet-50 border-violet-300 w-full justify-center whitespace-nowrap"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
                     <span>Abrir Portal</span>
@@ -4467,7 +4544,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   : null
                 return (
                   <div className="rounded-xl p-5 space-y-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                       <h3 className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
                         <SlidersHorizontal className="h-4 w-4 text-rose-500" /> Ferramenta de Contraste
                       </h3>
@@ -4475,6 +4552,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         variant="primary"
                         size="sm"
                         onClick={() => setContrastDialogOpen(true)}
+                        className="w-full sm:w-auto justify-center whitespace-nowrap"
                       >
                         {hasSaved ? (<><Pencil className="h-3.5 w-3.5" /> Editar</>) : (<><Plus className="h-3.5 w-3.5" /> Abrir ferramenta</>)}
                       </Btn>
@@ -4534,13 +4612,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               ) : (
                 <div className="space-y-2">
                   {resultFiles.map((f: any) => (
-                    <div key={f.id} className="flex items-center justify-between p-3 rounded-lg" style={{ background: t.surface2 }}>
-                      <div className="flex items-center gap-2 min-w-0">
+                    <div key={f.id} className="flex items-center justify-between gap-2 p-3 rounded-lg" style={{ background: t.surface2 }}>
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
                         <FileText className="h-4 w-4 text-red-500 flex-shrink-0" />
-                        <span className="text-sm truncate" style={{ color: t.text }}>{f.file_name}</span>
-                        <span className="text-xs" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
+                        <span className="text-sm truncate min-w-0" style={{ color: t.text }}>{f.file_name}</span>
+                        <span className="text-xs whitespace-nowrap flex-shrink-0" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
                       </div>
-                      <div className="flex items-center gap-2 ml-3">
+                      <div className="flex items-center gap-1 flex-shrink-0">
                         <a href={adminService.getResultFileUrl(f)} target="_blank" rel="noopener noreferrer">
                           <Btn variant="ghost" size="sm"><Download className="h-3.5 w-3.5" /></Btn>
                         </a>
@@ -4553,12 +4631,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-3 pt-2" style={{ borderTop: `1px solid ${t.border}` }}>
-              <Btn onClick={async () => { await handleSaveResult(); await handleSaveAIConfig(); await load() }} loading={savingResult || savingAI}>
+            <div className="flex flex-col items-start sm:flex-row sm:items-center gap-3 pt-3" style={{ borderTop: `1px solid ${t.border}` }}>
+              <Btn onClick={async () => { await handleSaveResult(); await handleSaveAIConfig(); await load() }} loading={savingResult || savingAI} className="w-full sm:w-auto justify-center">
                 <Save className="h-4 w-4" /> Salvar
               </Btn>
               {aiSaveStatus === 'saved' && <span className="text-sm text-green-600 flex items-center gap-1"><CheckCircle className="h-4 w-4" /> Salvo!</span>}
-              <span className="text-xs ml-auto flex items-center gap-1" style={{ color: t.text3 }}><Lock className="h-3 w-3" /> Liberação via Controle de Etapas</span>
+              <span className="text-xs sm:ml-auto flex items-center gap-1" style={{ color: t.text3 }}><Lock className="h-3 w-3" /> Liberação via Controle de Etapas</span>
             </div>
           </div>
         </div>
