@@ -30,6 +30,7 @@ import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
 import { AiCompositionsManager } from './documents/ai-compositions/AiCompositionsManager'
 import { ContrastLayoutDialog, type ContrastLayoutData, formatContrastValue } from './documents/client/ContrastLayoutDialog'
 import { cleanClientFiles } from '../../services/cleanupService'
+import { AddManualClientModal } from './AddManualClientModal'
 
 // ─── HEIC → JPEG (conversão no navegador) ─────────────────────────────────
 // Cache compartilhado entre todas as instâncias para não reconverter a mesma foto
@@ -345,7 +346,7 @@ interface DeadlineInfo {
   textColor: string
 }
 function getDeadlineInfo(client: Client, deadline?: DeadlineData | null): DeadlineInfo | null {
-  if (!deadline?.deadline_date || client.status === 'completed' || client.status === 'photos_submitted') return null
+  if (!deadline?.deadline_date || client.status === 'completed' || client.status === 'photos_submitted' || client.status === 'awaiting_ai_photo') return null
  
   const today = new Date(); today.setHours(0, 0, 0, 0)
   // CORRIGIDO: parseLocalDate evita bug de timezone (new Date("YYYY-MM-DD") = UTC = dia errado no Brasil)
@@ -1469,6 +1470,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board')
   const [creating, setCreating] = useState(false)
+  const [showManualModal, setShowManualModal] = useState(false)
   const [form, setForm] = useState({ full_name: '', email: '', phone: '', birth_date: '', plan_id: '', notes: '' })
   const [themeOpen, setThemeOpen] = useState(false)
   const themeRef = useRef<HTMLDivElement>(null)
@@ -2045,6 +2047,17 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           theme={t}
         />
       )}
+      {showManualModal && (
+        <AddManualClientModal
+          plans={plans}
+          onClose={() => setShowManualModal(false)}
+          onCreated={(clientId) => {
+            setShowManualModal(false)
+            silentLoad()
+            navigate(`/admin/clients/${clientId}`)
+          }}
+        />
+      )}
       {/* Toolbar */}
       <div style={{
         background: t.surface,
@@ -2256,6 +2269,26 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
           <button onClick={() => setViewMode('board')} title="Kanban" style={btnStyle(viewMode === 'board')}><LayoutGrid size={15} /></button>
           <button onClick={() => setViewMode('list')} title="Lista" style={btnStyle(viewMode === 'list')}><List size={15} /></button>
         </div>
+
+        {/* Botão de cadastro manual */}
+        <button
+          onClick={() => setShowManualModal(true)}
+          title="Cadastrar cliente manualmente"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '6px 13px', borderRadius: 8, border: 'none',
+            background: 'linear-gradient(135deg, #e91e63, #f06292)',
+            color: 'white', cursor: 'pointer', fontSize: 13, fontWeight: 700,
+            boxShadow: '0 2px 8px rgba(233,30,99,0.28)',
+            flexShrink: 0, transition: 'filter 0.15s',
+            whiteSpace: 'nowrap',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.filter = 'brightness(1.1)')}
+          onMouseLeave={e => (e.currentTarget.style.filter = 'none')}
+        >
+          <Plus size={15} />
+          {!isMobile && 'Nova cliente'}
+        </button>
       </div>
 
       {/* Body */}
