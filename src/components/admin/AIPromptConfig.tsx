@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react'
 import {
   Wand2, Save, CheckCircle, Camera, Trash2,
   Coins, Plus, Minus, Lock, Unlock, RefreshCw, MessageSquare,
-  X, FolderOpen, Loader2
+  X, FolderOpen, Loader2, Upload, ImagePlus
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { driveStorage } from '../../lib/driveStorage'
@@ -382,6 +382,7 @@ export function AIPromptConfig({
         <GalleryPhotoPicker
           typeId={galleryPickerTypeId}
           typeName={photoTypes.find(t => t.id === galleryPickerTypeId)?.name || galleryPickerTypeId}
+          clientId={clientId}
           clientPhotos={clientPhotos || []}
           photoCategories={photoCategories || []}
           onClose={() => setGalleryPickerTypeId(null)}
@@ -532,6 +533,7 @@ function DriveImage({ photo, alt, className }: DriveImageProps) {
 interface GalleryPhotoPickerProps {
   typeId: string
   typeName: string
+  clientId: string
   clientPhotos: any[]
   photoCategories: any[]
   onClose: () => void
@@ -539,13 +541,23 @@ interface GalleryPhotoPickerProps {
 }
 
 function GalleryPhotoPicker({
-  typeId, typeName, clientPhotos, photoCategories, onClose, onSelect,
+  typeId, typeName, clientId, clientPhotos, photoCategories, onClose, onSelect,
 }: GalleryPhotoPickerProps) {
+  // ── mode: null = tela inicial, 'gallery' = escolher da galeria, 'upload' = fazer upload
+  const [mode, setMode] = useState<null | 'gallery' | 'upload'>(null)
+
+  // ── gallery flow
   const [selectedCatId, setSelectedCatId] = useState<string | null>(null)
+
+  // ── upload flow
+  const [uploadCatId, setUploadCatId] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const uploadInputRef = React.useRef<HTMLInputElement>(null)
 
   const catName = (cat: any) => cat.title || cat.name || 'Sem nome'
 
-  // Categorias que têm pelo menos uma foto
+  // Categorias que têm pelo menos uma foto (para galeria)
   const catsWithPhotos = photoCategories.filter((cat: any) =>
     clientPhotos.some((p: any) => p.category_id === cat.id)
   )
@@ -559,6 +571,62 @@ function GalleryPhotoPicker({
     : []
 
   const selectedCat = photoCategories.find(c => c.id === selectedCatId)
+  const uploadCat = photoCategories.find(c => c.id === uploadCatId)
+
+  // ── upload handler
+  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !uploadCatId) return
+    e.target.value = ''
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const result = await driveStorage.adminUploadPhoto({
+        clientId,
+        file,
+        categoryId: uploadCatId,
+      })
+      onSelect({
+        url: result.url,
+        storagePath: '',
+        driveFileId: result.driveFileId,
+      })
+    } catch (err: any) {
+      setUploadError(err.message || 'Erro ao enviar foto')
+      setUploading(false)
+    }
+  }
+
+  // ── header title/subtitle logic
+  const headerTitle = () => {
+    if (mode === null) return 'Adicionar foto de referência'
+    if (mode === 'gallery') {
+      if (selectedCatId) return <span>Escolher foto — <span className="text-violet-600">{catName(selectedCat)}</span></span>
+      return 'Escolher da galeria'
+    }
+    if (mode === 'upload') {
+      if (uploadCatId) return <span>Enviar para — <span className="text-violet-600">{catName(uploadCat)}</span></span>
+      return 'Fazer upload'
+    }
+  }
+  const headerSub = () => {
+    if (mode === null) return `Referência para: ${typeName}`
+    if (mode === 'gallery' && selectedCatId) return 'Toque na foto para usar como referência'
+    if (mode === 'gallery') return 'De qual categoria você quer buscar a foto?'
+    if (mode === 'upload' && uploadCatId) return 'Escolha o arquivo para enviar'
+    if (mode === 'upload') return 'Selecione a categoria de destino'
+    return ''
+  }
+
+  // ── back button
+  const handleBack = () => {
+    if (mode === 'gallery' && selectedCatId) { setSelectedCatId(null); return }
+    if (mode === 'upload' && uploadCatId) { setUploadCatId(null); setUploadError(null); return }
+    setMode(null)
+    setSelectedCatId(null)
+    setUploadCatId(null)
+    setUploadError(null)
+  }
 
   return (
     <div
@@ -570,9 +638,9 @@ function GalleryPhotoPicker({
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <div className="flex items-center gap-2">
-            {selectedCatId && (
+            {mode !== null && (
               <button
-                onClick={() => setSelectedCatId(null)}
+                onClick={handleBack}
                 className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 -ml-1 mr-0.5 transition-colors"
                 aria-label="Voltar"
               >
@@ -580,17 +648,8 @@ function GalleryPhotoPicker({
               </button>
             )}
             <div>
-              <p className="font-semibold text-sm text-gray-900">
-                {selectedCatId
-                  ? <>Escolher foto — <span className="text-violet-600">{catName(selectedCat)}</span></>
-                  : <>Adicionar à composição</>
-                }
-              </p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                {selectedCatId
-                  ? 'Toque na foto para usar como referência'
-                  : 'De qual categoria você quer buscar a foto?'}
-              </p>
+              <p className="font-semibold text-sm text-gray-900">{headerTitle()}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{headerSub()}</p>
             </div>
           </div>
           <button
@@ -604,85 +663,208 @@ function GalleryPhotoPicker({
         {/* Conteúdo */}
         <div className="flex-1 overflow-y-auto">
 
-          {/* ── Etapa 1: tiles de categoria ── */}
-          {!selectedCatId && (
-            <div className="p-4 space-y-3">
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1">
-                Categoria de fotos:
+          {/* ══ Tela inicial: dois modos ══ */}
+          {mode === null && (
+            <div className="p-5 space-y-3">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1 mb-4">
+                Como deseja adicionar?
               </p>
-              {catsWithPhotos.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-                  <FolderOpen className="h-10 w-10 mb-2 opacity-30" />
-                  <p className="text-sm">Nenhuma foto cadastrada para esta cliente</p>
+              <button
+                onClick={() => setMode('gallery')}
+                className="w-full flex items-center gap-4 p-4 rounded-xl border-2 border-gray-200 hover:border-violet-400 hover:bg-violet-50 transition-all text-left group"
+              >
+                <div className="w-11 h-11 rounded-xl bg-violet-50 group-hover:bg-violet-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                  <FolderOpen className="h-5 w-5 text-violet-500" />
                 </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  {catsWithPhotos.map((cat: any) => {
-                    const count = clientPhotos.filter((p: any) => p.category_id === cat.id).length
-                    return (
-                      <button
-                        key={cat.id}
-                        onClick={() => setSelectedCatId(cat.id)}
-                        className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
-                      >
-                        <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
-                          <FolderOpen className="h-4 w-4 text-pink-400" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-800 leading-snug truncate">{catName(cat)}</p>
-                          <p className="text-xs text-gray-400 mt-0.5">{count} foto{count !== 1 ? 's' : ''}</p>
-                        </div>
-                        <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
-                      </button>
-                    )
-                  })}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">Escolher da galeria</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Selecione uma foto já enviada pela cliente</p>
                 </div>
-              )}
+                <span className="text-gray-300 group-hover:text-violet-400 transition-colors flex-shrink-0 text-lg">→</span>
+              </button>
+              <button
+                onClick={() => setMode('upload')}
+                className="w-full flex items-center gap-4 p-4 rounded-xl border-2 border-gray-200 hover:border-pink-400 hover:bg-pink-50 transition-all text-left group"
+              >
+                <div className="w-11 h-11 rounded-xl bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                  <Upload className="h-5 w-5 text-pink-500" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">Fazer upload</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Envie uma nova foto e adicione à galeria</p>
+                </div>
+                <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0 text-lg">→</span>
+              </button>
             </div>
           )}
 
-          {/* ── Etapa 2: grid de fotos da categoria ── */}
-          {selectedCatId && (
-            <div className="p-4">
-              {photosInCat.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-                  <Camera className="h-10 w-10 mb-2 opacity-30" />
-                  <p className="text-sm">Nenhuma foto nesta categoria.</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-3 gap-2">
-                  {photosInCat.map((photo: any) => (
-                    <button
-                      key={photo.id}
-                      onClick={() => {
-                        // Para fotos do Drive, salvamos o drive_file_id pra que o
-                        // chat consiga puxar via proxy autenticado (drive.google.com
-                        // não envia CORS headers, então fetch direto falha).
-                        // A `url` (thumbnail) ainda é salva pra <img> em listagens.
-                        const url = photo.drive_file_id
-                          ? driveStorage.viewUrl(photo.drive_file_id)
-                          : photo.url || (photo.storage_path
-                              ? supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl
-                              : '')
-                        onSelect({
-                          url,
-                          storagePath: photo.storage_path || '',
-                          driveFileId: photo.drive_file_id || null,
-                        })
-                      }}
-                      className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-violet-500 focus:outline-none focus:border-violet-500 transition-all group bg-gray-100"
-                    >
-                      <DriveImage
-                        photo={photo}
-                        alt={photo.photo_name || ''}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                      />
-                    </button>
-                  ))}
+          {/* ══ Modo galeria ══ */}
+          {mode === 'gallery' && (
+            <>
+              {/* Etapa 1: tiles de categoria */}
+              {!selectedCatId && (
+                <div className="p-4 space-y-3">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1">
+                    Categoria de fotos:
+                  </p>
+                  {catsWithPhotos.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                      <FolderOpen className="h-10 w-10 mb-2 opacity-30" />
+                      <p className="text-sm">Nenhuma foto cadastrada para esta cliente</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      {catsWithPhotos.map((cat: any) => {
+                        const count = clientPhotos.filter((p: any) => p.category_id === cat.id).length
+                        return (
+                          <button
+                            key={cat.id}
+                            onClick={() => setSelectedCatId(cat.id)}
+                            className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
+                          >
+                            <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                              <FolderOpen className="h-4 w-4 text-pink-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-800 leading-snug truncate">{catName(cat)}</p>
+                              <p className="text-xs text-gray-400 mt-0.5">{count} foto{count !== 1 ? 's' : ''}</p>
+                            </div>
+                            <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
+
+              {/* Etapa 2: grid de fotos da categoria */}
+              {selectedCatId && (
+                <div className="p-4">
+                  {photosInCat.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                      <Camera className="h-10 w-10 mb-2 opacity-30" />
+                      <p className="text-sm">Nenhuma foto nesta categoria.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2">
+                      {photosInCat.map((photo: any) => (
+                        <button
+                          key={photo.id}
+                          onClick={() => {
+                            const url = photo.drive_file_id
+                              ? driveStorage.viewUrl(photo.drive_file_id)
+                              : photo.url || (photo.storage_path
+                                  ? supabase.storage.from('client-photos').getPublicUrl(photo.storage_path).data.publicUrl
+                                  : '')
+                            onSelect({
+                              url,
+                              storagePath: photo.storage_path || '',
+                              driveFileId: photo.drive_file_id || null,
+                            })
+                          }}
+                          className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-violet-500 focus:outline-none focus:border-violet-500 transition-all group bg-gray-100"
+                        >
+                          <DriveImage
+                            photo={photo}
+                            alt={photo.photo_name || ''}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
+
+          {/* ══ Modo upload ══ */}
+          {mode === 'upload' && (
+            <>
+              {/* Etapa 1: selecionar categoria de destino */}
+              {!uploadCatId && (
+                <div className="p-4 space-y-3">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1">
+                    Para qual categoria enviar?
+                  </p>
+                  {photoCategories.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                      <FolderOpen className="h-10 w-10 mb-2 opacity-30" />
+                      <p className="text-sm">Nenhuma categoria cadastrada</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      {photoCategories.map((cat: any) => (
+                        <button
+                          key={cat.id}
+                          onClick={() => setUploadCatId(cat.id)}
+                          className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
+                        >
+                          <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                            <FolderOpen className="h-4 w-4 text-pink-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-800 leading-snug truncate">{catName(cat)}</p>
+                          </div>
+                          <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Etapa 2: área de upload */}
+              {uploadCatId && (
+                <div className="p-5 flex flex-col items-center gap-4">
+                  <input
+                    ref={uploadInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleUploadFile}
+                    disabled={uploading}
+                  />
+
+                  {uploading ? (
+                    <div className="w-full flex flex-col items-center justify-center py-12 gap-3 text-violet-600">
+                      <Loader2 className="h-10 w-10 animate-spin" />
+                      <p className="text-sm font-medium">Enviando foto...</p>
+                      <p className="text-xs text-gray-400">Salvando na galeria e na referência IA</p>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => uploadInputRef.current?.click()}
+                      className="w-full flex flex-col items-center justify-center gap-3 py-12 px-6 rounded-2xl border-2 border-dashed border-pink-300 hover:border-pink-500 hover:bg-pink-50 transition-all group"
+                    >
+                      <div className="w-14 h-14 rounded-2xl bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center transition-colors">
+                        <ImagePlus className="h-7 w-7 text-pink-400 group-hover:text-pink-600 transition-colors" />
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm font-semibold text-gray-700 group-hover:text-gray-900">Clique para escolher a foto</p>
+                        <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP — a foto será salva na galeria da cliente</p>
+                      </div>
+                    </button>
+                  )}
+
+                  {uploadError && (
+                    <div className="w-full flex items-center gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-lg text-red-600 text-xs">
+                      <span className="flex-shrink-0">⚠️</span>
+                      <span>{uploadError}</span>
+                      <button
+                        onClick={() => setUploadError(null)}
+                        className="ml-auto text-red-400 hover:text-red-600"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
         </div>
 
         {/* Footer */}

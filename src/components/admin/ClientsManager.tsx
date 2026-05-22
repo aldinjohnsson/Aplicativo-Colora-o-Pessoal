@@ -2763,9 +2763,27 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
   const [photos, setPhotos] = useState(initialPhotos)
   const [index, setIndex] = useState(initialIndex)
   const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  // pointersRef: pointers ativos (id → posição atual). Suporta multi-touch.
+  // dragRef:   estado de pan com 1 dedo. Só efetiva o pan se zoom > 1.
+  // pinchRef:  estado inicial do pinch (2 dedos): distância, zoom e pan no
+  //            momento em que o segundo dedo desceu, mais o ponto-âncora.
+  // panRef:    cópia ref do `pan` pra usar dentro de handlers sem precisar
+  //            do React re-renderizar o handler.
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const dragRef = useRef<{ panX: number; panY: number; startX: number; startY: number } | null>(null)
+  const pinchRef = useRef<{ startDist: number; startZoom: number; startPanX: number; startPanY: number; anchorX: number; anchorY: number } | null>(null)
+  const panRef = useRef(pan)
+  useEffect(() => { panRef.current = pan }, [pan])
+  const imgContainerRef = useRef<HTMLDivElement>(null)
   const [deleting, setDeleting] = useState(false)
   const prev = useCallback(() => { setIndex(i => (i - 1 + photos.length) % photos.length); setZoom(1) }, [photos.length])
   const next = useCallback(() => { setIndex(i => (i + 1) % photos.length); setZoom(1) }, [photos.length])
+  // Sempre que o zoom voltar pra 1 (ou menor), recentra a imagem. Isso roda
+  // tanto quando o usuário clica em "zoom out" até o fim, quanto quando prev/
+  // next/thumbnail forçam zoom=1.
+  useEffect(() => { if (zoom <= 1) setPan({ x: 0, y: 0 }) }, [zoom])
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose(); if (e.key === 'ArrowLeft') prev(); if (e.key === 'ArrowRight') next()
@@ -2775,6 +2793,110 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
   }, [prev, next, onClose])
   const photo = photos[index]
   const mainImage = useHeicSafeSrc(photo?.url, photo?.photo_name)
+
+  // ── Drag (1 dedo / mouse) + Pinch (2 dedos) via Pointer Events ──
+  // Handlers ficam no container — não na <img> — porque o 2º dedo do pinch
+  // pode pousar fora da imagem. setPointerCapture mantém o evento mesmo se
+  // o dedo arrastar pra fora do container.
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Ignora pointerdown nos botões prev/next que vivem dentro do container
+    if ((e.target as HTMLElement).closest('button')) return
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const count = pointersRef.current.size
+    if (count === 1) {
+      // Inicia drag — só pan'ará no move se zoom > 1
+      dragRef.current = { panX: panRef.current.x, panY: panRef.current.y, startX: e.clientX, startY: e.clientY }
+    } else if (count === 2) {
+      // Inicia pinch — cancela qualquer drag em andamento
+      dragRef.current = null
+      const pts = Array.from(pointersRef.current.values())
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
+      const midX = (pts[0].x + pts[1].x) / 2
+      const midY = (pts[0].y + pts[1].y) / 2
+      const container = imgContainerRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      pinchRef.current = {
+        startDist: dist,
+        startZoom: zoom,
+        startPanX: panRef.current.x,
+        startPanY: panRef.current.y,
+        // Âncora = ponto médio do pinch, em coords relativas ao centro do container
+        anchorX: midX - (rect.left + rect.width / 2),
+        anchorY: midY - (rect.top + rect.height / 2),
+      }
+      setDragging(true) // desliga animação durante o gesto
+    }
+  }
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(e.pointerId)) return
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (pinchRef.current && pointersRef.current.size >= 2) {
+      // Pinch ativo: zoom = (distância atual / distância inicial) * zoom inicial,
+      // ancorado no ponto médio inicial. Mesma matemática do wheel zoom.
+      const pts = Array.from(pointersRef.current.values()).slice(0, 2)
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
+      const ps = pinchRef.current
+      const newZoom = Math.max(0.5, Math.min(4, ps.startZoom * (dist / ps.startDist)))
+      if (newZoom > 1) {
+        const r = newZoom / ps.startZoom
+        setPan({ x: ps.anchorX - (ps.anchorX - ps.startPanX) * r, y: ps.anchorY - (ps.anchorY - ps.startPanY) * r })
+      }
+      setZoom(newZoom)
+    } else if (dragRef.current && pointersRef.current.size === 1 && zoom > 1) {
+      // Pan com 1 dedo (só quando há zoom)
+      const d = dragRef.current
+      setPan({ x: d.panX + (e.clientX - d.startX), y: d.panY + (e.clientY - d.startY) })
+      if (!dragging) setDragging(true)
+    }
+  }
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(e.pointerId)) return
+    pointersRef.current.delete(e.pointerId)
+    try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId) } catch {}
+    const count = pointersRef.current.size
+    if (count < 2 && pinchRef.current) {
+      pinchRef.current = null
+      // Transição pinch → drag: se sobrou 1 dedo, re-inicia drag a partir dele.
+      // Sem isso, a imagem "trava" depois de pinch até o usuário levantar todos
+      // os dedos e tocar de novo.
+      if (count === 1) {
+        const [remaining] = Array.from(pointersRef.current.values())
+        dragRef.current = { panX: panRef.current.x, panY: panRef.current.y, startX: remaining.x, startY: remaining.y }
+      }
+    }
+    if (count === 0) {
+      dragRef.current = null
+      setDragging(false)
+    }
+  }
+
+  // ── Zoom via scroll do mouse (ancorado no cursor) ──
+  // Não chamamos preventDefault: o lightbox é fixed inset-0 com overflow-hidden
+  // em todos os ancestrais, então não há scroll de página pra travar.
+  // O fator exp(-deltaY * 0.002) dá ~18% de mudança por "click" de mouse wheel
+  // (deltaY≈100) e mudanças graduais em trackpad (deltaY≈10 por evento).
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    const container = imgContainerRef.current
+    if (!container) return
+    const factor = Math.exp(-e.deltaY * 0.002)
+    const newZoom = Math.max(0.5, Math.min(4, zoom * factor))
+    if (newZoom === zoom) return
+    const rect = container.getBoundingClientRect()
+    // Coordenadas do cursor relativas ao centro do container (= centro visual
+    // da imagem quando pan=0). Pra cursor-anchored zoom: o ponto da imagem
+    // sob o cursor antes do zoom deve continuar sob o cursor depois.
+    const cx = e.clientX - (rect.left + rect.width / 2)
+    const cy = e.clientY - (rect.top + rect.height / 2)
+    if (newZoom > 1) {
+      const ratio = newZoom / zoom
+      setPan({ x: cx - (cx - pan.x) * ratio, y: cy - (cy - pan.y) * ratio })
+    }
+    // newZoom <= 1: o useEffect existente já reseta pan pra {0,0}.
+    setZoom(newZoom)
+  }
 
   const handleDownload = async () => {
     try {
@@ -2791,19 +2913,31 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
           return
         }
       }
-      // Caso contrário, baixa o original
-      const res = await fetch(photo.url)
-      const blob = await res.blob()
+
+      // Fotos do Drive: usa o proxy autenticado da Edge Function. fetch()
+      // direto em drive.google.com/thumbnail não funciona — sem header CORS.
+      let blob: Blob
+      if (photo.drive_file_id) {
+        blob = await driveStorage.fetchPhotoBlob(photo.drive_file_id)
+      } else {
+        const res = await fetch(photo.url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        blob = await res.blob()
+      }
+
       const blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = blobUrl
-      a.download = photo.photo_name
+      a.download = photo.photo_name || 'foto'
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      URL.revokeObjectURL(blobUrl)
-    } catch {
-      window.open(photo.url, '_blank')
+      // Pequeno delay antes de revogar pra alguns browsers (Safari) terem
+      // tempo de iniciar o download usando a URL antes dela ser invalidada.
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+    } catch (e: any) {
+      console.error('[PhotoLightbox] handleDownload error:', e)
+      alert(`Não foi possível baixar a foto: ${e?.message || 'erro desconhecido'}`)
     }
   }
   const handleDelete = async () => {
@@ -2847,7 +2981,19 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
           <button onClick={onClose} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation ml-1"><X className="h-5 w-5" /></button>
         </div>
       </div>
-      <div className="flex-1 flex items-center justify-center overflow-hidden relative" onClick={e => e.stopPropagation()}>
+      <div
+        ref={imgContainerRef}
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        className="flex-1 flex items-center justify-center overflow-hidden relative"
+        // touchAction: 'none' impede que o browser interprete os toques como
+        // scroll/pinch-zoom nativo da página — quem cuida dos gestos é a gente.
+        style={{ touchAction: 'none' }}
+        onClick={e => e.stopPropagation()}
+      >
         {photos.length > 1 && <button onClick={prev} className="absolute left-2 sm:left-4 z-10 p-3 sm:p-3 bg-black/50 hover:bg-black/70 active:bg-black/80 rounded-full text-white touch-manipulation"><ChevronLeft className="h-6 w-6" /></button>}
         {mainImage.loading ? (
           <div className="text-white text-center px-6">
@@ -2862,7 +3008,19 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
             <p className="text-xs text-white/60 mt-1 break-all">{photo.photo_name}</p>
           </div>
         ) : (
-          <img src={mainImage.src} alt={photo.photo_name} className="max-w-full max-h-full object-contain select-none transition-transform duration-200" style={{ transform: `scale(${zoom})`, cursor: zoom > 1 ? 'move' : 'default' }} draggable={false} />
+          <img
+            src={mainImage.src}
+            alt={photo.photo_name}
+            className="max-w-full max-h-full object-contain select-none"
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              // Sem animação durante o arrasto/pinch pra acompanhar o gesto 1:1;
+              // animação curta só pra zoom in/out via botão/teclado.
+              transition: dragging ? 'none' : 'transform 0.2s',
+              cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default',
+            }}
+            draggable={false}
+          />
         )}
         {photos.length > 1 && <button onClick={next} className="absolute right-2 sm:right-4 z-10 p-3 sm:p-3 bg-black/50 hover:bg-black/70 active:bg-black/80 rounded-full text-white touch-manipulation"><ChevronRight className="h-6 w-6" /></button>}
       </div>
@@ -2934,7 +3092,7 @@ function PhotoThumb({ photo, onClick }: { photo: any; onClick: () => void }) {
 }
 
 // ─── Photos View ──────────────────────────────────────────────────────────
-function PhotosView({ clientId, photos, photoCategories, clientToken }: { clientId: string; photos: any[]; photoCategories: any[]; clientToken: string }) {
+function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosChange }: { clientId: string; photos: any[]; photoCategories: any[]; clientToken: string; onPhotosChange?: () => void }) {
   const { theme: t } = useTheme()
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -2960,6 +3118,7 @@ function PhotosView({ clientId, photos, photoCategories, clientToken }: { client
     if (dbError) throw dbError
 
     setPhotosWithUrls(prev => prev.filter(p => p.id !== photo.id))
+    onPhotosChange?.()
   }
   const [selectedCategoryForUpload, setSelectedCategoryForUpload] = useState<string | null>(
     photoCategories.length > 0 ? photoCategories[0].id : null
@@ -3032,6 +3191,7 @@ function PhotosView({ clientId, photos, photoCategories, clientToken }: { client
         if (dbErr) throw dbErr
       }
       await loadPhotos()
+      onPhotosChange?.()
       if (driveErrors.length > 0) {
         alert(
           `Drive falhou em ${driveErrors.length} foto(s):\n\n${driveErrors.join('\n')}\n\n` +
@@ -3417,7 +3577,11 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
   const load = async () => {
     if (!clientId) return
-    setLoading(true)
+    // Só mostra a tela de loading no carregamento inicial. Em refreshes
+    // (depois que data já existe), mantém a UI atual visível e só substitui
+    // o conteúdo ao final — evita pisca-pisca quando outras abas chamam load().
+    const initialLoad = data === null
+    if (initialLoad) setLoading(true)
     const [detail, foldersRes, templatesRes] = await Promise.all([
       adminService.getClientDetail(clientId),
       supabase.from('ai_folders').select('id, name, config').order('name'),
@@ -3447,7 +3611,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     savedAiTagsRef.current = JSON.stringify(
       tpls.map((t: any) => { const saved = savedTags.find((s: any) => s.templateId === t.id); return { templateId: t.id, name: t.name, value: saved?.value || '' } })
     )
-    setLoading(false)
+    if (initialLoad) setLoading(false)
   }
 
   // ─── Auto-save das tags de "Informações da análise" ────────────────────
@@ -4298,7 +4462,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
           {tab === 'photos' && (
             <div className="space-y-4">
-              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} clientToken={client.token} />
+              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} clientToken={client.token} onPhotosChange={load} />
 
               {/* Zona de limpeza — visível apenas para clientes concluídos */}
               {client.status === 'completed' && (
@@ -4386,6 +4550,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   clientId={clientId!}
                   clientName={client.full_name}
                   onGoToDocuments={() => setDocsSubTab('docs')}
+                  onSavedToResult={load}
                 />
               )}
             </div>

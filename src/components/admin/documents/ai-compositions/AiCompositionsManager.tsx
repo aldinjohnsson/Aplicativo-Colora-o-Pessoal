@@ -103,9 +103,13 @@ interface AiCompositionsManagerProps {
   clientId?:   string
   clientName?: string
   onGoToDocuments?: () => void
+  /** Disparado depois de salvar com sucesso em client_result_files.
+   *  Permite que o componente pai (ex: ClientsManager) recarregue a aba
+   *  Resultado pra mostrar o PDF novo sem precisar de F5. */
+  onSavedToResult?: () => void
 }
 
-export function AiCompositionsManager({ clientId: propClientId, clientName: propClientName, onGoToDocuments }: AiCompositionsManagerProps = {}) {
+export function AiCompositionsManager({ clientId: propClientId, clientName: propClientName, onGoToDocuments, onSavedToResult }: AiCompositionsManagerProps = {}) {
   const isEmbedded = !!propClientId
 
   // ── Clientes (só no modo global) ──
@@ -378,6 +382,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
       const file = new File([pdfBlob], fileName, { type: 'application/pdf' })
       await adminService.uploadResultFile(selectedClient.id, file)
       setSavedDoc({ id: 'ok' } as any) // marca como salvo pro banner mudar
+      onSavedToResult?.()
     } catch (e: any) {
       const msg = e?.message || String(e) || 'Erro desconhecido ao salvar'
       console.error('[AiCompositionsManager] handleSaveToResults error:', e)
