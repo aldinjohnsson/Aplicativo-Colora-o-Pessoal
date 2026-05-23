@@ -13,12 +13,19 @@
 //   │  → resposta: { success, storagePath, size, promptName }
 //   └────────────────────────────────────────────────────────────────────
 //
-//   ┌─ Modo COMPOSITION (novo) ─────────────────────────────────────────
+//   ┌─ Modo COMPOSITION (novo destino: Google Drive) ───────────────────
 //   │  body: { promptId, clientId, photoId, composition: { compositionId, index } }
 //   │  → NÃO toca em client_tag_values
-//   │  → sobe em
-//   │    client-tag-images/{clientId}/compositions/{compositionId}/{index}_{ts}.png
-//   │  → resposta: { success, storagePath, size, promptName }
+//   │  → Chama internamente /functions/v1/drive/upload com kind=composition,
+//   │    que sobe o PNG em "Composições IA" dentro da pasta do cliente
+//   │    no Google Drive.
+//   │  → resposta: { success, driveFileId, driveFolderId, url, downloadUrl,
+//   │               photoName, size, promptName }
+//   │
+//   │  Antes esse caminho gravava em client-tag-images/{clientId}/compositions/…
+//   │  com signed URL de 1h, que expirava no localStorage e quebrava ao reabrir.
+//   │  Migrado pro Drive pra consistência com o resto do app (todas as fotos
+//   │  já vão pro Drive) e pra eliminar a expiração da URL.
 //   └────────────────────────────────────────────────────────────────────
 //
 // Deploy:
@@ -58,8 +65,8 @@ interface RequestBody {
   promptOverride?: string
   // Modo TAG (existente). Se vier, escreve em client_tag_values.
   tagId?:          string
-  // Modo COMPOSITION (novo). Se vier (e tagId NÃO vier), só sobe arquivo
-  // numa pasta separada e devolve o storagePath, sem mexer em DB.
+  // Modo COMPOSITION. Se vier (e tagId NÃO vier), sobe a imagem pro Google
+  // Drive (sem escrever em DB) e devolve { driveFileId, url, downloadUrl }.
   composition?:    CompositionRef
 }
 
@@ -116,7 +123,6 @@ serve(async (req) => {
     }
 
     // ── 3. Carrega prompt + foto ────────────────────────────────────
-    // FIX: adicionado reference_image_path ao SELECT
     const [{ data: prompt, error: pErr }, { data: photo, error: phErr }] = await Promise.all([
       admin.from('ai_image_prompts')
         .select('id, name, prompt, model, size, quality, is_active, reference_image_path')
@@ -127,6 +133,7 @@ serve(async (req) => {
     ])
     if (pErr || !prompt)   return jsonRes({ error: 'Prompt not found' }, 404)
     if (!prompt.is_active) return jsonRes({ error: 'Prompt is inactive' }, 400)
+
     // Valida depois de resolver promptOverride — o campo prompt.prompt pode estar
     // vazio intencionalmente quando o texto real vem no array parts (enviado
     // pelo frontend como promptOverride). Só bloqueia se ambos estiverem vazios.
@@ -135,7 +142,6 @@ serve(async (req) => {
       : (prompt.prompt || '').trim()
 
     if (!resolvedPromptText) {
-      // Diagnóstico: informa exatamente o que chegou pra facilitar debug
       console.error('Empty prompt debug', JSON.stringify({
         promptName:      prompt.name,
         promptDotPrompt: prompt.prompt,
@@ -152,16 +158,10 @@ serve(async (req) => {
     if (phErr || !photo)   return jsonRes({ error: 'Photo not found' }, 404)
 
     // ── 4. Baixa a foto da galeria (Drive → Supabase Storage como fallback) ────
-    //
-    // Fotos novas são salvas no Google Drive (drive_file_id preenchido).
-    // Fotos antigas podem ainda estar no Supabase Storage (storage_path).
-    // Tentamos Drive primeiro; se falhar ou não houver drive_file_id,
-    // tentamos o bucket client-photos.
     let photoBlob: Blob | null = null
     let photoMime = photo.photo_type || 'image/jpeg'
 
     if (photo.drive_file_id) {
-      // Download via URL pública do Drive
       const driveUrl = `https://drive.google.com/uc?export=download&id=${photo.drive_file_id}`
       try {
         const driveRes = await fetch(driveUrl)
@@ -176,7 +176,6 @@ serve(async (req) => {
       }
     }
 
-    // Fallback: Supabase Storage
     if (!photoBlob && photo.storage_path) {
       const { data: sb, error: dlErr } = await admin.storage
         .from('client-photos')
@@ -199,7 +198,6 @@ serve(async (req) => {
     }
 
     // ── 4b. Baixa a imagem de referência do prompt (se houver) ──────
-    // FIX: novo bloco — baixa do bucket ai-prompt-references
     let refBlob: Blob | null = null
 
     if (prompt.reference_image_path) {
@@ -208,7 +206,6 @@ serve(async (req) => {
         .download(prompt.reference_image_path)
 
       if (refErr || !refData) {
-        // Loga o aviso mas NÃO aborta — gera mesmo sem a referência
         console.warn(
           `Imagem de referência do prompt não encontrada (${prompt.reference_image_path}): ` +
           `${refErr?.message ?? 'objeto não encontrado'}. Gerando sem ela.`
@@ -241,13 +238,6 @@ serve(async (req) => {
     }
 
     // ── 6. Chama OpenAI images/edits ────────────────────────────────
-    //
-    // FIX: quando há imagem de referência no prompt, enviamos DUAS imagens:
-    //   image[0] → imagem de referência do prompt (cartela, exemplo, etc.)
-    //   image[1] → foto da galeria do cliente
-    //
-    // Quando não há referência, comportamento idêntico ao original
-    // (campo "image" simples para retrocompatibilidade).
     const photoBytes = new Uint8Array(await photoBlob.arrayBuffer())
     const photoFile  = new Blob([photoBytes], { type: photoMime })
 
@@ -259,14 +249,12 @@ serve(async (req) => {
     form.append('n',       '1')
 
     if (refBlob) {
-      // Duas imagens: referência primeiro, depois a foto do cliente
       const refBytes = new Uint8Array(await refBlob.arrayBuffer())
       const refFile  = new Blob([refBytes], { type: 'image/jpeg' })
       form.append('image[]', refFile,    'reference.jpg')
       form.append('image[]', photoFile,  photo.photo_name || 'client.jpg')
       console.log(`Gerando com imagem de referência: ${prompt.reference_image_path}`)
     } else {
-      // Sem referência: campo simples (compatibilidade original)
       form.append('image', photoFile, photo.photo_name || 'input.jpg')
     }
 
@@ -298,12 +286,11 @@ serve(async (req) => {
     const ts = Date.now()
 
     // ═══════════════════════════════════════════════════════════════════
-    //   Caminho TAG MODE — comportamento legado
+    //   Caminho TAG MODE — comportamento legado (Supabase Storage)
     // ═══════════════════════════════════════════════════════════════════
     if (isTagMode) {
       const storagePath = `${clientId}/${tagId}_ai_${ts}.png`
 
-      // Remove arquivo antigo se houver
       const { data: existing } = await admin
         .from('client_tag_values')
         .select('image_storage_path')
@@ -348,22 +335,56 @@ serve(async (req) => {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //   Caminho COMPOSITION MODE — sobe arquivo soltinho, sem DB write
+    //   Caminho COMPOSITION MODE — upload para Google Drive
     // ═══════════════════════════════════════════════════════════════════
-    const compId  = safeSlug(composition!.compositionId, 80)
-    const idx     = Number.isFinite(composition!.index) ? Math.max(0, Math.floor(composition!.index)) : 0
-    const idxStr  = String(idx).padStart(3, '0')
-    const storagePath = `${clientId}/compositions/${compId}/${idxStr}_${ts}.png`
+    //
+    // Antes: upload em client-tag-images/{clientId}/compositions/… com signed
+    //        URL de 1h. URL expirava no localStorage e quebrava ao reabrir.
+    // Agora: chama internamente /drive/upload com kind='composition', que
+    //        sobe em "Composições IA" dentro da pasta do cliente no Drive,
+    //        SEM insert em client_photos. URL é estática (sem TTL).
+    const compId   = safeSlug(composition!.compositionId, 80)
+    const idx      = Number.isFinite(composition!.index) ? Math.max(0, Math.floor(composition!.index)) : 0
+    const idxStr   = String(idx).padStart(3, '0')
+    const safeName = `${safeSlug(prompt.name, 40)}_${compId}_${idxStr}_${ts}.png`
 
-    const { error: upErr } = await admin.storage
-      .from('client-tag-images')
-      .upload(storagePath, outBytes, { contentType: 'image/png', upsert: true })
-    if (upErr) return jsonRes({ error: `Upload failed: ${upErr.message}` }, 500)
+    const driveForm = new FormData()
+    driveForm.append('kind', 'composition')
+    driveForm.append('client_id', clientId)
+    driveForm.append('composition_index', String(idx))
+    driveForm.append('file', new Blob([outBytes], { type: 'image/png' }), safeName)
+
+    // Repassa o JWT do admin pra função `drive` autenticar.
+    const driveRes = await fetch(`${supabaseUrl}/functions/v1/drive/upload`, {
+      method: 'POST',
+      headers: { Authorization: authHeader },
+      body:    driveForm,
+    })
+
+    if (!driveRes.ok) {
+      const errJson = await driveRes.json().catch(() => ({}))
+      const errMsg  = (errJson as any)?.error ?? `HTTP ${driveRes.status}`
+      console.error(`Drive upload failed (composition): ${errMsg}`)
+      return jsonRes({ error: `Drive upload failed: ${errMsg}` }, 500)
+    }
+
+    const driveData = await driveRes.json() as {
+      ok:            boolean
+      driveFileId:   string
+      driveFolderId: string
+      photoName:     string
+      url:           string
+      downloadUrl:   string
+    }
 
     return jsonRes({
       success:            true,
       mode:               'composition',
-      storagePath,
+      driveFileId:        driveData.driveFileId,
+      driveFolderId:      driveData.driveFolderId,
+      photoName:          driveData.photoName,
+      url:                driveData.url,
+      downloadUrl:        driveData.downloadUrl,
       size:               outBytes.length,
       promptName:         prompt.name,
       usedReferenceImage: !!refBlob,

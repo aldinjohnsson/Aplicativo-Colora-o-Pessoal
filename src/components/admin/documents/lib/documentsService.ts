@@ -24,9 +24,16 @@ import { formatContrastValue } from './contrastLayout'
 // ══════════════════════════════════════════════════════════════════════
 
 export interface CompositionImageResult {
-  storagePath: string
-  size?:       number
-  promptName?: string
+  /** ID do arquivo no Google Drive. Use com driveStorage.viewUrl / fetchPhotoBlob. */
+  driveFileId:   string
+  driveFolderId: string
+  /** URL pública de thumbnail (estática, sem TTL). Pode usar direto em <img src>. */
+  url:           string
+  /** URL de download (estática, sem TTL). */
+  downloadUrl:   string
+  photoName:     string
+  size?:         number
+  promptName?:   string
 }
 
 export interface ClientLite {
@@ -1117,34 +1124,25 @@ export const documentsService = {
       throw new Error(err?.error || `Falha ao gerar imagem (HTTP ${res.status})`)
     }
     const data = await res.json()
-    if (!data?.storagePath) throw new Error('Edge function não retornou storagePath')
+    // A edge function no modo composition agora retorna o arquivo no Drive.
+    if (!data?.driveFileId) {
+      throw new Error('Edge function não retornou driveFileId (composition deve subir pro Drive)')
+    }
     return {
-      storagePath: data.storagePath,
-      size:        data.size,
-      promptName:  data.promptName,
+      driveFileId:   data.driveFileId,
+      driveFolderId: data.driveFolderId,
+      url:           data.url,
+      downloadUrl:   data.downloadUrl,
+      photoName:     data.photoName,
+      size:          data.size,
+      promptName:    data.promptName,
     }
   },
 
-  /**
-   * URL temporária (1h) pra baixar uma imagem da composição.
-   * Reusa o bucket `client-tag-images`.
-   */
-  async getSignedCompositionImageUrl(storagePath: string): Promise<string> {
-    const { data, error } = await supabase.storage
-      .from('client-tag-images')
-      .createSignedUrl(storagePath, 60 * 60)
-    if (error || !data?.signedUrl) throw error || new Error('Falha ao gerar URL assinada')
-    return data.signedUrl
-  },
-
-  /**
-   * Remove imagens de composição do storage (cleanup).
-   * Não lança em erro individual de path.
-   */
-  async deleteCompositionImages(storagePaths: string[]): Promise<void> {
-    if (!storagePaths.length) return
-    await supabase.storage.from('client-tag-images').remove(storagePaths).catch(() => {})
-  },
+  // Os métodos `getSignedCompositionImageUrl` e `deleteCompositionImages`
+  // foram removidos: composições não vivem mais no Supabase Storage. A URL
+  // do Drive já vem estática (sem TTL) no resultado de generateCompositionImage,
+  // e o cleanup é gerenciado pelo cron de purge do Drive (drive/cleanup).
 
   /**
    * Lista de clientes pro seletor (ordenado por nome).

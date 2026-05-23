@@ -9,8 +9,14 @@
 //   - imagem 1536×1024 (paisagem)    → página 842×561 pt  (≈ A4 landscape)
 // A imagem preenche a página inteira (cover sem necessidade de crop —
 // já que a página tem o exato aspect ratio da imagem). Sem margens.
+//
+// IMAGENS NO DRIVE: a feature foi migrada do Supabase Storage pro Google
+// Drive (sem signed URLs com TTL). Pra baixar os bytes a partir de um
+// driveFileId precisamos passar pelo /drive/photo-proxy (autenticado) —
+// fetch direto em drive.google.com no browser dá CORS.
 
 import { PDFDocument } from 'pdf-lib'
+import { driveStorage } from '../../../../lib/driveStorage'
 
 // Lado maior da página em pt. 842 = altura da A4 em portrait.
 const TARGET_LONG_SIDE_PT = 842
@@ -53,9 +59,9 @@ export async function generateCompositionPdf(images: CompositionImage[]): Promis
 
 /**
  * Detecta o tipo real da imagem pelos magic bytes do arquivo.
- * Ignora o Content-Type do response, que pode vir errado do Supabase
- * storage (ex: application/octet-stream ao invés de image/png), o que
- * faria pdf-lib chamar embedJpg() com dados PNG e gerar um PDF inválido.
+ * Ignora o Content-Type do response, que pode vir errado dependendo da
+ * fonte (ex: application/octet-stream do Drive proxy), o que faria
+ * pdf-lib chamar embedJpg() com dados PNG e gerar um PDF inválido.
  *
  *   PNG  → 89 50 4E 47  (‰PNG)
  *   JPEG → FF D8 FF
@@ -73,17 +79,20 @@ function detectImageMime(buf: ArrayBuffer): string {
 }
 
 /**
- * Baixa todas as imagens (urls assinadas) em sequência.
+ * Baixa todas as imagens da composição a partir dos IDs do Drive.
  * Devolve na MESMA ORDEM da entrada.
+ *
+ * Usa `driveStorage.fetchPhotoBlob` (que passa pelo /drive/photo-proxy
+ * autenticado) — fetch direto em drive.google.com no browser dá CORS.
+ *
  * O tipo MIME é determinado pelos magic bytes do arquivo, não pelo
  * Content-Type do servidor (que pode estar errado).
  */
-export async function fetchAllAsBytes(urls: string[]): Promise<CompositionImage[]> {
+export async function fetchAllByDriveId(driveFileIds: string[]): Promise<CompositionImage[]> {
   const out: CompositionImage[] = []
-  for (const url of urls) {
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`Falha ao baixar imagem (HTTP ${res.status})`)
-    const bytes = await res.arrayBuffer()
+  for (const id of driveFileIds) {
+    const blob = await driveStorage.fetchPhotoBlob(id)
+    const bytes = await blob.arrayBuffer()
     const mime  = detectImageMime(bytes)
     out.push({ bytes, mime })
   }

@@ -8,7 +8,7 @@
 //   GET  /status       — admin: retorna se está conectado
 //   POST /disconnect   — admin: remove credenciais
 //   POST /set-root     — admin: define pasta raiz no Drive
-//   POST /upload       — cliente (portal_token) ou admin (kind=admin_photo + JWT): envia foto pro Drive
+//   POST /upload       — cliente (portal_token) ou admin (kind=admin_photo|composition + JWT): envia foto pro Drive
 //   GET  /photo-proxy  — admin (JWT): proxy de download de foto do Drive sem CORS
 //   POST /cleanup      — cron: apaga pastas de clientes finalizados há 21+ dias
 //
@@ -378,13 +378,84 @@ Deno.serve(async (req: Request) => {
     // ─── POST /upload ──────────────────────────────────────────────────────
     if (req.method === 'POST' && path === '/upload') {
       const form       = await req.formData()
-      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo'
+      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo' | 'composition'
       const categoryId = form.get('category_id') ? String(form.get('category_id')) : null
       const file       = form.get('file') as File | null
 
       if (!(file instanceof File)) return json({ error: 'file obrigatório' }, 400)
 
       const sb = adminSb()
+
+      // ── Caminho composition (kind='composition') ───────────────────────
+      // Autenticado via JWT do admin. Pra composições IA: sobe o PNG
+      // gerado na subpasta "Composições IA" dentro da pasta do cliente.
+      // NÃO faz insert em client_photos — composições são material
+      // intermediário de sessão (várias páginas pra montar um PDF),
+      // não fotos de galeria do cliente.
+      if (kind === 'composition') {
+        const authUser = await getAuthUser(req)
+        if (!authUser) return json({ error: 'Não autenticado' }, 401)
+
+        const clientId = form.get('client_id') ? String(form.get('client_id')) : null
+        if (!clientId) return json({ error: 'client_id obrigatório' }, 400)
+
+        // Opcional — só pra ajudar a debugar / agrupar arquivos no Drive.
+        const compositionIndex = form.get('composition_index')
+          ? Math.max(0, Math.floor(Number(form.get('composition_index')) || 0))
+          : 0
+
+        const { data: client } = await sb
+          .from('clients')
+          .select('id, admin_id, full_name, drive_folder_id')
+          .eq('id', clientId)
+          .maybeSingle()
+        if (!client) return json({ error: 'Cliente não encontrado' }, 404)
+        if (client.admin_id !== authUser.id) return json({ error: 'Acesso negado' }, 403)
+
+        let accessToken: string, rootFolderId: string | null
+        try {
+          const t = await getAdminToken(sb, authUser.id)
+          accessToken  = t.accessToken
+          rootFolderId = t.rootFolderId
+        } catch (e: any) {
+          return json({ error: e.message }, 412)
+        }
+
+        // Pasta do cliente (mesma lógica dos outros kinds)
+        let clientFolderId = client.drive_folder_id
+        if (!clientFolderId) {
+          const folderName = sanitizeFolderName(client.full_name || `cliente-${client.id}`)
+          clientFolderId = await findOrCreateFolder(accessToken, folderName, rootFolderId, /* makePublic */ true)
+          await sb.from('clients').update({ drive_folder_id: clientFolderId }).eq('id', client.id)
+        }
+
+        // Subpasta dedicada às composições — agrupa pra ficar organizado no Drive.
+        const compFolderId = await findOrCreateFolder(accessToken, 'Composições IA', clientFolderId, false)
+
+        const idxStr   = String(compositionIndex).padStart(3, '0')
+        const safeName = `${Date.now()}_${idxStr}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const bytes    = new Uint8Array(await file.arrayBuffer())
+
+        const uploaded = await uploadToDrive(accessToken, {
+          name:     safeName,
+          mimeType: file.type || 'image/png',
+          parents:  [compFolderId],
+          body:     bytes,
+        })
+        // Permissão pública: mesmo padrão das fotos do cliente. Permite
+        // <img src="drive.google.com/thumbnail?id=..."> sem precisar passar
+        // pelo /photo-proxy autenticado pra cada preview.
+        await makeAnyoneReader(accessToken, uploaded.id)
+
+        return json({
+          ok:            true,
+          driveFileId:   uploaded.id,
+          driveFolderId: compFolderId,
+          photoName:     safeName,
+          url:           `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
+          downloadUrl:   `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+        })
+      }
 
       // ── Caminho admin (kind='admin_photo') ─────────────────────────────
       // Autenticado via JWT do admin; usa client_id diretamente; insere em

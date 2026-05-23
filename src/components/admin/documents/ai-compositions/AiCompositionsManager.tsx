@@ -23,9 +23,10 @@ import {
   FileText, RefreshCw, Image as ImageIcon, Wand2, Eye,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
+import { driveStorage } from '../../../../lib/driveStorage'
 import { adminService } from '../../../../lib/services'
 import { AddPageDialog, AddPageResult } from './AddPageDialog'
-import { generateCompositionPdf, fetchAllAsBytes } from './generateCompositionPdf'
+import { generateCompositionPdf, fetchAllByDriveId } from './generateCompositionPdf'
 import type { ClientGeneratedDocument } from '../types'
 
 // ── Btn ───────────────────────────────────────────────────────────────
@@ -76,7 +77,10 @@ interface CompositionPage {
   uploadedPhotoMime?:   string
   // Status
   status:               PageStatus
-  storagePath?:         string
+  /** ID do arquivo gerado no Drive — referência persistente da imagem produzida. */
+  generatedDriveFileId?: string
+  /** URL estática do Drive (thumbnail). Não expira, mas refrescamos no load
+   *  pra páginas legadas e por consistência. */
   generatedImageUrl?:   string
   errorMsg?:            string
 }
@@ -155,6 +159,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
   // ── Load localStorage no modo EMBEDDED (on mount) ──
   useEffect(() => {
     if (!isEmbedded || !propClientId) return
+    let cancelled = false
     try {
       const raw = localStorage.getItem(`ai_composition_${propClientId}`)
       if (raw) {
@@ -162,9 +167,16 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         if (Array.isArray(saved) && saved.length > 0) {
           setPages(saved)
           compositionIdRef.current = compositionId || ''
+          // URLs do Drive são estáticas (sem TTL). Esse refresh trata
+          // páginas legacy (vindas do Supabase Storage) e preenche a
+          // URL pra páginas novas que ainda não tinham.
+          refreshDriveUrls(saved).then(refreshed => {
+            if (!cancelled) setPages(refreshed)
+          })
         }
       }
     } catch {}
+    return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // só no mount
 
@@ -181,6 +193,8 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
       return
     }
 
+    let cancelled = false
+    let loaded = false
     try {
       const raw = localStorage.getItem(`ai_composition_${selectedClientId}`)
       if (raw) {
@@ -188,12 +202,19 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         if (Array.isArray(saved) && saved.length > 0) {
           setPages(saved)
           compositionIdRef.current = compositionId || ''
-          return
+          loaded = true
+          // URLs do Drive são estáticas — preenche o que falta + migra legacy.
+          refreshDriveUrls(saved).then(refreshed => {
+            if (!cancelled) setPages(refreshed)
+          })
         }
       }
     } catch {}
-    setPages([])
-    compositionIdRef.current = ''
+    if (!loaded) {
+      setPages([])
+      compositionIdRef.current = ''
+    }
+    return () => { cancelled = true }
   }, [selectedClientId, isEmbedded])
 
   // ── Persist pages to localStorage sempre que mudarem ──
@@ -222,6 +243,48 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
   const patchPage = (id: string, patch: Partial<CompositionPage>) =>
     setPages(prev => prev.map(p => p.id === id ? { ...p, ...patch } : p))
+
+  // ── Refresh / migração de URLs ────────────────────────────────────────
+  //
+  // A feature foi migrada do Supabase Storage (signed URL com TTL de 1h)
+  // pro Google Drive (URL estática). Este helper trata dois casos:
+  //
+  //   1. PÁGINAS NOVAS (driveFileId presente): garante que `generatedImageUrl`
+  //      esteja preenchida com a URL estática do Drive. Sem chamada de rede.
+  //
+  //   2. PÁGINAS LEGACY (storagePath presente, sem driveFileId): vieram do
+  //      Supabase Storage. Como não temos mais como gerar signed URL daquele
+  //      bucket pra elas (ou a URL já expirou), marcamos como `pending` pro
+  //      usuário regerar. A imagem antiga fica órfã no bucket — o cleanup
+  //      faz o resto.
+  const refreshDriveUrls = async (pgs: CompositionPage[]): Promise<CompositionPage[]> => {
+    return pgs.map((p) => {
+      if (p.status !== 'done') return p
+
+      // Caso 1: já tá no Drive — só garante a URL preenchida.
+      if (p.generatedDriveFileId) {
+        return {
+          ...p,
+          generatedImageUrl: p.generatedImageUrl || driveStorage.viewUrl(p.generatedDriveFileId),
+        }
+      }
+
+      // Caso 2: página legacy (vinda do Supabase Storage). Marca como pending
+      // pra usuário regerar — agora vai pro Drive automaticamente.
+      const isLegacy = !!(p as any).storagePath
+      if (isLegacy) {
+        return {
+          ...p,
+          status:            'pending' as PageStatus,
+          generatedImageUrl: undefined,
+          errorMsg:          undefined,
+        }
+      }
+
+      // Estado inconsistente (done sem id nem storagePath) — pending também.
+      return { ...p, status: 'pending' as PageStatus, generatedImageUrl: undefined }
+    })
+  }
 
   // ── Geração individual ──
   const handleGenerateSingle = async (pageId: string) => {
@@ -252,12 +315,12 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
         ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
       })
-      const signedUrl = await (documentsService as any).getSignedCompositionImageUrl(res.storagePath)
+      // res = { driveFileId, url, downloadUrl, ... } — URL do Drive é estática.
       patchPage(pageId, {
-        status:           'done',
-        storagePath:      res.storagePath,
-        generatedImageUrl: signedUrl,
-        errorMsg:         undefined,
+        status:                'done',
+        generatedDriveFileId:  res.driveFileId,
+        generatedImageUrl:     res.url,
+        errorMsg:              undefined,
       })
     } catch (e: any) {
       patchPage(pageId, { status: 'error', errorMsg: e?.message || 'Erro na geração' })
@@ -306,13 +369,17 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
           ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
           ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
         })
-        const signedUrl = await (documentsService as any)
-          .getSignedCompositionImageUrl(res.storagePath)
-          .catch(() => undefined as string | undefined)
+        // res = { driveFileId, url, downloadUrl, ... } — URL do Drive é estática.
 
         commit(snap => snap.map(p =>
           p.id === page.id
-            ? { ...p, status: 'done', storagePath: res.storagePath, generatedImageUrl: signedUrl, errorMsg: undefined }
+            ? {
+                ...p,
+                status:               'done',
+                generatedDriveFileId: res.driveFileId,
+                generatedImageUrl:    res.url,
+                errorMsg:             undefined,
+              }
             : p
         ))
       } catch (e: any) {
@@ -336,7 +403,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
   // ── Finalizar: apenas monta o blob (sem salvar) ──
   const handleFinalizePdf = async () => {
     if (!selectedClient) return
-    const donePages = pages.filter(p => p.status === 'done' && p.storagePath)
+    const donePages = pages.filter(p => p.status === 'done' && p.generatedDriveFileId)
     if (donePages.length === 0) return
 
     setBuildingPdf(true)
@@ -345,14 +412,11 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     setSavedDoc(null)
 
     try {
-      const ordered = pages.filter(p => p.status === 'done' && p.storagePath)
-      const signedUrls: string[] = []
-      for (const p of ordered) {
-        const url = p.generatedImageUrl
-          ?? await (documentsService as any).getSignedCompositionImageUrl(p.storagePath)
-        signedUrls.push(url)
-      }
-      const images = await fetchAllAsBytes(signedUrls)
+      const ordered = pages.filter(p => p.status === 'done' && p.generatedDriveFileId)
+      const driveFileIds = ordered.map(p => p.generatedDriveFileId as string)
+      // Baixa via /drive/photo-proxy (autenticado). Fetch direto em
+      // drive.google.com no browser dá CORS.
+      const images = await fetchAllByDriveId(driveFileIds)
       const blob   = await generateCompositionPdf(images)
       setPdfBlob(blob)
     } catch (e: any) {
@@ -451,7 +515,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
   const handleResetPage = (id: string) => {
     if (isBusy) return
-    patchPage(id, { status: 'pending', errorMsg: undefined, storagePath: undefined, generatedImageUrl: undefined })
+    patchPage(id, { status: 'pending', errorMsg: undefined, generatedDriveFileId: undefined, generatedImageUrl: undefined })
     setSavedDoc(null)
   }
 
@@ -737,6 +801,107 @@ function PageRow({
 }) {
   const [showPreview, setShowPreview] = useState(false)
 
+  // ── Zoom/pan do preview ─────────────────────────────────────────────
+  // Scroll do mouse = zoom (centrado no cursor).
+  // Drag = pan (quando ampliado).
+  // Double-click = reset.
+  const [zoom, setZoom]           = useState(1)
+  const [pan, setPan]             = useState({ x: 0, y: 0 })
+  const [isDragging, setDragging] = useState(false)
+
+  const wrapperRef   = useRef<HTMLDivElement>(null)
+  const dragStartRef = useRef({ x: 0, y: 0, px: 0, py: 0 })
+  // Refs espelhados pro handler de wheel não capturar valores velhos
+  // (o listener é criado uma vez só por abertura do modal).
+  const zoomRef = useRef(zoom)
+  const panRef  = useRef(pan)
+  useEffect(() => { zoomRef.current = zoom }, [zoom])
+  useEffect(() => { panRef.current  = pan },  [pan])
+
+  // Reset toda vez que abre o preview
+  useEffect(() => {
+    if (showPreview) {
+      setZoom(1)
+      setPan({ x: 0, y: 0 })
+    }
+  }, [showPreview])
+
+  // Wheel zoom — precisa de addEventListener manual pra { passive: false }.
+  // No onWheel do React, preventDefault não funciona porque o listener
+  // é registrado como passive por padrão (React 17+).
+  useEffect(() => {
+    if (!showPreview) return
+    const el = wrapperRef.current
+    if (!el) return
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+
+      const prevZoom = zoomRef.current
+      const prevPan  = panRef.current
+
+      const factor   = e.deltaY > 0 ? 0.85 : 1.18
+      const nextZoom = Math.max(1, Math.min(6, prevZoom * factor))
+
+      // Zerou: reseta pan junto.
+      if (nextZoom === 1) {
+        if (prevZoom !== 1 || prevPan.x !== 0 || prevPan.y !== 0) {
+          setZoom(1)
+          setPan({ x: 0, y: 0 })
+        }
+        return
+      }
+      if (nextZoom === prevZoom) return
+
+      // Zoom-to-cursor: mantém o ponto sob o cursor estável.
+      // Como transform-origin é 0 0, o ponto da imagem original que está
+      // em (cx, cy) é ((cx - pan.x) / zoom, (cy - pan.y) / zoom).
+      // Pra mantê-lo sob o cursor depois do zoom: pan' = c - (c - pan) * k.
+      const k = nextZoom / prevZoom
+      setPan({
+        x: cx - (cx - prevPan.x) * k,
+        y: cy - (cy - prevPan.y) * k,
+      })
+      setZoom(nextZoom)
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [showPreview])
+
+  // Drag pan: listeners no window pra continuar funcionando se o
+  // cursor sair do wrapper durante o arrasto.
+  useEffect(() => {
+    if (!isDragging) return
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - dragStartRef.current.x
+      const dy = e.clientY - dragStartRef.current.y
+      setPan({ x: dragStartRef.current.px + dx, y: dragStartRef.current.py + dy })
+    }
+    const onUp = () => setDragging(false)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [isDragging])
+
+  const startDrag = (e: React.MouseEvent) => {
+    if (zoom <= 1) return
+    e.preventDefault()
+    setDragging(true)
+    dragStartRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }
+  }
+
+  const resetZoom = () => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+  }
+
   const statusBadge: Record<PageStatus, React.ReactNode> = {
     pending: (
       <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
@@ -817,17 +982,31 @@ function PageRow({
 
           {/* Ações */}
           <div className="flex items-center gap-0.5 flex-shrink-0">
-            {page.status === 'done' && page.generatedImageUrl && (
-              <a
-                href={page.generatedImageUrl}
-                download={`${page.promptName} - ${page.partLabel}.png`}
-                target="_blank"
-                rel="noreferrer"
+            {page.status === 'done' && page.generatedDriveFileId && (
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.preventDefault()
+                  if (!page.generatedDriveFileId) return
+                  try {
+                    // Baixa via proxy autenticado — drive.google.com bloqueia
+                    // fetch direto no browser por CORS.
+                    const blob = await driveStorage.fetchPhotoBlob(page.generatedDriveFileId)
+                    const objUrl = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = objUrl
+                    a.download = `${page.promptName} - ${page.partLabel}.png`
+                    a.click()
+                    URL.revokeObjectURL(objUrl)
+                  } catch (err: any) {
+                    alert('Falha ao baixar imagem: ' + (err?.message || err))
+                  }
+                }}
                 title="Baixar imagem gerada"
                 className="p-2 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors inline-flex items-center"
               >
                 <Download className="h-3.5 w-3.5" />
-              </a>
+              </button>
             )}
             {(page.status === 'pending' || page.status === 'error') && (
               <button
@@ -877,20 +1056,56 @@ function PageRow({
           className="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4"
           onClick={() => setShowPreview(false)}
         >
-          <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
-            <img
-              src={page.generatedImageUrl}
-              alt={`Imagem gerada — ${page.promptName} · ${page.partLabel}`}
-              className="w-full h-auto rounded-2xl shadow-2xl"
-            />
+          <div
+            className="relative flex flex-col items-center max-w-full"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Wrapper com overflow-hidden: corta a img quando ampliada
+                (efeito de viewer de imagem). inline-block faz o div se
+                ajustar ao tamanho NATURAL da img sem transform — o transform
+                CSS não muda layout, então o wrapper fica fixo no tamanho
+                display original mesmo com zoom maior. */}
+            <div
+              ref={wrapperRef}
+              className="relative w-fit overflow-hidden rounded-2xl shadow-2xl bg-black"
+              onMouseDown={startDrag}
+              onDoubleClick={resetZoom}
+            >
+              <img
+                src={page.generatedImageUrl}
+                alt={`Imagem gerada — ${page.promptName} · ${page.partLabel}`}
+                draggable={false}
+                style={{
+                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                  transformOrigin: '0 0',
+                  cursor: zoom > 1
+                    ? (isDragging ? 'grabbing' : 'grab')
+                    : 'zoom-in',
+                  // Sem transition: scroll do mouse já é discreto,
+                  // qualquer suavização deixa o feedback lento.
+                }}
+                className="block w-auto h-auto max-w-[min(90vw,720px)] max-h-[82vh] select-none"
+              />
+            </div>
+
             <button
               onClick={() => setShowPreview(false)}
               className="absolute top-3 right-3 h-8 w-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
             >
               <X className="h-4 w-4" />
             </button>
-            <p className="mt-3 text-center text-sm text-white/70">
+
+            <p className="mt-3 text-center text-sm text-white/70 max-w-[min(90vw,720px)] truncate">
               {page.promptName} · {page.partLabel} · Foto: {page.photoName}
+              {zoom > 1 ? (
+                <span className="ml-2 text-white/40">
+                  · {Math.round(zoom * 100)}% · clique duplo pra resetar
+                </span>
+              ) : (
+                <span className="ml-2 text-white/40">
+                  · use o scroll do mouse pra dar zoom
+                </span>
+              )}
             </p>
           </div>
         </div>
