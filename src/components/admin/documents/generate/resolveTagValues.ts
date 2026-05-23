@@ -53,6 +53,7 @@ async function fetchBytes(url: string): Promise<{ bytes: ArrayBuffer; mime: stri
 type ParsedLink =
   | { kind: 'ai_info_template'; templateId: string }    // pra image-type doc tag (puxa arquivo)
   | { kind: 'import_source';    key: string }           // pra text-type doc tag (puxa string)
+  | { kind: 'settings_logo' }                           // logo do admin nas configurações
   | null
 
 function parseTagLink(tag: DocumentTag): ParsedLink {
@@ -69,7 +70,9 @@ function parseTagLink(tag: DocumentTag): ParsedLink {
   // Formato novo
   if (hint.source === 'import_source' && typeof hint.key === 'string' && hint.key) {
     if (tag.type === 'image') {
-      // Doc-tag imagem só sabe lidar com ai_info:<uuid> (puxa arquivo)
+      // Logo das configurações do admin
+      if (hint.key === 'logo') return { kind: 'settings_logo' }
+      // Doc-tag imagem vinculada a AI Info imagem (puxa arquivo)
       const m = /^ai_info:(.+)$/.exec(hint.key)
       if (m) return { kind: 'ai_info_template', templateId: m[1] }
       return null
@@ -116,6 +119,7 @@ export async function resolveTagValues(input: {
   //  Cada um é puxado UMA vez só, mesmo que várias doc-tags consumam.
   const aiImageTemplateIds: string[] = []
   let needsTextSources = false
+  let needsLogoUrl = false
 
   const parsedByTag: Record<string, ParsedLink> = {}
   for (const tagId of usedTagIds) {
@@ -125,6 +129,7 @@ export async function resolveTagValues(input: {
     parsedByTag[tagId] = link
     if (link?.kind === 'ai_info_template') aiImageTemplateIds.push(link.templateId)
     if (link?.kind === 'import_source')    needsTextSources = true
+    if (link?.kind === 'settings_logo')    needsLogoUrl = true
   }
 
   const aiLinks = aiImageTemplateIds.length > 0
@@ -137,6 +142,11 @@ export async function resolveTagValues(input: {
   const textSourceByKey: Record<string, typeof textSources[number]> = {}
   for (const s of textSources) textSourceByKey[s.key] = s
 
+  // Pré-fetch da URL do logo (uma única chamada, reutilizada pra todas as tags {{Logo}})
+  const adminLogoUrl = needsLogoUrl
+    ? await documentsService.getAdminLogoUrl()
+    : null
+
   // ── 2. Resolve tag-a-tag ──────────────────────────────────────────
   const resolved: Record<string, TagValueResolved> = {}
   const missing: DocumentTag[] = []
@@ -146,6 +156,23 @@ export async function resolveTagValues(input: {
     if (!tag) continue   // tag deletada; elemento órfão, ignora
 
     const link = parsedByTag[tagId]
+
+    // ─── Caminho A0: VINCULADA — Logo das configurações do admin ─
+    if (link?.kind === 'settings_logo') {
+      if (!adminLogoUrl) { missing.push(tag); continue }
+      try {
+        const { bytes, mime } = await fetchBytes(adminLogoUrl)
+        resolved[tagId] = {
+          tag, kind: 'image',
+          imageBytes: bytes,
+          imageMime: mime,
+        }
+      } catch (err) {
+        console.error(`Falha ao baixar logo para tag "${tag.name}":`, err)
+        missing.push(tag)
+      }
+      continue
+    }
 
     // ─── Caminho A: VINCULADA — AI Info imagem (puxa bytes) ─────
     if (link?.kind === 'ai_info_template') {

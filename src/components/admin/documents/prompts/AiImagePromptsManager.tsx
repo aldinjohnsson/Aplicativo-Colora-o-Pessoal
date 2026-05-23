@@ -401,10 +401,11 @@ function PromptFormDialog({
   const [saving, setSaving] = useState(false)
   const [err, setErr]       = useState<string | null>(null)
 
-  // ── Variáveis de prompt (ai_info_templates) ────────────────────────
-  // Lista os nomes das tags cadastradas em Configurações → Informações da
-  // análise. Usado pelo picker "Inserir variável" acima de cada textarea.
-  const [varLabels, setVarLabels] = useState<string[]>([])
+  // ── Variáveis de prompt ────────────────────────────────────────────
+  // • aiInfoLabels  — nomes das tags de AI Info (banco)
+  // • builtinLabels — variáveis fixas do sistema (Contraste, Logo)
+  const [aiInfoLabels, setAiInfoLabels] = useState<string[]>([])
+  const builtinLabels = ['Contraste', 'Logo']
   const [varPickerOpenIdx, setVarPickerOpenIdx] = useState<number | null>(null)
   const textareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({})
 
@@ -419,11 +420,7 @@ function PromptFormDialog({
         const labels = ((data || []) as Array<{ name: string | null }>)
           .map(t => (t.name || '').trim())
           .filter(Boolean)
-        // Variável built-in da Ferramenta de Contraste — sem cadastro de tag.
-        if (!labels.some(l => l.toLowerCase() === 'contraste')) {
-          labels.push('Contraste')
-        }
-        setVarLabels(labels)
+        setAiInfoLabels(labels)
       })
     return () => { cancelled = true }
   }, [])
@@ -664,36 +661,58 @@ function PromptFormDialog({
                       <button
                         type="button"
                         onClick={() => setVarPickerOpenIdx(varPickerOpenIdx === idx ? null : idx)}
-                        disabled={varLabels.length === 0}
-                        className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 disabled:opacity-50 disabled:cursor-not-allowed font-medium border border-violet-200"
+                        disabled={aiInfoLabels.length === 0 && builtinLabels.length === 0}
+                        className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 disabled:opacity-50 disabled:cursor-not-allowed font-medium border border-violet-200 flex-shrink-0"
                       >
                         <Braces className="h-3 w-3" /> Inserir variável
                         <ChevronDown className="h-3 w-3 opacity-60" />
                       </button>
-                      <span className="text-[10px] text-gray-500 truncate flex-1">
-                        {varLabels.length === 0
+                      <span className="text-[10px] text-gray-500 truncate flex-1 min-w-0">
+                        {aiInfoLabels.length === 0
                           ? <>Cadastre tags em <strong>Configurações → Informações da análise</strong>.</>
                           : <>Será substituída pelo valor da cliente na hora da geração.</>}
                       </span>
-                      {varPickerOpenIdx === idx && varLabels.length > 0 && (
+                      {varPickerOpenIdx === idx && (
                         <div
                           data-var-picker
-                          className="absolute top-full left-3 mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-64 max-h-72 overflow-y-auto"
+                          className="absolute top-full left-0 right-0 sm:left-3 sm:right-auto mt-1 z-20 bg-white border border-gray-200 rounded-xl shadow-xl sm:w-72 overflow-hidden"
+                          style={{ maxHeight: '260px', overflowY: 'auto' }}
                         >
-                          <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wide bg-gray-50 border-b border-gray-100 sticky top-0">
-                            Informações da análise
+                          {/* Grupo: Marca (Logo) */}
+                          <div className="sticky top-0 px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+                            Marca
                           </div>
-                          {varLabels.map(label => (
+                          {builtinLabels.map(label => (
                             <button
                               key={label}
                               type="button"
                               onClick={() => insertVar(idx, label)}
-                              className="w-full px-3 py-1.5 text-left text-xs hover:bg-violet-50 hover:text-violet-700 flex items-center justify-between gap-2 border-b border-gray-50 last:border-0"
+                              className="w-full px-3 py-2 text-left text-xs hover:bg-violet-50 hover:text-violet-700 flex items-center justify-between gap-2 border-b border-gray-50 last:border-0"
                             >
                               <span className="truncate font-medium">{label}</span>
-                              <span className="text-[10px] text-gray-400 font-mono whitespace-nowrap">{`{{${label}}}`}</span>
+                              <span className="text-[10px] text-gray-400 font-mono whitespace-nowrap flex-shrink-0">{`{{${label}}}`}</span>
                             </button>
                           ))}
+
+                          {/* Grupo: Informações da análise */}
+                          {aiInfoLabels.length > 0 && (
+                            <>
+                              <div className="sticky top-0 px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wide bg-gray-50 border-b border-gray-100 border-t border-gray-100">
+                                Informações da análise
+                              </div>
+                              {aiInfoLabels.map(label => (
+                                <button
+                                  key={label}
+                                  type="button"
+                                  onClick={() => insertVar(idx, label)}
+                                  className="w-full px-3 py-2 text-left text-xs hover:bg-violet-50 hover:text-violet-700 flex items-center justify-between gap-2 border-b border-gray-50 last:border-0"
+                                >
+                                  <span className="truncate font-medium">{label}</span>
+                                  <span className="text-[10px] text-gray-400 font-mono whitespace-nowrap flex-shrink-0">{`{{${label}}}`}</span>
+                                </button>
+                              ))}
+                            </>
+                          )}
                         </div>
                       )}
                     </div>

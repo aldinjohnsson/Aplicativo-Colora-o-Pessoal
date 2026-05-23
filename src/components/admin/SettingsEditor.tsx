@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -125,6 +125,7 @@ interface AppSettings {
   adminEmail: string
   resendApiKey: string
   fromEmail: string
+  logoStoragePath?: string   // path no bucket 'admin-logos'
 }
 
 // ── Helper: select → update ou insert ───────────────────────────────────────────
@@ -214,6 +215,7 @@ const settingsStorageService = {
       adminEmail: '',
       resendApiKey: '',
       fromEmail: '',
+      logoStoragePath: '',
     }
 
     try {
@@ -263,6 +265,129 @@ const settingsStorageService = {
 
 if (typeof window !== 'undefined') {
   (window as any).settingsStorageService = settingsStorageService
+}
+
+// ── Logo da marca ────────────────────────────────────────────────────────────
+
+const LOGO_BUCKET = 'admin-logos'
+
+function LogoSection({
+  currentPath,
+  onSave,
+  onRemove,
+}: {
+  currentPath: string
+  onSave: (path: string) => void
+  onRemove: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const { theme } = useTheme()
+
+  useEffect(() => {
+    if (!currentPath) { setPreviewUrl(null); return }
+    const { data } = supabase.storage.from(LOGO_BUCKET).getPublicUrl(currentPath)
+    setPreviewUrl(data.publicUrl)
+  }, [currentPath])
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !file.type.startsWith('image/')) return
+    e.target.value = ''
+    setSaving(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Sessão expirada')
+      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase() || '.png'
+      const path = `${user.id}/logo${ext}`
+      const { error } = await supabase.storage
+        .from(LOGO_BUCKET)
+        .upload(path, file, { contentType: file.type, upsert: true })
+      if (error) throw error
+      onSave(path)
+    } catch (err: any) {
+      alert('Erro ao salvar logo: ' + err.message)
+    } finally { setSaving(false) }
+  }
+
+  const handleRemove = async () => {
+    if (!confirm('Remover o logo?')) return
+    if (currentPath) {
+      await supabase.storage.from(LOGO_BUCKET).remove([currentPath]).catch(() => {})
+    }
+    onRemove()
+  }
+
+  return (
+    <div className="rounded-2xl shadow-sm overflow-hidden" style={{ background: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}>
+      <div
+        className="px-3 sm:px-6 py-3 sm:py-4"
+        style={{ borderBottom: `1px solid ${theme.border}`, background: `linear-gradient(to right, color-mix(in srgb, #f43f5e 12%, ${theme.surface2}), color-mix(in srgb, #f43f5e 6%, ${theme.surface2}))` }}
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #f43f5e, #ec4899)' }}>
+            <ImageIcon className="h-5 w-5 text-white" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold" style={{ color: theme.text }}>Logo da sua marca</h2>
+            <p className="text-sm" style={{ color: theme.text2 }}>
+              Usado automaticamente na tag{' '}
+              <code className="px-1 rounded text-xs font-mono" style={{ background: theme.surface }}>{'{{Logo}}'}</code>
+              {' '}dos documentos gerados
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-5">
+        {previewUrl ? (
+          <div className="flex items-center gap-4">
+            <div
+              className="h-16 w-32 rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0"
+              style={{ border: `1px solid ${theme.border}`, background: theme.surface2 }}
+            >
+              <img src={previewUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
+            </div>
+            <div className="flex gap-2">
+              <label
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors"
+                style={{ border: `1px solid ${theme.border}`, color: theme.text2, background: theme.surface }}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {saving ? 'Salvando...' : 'Trocar'}
+                <input type="file" accept="image/*" className="hidden" onChange={handleUpload} disabled={saving} />
+              </label>
+              <button
+                onClick={handleRemove}
+                className="p-1.5 rounded-lg transition-colors"
+                style={{ background: 'color-mix(in srgb, #ef4444 15%, transparent)', color: '#ef4444' }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <label
+            className={`flex flex-col items-center gap-3 rounded-xl p-8 cursor-pointer transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`}
+            style={{ border: `2px dashed color-mix(in srgb, #f43f5e 40%, ${theme.border})` }}
+          >
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: `color-mix(in srgb, #f43f5e 15%, ${theme.surface2})` }}>
+              {saving
+                ? <div className="animate-spin h-6 w-6 rounded-full" style={{ border: '2px solid #f43f5e', borderTopColor: 'transparent' }} />
+                : <Upload className="h-6 w-6" style={{ color: '#f43f5e' }} />}
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-medium" style={{ color: theme.text }}>
+                {saving ? 'Salvando logo...' : 'Clique para enviar seu logo'}
+              </p>
+              <p className="text-xs mt-1" style={{ color: theme.text3 }}>PNG, JPG ou SVG · Fundo transparente recomendado</p>
+            </div>
+            <input type="file" accept="image/*" className="hidden" onChange={handleUpload} disabled={saving} />
+          </label>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // ── PDF Modelo ──────────────────────────────────────────────────────────────
@@ -395,6 +520,7 @@ export default function SettingsEditor() {
     adminEmail: '',
     resendApiKey: '',
     fromEmail: '',
+    logoStoragePath: '',
   })
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -695,6 +821,21 @@ export default function SettingsEditor() {
 
       {/* Tags de Informação IA — apenas super admin gerencia */}
       {isSuperAdmin && <TagsManager />}
+
+      {/* Logo da marca */}
+      <LogoSection
+        currentPath={settings.logoStoragePath || ''}
+        onSave={(path) => {
+          const updated = { ...settings, logoStoragePath: path }
+          setSettings(updated)
+          settingsStorageService.saveSettings(updated)
+        }}
+        onRemove={() => {
+          const updated = { ...settings, logoStoragePath: '' }
+          setSettings(updated)
+          settingsStorageService.saveSettings(updated)
+        }}
+      />
 
       {/* PDF Modelo */}
       <PdfTemplateSection

@@ -237,23 +237,61 @@ serve(async (req) => {
       }, 400)
     }
 
+    // ── 5b. Baixa o logo do admin se {{Logo}} aparecer no prompt ─────
+    let logoBlob: Blob | null = null
+    const hasLogoPlaceholder = resolvedPromptText.includes('{{Logo}}')
+
+    if (hasLogoPlaceholder) {
+      const logoPath: string | undefined = (settingsRow?.content as any)?.logoStoragePath
+      if (logoPath && logoPath.trim()) {
+        const { data: logoData, error: logoErr } = await admin.storage
+          .from('admin-logos')
+          .download(logoPath.trim())
+        if (logoErr || !logoData) {
+          console.warn(`Logo não encontrado em admin-logos/${logoPath}: ${logoErr?.message ?? 'objeto não encontrado'}. Gerando sem ele.`)
+        } else {
+          logoBlob = logoData
+          console.log(`Logo carregado para inclusão na geração: ${logoPath}`)
+        }
+      } else {
+        console.warn('{{Logo}} presente no prompt mas logoStoragePath não configurado nas Configurações.')
+      }
+    }
+
+    // Substitui {{Logo}} no texto do prompt por instrução legível pra IA
+    const finalPromptText = hasLogoPlaceholder
+      ? resolvedPromptText.replace(/\{\{Logo\}\}/g,
+          logoBlob
+            ? '(use the brand logo provided as one of the reference images — position and scale exactly as described)'
+            : '(logo image not available — omit)'
+        )
+      : resolvedPromptText
+
     // ── 6. Chama OpenAI images/edits ────────────────────────────────
     const photoBytes = new Uint8Array(await photoBlob.arrayBuffer())
     const photoFile  = new Blob([photoBytes], { type: photoMime })
 
     const form = new FormData()
     form.append('model',   prompt.model   || 'gpt-image-1')
-    form.append('prompt',  resolvedPromptText)
+    form.append('prompt',  finalPromptText)
     form.append('size',    prompt.size    || '1024x1024')
     form.append('quality', prompt.quality || 'medium')
     form.append('n',       '1')
 
-    if (refBlob) {
-      const refBytes = new Uint8Array(await refBlob.arrayBuffer())
-      const refFile  = new Blob([refBytes], { type: 'image/jpeg' })
-      form.append('image[]', refFile,    'reference.jpg')
-      form.append('image[]', photoFile,  photo.photo_name || 'client.jpg')
-      console.log(`Gerando com imagem de referência: ${prompt.reference_image_path}`)
+    // Monta o array de imagens: logo (se houver) + ref (se houver) + foto do cliente
+    const hasMultipleImages = refBlob || logoBlob
+    if (hasMultipleImages) {
+      if (logoBlob) {
+        const logoBytes = new Uint8Array(await logoBlob.arrayBuffer())
+        form.append('image[]', new Blob([logoBytes], { type: logoBlob.type || 'image/png' }), 'logo.png')
+        console.log('Adicionando logo ao array de imagens da OpenAI')
+      }
+      if (refBlob) {
+        const refBytes = new Uint8Array(await refBlob.arrayBuffer())
+        form.append('image[]', new Blob([refBytes], { type: 'image/jpeg' }), 'reference.jpg')
+        console.log(`Adicionando imagem de referência ao array: ${prompt.reference_image_path}`)
+      }
+      form.append('image[]', photoFile, photo.photo_name || 'client.jpg')
     } else {
       form.append('image', photoFile, photo.photo_name || 'input.jpg')
     }
@@ -331,6 +369,7 @@ serve(async (req) => {
         size:              outBytes.length,
         promptName:        prompt.name,
         usedReferenceImage: !!refBlob,
+        usedLogo:          !!logoBlob,
       })
     }
 
@@ -388,6 +427,7 @@ serve(async (req) => {
       size:               outBytes.length,
       promptName:         prompt.name,
       usedReferenceImage: !!refBlob,
+      usedLogo:           !!logoBlob,
     })
 
   } catch (err) {

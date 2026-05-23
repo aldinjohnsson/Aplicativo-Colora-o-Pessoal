@@ -605,6 +605,8 @@ export const documentsService = {
       { key: 'phone',         label: 'Telefone',                   groupLabel: 'Dados do cliente', acceptedTagTypes: ['text'] },
       { key: 'observations',  label: 'Observações do resultado',   groupLabel: 'Resultado',        acceptedTagTypes: ['text'] },
       { key: 'result_folder', label: 'Link da pasta do resultado', groupLabel: 'Resultado',        acceptedTagTypes: ['text'] },
+      // Logo das configurações do admin — preenche automaticamente a tag {{Logo}}
+      { key: 'logo',          label: 'Logo (Configurações)',        groupLabel: 'Marca',            acceptedTagTypes: ['image'] },
     ]
 
     // AI Info Templates (ambos tipos viram fonte de tag — text/imagem)
@@ -1183,5 +1185,28 @@ export const documentsService = {
       throw new Error((data as any)?.error || 'Resposta vazia da Edge Function')
     }
     return data as any
+  },
+
+  /**
+   * Retorna a URL pública do logo do admin logado (ou null se não configurado).
+   * Lê o path de `admin_content.settings.logoStoragePath` e gera URL pública
+   * do bucket `admin-logos`.
+   */
+  async getAdminLogoUrl(): Promise<string | null> {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return null
+
+    const { data: row } = await supabase
+      .from('admin_content')
+      .select('content')
+      .eq('admin_id', user.id)
+      .eq('type', 'settings')
+      .maybeSingle()
+
+    const path: string | undefined = (row?.content as any)?.logoStoragePath
+    if (!path) return null
+
+    const { data } = supabase.storage.from('admin-logos').getPublicUrl(path)
+    return data?.publicUrl ?? null
   },
 }
