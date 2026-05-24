@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon, Sparkles } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -126,6 +126,16 @@ interface AppSettings {
   resendApiKey: string
   fromEmail: string
   logoStoragePath?: string   // path no bucket 'admin-logos'
+
+  // ── Branding das Composições IA ─────────────────────────────────────
+  // Capa e contracapa anexadas ao PDF gerado pela feature Composições IA.
+  // Cada PDF (1 página, vetorial) fica em sua própria linha em
+  // admin_content (tipos 'ai_composition_cover' e 'ai_composition_final')
+  // pra evitar inflar o payload da row principal de settings.
+  aiCompositionCoverBase64?:   string
+  aiCompositionCoverFileName?: string
+  aiCompositionFinalBase64?:   string
+  aiCompositionFinalFileName?: string
 }
 
 // ── Helper: select → update ou insert ───────────────────────────────────────────
@@ -160,12 +170,27 @@ async function saveOrUpdate(type: string, content: Record<string, any>, adminId:
   }
 }
 
+// ── Helper: delete row de admin_content por type ────────────────────────────
+async function deleteRow(type: string, adminId: string) {
+  const { error } = await supabase
+    .from('admin_content')
+    .delete()
+    .eq('admin_id', adminId)
+    .eq('type', type)
+  if (error) throw new Error(error.message)
+}
+
 // Serviço de storage — salva no localStorage E no Supabase
 const settingsStorageService = {
   async saveSettings(data: AppSettings) {
-    // ── 1. localStorage: salvar sem o base64 do template (pode ser vários MB)
+    // ── 1. localStorage: salvar sem os base64 (cada PDF pode ter vários MB)
     try {
-      const { pdfTemplateBase64: _omit, ...rest } = data
+      const {
+        pdfTemplateBase64:        _omit1,
+        aiCompositionCoverBase64: _omit2,
+        aiCompositionFinalBase64: _omit3,
+        ...rest
+      } = data
       localStorage.setItem('app-settings', JSON.stringify(rest))
     } catch {
       // QuotaExceededError — ignora; Supabase é a fonte de verdade
@@ -177,22 +202,54 @@ const settingsStorageService = {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
 
-    // ── 3. Supabase: separar o template em linha própria p/ não estourar payload
-    const { pdfTemplateBase64, ...settingsWithoutTemplate } = data
+    // ── 3. Supabase: separar cada base64 em linha própria pra não estourar payload
+    const {
+      pdfTemplateBase64,
+      aiCompositionCoverBase64,
+      aiCompositionFinalBase64,
+      ...settingsWithoutBlobs
+    } = data
 
-    // 3a. Salvar configurações (sem base64).
-    await saveOrUpdate('settings', settingsWithoutTemplate as any, user.id)
+    // 3a. Salvar configurações principais (sem nenhum base64).
+    await saveOrUpdate('settings', settingsWithoutBlobs as any, user.id)
 
-    // 3b. Salvar template PDF em linha separada (só quando há base64)
+    // 3b. Salvar template PDF do dossiê (Gemini) em linha separada
     if (pdfTemplateBase64) {
-      const tplPayload = {
+      await saveOrUpdate('pdf_template', {
         pdfTemplateBase64,
         pdfTemplateFileName: data.pdfTemplateFileName ?? '',
-      }
-      await saveOrUpdate('pdf_template', tplPayload as any, user.id)
+      } as any, user.id)
+    }
+
+    // 3c. Salvar capa das composições IA em linha separada
+    if (aiCompositionCoverBase64) {
+      await saveOrUpdate('ai_composition_cover', {
+        pdfBase64: aiCompositionCoverBase64,
+        fileName:  data.aiCompositionCoverFileName ?? '',
+      } as any, user.id)
+    }
+
+    // 3d. Salvar contracapa das composições IA em linha separada
+    if (aiCompositionFinalBase64) {
+      await saveOrUpdate('ai_composition_final', {
+        pdfBase64: aiCompositionFinalBase64,
+        fileName:  data.aiCompositionFinalFileName ?? '',
+      } as any, user.id)
     }
 
     return { success: true }
+  },
+
+  /**
+   * Deleta as rows de capa ou contracapa das composições IA.
+   * Usado quando o admin clica no "trash" do upload — limpa o banco,
+   * não só o estado local.
+   */
+  async deleteAiCompositionBranding(slot: 'cover' | 'final') {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada')
+    const type = slot === 'cover' ? 'ai_composition_cover' : 'ai_composition_final'
+    await deleteRow(type, user.id)
   },
 
   async getSettings(): Promise<AppSettings> {
@@ -216,6 +273,10 @@ const settingsStorageService = {
       resendApiKey: '',
       fromEmail: '',
       logoStoragePath: '',
+      aiCompositionCoverBase64:   '',
+      aiCompositionCoverFileName: '',
+      aiCompositionFinalBase64:   '',
+      aiCompositionFinalFileName: '',
     }
 
     try {
@@ -225,30 +286,34 @@ const settingsStorageService = {
       const { data: { user } } = await supabase.auth.getUser()
       const adminId = user?.id
 
-      // Carregar configurações principais
-      const { data: settingsRow } = await supabase
-        .from('admin_content')
-        .select('content')
-        .eq('admin_id', adminId ?? '')   // ← CORRIGIDO: era .eq('id', adminId)
-        .eq('type', 'settings')
-        .maybeSingle()
+      // Carrega tudo em paralelo: settings + 3 PDFs (template + capa + contracapa)
+      const [
+        { data: settingsRow },
+        { data: tplRow },
+        { data: coverRow },
+        { data: finalRow },
+      ] = await Promise.all([
+        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'settings').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'pdf_template').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'ai_composition_cover').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'ai_composition_final').maybeSingle(),
+      ])
 
-      // Carregar template PDF (linha separada)
-      const { data: tplRow } = await supabase
-        .from('admin_content')
-        .select('content')
-        .eq('admin_id', adminId ?? '')   // ← CORRIGIDO: era .eq('id', adminId)
-        .eq('type', 'pdf_template')
-        .maybeSingle()
-
-      const tplContent = tplRow?.content as { pdfTemplateBase64?: string; pdfTemplateFileName?: string } | null
+      const tplContent   = tplRow?.content   as { pdfTemplateBase64?: string; pdfTemplateFileName?: string } | null
+      const coverContent = coverRow?.content as { pdfBase64?: string; fileName?: string } | null
+      const finalContent = finalRow?.content as { pdfBase64?: string; fileName?: string } | null
 
       const merged: AppSettings = {
         ...defaults,
         ...(settingsRow?.content as AppSettings ?? {}),
-        // Template vem da linha dedicada se existir, senão do campo legado na settings
-        pdfTemplateBase64:  tplContent?.pdfTemplateBase64  ?? (settingsRow?.content as any)?.pdfTemplateBase64  ?? '',
+        // Template do dossiê (Gemini)
+        pdfTemplateBase64:   tplContent?.pdfTemplateBase64   ?? (settingsRow?.content as any)?.pdfTemplateBase64   ?? '',
         pdfTemplateFileName: tplContent?.pdfTemplateFileName ?? (settingsRow?.content as any)?.pdfTemplateFileName ?? '',
+        // Branding das composições IA
+        aiCompositionCoverBase64:   coverContent?.pdfBase64 ?? '',
+        aiCompositionCoverFileName: coverContent?.fileName  ?? '',
+        aiCompositionFinalBase64:   finalContent?.pdfBase64 ?? '',
+        aiCompositionFinalFileName: finalContent?.fileName  ?? '',
       }
 
       return merged
@@ -498,7 +563,194 @@ function PdfTemplateSection({
   )
 }
 
+// ── Branding das Composições IA ─────────────────────────────────────────────
+//
+// Capa (1ª página) + Contracapa (última página) anexadas automaticamente em
+// todo PDF gerado pela feature "Composições IA". As imagens geradas pela IA
+// ficam entre elas — sem logo embutido. Assim o branding fica vetorial,
+// consistente, e trocar a identidade visual = trocar 2 arquivos aqui sem
+// regerar nenhuma imagem dos clientes.
 
+const AI_BRANDING_ACCENT = '#06b6d4'  // cyan-500 — distinto do PDF Modelo e do logo
+
+function AiCompositionBrandingSection({
+  coverFileName,
+  finalFileName,
+  onSaveCover,
+  onSaveFinal,
+  onRemoveCover,
+  onRemoveFinal,
+}: {
+  coverFileName: string
+  finalFileName: string
+  onSaveCover:   (base64: string, fileName: string) => void
+  onSaveFinal:   (base64: string, fileName: string) => void
+  onRemoveCover: () => void
+  onRemoveFinal: () => void
+}) {
+  const { theme } = useTheme()
+
+  return (
+    <div className="rounded-2xl shadow-sm overflow-hidden" style={{ background: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}>
+      <div
+        className="px-3 sm:px-6 py-3 sm:py-4"
+        style={{
+          borderBottom: `1px solid ${theme.border}`,
+          background: `linear-gradient(to right, color-mix(in srgb, ${AI_BRANDING_ACCENT} 12%, ${theme.surface2}), color-mix(in srgb, ${AI_BRANDING_ACCENT} 6%, ${theme.surface2}))`,
+        }}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center"
+            style={{ background: `linear-gradient(135deg, ${AI_BRANDING_ACCENT}, #0891b2)` }}
+          >
+            <Sparkles className="h-5 w-5 text-white" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold" style={{ color: theme.text }}>Branding das Composições IA</h2>
+            <p className="text-sm" style={{ color: theme.text2 }}>
+              Capa e contracapa anexadas ao PDF gerado pela IA
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-5 space-y-4">
+        <p className="text-sm" style={{ color: theme.text2 }}>
+          Envie dois PDFs vetoriais (1 página cada). O PDF final fica:{' '}
+          <strong style={{ color: theme.text }}>[Capa]</strong>
+          {' + '}
+          <span style={{ color: theme.text3 }}>[imagens geradas pela IA]</span>
+          {' + '}
+          <strong style={{ color: theme.text }}>[Contracapa]</strong>. As imagens
+          ficam limpas, sem logo — o branding vive só nessas duas páginas.
+        </p>
+
+        {/* Capa */}
+        <BrandingSlot
+          label="Capa (1ª página)"
+          accent={AI_BRANDING_ACCENT}
+          theme={theme}
+          fileName={coverFileName}
+          onSave={onSaveCover}
+          onRemove={onRemoveCover}
+        />
+
+        {/* Contracapa */}
+        <BrandingSlot
+          label="Contracapa (última página)"
+          accent={AI_BRANDING_ACCENT}
+          theme={theme}
+          fileName={finalFileName}
+          onSave={onSaveFinal}
+          onRemove={onRemoveFinal}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── Slot reutilizável (1 PDF) ─────────────────────────────────────────────
+
+function BrandingSlot({
+  label,
+  accent,
+  theme,
+  fileName,
+  onSave,
+  onRemove,
+}: {
+  label:    string
+  accent:   string
+  theme:    any
+  fileName: string
+  onSave:   (base64: string, fileName: string) => void
+  onRemove: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || file.type !== 'application/pdf') return
+    e.target.value = ''
+    setSaving(true)
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      onSave(base64, file.name)
+      setStatus('saved')
+      setTimeout(() => setStatus('idle'), 3000)
+    } catch (err: any) {
+      alert('Erro ao processar PDF: ' + err.message)
+      setStatus('error')
+    } finally { setSaving(false) }
+  }
+
+  const handleDelete = () => {
+    if (!confirm(`Remover "${label.toLowerCase()}"? Composições futuras não terão mais essa página.`)) return
+    onRemove()
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.text2 }}>
+        {label}
+      </p>
+
+      {fileName ? (
+        <div className="flex items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, ${accent} 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, ${accent} 30%, ${theme.border})` }}>
+          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `color-mix(in srgb, ${accent} 18%, ${theme.surface2})` }}>
+            <FileText className="h-5 w-5" style={{ color: accent }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium" style={{ color: theme.text }}>PDF carregado</p>
+            <p className="text-xs truncate" style={{ color: theme.text2 }}>{fileName}</p>
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}>
+              <Upload className="h-3.5 w-3.5" />
+              {saving ? 'Salvando...' : 'Trocar'}
+              <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
+            </label>
+            <button
+              onClick={handleDelete}
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ background: 'color-mix(in srgb, #ef4444 15%, transparent)', color: '#ef4444' }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <label className={`flex flex-col items-center gap-3 rounded-xl p-6 cursor-pointer transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`} style={{ border: `2px dashed color-mix(in srgb, ${accent} 40%, ${theme.border})` }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `color-mix(in srgb, ${accent} 15%, ${theme.surface2})` }}>
+            {saving
+              ? <div className="animate-spin h-5 w-5 rounded-full" style={{ border: `2px solid ${accent}`, borderTopColor: 'transparent' }} />
+              : <Upload className="h-5 w-5" style={{ color: accent }} />}
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-medium" style={{ color: theme.text }}>
+              {saving ? 'Salvando PDF no banco...' : 'Clique para enviar o PDF'}
+            </p>
+            <p className="text-xs mt-1" style={{ color: theme.text3 }}>1 página · vetorial</p>
+          </div>
+          <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
+        </label>
+      )}
+
+      {status === 'saved' && (
+        <div className="flex items-center gap-2 text-xs text-green-600">
+          <CheckCircle className="h-3.5 w-3.5" /> Salvo!
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ── Settings Editor ─────────────────────────────────────────────────────────
 
@@ -521,6 +773,10 @@ export default function SettingsEditor() {
     resendApiKey: '',
     fromEmail: '',
     logoStoragePath: '',
+    aiCompositionCoverBase64:   '',
+    aiCompositionCoverFileName: '',
+    aiCompositionFinalBase64:   '',
+    aiCompositionFinalFileName: '',
   })
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -837,12 +1093,46 @@ export default function SettingsEditor() {
         }}
       />
 
-      {/* PDF Modelo */}
+      {/* PDF Modelo (Gemini → dossiê capilar) */}
       <PdfTemplateSection
         currentFileName={settings.pdfTemplateFileName || ''}
         onSave={(base64, fileName) => {
           const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
           setSettings(updated)
+          settingsStorageService.saveSettings(updated)
+        }}
+      />
+
+      {/* Branding das Composições IA (capa + contracapa anexadas ao PDF gerado pela OpenAI) */}
+      <AiCompositionBrandingSection
+        coverFileName={settings.aiCompositionCoverFileName || ''}
+        finalFileName={settings.aiCompositionFinalFileName || ''}
+        onSaveCover={(base64, fileName) => {
+          const updated = { ...settings, aiCompositionCoverBase64: base64, aiCompositionCoverFileName: fileName }
+          setSettings(updated)
+          settingsStorageService.saveSettings(updated)
+        }}
+        onSaveFinal={(base64, fileName) => {
+          const updated = { ...settings, aiCompositionFinalBase64: base64, aiCompositionFinalFileName: fileName }
+          setSettings(updated)
+          settingsStorageService.saveSettings(updated)
+        }}
+        onRemoveCover={() => {
+          const updated = { ...settings, aiCompositionCoverBase64: '', aiCompositionCoverFileName: '' }
+          setSettings(updated)
+          // Apaga a linha do banco direto — só zerar o estado não basta porque
+          // saveSettings só faz upsert quando há base64.
+          settingsStorageService.deleteAiCompositionBranding('cover').catch(err =>
+            console.warn('Falha ao deletar capa do banco (estado local limpo mesmo assim):', err)
+          )
+          settingsStorageService.saveSettings(updated)
+        }}
+        onRemoveFinal={() => {
+          const updated = { ...settings, aiCompositionFinalBase64: '', aiCompositionFinalFileName: '' }
+          setSettings(updated)
+          settingsStorageService.deleteAiCompositionBranding('final').catch(err =>
+            console.warn('Falha ao deletar contracapa do banco (estado local limpo mesmo assim):', err)
+          )
           settingsStorageService.saveSettings(updated)
         }}
       />

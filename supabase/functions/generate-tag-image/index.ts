@@ -11,9 +11,12 @@
 //   │    client-tag-images/{clientId}/{tagId}_ai_{ts}.png e upserta em
 //   │    client_tag_values.
 //   │  → resposta: { success, storagePath, size, promptName }
+//   │  → LOGO: compositing automático no canto inferior direito (legado).
+//   │    Necessário porque tag values aparecem isoladas em outras UIs
+//   │    do app, sem capa/contracapa de PDF pra carregar o branding.
 //   └────────────────────────────────────────────────────────────────────
 //
-//   ┌─ Modo COMPOSITION (novo destino: Google Drive) ───────────────────
+//   ┌─ Modo COMPOSITION (destino: Google Drive) ─────────────────────────
 //   │  body: { promptId, clientId, photoId, composition: { compositionId, index } }
 //   │  → NÃO toca em client_tag_values
 //   │  → Chama internamente /functions/v1/drive/upload com kind=composition,
@@ -21,12 +24,17 @@
 //   │    no Google Drive.
 //   │  → resposta: { success, driveFileId, driveFolderId, url, downloadUrl,
 //   │               photoName, size, promptName }
-//   │
-//   │  Antes esse caminho gravava em client-tag-images/{clientId}/compositions/…
-//   │  com signed URL de 1h, que expirava no localStorage e quebrava ao reabrir.
-//   │  Migrado pro Drive pra consistência com o resto do app (todas as fotos
-//   │  já vão pro Drive) e pra eliminar a expiração da URL.
+//   │  → LOGO: NÃO embute. Branding vem da capa/contracapa (PDFs vetoriais)
+//   │    que o admin configura em Settings → Branding de Composições IA.
+//   │    As imagens IA ficam limpas e o PDF final concatena
+//   │    [capa] + [imagens IA] + [contracapa] no frontend.
 //   └────────────────────────────────────────────────────────────────────
+//
+// Tag {{Logo}}:
+//   Tag legada — se ainda existir no texto do prompt, a linha inteira é
+//   removida antes de enviar pra OpenAI. Em tag mode, o logo entra via
+//   compositing determinístico (não via IA, que não posiciona logo de
+//   forma confiável). Em composition mode, a linha simplesmente some.
 //
 // Deploy:
 //   supabase functions deploy generate-tag-image
@@ -78,6 +86,52 @@ function safeSlug(s: string, max = 60): string {
     .replace(/_+/g, '_')
     .replace(/^_|_$/g, '')
     .slice(0, max) || 'x'
+}
+
+// ── Compositing do logo sobre a imagem gerada ────────────────────────────────
+//
+// Usa ImageScript (pure Deno/TS, sem deps nativas).
+// Posiciona o logo no canto inferior direito com padding de 24px.
+// Redimensiona o logo para no máximo 18% da largura da imagem base.
+// Se o compositing falhar por qualquer motivo (logo corrompido, formato
+// não suportado etc.), retorna os bytes originais sem quebrar a geração.
+//
+async function compositeLogoBottomRight(
+  baseBytes: Uint8Array,
+  logoBytes: Uint8Array,
+): Promise<Uint8Array> {
+  try {
+    const { Image } = await import('https://deno.land/x/imagescript@1.2.15/mod.ts')
+
+    const baseImg = await Image.decode(baseBytes)
+    const logoImg = await Image.decode(logoBytes)
+
+    // Redimensiona o logo: máximo 18% da largura da imagem gerada,
+    // preservando a proporção.
+    const maxLogoW = Math.floor(baseImg.width * 0.18)
+    if (logoImg.width > maxLogoW) {
+      const ratio   = maxLogoW / logoImg.width
+      const newW    = maxLogoW
+      const newH    = Math.max(1, Math.round(logoImg.height * ratio))
+      logoImg.resize(newW, newH)
+    }
+
+    // Posição: canto inferior direito, 24px de margem
+    const padding = 24
+    const x = baseImg.width  - logoImg.width  - padding
+    const y = baseImg.height - logoImg.height - padding
+
+    baseImg.composite(logoImg, x, y)
+
+    const result = await baseImg.encode()
+    console.log(`Logo composto em (${x}, ${y}), tamanho final ${logoImg.width}×${logoImg.height}px`)
+    return result
+
+  } catch (err) {
+    // Não quebra a geração — loga e devolve imagem original
+    console.warn('compositeLogoBottomRight falhou, usando imagem original:', err)
+    return baseBytes
+  }
 }
 
 serve(async (req) => {
@@ -237,37 +291,55 @@ serve(async (req) => {
       }, 400)
     }
 
-    // ── 5b. Baixa o logo do admin se {{Logo}} aparecer no prompt ─────
-    let logoBlob: Blob | null = null
-    const hasLogoPlaceholder = resolvedPromptText.includes('{{Logo}}')
+    // ── 5b. Baixa o logo do admin (SOMENTE em tag mode) ─────────────
+    //
+    // Tag mode: logo é embutido no canto inferior direito da imagem
+    // gerada via compositing determinístico (não via IA). Necessário
+    // porque tag values aparecem isoladas em outras UIs do app.
+    //
+    // Composition mode: NÃO embute logo. Branding vem da capa e da
+    // contracapa (PDFs vetoriais) que o admin configura em
+    // Settings → Branding de Composições IA. As imagens geradas
+    // ficam limpas; o PDF final concatena
+    // [capa] + [imagens IA] + [contracapa] no frontend.
+    //
+    // Se {{Logo}} ainda existir no prompt (legado), a linha inteira é
+    // removida antes de enviar pra OpenAI nos dois modos.
+    //
+    let logoBytes: Uint8Array | null = null
 
-    if (hasLogoPlaceholder) {
+    if (isTagMode) {
       const logoPath: string | undefined = (settingsRow?.content as any)?.logoStoragePath
-      if (logoPath && logoPath.trim()) {
+
+      if (logoPath?.trim()) {
         const { data: logoData, error: logoErr } = await admin.storage
           .from('admin-logos')
           .download(logoPath.trim())
         if (logoErr || !logoData) {
           console.warn(`Logo não encontrado em admin-logos/${logoPath}: ${logoErr?.message ?? 'objeto não encontrado'}. Gerando sem ele.`)
         } else {
-          logoBlob = logoData
-          console.log(`Logo carregado para inclusão na geração: ${logoPath}`)
+          logoBytes = new Uint8Array(await logoData.arrayBuffer())
+          console.log(`Logo carregado para compositing (tag mode): ${logoPath}`)
         }
-      } else {
-        console.warn('{{Logo}} presente no prompt mas logoStoragePath não configurado nas Configurações.')
       }
+    } else {
+      console.log('Composition mode: pulando logo compositing (branding via capa/contracapa do PDF).')
     }
 
-    // Substitui {{Logo}} no texto do prompt por instrução legível pra IA
-    const finalPromptText = hasLogoPlaceholder
-      ? resolvedPromptText.replace(/\{\{Logo\}\}/g,
-          logoBlob
-            ? '(use the brand logo provided as one of the reference images — position and scale exactly as described)'
-            : '(logo image not available — omit)'
-        )
-      : resolvedPromptText
+    // Remove linhas com {{Logo}} do prompt (legado) e instrução de canto
+    // que ficaria truncada — o logo entra via compositing em tag mode,
+    // ou simplesmente não entra em composition mode.
+    const finalPromptText = resolvedPromptText
+      .split('\n')
+      .filter(line => !line.includes('{{Logo}}'))
+      .join('\n')
+      .trim()
 
     // ── 6. Chama OpenAI images/edits ────────────────────────────────
+    //
+    // O logo NÃO entra no array image[] — apenas a imagem de referência
+    // do prompt (card da estação) e a foto da cliente.
+    //
     const photoBytes = new Uint8Array(await photoBlob.arrayBuffer())
     const photoFile  = new Blob([photoBytes], { type: photoMime })
 
@@ -278,20 +350,12 @@ serve(async (req) => {
     form.append('quality', prompt.quality || 'medium')
     form.append('n',       '1')
 
-    // Monta o array de imagens: logo (se houver) + ref (se houver) + foto do cliente
-    const hasMultipleImages = refBlob || logoBlob
-    if (hasMultipleImages) {
-      if (logoBlob) {
-        const logoBytes = new Uint8Array(await logoBlob.arrayBuffer())
-        form.append('image[]', new Blob([logoBytes], { type: logoBlob.type || 'image/png' }), 'logo.png')
-        console.log('Adicionando logo ao array de imagens da OpenAI')
-      }
-      if (refBlob) {
-        const refBytes = new Uint8Array(await refBlob.arrayBuffer())
-        form.append('image[]', new Blob([refBytes], { type: 'image/jpeg' }), 'reference.jpg')
-        console.log(`Adicionando imagem de referência ao array: ${prompt.reference_image_path}`)
-      }
+    // Monta o array de imagens: ref do prompt (se houver) + foto do cliente
+    if (refBlob) {
+      const refBytes = new Uint8Array(await refBlob.arrayBuffer())
+      form.append('image[]', new Blob([refBytes], { type: 'image/jpeg' }), 'reference.jpg')
       form.append('image[]', photoFile, photo.photo_name || 'client.jpg')
+      console.log(`Usando imagem de referência: ${prompt.reference_image_path}`)
     } else {
       form.append('image', photoFile, photo.photo_name || 'input.jpg')
     }
@@ -310,16 +374,26 @@ serve(async (req) => {
       }, 502)
     }
 
-    const data = await openaiRes.json()
-    const b64 = data?.data?.[0]?.b64_json
+    const aiData = await openaiRes.json()
+    const b64 = aiData?.data?.[0]?.b64_json
     if (!b64 || typeof b64 !== 'string') {
       return jsonRes({ error: 'OpenAI returned no image' }, 502)
     }
 
     // ── 7. Decodifica base64 ────────────────────────────────────────
     const binStr = atob(b64)
-    const outBytes = new Uint8Array(binStr.length)
+    let outBytes = new Uint8Array(binStr.length)
     for (let i = 0; i < binStr.length; i++) outBytes[i] = binStr.charCodeAt(i)
+
+    // ── 7b. Compositing do logo (canto inferior direito) ────────────
+    //
+    // Em composition mode, logoBytes é sempre null (skipped no bloco 5b),
+    // então esse if não executa. Em tag mode, executa se o admin tem
+    // logo configurado em admin-logos/.
+    //
+    if (logoBytes) {
+      outBytes = await compositeLogoBottomRight(outBytes, logoBytes)
+    }
 
     const ts = Date.now()
 
@@ -363,13 +437,13 @@ serve(async (req) => {
       }
 
       return jsonRes({
-        success:           true,
-        mode:              'tag',
+        success:            true,
+        mode:               'tag',
         storagePath,
-        size:              outBytes.length,
-        promptName:        prompt.name,
+        size:               outBytes.length,
+        promptName:         prompt.name,
         usedReferenceImage: !!refBlob,
-        usedLogo:          !!logoBlob,
+        usedLogo:           !!logoBytes,
       })
     }
 
@@ -382,6 +456,9 @@ serve(async (req) => {
     // Agora: chama internamente /drive/upload com kind='composition', que
     //        sobe em "Composições IA" dentro da pasta do cliente no Drive,
     //        SEM insert em client_photos. URL é estática (sem TTL).
+    //
+    // Imagem fica SEM LOGO embutido — branding fica na capa/contracapa
+    // do PDF, montadas no frontend.
     const compId   = safeSlug(composition!.compositionId, 80)
     const idx      = Number.isFinite(composition!.index) ? Math.max(0, Math.floor(composition!.index)) : 0
     const idxStr   = String(idx).padStart(3, '0')
@@ -427,7 +504,7 @@ serve(async (req) => {
       size:               outBytes.length,
       promptName:         prompt.name,
       usedReferenceImage: !!refBlob,
-      usedLogo:           !!logoBlob,
+      usedLogo:           !!logoBytes,
     })
 
   } catch (err) {

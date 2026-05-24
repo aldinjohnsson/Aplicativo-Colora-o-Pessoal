@@ -2,55 +2,152 @@
 //
 // Builder de PDF pra feature "Composições IA".
 //
-// Regra: 1 imagem por página. Página é dimensionada pra que o LADO MAIOR
-// equivalha ao lado maior de uma A4 (842 pt ≈ 297 mm). Isso dá:
-//   - imagem 1024×1024 (quadrada)    → página 842×842 pt
-//   - imagem 1024×1536 (retrato)     → página 561×842 pt  (≈ A4 portrait)
-//   - imagem 1536×1024 (paisagem)    → página 842×561 pt  (≈ A4 landscape)
-// A imagem preenche a página inteira (cover sem necessidade de crop —
-// já que a página tem o exato aspect ratio da imagem). Sem margens.
+// Estrutura do PDF final:
+//   [Capa.pdf]                     ← do admin (branding), vem do banco em base64
+//   [N páginas geradas pela IA]    ← sem logo, imagem centrada em página A4
+//   [Contracapa.pdf]               ← do admin (branding), vem do banco em base64
 //
-// IMAGENS NO DRIVE: a feature foi migrada do Supabase Storage pro Google
-// Drive (sem signed URLs com TTL). Pra baixar os bytes a partir de um
-// driveFileId precisamos passar pelo /drive/photo-proxy (autenticado) —
-// fetch direto em drive.google.com no browser dá CORS.
+// ─── Regra de tamanho de página (UNIFORME) ──────────────────────────────
+//
+// TODAS as páginas do PDF final têm o MESMO tamanho. Sem isso, abrir o
+// dossiê mostraria a capa A4 + páginas IA quadradas + contracapa A4 —
+// inconsistente. Estratégia:
+//
+//   1. Se a capa foi enviada → usa o tamanho da 1ª página da capa como padrão
+//   2. Senão, se a contracapa foi enviada → usa o tamanho da 1ª página dela
+//   3. Senão (nenhum branding) → A4 portrait padrão (595×842 pt)
+//
+// As imagens geradas pela IA são posicionadas nessa página com
+// **aspect-preserving fit + center** (letterbox):
+//   - 1024×1024 (quadrada) em A4 portrait → 595×595 centrada verticalmente,
+//     ~123pt de margem branca acima e abaixo
+//   - 1024×1536 (retrato) em A4 portrait → preenche quase tudo, leves
+//     margens laterais (proporções 0.667 vs 0.707 — diferença pequena)
+//   - 1536×1024 (paisagem) em A4 portrait → margens grandes acima/abaixo;
+//     se isso for indesejável, faça capa landscape
+//
+// Recomendação: faça capa/contracapa do MESMO tamanho que a imagem IA
+// (ou vice-versa) pra evitar áreas em branco grandes nas páginas IA.
+// Padrão sugerido: A4 portrait pra tudo, imagens IA quadradas com
+// letterbox (visual ok e consistente).
 
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, PDFPage } from 'pdf-lib'
 import { driveStorage } from '../../../../lib/driveStorage'
 
-// Lado maior da página em pt. 842 = altura da A4 em portrait.
-const TARGET_LONG_SIDE_PT = 842
+// A4 portrait em pt (1 pt = 1/72 polegada). Usado como fallback quando
+// nenhum branding (capa nem contracapa) está configurado.
+const A4_PORTRAIT_W = 595
+const A4_PORTRAIT_H = 842
 
 export interface CompositionImage {
   bytes: ArrayBuffer
-  mime:  string         // 'image/png' | 'image/jpeg' (a edge function devolve sempre png)
+  mime:  string         // 'image/png' | 'image/jpeg'
 }
 
-export async function generateCompositionPdf(images: CompositionImage[]): Promise<Blob> {
+export interface BrandingPdfs {
+  cover?: ArrayBuffer | null
+  final?: ArrayBuffer | null
+}
+
+/**
+ * Monta o PDF da composição com tamanho de página uniforme.
+ *
+ * Ordem das páginas no PDF final:
+ *   1. Todas as páginas do `branding.cover` (se informado) — copiadas vetorialmente
+ *   2. N imagens geradas pela IA (1 por página, centradas com aspect-preserving fit)
+ *   3. Todas as páginas do `branding.final` (se informado) — copiadas vetorialmente
+ *
+ * Se a capa ou o final falharem em carregar (PDF corrompido, formato
+ * inválido), o builder ignora silenciosamente e segue — melhor entregar
+ * o PDF sem branding do que quebrar o fluxo do admin.
+ */
+export async function generateCompositionPdf(
+  images: CompositionImage[],
+  branding: BrandingPdfs = {},
+): Promise<Blob> {
   if (images.length === 0) {
     throw new Error('Nenhuma imagem pra montar o PDF')
   }
 
   const pdf = await PDFDocument.create()
 
+  // ── 1. Carrega capa e contracapa primeiro pra inferir tamanho-padrão ──
+  //
+  // Carrega aqui mesmo (não dentro do try de adicionar) pra poder
+  // medir a 1ª página antes de criar as páginas das imagens IA.
+  let coverDoc: PDFDocument | null = null
+  let finalDoc: PDFDocument | null = null
+
+  if (branding.cover) {
+    try {
+      coverDoc = await PDFDocument.load(branding.cover)
+    } catch (e) {
+      console.warn('[generateCompositionPdf] Capa inválida, ignorando:', e)
+      coverDoc = null
+    }
+  }
+  if (branding.final) {
+    try {
+      finalDoc = await PDFDocument.load(branding.final)
+    } catch (e) {
+      console.warn('[generateCompositionPdf] Contracapa inválida, ignorando:', e)
+      finalDoc = null
+    }
+  }
+
+  // Tamanho-padrão pra todas as páginas: capa → contracapa → A4 portrait.
+  // (Cobre os 3 cenários: com capa, só com contracapa, sem nada.)
+  let pageW = A4_PORTRAIT_W
+  let pageH = A4_PORTRAIT_H
+
+  if (coverDoc) {
+    const firstPage = coverDoc.getPage(0)
+    pageW = firstPage.getWidth()
+    pageH = firstPage.getHeight()
+  } else if (finalDoc) {
+    const firstPage = finalDoc.getPage(0)
+    pageW = firstPage.getWidth()
+    pageH = firstPage.getHeight()
+  }
+
+  // ── 2. Capa: copia vetorialmente todas as páginas ──
+  if (coverDoc) {
+    const indices = coverDoc.getPageIndices()
+    const copied  = await pdf.copyPages(coverDoc, indices)
+    copied.forEach((p: PDFPage) => pdf.addPage(p))
+  }
+
+  // ── 3. Páginas geradas pela IA: tamanho uniforme + imagem centrada ──
   for (const img of images) {
     const m = (img.mime || '').toLowerCase()
     const embedded = m.includes('png')
       ? await pdf.embedPng(img.bytes)
       : await pdf.embedJpg(img.bytes)
 
-    const longSide = Math.max(embedded.width, embedded.height) || 1
-    const scale = TARGET_LONG_SIDE_PT / longSide
-    const pageW = embedded.width * scale
-    const pageH = embedded.height * scale
-
     const page = pdf.addPage([pageW, pageH])
-    page.drawImage(embedded, {
-      x: 0,
-      y: 0,
-      width:  pageW,
-      height: pageH,
-    })
+
+    // Aspect-preserving fit: escala pela dimensão mais restrita.
+    // Resulta em letterbox (margens brancas) quando o aspect ratio da
+    // imagem não bate com o da página.
+    const scale = Math.min(
+      pageW / embedded.width,
+      pageH / embedded.height,
+    )
+    const imgW = embedded.width  * scale
+    const imgH = embedded.height * scale
+
+    // Centro horizontal e vertical na página
+    const x = (pageW - imgW) / 2
+    const y = (pageH - imgH) / 2
+
+    page.drawImage(embedded, { x, y, width: imgW, height: imgH })
+  }
+
+  // ── 4. Contracapa: copia vetorialmente todas as páginas ──
+  if (finalDoc) {
+    const indices = finalDoc.getPageIndices()
+    const copied  = await pdf.copyPages(finalDoc, indices)
+    copied.forEach((p: PDFPage) => pdf.addPage(p))
   }
 
   const bytes = await pdf.save()
@@ -75,26 +172,39 @@ function detectImageMime(buf: ArrayBuffer): string {
   if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) {
     return 'image/jpeg'
   }
-  return 'image/png' // fallback seguro — edge function sempre devolve PNG
+  return 'image/png' // fallback seguro
 }
 
 /**
  * Baixa todas as imagens da composição a partir dos IDs do Drive.
  * Devolve na MESMA ORDEM da entrada.
- *
- * Usa `driveStorage.fetchPhotoBlob` (que passa pelo /drive/photo-proxy
- * autenticado) — fetch direto em drive.google.com no browser dá CORS.
- *
- * O tipo MIME é determinado pelos magic bytes do arquivo, não pelo
- * Content-Type do servidor (que pode estar errado).
  */
 export async function fetchAllByDriveId(driveFileIds: string[]): Promise<CompositionImage[]> {
   const out: CompositionImage[] = []
   for (const id of driveFileIds) {
-    const blob = await driveStorage.fetchPhotoBlob(id)
+    const blob  = await driveStorage.fetchPhotoBlob(id)
     const bytes = await blob.arrayBuffer()
     const mime  = detectImageMime(bytes)
     out.push({ bytes, mime })
   }
   return out
+}
+
+/**
+ * Converte um PDF salvo em base64 (data URL ou base64 puro) pra ArrayBuffer.
+ *
+ * O Settings salva os PDFs de branding usando FileReader.readAsDataURL,
+ * que produz "data:application/pdf;base64,JVBERi0xLjQK…". Essa função
+ * aceita as duas formas: com prefixo data: ou só o base64.
+ *
+ * Usado pra decodificar a capa e a contracapa armazenadas em
+ * admin_content.content.pdfBase64 antes de passar pro builder.
+ */
+export function base64PdfToArrayBuffer(base64: string): ArrayBuffer {
+  if (!base64) throw new Error('base64 vazio')
+  const cleaned = base64.includes(',') ? base64.split(',')[1] : base64
+  const binStr  = atob(cleaned)
+  const bytes   = new Uint8Array(binStr.length)
+  for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
+  return bytes.buffer
 }

@@ -9,12 +9,24 @@
 //      → preview inline no card
 //   4. Reordena/remove se quiser
 //   5. "Finalizar e Gerar PDF" → baixa todas as imagens prontas e monta o PDF
+//      (com capa + contracapa do admin logado, se configuradas no Settings)
+//
+// Branding:
+//   No momento de montar o PDF, busca o branding do ADMIN LOGADO em duas
+//   linhas separadas de `admin_content`:
+//     - `ai_composition_cover`  → { pdfBase64, fileName }
+//     - `ai_composition_final`  → { pdfBase64, fileName }
+//   Cada admin tem o seu (mesmo padrão do `pdf_template` do Gemini).
+//   Se não estiverem configurados (ou falharem em carregar), o PDF é
+//   montado só com as imagens IA — feature 100% opt-in.
 //
 // Mudanças vs versão anterior:
 //   • CompositionPage agora tem partId + partLabel (sem modelOverride nem uploadedImageBase64)
 //   • handleAdd aceita AddPageResult[] e cria múltiplas páginas de uma vez
 //   • generateCompositionImage passa partId pra o backend saber qual sub-prompt usar
 //   • Fotos podem ser da galeria ou upload (uploadedPhotoBase64)
+//   • handleFinalizePdf agora resolve capa + contracapa do admin logado antes
+//     de montar o PDF, lendo direto do banco em base64 (não do Drive)
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -25,8 +37,13 @@ import {
 import { documentsService } from '../lib/documentsService'
 import { driveStorage } from '../../../../lib/driveStorage'
 import { adminService } from '../../../../lib/services'
+import { supabase } from '../../../../lib/supabase'
 import { AddPageDialog, AddPageResult } from './AddPageDialog'
-import { generateCompositionPdf, fetchAllByDriveId } from './generateCompositionPdf'
+import {
+  generateCompositionPdf,
+  fetchAllByDriveId,
+  base64PdfToArrayBuffer,
+} from './generateCompositionPdf'
 import type { ClientGeneratedDocument } from '../types'
 
 // ── Btn ───────────────────────────────────────────────────────────────
@@ -400,7 +417,16 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     }
   }
 
-  // ── Finalizar: apenas monta o blob (sem salvar) ──
+  // ── Finalizar: monta o blob (capa + IA + contracapa) ─────────────
+  //
+  // O branding (capa e contracapa) vem do Settings do ADMIN LOGADO,
+  // armazenado em duas linhas de admin_content (tipos `ai_composition_cover`
+  // e `ai_composition_final`), cada uma com um PDF em base64. Cada admin
+  // tem o seu — mesmo padrão do `pdf_template` do Gemini.
+  //
+  // Best-effort: se algum dos dois falhar (não configurado, base64 inválido,
+  // PDF corrompido), o builder ignora e segue. Melhor entregar PDF sem
+  // branding do que travar o fluxo.
   const handleFinalizePdf = async () => {
     if (!selectedClient) return
     const donePages = pages.filter(p => p.status === 'done' && p.generatedDriveFileId)
@@ -412,12 +438,55 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     setSavedDoc(null)
 
     try {
+      // 1. Resolve branding do admin logado (capa + contracapa) ────
+      let coverBytes: ArrayBuffer | null = null
+      let finalBytes: ArrayBuffer | null = null
+
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        // Lê as duas rows em paralelo. Cada uma traz { pdfBase64, fileName }.
+        const [{ data: coverRow }, { data: finalRow }] = await Promise.all([
+          supabase.from('admin_content')
+            .select('content')
+            .eq('admin_id', user.id)
+            .eq('type', 'ai_composition_cover')
+            .maybeSingle(),
+          supabase.from('admin_content')
+            .select('content')
+            .eq('admin_id', user.id)
+            .eq('type', 'ai_composition_final')
+            .maybeSingle(),
+        ])
+
+        const coverB64 = (coverRow?.content as any)?.pdfBase64 as string | undefined
+        const finalB64 = (finalRow?.content as any)?.pdfBase64 as string | undefined
+
+        if (coverB64) {
+          try {
+            coverBytes = base64PdfToArrayBuffer(coverB64)
+          } catch (e) {
+            console.warn('[AiCompositionsManager] Capa de branding inválida (base64 corrompido?):', e)
+          }
+        }
+        if (finalB64) {
+          try {
+            finalBytes = base64PdfToArrayBuffer(finalB64)
+          } catch (e) {
+            console.warn('[AiCompositionsManager] Contracapa de branding inválida (base64 corrompido?):', e)
+          }
+        }
+      }
+
+      // 2. Baixa imagens geradas + monta PDF ───────────────────────
       const ordered = pages.filter(p => p.status === 'done' && p.generatedDriveFileId)
       const driveFileIds = ordered.map(p => p.generatedDriveFileId as string)
       // Baixa via /drive/photo-proxy (autenticado). Fetch direto em
       // drive.google.com no browser dá CORS.
       const images = await fetchAllByDriveId(driveFileIds)
-      const blob   = await generateCompositionPdf(images)
+      const blob   = await generateCompositionPdf(images, {
+        cover: coverBytes,
+        final: finalBytes,
+      })
       setPdfBlob(blob)
     } catch (e: any) {
       setGlobalError(e?.message || 'Erro ao montar o PDF')
