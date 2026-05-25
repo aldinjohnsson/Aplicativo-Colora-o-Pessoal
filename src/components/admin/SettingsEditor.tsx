@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon, Sparkles, Loader2 } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon, Sparkles, Loader2, Shield } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -122,6 +122,7 @@ interface AppSettings {
   adminEmail: string
   resendApiKey: string
   fromEmail: string
+  emailDisplayName: string  // Nome que aparece como remetente nos e-mails enviados às clientes
   logoStoragePath?: string
 
   aiCompositionCoverBase64?:   string
@@ -248,6 +249,7 @@ const settingsStorageService = {
       adminEmail: '',
       resendApiKey: '',
       fromEmail: '',
+      emailDisplayName: '',
       logoStoragePath: '',
       aiCompositionCoverBase64:   '',
       aiCompositionCoverFileName: '',
@@ -844,6 +846,7 @@ export default function SettingsEditor() {
     adminEmail: '',
     resendApiKey: '',
     fromEmail: '',
+    emailDisplayName: '',
     logoStoragePath: '',
     aiCompositionCoverBase64:   '',
     aiCompositionCoverFileName: '',
@@ -857,6 +860,14 @@ export default function SettingsEditor() {
   const [showGeminiHelp, setShowGeminiHelp] = useState(false)
   const [showOpenAIHelp, setShowOpenAIHelp] = useState(false)
 
+  // Configuração global de e-mail — apenas super_admin edita.
+  // Armazenada em admin_content (type='global_email_settings') do super_admin.
+  // Todos os admins (salões) usam essa config como fallback automático.
+  const [globalEmail, setGlobalEmail] = useState<{ resendApiKey: string; fromEmail: string }>({
+    resendApiKey: '',
+    fromEmail: '',
+  })
+
   useEffect(() => {
     loadSettings()
     adminService.getCurrentAdmin().then(a => setUserRole(a?.role ?? null))
@@ -867,6 +878,34 @@ export default function SettingsEditor() {
     try {
       const loaded = await settingsStorageService.getSettings()
       setSettings(loaded)
+
+      // Carrega config global de e-mail (só super_admin precisa, mas é seguro
+      // tentar ler — RLS bloqueia se não for super_admin). A query é barata.
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: meRow } = await supabase
+          .from('admins')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+
+        if (meRow?.role === 'super_admin') {
+          const { data: globalRow } = await supabase
+            .from('admin_content')
+            .select('content')
+            .eq('admin_id', user.id)
+            .eq('type', 'global_email_settings')
+            .maybeSingle()
+
+          if (globalRow?.content) {
+            const c = globalRow.content as any
+            setGlobalEmail({
+              resendApiKey: c.resendApiKey || '',
+              fromEmail:    c.fromEmail    || '',
+            })
+          }
+        }
+      }
     } catch {
       setMessage({ type: 'error', text: 'Erro ao carregar configurações' })
     } finally {
@@ -879,6 +918,18 @@ export default function SettingsEditor() {
     setMessage(null)
     try {
       await settingsStorageService.saveSettings(settings)
+
+      // Super admin: salva também a config global compartilhada.
+      if (userRole === 'super_admin') {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          await saveOrUpdate('global_email_settings', {
+            resendApiKey: globalEmail.resendApiKey,
+            fromEmail:    globalEmail.fromEmail,
+          }, user.id)
+        }
+      }
+
       setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' })
       setTimeout(() => setMessage(null), 5000)
     } catch {
@@ -1090,7 +1141,14 @@ export default function SettingsEditor() {
         </div>
       </div>
 
-      {/* ── E-mail (Resend) ─────────────────────────────────────────────── */}
+      {/* ── E-mail: notificações pro admin ────────────────────────────────
+        *
+        * Esta seção mostra apenas o e-mail onde o admin (salão) quer
+        * receber as cópias dos contratos. A chave Resend + domínio
+        * remetente vêm da configuração GLOBAL gerida pelo super_admin
+        * (seção abaixo, visível só pra ele) — o admin não precisa ter
+        * conta Resend própria nem domínio verificado.
+        */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-cyan-50">
           <div className="flex items-center gap-3">
@@ -1098,75 +1156,157 @@ export default function SettingsEditor() {
               <Mail className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-gray-900">Envio de E-mails</h2>
-              <p className="text-sm text-gray-500">Contratos assinados enviados por e-mail</p>
+              <h2 className="text-base font-semibold text-gray-900">Notificações por E-mail</h2>
+              <p className="text-sm text-gray-500">Onde você quer receber a cópia dos contratos assinados</p>
             </div>
           </div>
         </div>
 
         <div className="px-6 py-5 space-y-4">
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Nome que aparece como remetente</label>
+            <input
+              type="text"
+              value={settings.emailDisplayName}
+              onChange={e => setSettings({ ...settings, emailDisplayName: e.target.value })}
+              placeholder="Ex: Marília Color, Salão da Fulana, Studio X..."
+              maxLength={80}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+            />
+            <p className="text-xs text-gray-500 mt-1.5">
+              Esse nome aparece na caixa de entrada da sua cliente como remetente do e-mail.
+              {settings.emailDisplayName && (
+                <span className="block mt-1 font-mono text-gray-600">
+                  Prévia: <strong>{settings.emailDisplayName}</strong> &lt;contato@...&gt;
+                </span>
+              )}
+            </p>
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Seu e-mail (para receber notificações)</label>
             <input
               type="email"
               value={settings.adminEmail}
               onChange={e => setSettings({ ...settings, adminEmail: e.target.value })}
-              placeholder="voce@seudominio.com.br"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
-            />
-            <p className="text-xs text-gray-500 mt-1.5">Você receberá uma cópia do contrato toda vez que uma cliente assinar.</p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">E-mail remetente</label>
-            <input
-              type="email"
-              value={settings.fromEmail}
-              onChange={e => setSettings({ ...settings, fromEmail: e.target.value })}
-              placeholder="noreply@seudominio.com.br"
+              placeholder="voce@seuemail.com"
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
             />
             <p className="text-xs text-gray-500 mt-1.5">
-              Deve ser um domínio verificado no Resend. Para testes use <span className="font-mono">onboarding@resend.dev</span>.
+              Você recebe uma cópia toda vez que uma cliente assina o contrato.
+              {!isSuperAdmin && ' Pode ser qualquer e-mail (Gmail, Outlook, etc).'}
             </p>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Chave da API Resend</label>
-            <div className="relative">
-              <input
-                type="password"
-                value={settings.resendApiKey}
-                onChange={e => setSettings({ ...settings, resendApiKey: e.target.value })}
-                placeholder="re_..."
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent font-mono pr-28"
-              />
-              {settings.resendApiKey && (
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
-                  ✓ Configurada
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-gray-500 mt-1.5">
-              Crie sua conta grátis em{' '}
-              <a href="https://resend.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">resend.com</a>
-              {' '}· Plano gratuito inclui 3.000 e-mails/mês.
-            </p>
-          </div>
-
-          {settings.resendApiKey && settings.adminEmail ? (
+          {settings.adminEmail ? (
             <div className="bg-green-50 border border-green-200 rounded-xl p-4">
               <p className="text-sm text-green-700">
-                ✓ E-mail configurado — contratos serão enviados para a cliente e uma cópia para <strong>{settings.adminEmail}</strong>.
+                ✓ Notificações ativas — cópia dos contratos será enviada para <strong>{settings.adminEmail}</strong>.
               </p>
+              {!isSuperAdmin && (
+                <p className="text-xs text-green-600 mt-1.5">
+                  As clientes recebem o contrato pelo domínio oficial do MS Colors.
+                </p>
+              )}
             </div>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-              <p className="text-sm text-amber-700">⚠️ Sem e-mail configurado, contratos não serão enviados por e-mail.</p>
+              <p className="text-sm text-amber-700">⚠️ Preencha seu e-mail para receber a cópia dos contratos assinados.</p>
             </div>
           )}
         </div>
       </div>
+
+      {/* ── Config GLOBAL de e-mail (só super_admin) ────────────────────────
+        *
+        * Configuração única e compartilhada que serve TODOS os admins
+        * (salões) do sistema. Armazenada em admin_content type=
+        * 'global_email_settings' vinculada ao user_id do super_admin.
+        *
+        * A edge function `send-contract-email` usa essa chave/domínio
+        * pra enviar e-mails em nome de cada salão, com o NOME DO SALÃO
+        * (admins.nome) como display name no header From.
+        */}
+      {isSuperAdmin && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-purple-50">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-500 rounded-xl flex items-center justify-center">
+                <Shield className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Configuração Global de E-mail</h2>
+                <p className="text-sm text-gray-500">Chave Resend e domínio compartilhados por TODOS os salões</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-6 py-5 space-y-4">
+            <div className="bg-violet-50 border border-violet-100 rounded-xl p-3">
+              <p className="text-xs text-violet-700 leading-relaxed">
+                ℹ️ Esta configuração é usada por <strong>todos os admins (salões)</strong> do sistema.
+                Os e-mails saem do seu domínio com o <strong>nome do salão</strong> como remetente
+                (ex: <span className="font-mono">"Salão da Fulana &lt;{globalEmail.fromEmail || 'contato@seudominio.com.br'}&gt;"</span>),
+                mas cada admin recebe a cópia no e-mail dele.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">E-mail remetente global</label>
+              <input
+                type="email"
+                value={globalEmail.fromEmail}
+                onChange={e => setGlobalEmail({ ...globalEmail, fromEmail: e.target.value })}
+                placeholder="contato@mariliasantoscolor.com.br"
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent"
+              />
+              <p className="text-xs text-gray-500 mt-1.5">
+                Domínio verificado no Resend. Para testes: <span className="font-mono">onboarding@resend.dev</span>.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Chave da API Resend (global)</label>
+              <div className="relative">
+                <input
+                  type="password"
+                  value={globalEmail.resendApiKey}
+                  onChange={e => setGlobalEmail({ ...globalEmail, resendApiKey: e.target.value })}
+                  placeholder="re_..."
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-28"
+                />
+                {globalEmail.resendApiKey && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
+                    ✓ Configurada
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 mt-1.5">
+                Sua conta em{' '}
+                <a href="https://resend.com" target="_blank" rel="noopener noreferrer" className="text-violet-600 hover:underline font-medium">resend.com</a>
+                {' '}· 3.000 e-mails/mês no plano free.
+              </p>
+            </div>
+
+            {globalEmail.resendApiKey && globalEmail.fromEmail ? (
+              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+                <p className="text-sm text-green-700">
+                  ✓ Configuração global ativa — todos os admins enviam e-mails usando esta conta.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-sm text-amber-700">
+                  ⚠️ Sem configuração global, <strong>nenhum admin</strong> consegue enviar e-mails.
+                  Preencha os dois campos acima.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {isSuperAdmin && <PhotoTypesManager />}
       {isSuperAdmin && <TagsManager />}

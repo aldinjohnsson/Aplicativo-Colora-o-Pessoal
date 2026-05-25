@@ -16,6 +16,36 @@ function sanitizePortalUrl(url: string): string {
   return url.replace(/^https?:\/\/localhost(:\d+)?/, siteUrl.replace(/\/$/, ''))
 }
 
+// ── Monta header "From" em formato RFC 5322 ──────────────────────────────────
+//
+// Recebe o nome do salão (admins.nome) e o endereço de e-mail global
+// (que pode vir como "email puro" ou como "Display <email>"). Retorna
+// o header completo com o NOME DO SALÃO + e-mail do super_admin, ex:
+//
+//   buildFromHeader('Salão da Fulana', 'contato@mariliasantoscolor.com.br')
+//     → 'Salão da Fulana <contato@mariliasantoscolor.com.br>'
+//
+//   buildFromHeader('', 'MS Color <noreply@x.com>')
+//     → 'MS Color <noreply@x.com>'  (fallback)
+//
+// Caracteres especiais (vírgula, ponto-e-vírgula) forçam aspas duplas
+// no display name pra não quebrar o header.
+function buildFromHeader(displayName: string, fromHeaderOrEmail: string): string {
+  const src = (fromHeaderOrEmail || '').trim()
+  if (!src) return 'MS Color <onboarding@resend.dev>'
+
+  // Extrai só o e-mail caso `src` venha como "Display <email>"
+  const match = src.match(/<([^>]+)>/)
+  const email = (match ? match[1] : src).trim()
+
+  const name = (displayName || '').replace(/[<>"]/g, '').trim()
+  if (!name) return src   // sem nome do salão → usa o header global cru
+
+  // Quote se tiver vírgula/ponto-e-vírgula/dois-pontos (RFC 5322)
+  if (/[,;:]/.test(name)) return `"${name}" <${email}>`
+  return `${name} <${email}>`
+}
+
 // ── Helper de quebra de texto ─────────────────────────────────────────────────
 function wrapText(text: string, font: any, fontSize: number, maxWidth: number): string[] {
   const lines: string[] = []
@@ -475,13 +505,65 @@ serve(async (req) => {
       .eq('admin_id', adminId)
       .maybeSingle()
 
-    const cfg          = settingsRow?.content as any
-    const RESEND_API_KEY = cfg?.resendApiKey
-    const ADMIN_EMAIL    = cfg?.adminEmail
-    const FROM_EMAIL     = cfg?.fromEmail || 'MS Color <onboarding@resend.dev>'
+    const cfg = settingsRow?.content as any
+    const ADMIN_EMAIL = cfg?.adminEmail
+
+    // ─── Config global compartilhada (super_admin) ─────────────────────────
+    //
+    // O super_admin configura UMA VEZ a chave Resend + domínio remetente
+    // (em admin_content type='global_email_settings'). Todos os admins
+    // (salões) usam essa config — eles só preenchem o `adminEmail` deles.
+    //
+    // A config própria do admin (cfg.resendApiKey / cfg.fromEmail) ainda
+    // tem precedência se existir — escape hatch pra admin legacy que já
+    // tinha configurado conta própria antes dessa mudança.
+    const { data: superAdminRow } = await supabaseClient
+      .from('admins')
+      .select('id')
+      .eq('role', 'super_admin')
+      .limit(1)
+      .maybeSingle()
+
+    let globalResendKey: string | null = null
+    let globalFromEmail: string | null = null
+
+    if (superAdminRow?.id) {
+      const { data: globalRow } = await supabaseClient
+        .from('admin_content')
+        .select('content')
+        .eq('admin_id', superAdminRow.id)
+        .eq('type', 'global_email_settings')
+        .maybeSingle()
+
+      const globalCfg = globalRow?.content as any
+      globalResendKey = globalCfg?.resendApiKey || null
+      globalFromEmail = globalCfg?.fromEmail || null
+    }
+
+    // Nome de exibição do remetente — cada usuário (admin OU super_admin) define o
+    // próprio no settings. Fallback pra admins.nome (nome dado pelo super_admin ao
+    // criar o admin) se o usuário ainda não preencheu o campo personalizado.
+    //
+    // A cliente vê: "<emailDisplayName> <contato@mariliasantoscolor.com.br>"
+    // Ex: "Marília Color <contato@...>" ou "Salão da Fulana <contato@...>".
+    let adminDisplayName = (cfg?.emailDisplayName || '').trim()
+
+    if (!adminDisplayName) {
+      const { data: thisAdminRow } = await supabaseClient
+        .from('admins')
+        .select('nome')
+        .eq('id', adminId)
+        .maybeSingle()
+      adminDisplayName = (thisAdminRow?.nome || '').trim()
+    }
+
+    // Fallback chain: config própria do admin > config global do super_admin
+    const RESEND_API_KEY = cfg?.resendApiKey || globalResendKey
+    const FROM_EMAIL_BASE = cfg?.fromEmail || globalFromEmail || 'MS Color <onboarding@resend.dev>'
+    const FROM_EMAIL = buildFromHeader(adminDisplayName, FROM_EMAIL_BASE)
 
     if (!RESEND_API_KEY || !ADMIN_EMAIL) {
-      console.warn(`[${emailType}] E-mail nao configurado para admin ${adminId}. Pulando envio.`)
+      console.warn(`[${emailType}] E-mail nao configurado para admin ${adminId}. Pulando envio. (resendKey=${!!RESEND_API_KEY}, adminEmail=${!!ADMIN_EMAIL})`)
       return jsonResponse({ skipped: true })
     }
 
