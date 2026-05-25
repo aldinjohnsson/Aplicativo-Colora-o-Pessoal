@@ -518,7 +518,7 @@ serve(async (req) => {
     // tem precedência se existir — escape hatch pra admin legacy que já
     // tinha configurado conta própria antes dessa mudança.
     const { data: superAdminRow } = await supabaseClient
-      .from('admins')
+      .from('admin_users')
       .select('id')
       .eq('role', 'super_admin')
       .limit(1)
@@ -550,7 +550,7 @@ serve(async (req) => {
 
     if (!adminDisplayName) {
       const { data: thisAdminRow } = await supabaseClient
-        .from('admins')
+        .from('admin_users')
         .select('nome')
         .eq('id', adminId)
         .maybeSingle()

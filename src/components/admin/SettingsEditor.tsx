@@ -884,7 +884,7 @@ export default function SettingsEditor() {
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
         const { data: meRow } = await supabase
-          .from('admins')
+          .from('admin_users')
           .select('role')
           .eq('id', user.id)
           .maybeSingle()
