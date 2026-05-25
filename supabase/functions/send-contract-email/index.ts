@@ -557,9 +557,11 @@ serve(async (req) => {
       adminDisplayName = (thisAdminRow?.nome || '').trim()
     }
 
-    // Fallback chain: config própria do admin > config global do super_admin
-    const RESEND_API_KEY = cfg?.resendApiKey || globalResendKey
-    const FROM_EMAIL_BASE = cfg?.fromEmail || globalFromEmail || 'MS Color <onboarding@resend.dev>'
+    // Sempre usa a config GLOBAL do super_admin — sem escape hatch.
+    // (A UI já esconde os campos resendApiKey/fromEmail no settings do admin,
+    // mas valores legacy do banco poderiam interferir se respeitássemos `cfg`.)
+    const RESEND_API_KEY = globalResendKey
+    const FROM_EMAIL_BASE = globalFromEmail || 'MS Color <onboarding@resend.dev>'
     const FROM_EMAIL = buildFromHeader(adminDisplayName, FROM_EMAIL_BASE)
 
     if (!RESEND_API_KEY || !ADMIN_EMAIL) {
