@@ -115,6 +115,47 @@ interface ContrastData {
   label: string
 }
 
+// ── LocalStorage: persistência da geração IA ──────────────────────────
+//
+// Salva qualquer alteração feita pelo admin (prompt, foto, subtom, contraste,
+// páginas geradas, compositionId) pra que reload/navegação não perca o
+// trabalho. Duas chaves separadas: "config" (sempre cabe) e "workspace"
+// (pode ficar grande com imagens base64; se estourar quota, só ele falha
+// — a config sobrevive).
+
+const STANDALONE_AI_STORAGE_V = 2
+
+const standaloneAiStorageKeys = (adminId: string) => ({
+  config:    `standalone_ai_generation_${adminId}_config_v${STANDALONE_AI_STORAGE_V}`,
+  workspace: `standalone_ai_generation_${adminId}_workspace_v${STANDALONE_AI_STORAGE_V}`,
+})
+
+interface PersistedConfig {
+  selectedPromptId:  string
+  photoBase64:       string | null
+  photoMime:         string
+  aiInfoValues:      Record<string, string>
+  contrastData:      ContrastData | null
+  contrastFormatted: string
+}
+
+interface PersistedWorkspace {
+  pages:         CompositionPage[]
+  compositionId: string
+}
+
+function safeGetItem(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+
+function safeSetItem(key: string, value: string): boolean {
+  try { localStorage.setItem(key, value); return true } catch { return false }
+}
+
+function safeRemoveItem(key: string) {
+  try { localStorage.removeItem(key) } catch {}
+}
+
 // ── Canvas helpers (espelho do ContrastLayoutDialog) ──────────────────
 
 const CW = 1340, CH = 950
@@ -472,6 +513,129 @@ export function StandaloneAiGenerationPage() {
       )
     } catch { /* silencioso — templates são opcionais */ }
   }
+
+  // ── LocalStorage: restauração ─────────────────────────────────────
+  //
+  // Dispara quando adminId fica disponível. Lê config + workspace
+  // do localStorage e repopula o estado. Blob URLs (photoPreview,
+  // photoPreviewUrl, generatedImageUrl que veio de blob) são
+  // regeneradas como data URLs a partir dos respectivos base64.
+  //
+  // Páginas que estavam em 'generating' no momento do reload são
+  // resetadas pra 'pending' — não dá pra retomar uma chamada HTTP
+  // que estava em vôo.
+  //
+  // `restored` é state (não ref) de propósito: ao virar true ele
+  // dispara mais um render, e só DEPOIS desse render os effects
+  // de persistência veem os valores restaurados — evitando que
+  // eles sobrescrevam o localStorage com os valores iniciais
+  // vazios na mesma passada em que o restore acontece.
+
+  const [restored, setRestored] = useState(false)
+
+  useEffect(() => {
+    if (!adminId || restored) return
+
+    const keys = standaloneAiStorageKeys(adminId)
+
+    // ─ Config ─
+    const rawCfg = safeGetItem(keys.config)
+    if (rawCfg) {
+      try {
+        const cfg = JSON.parse(rawCfg) as PersistedConfig
+        if (cfg.selectedPromptId)  setSelectedPromptId(cfg.selectedPromptId)
+        if (cfg.photoBase64) {
+          const mime = cfg.photoMime || 'image/jpeg'
+          setPhotoBase64(cfg.photoBase64)
+          setPhotoMime(mime)
+          setPhotoPreview(`data:${mime};base64,${cfg.photoBase64}`)
+        }
+        if (cfg.aiInfoValues)      setAiInfoValues(cfg.aiInfoValues)
+        if (cfg.contrastData)      setContrastData(cfg.contrastData)
+        if (cfg.contrastFormatted) setContrastFormatted(cfg.contrastFormatted)
+      } catch {
+        safeRemoveItem(keys.config)   // payload corrompido — descarta
+      }
+    }
+
+    // ─ Workspace (pages + compositionId) ─
+    const rawWs = safeGetItem(keys.workspace)
+    if (rawWs) {
+      try {
+        const ws = JSON.parse(rawWs) as PersistedWorkspace
+        if (ws.compositionId) {
+          compositionIdRef.current = ws.compositionId
+        }
+        if (Array.isArray(ws.pages) && ws.pages.length > 0) {
+          const restoredPages: CompositionPage[] = ws.pages.map(p => ({
+            ...p,
+            // Blob URL morre no reload — regenera do base64
+            photoPreviewUrl: p.uploadedPhotoBase64
+              ? `data:${p.uploadedPhotoMime || 'image/jpeg'};base64,${p.uploadedPhotoBase64}`
+              : (p.photoPreviewUrl || ''),
+            // Mesmo tratamento pra imagem gerada (se ainda temos o base64)
+            generatedImageUrl: p.generatedImageBase64
+              ? `data:${p.generatedImageMime || 'image/png'};base64,${p.generatedImageBase64}`
+              : p.generatedImageUrl,
+            // Geração que ficou no ar volta a pendente
+            status: p.status === 'generating' ? 'pending' : p.status,
+          }))
+          setPages(restoredPages)
+        }
+      } catch {
+        safeRemoveItem(keys.workspace)
+      }
+    }
+
+    setRestored(true)
+  }, [adminId, restored])
+
+  // ── LocalStorage: persistência da CONFIG ──────────────────────────
+  // Salva sempre que qualquer campo de configuração muda.
+
+  useEffect(() => {
+    if (!adminId || !restored) return
+    const payload: PersistedConfig = {
+      selectedPromptId,
+      photoBase64,
+      photoMime,
+      aiInfoValues,
+      contrastData,
+      contrastFormatted,
+    }
+    safeSetItem(
+      standaloneAiStorageKeys(adminId).config,
+      JSON.stringify(payload),
+    )
+  }, [
+    adminId,
+    restored,
+    selectedPromptId,
+    photoBase64,
+    photoMime,
+    aiInfoValues,
+    contrastData,
+    contrastFormatted,
+  ])
+
+  // ── LocalStorage: persistência do WORKSPACE ───────────────────────
+  // Salva páginas + compositionId. Pode estourar quota se houver
+  // muitas imagens em base64 — nesse caso o set silenciosamente falha
+  // e o estado em memória continua válido pela sessão atual.
+
+  useEffect(() => {
+    if (!adminId || !restored) return
+    const key = standaloneAiStorageKeys(adminId).workspace
+    if (pages.length === 0) {
+      safeRemoveItem(key)
+      return
+    }
+    const payload: PersistedWorkspace = {
+      pages,
+      compositionId: compositionIdRef.current,
+    }
+    safeSetItem(key, JSON.stringify(payload))
+  }, [adminId, restored, pages])
 
   // ── Upload de foto ────────────────────────────────────────────────
 

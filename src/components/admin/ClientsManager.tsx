@@ -2512,160 +2512,252 @@ function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
     return String(value)
   }
 
-  const fetchBase64 = async (url: string): Promise<string | null> => {
-    try {
-      const resp = await fetch(url)
-      const blob = await resp.blob()
-      return await new Promise((res, rej) => {
-        const reader = new FileReader()
-        reader.onload = () => res(reader.result as string)
-        reader.onerror = rej
-        reader.readAsDataURL(blob)
-      })
-    } catch { return null }
+  // Tenta extrair o file ID de uma URL do Google Drive (qualquer formato comum).
+  const extractDriveFileId = (url: string): string | null => {
+    // drive.google.com/thumbnail?id=XXX  |  drive.google.com/uc?...&id=XXX
+    const q = url.match(/[?&]id=([^&]+)/)
+    if (q) return q[1]
+    // drive.google.com/file/d/XXX/... | /folders/XXX
+    const p = url.match(/\/(?:file\/d|folders)\/([^/?#]+)/)
+    if (p) return p[1]
+    return null
   }
 
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((res, rej) => {
+      const reader = new FileReader()
+      reader.onload = () => res(reader.result as string)
+      reader.onerror = rej
+      reader.readAsDataURL(blob)
+    })
+
+  // Detecta HEIC/HEIF inspecionando os primeiros bytes (caixa ISOBMFF 'ftyp').
+  // Funciona mesmo quando a URL não tem extensão (caso típico das thumbs do Drive).
+  const detectHeicFromBytes = async (blob: Blob): Promise<boolean> => {
+    try {
+      const buf = await blob.slice(0, 12).arrayBuffer()
+      const b = new Uint8Array(buf)
+      if (b.length < 12) return false
+      // bytes 4..7 = 'ftyp'
+      if (b[4] !== 0x66 || b[5] !== 0x74 || b[6] !== 0x79 || b[7] !== 0x70) return false
+      const brand = String.fromCharCode(b[8], b[9], b[10], b[11])
+      return ['heic', 'heix', 'heim', 'heis', 'mif1', 'msf1', 'hevc', 'hevx'].includes(brand)
+    } catch { return false }
+  }
+
+  // Converte qualquer Blob (incluindo HEIC) em data:URL de imagem que o jsPDF
+  // consegue embutir. HEIC → JPEG via heic2any; demais formatos passam direto.
+  const blobToPdfImageBase64 = async (blob: Blob): Promise<string | null> => {
+    try {
+      if (await detectHeicFromBytes(blob)) {
+        const heic2any = (await import('heic2any')).default
+        const result = await heic2any({ blob, toType: 'image/jpeg', quality: 0.85 })
+        const converted = (Array.isArray(result) ? result[0] : result) as Blob
+        return await blobToBase64(converted)
+      }
+      return await blobToBase64(blob)
+    } catch (e) {
+      console.warn('[PDF] Falha ao preparar imagem:', e)
+      return null
+    }
+  }
+
+  // Busca uma imagem como base64 pronto pra embutir no PDF.
+  //
+  // O fetch direto em URLs do Drive (drive.google.com/thumbnail?...) falha por
+  // CORS no browser, e era esse o motivo do PDF antigo sair sem as imagens.
+  // Solução: quando a URL aponta pro Drive, baixamos via proxy `/photo-proxy`
+  // da Edge Function, que vem com CORS liberado. Pra URLs blob:/data:/outras,
+  // usamos fetch direto. Em ambos os casos, detectamos HEIC pelos bytes e
+  // convertemos pra JPEG antes de devolver — jsPDF não embute HEIC.
+  const fetchBase64 = async (url: string): Promise<string | null> => {
+    try {
+      let blob: Blob
+      const driveId = extractDriveFileId(url)
+      if (driveId) {
+        blob = await driveStorage.fetchPhotoBlob(driveId)
+      } else {
+        const resp = await fetch(url)
+        if (!resp.ok) return null
+        blob = await resp.blob()
+      }
+      return await blobToPdfImageBase64(blob)
+    } catch (e) {
+      console.warn('[PDF] fetchBase64 falhou para', url, e)
+      return null
+    }
+  }
+
+  // ─── PDF builder (pure) ──────────────────────────────────────────────────
+  //
+  // Monta o blob do PDF sem qualquer side-effect (não baixa, não envia pro
+  // Drive). É usado tanto pelo botão de download quanto pelo auto-upload na
+  // abertura do modal, garantindo que o arquivo é exatamente o mesmo.
+  //
+  // Layout — combina com o exemplo desejado pela usuária:
+  //   1. Cabeçalho: data + título "Coloração Pessoal Online" + "Formulário"
+  //   2. Para cada pergunta:
+  //       • Nome da pergunta em negrito
+  //       • Imagens renderizadas LARGAS, logo abaixo do enunciado
+  //       • Respostas de texto em parágrafo abaixo do enunciado
+  const buildFormPDFBlob = async (): Promise<Blob> => {
+    const { default: jsPDF } = await import('jspdf')
+    const pdf = new jsPDF()
+    const pageW = pdf.internal.pageSize.width
+    const pageH = pdf.internal.pageSize.height
+    const margin = 20
+    const maxW = pageW - margin * 2
+    let y = 20
+
+    const checkPage = (space = 20) => {
+      if (y + space > pageH - margin) { pdf.addPage(); y = margin }
+    }
+    const hline = () => {
+      pdf.setDrawColor(220, 220, 220)
+      pdf.line(margin, y, pageW - margin, y)
+      y += 6
+    }
+
+    // Cabeçalho
+    pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(130, 130, 130)
+    const dateStr = formSubmission?.submitted_at
+      ? new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+      : ''
+    pdf.text(dateStr, pageW - margin - pdf.getTextWidth(dateStr), y); y += 10
+
+    pdf.setFontSize(18); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(0, 0, 0)
+    pdf.text('Coloração Pessoal Online', margin, y); y += 8
+    pdf.setFontSize(12); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(80, 80, 80)
+    pdf.text('Formulário', margin, y); y += 10
+    hline()
+
+    // Campos ordenados (mesma lógica usada na renderização da tela)
+    const ordered: [string, any][] = (() => {
+      const result: [string, any][] = []
+      const handled = new Set<string>()
+      for (const f of fields as any[]) {
+        if (formData[f.id] !== undefined) {
+          result.push([f.id, formData[f.id]])
+          handled.add(f.id)
+        }
+        const obsKey = Object.keys(formData).find(k => k.toLowerCase() === `${f.id}__obs`)
+        if (obsKey && formData[obsKey] !== undefined) {
+          result.push([obsKey, formData[obsKey]])
+          handled.add(obsKey)
+        }
+      }
+      Object.keys(formData).filter(k => !handled.has(k)).forEach(k => result.push([k, formData[k]]))
+      return result
+    })()
+
+    for (let i = 0; i < ordered.length; i++) {
+      const [key, value] = ordered[i]
+      const field = fieldMap[key]
+      const label = (() => {
+        if (field) return field.label
+        if (key.toLowerCase().endsWith('__obs')) {
+          const parentId = key.replace(/__obs$/i, '')
+          const parentField = fieldMap[parentId]
+          return parentField?.conditionalLabel || 'Observação'
+        }
+        return key
+      })()
+      const imgUrls = getImageUrls(value)
+      const isImg = field?.type === 'image' || imgUrls.length > 0
+
+      checkPage(30)
+
+      // Pergunta em negrito — texto escuro pra dar mais legibilidade
+      pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(20, 20, 20)
+      const qLines = pdf.splitTextToSize(`${i + 1}. ${label}`, maxW)
+      qLines.forEach((line: string) => { checkPage(); pdf.text(line, margin, y); y += 6 })
+      y += 3
+
+      if (isImg) {
+        if (imgUrls.length === 0) {
+          pdf.setFontSize(10); pdf.setFont('helvetica', 'italic'); pdf.setTextColor(160, 160, 160)
+          pdf.text('(Nenhuma imagem enviada)', margin + 5, y); y += 8
+        } else {
+          // Imagens em LARGURA TOTAL, uma por linha — formato que a usuária pediu.
+          // Cada imagem é alta o suficiente pra ler detalhes (rosto, cabelo, etc).
+          // Limite de altura: 70% da página, pra evitar imagens gigantescas que
+          // estouram a página.
+          const maxImgH = pageH * 0.7
+          for (const url of imgUrls) {
+            const b64 = await fetchBase64(url)
+            if (!b64) {
+              pdf.setFontSize(9); pdf.setFont('helvetica', 'italic'); pdf.setTextColor(180, 100, 100)
+              pdf.text('(Imagem não pôde ser carregada)', margin + 5, y); y += 6
+              continue
+            }
+            try {
+              const props = pdf.getImageProperties(b64)
+              const ratio = props.width / props.height
+              // Caber em largura E altura
+              let drawW = maxW
+              let drawH = drawW / ratio
+              if (drawH > maxImgH) {
+                drawH = maxImgH
+                drawW = drawH * ratio
+              }
+              // Se a imagem não cabe no espaço restante da página, vai pra próxima
+              if (y + drawH + 10 > pageH - margin) { pdf.addPage(); y = margin }
+              // Detecta formato pelo prefixo do data URL pra evitar warnings do jsPDF
+              const fmt = b64.startsWith('data:image/png') ? 'PNG'
+                       : b64.startsWith('data:image/webp') ? 'WEBP'
+                       : 'JPEG'
+              pdf.addImage(b64, fmt, margin, y, drawW, drawH)
+              y += drawH + 8
+            } catch (e) {
+              console.warn('[PDF] addImage falhou:', e)
+            }
+          }
+        }
+      } else {
+        pdf.setFontSize(10); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(60, 60, 60)
+        const lines = pdf.splitTextToSize(getTextValue(value), maxW - 10)
+        lines.forEach((line: string) => { checkPage(); pdf.text(line, margin + 5, y); y += 6 })
+        y += 4
+      }
+
+      if (i < ordered.length - 1) {
+        pdf.setDrawColor(235, 235, 235)
+        pdf.line(margin, y, pageW - margin, y)
+        y += 8
+      }
+    }
+
+    // Rodapé em todas as páginas
+    const total = (pdf as any).internal.pages.length - 1
+    for (let p = 1; p <= total; p++) {
+      pdf.setPage(p)
+      pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(160, 160, 160)
+      const pg = `Página ${p} de ${total}`
+      pdf.text(pg, pageW - margin - pdf.getTextWidth(pg), pageH - 10)
+    }
+
+    return pdf.output('blob')
+  }
+
+  // ─── Botão "PDF" do header — só baixa local, NÃO envia pro Drive ─────────
+  //
+  // Antes este handler também subia o PDF pro Drive com kind='admin_photo',
+  // o que (a) criava uma entrada de foto vinculada à cliente e (b) duplicava
+  // o arquivo toda vez que o admin clicasse. Agora ele só baixa local.
+  // O upload pro Drive acontece automaticamente no useEffect logo abaixo,
+  // uma única vez por abertura do modal.
   const handleDownloadPDF = async () => {
     setGeneratingPDF(true)
     try {
-      const { default: jsPDF } = await import('jspdf')
-      const pdf = new jsPDF()
-      const pageW = pdf.internal.pageSize.width
-      const pageH = pdf.internal.pageSize.height
-      const margin = 20
-      const maxW = pageW - margin * 2
-      let y = 20
-
-      const checkPage = (space = 20) => {
-        if (y + space > pageH - margin) { pdf.addPage(); y = margin }
-      }
-      const hline = () => {
-        pdf.setDrawColor(220, 220, 220)
-        pdf.line(margin, y, pageW - margin, y)
-        y += 6
-      }
-
-      // Cabeçalho
-      pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(130, 130, 130)
-      const dateStr = formSubmission?.submitted_at
-        ? new Date(formSubmission.submitted_at).toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-        : ''
-      pdf.text(dateStr, pageW - margin - pdf.getTextWidth(dateStr), y); y += 10
-
-      pdf.setFontSize(18); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(0, 0, 0)
-      pdf.text('Coloração Pessoal Online', margin, y); y += 8
-      pdf.setFontSize(12); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(80, 80, 80)
-      pdf.text('Formulário', margin, y); y += 10
-      hline()
-
-      // Campos ordenados
-      const ordered: [string, any][] = (() => {
-        const result: [string, any][] = []
-        const handled = new Set<string>()
-        for (const f of fields as any[]) {
-          if (formData[f.id] !== undefined) {
-            result.push([f.id, formData[f.id]])
-            handled.add(f.id)
-          }
-          const obsKey = Object.keys(formData).find(k => k.toLowerCase() === `${f.id}__obs`)
-          if (obsKey && formData[obsKey] !== undefined) {
-            result.push([obsKey, formData[obsKey]])
-            handled.add(obsKey)
-          }
-        }
-        Object.keys(formData).filter(k => !handled.has(k)).forEach(k => result.push([k, formData[k]]))
-        return result
-      })()
-
-      for (let i = 0; i < ordered.length; i++) {
-        const [key, value] = ordered[i]
-        const field = fieldMap[key]
-        const label = (() => {
-          if (field) return field.label
-          if (key.toLowerCase().endsWith('__obs')) {
-            const parentId = key.replace(/__obs$/i, '')
-            const parentField = fieldMap[parentId]
-            return parentField?.conditionalLabel || 'Observação'
-          }
-          return key
-        })()
-        const imgUrls = getImageUrls(value)
-        const isImg = field?.type === 'image' || imgUrls.length > 0
-
-        checkPage(30)
-
-        // Pergunta em bold azul-escuro
-        pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(30, 40, 80)
-        const qLines = pdf.splitTextToSize(`${i + 1}. ${label}`, maxW)
-        qLines.forEach((line: string) => { checkPage(); pdf.text(line, margin, y); y += 6 })
-        y += 2
-
-        if (isImg) {
-          if (imgUrls.length === 0) {
-            pdf.setFontSize(10); pdf.setFont('helvetica', 'italic'); pdf.setTextColor(160, 160, 160)
-            pdf.text('(Nenhuma imagem)', margin + 5, y); y += 8
-          } else {
-            for (const url of imgUrls) {
-              const b64 = await fetchBase64(url)
-              if (!b64) continue
-              try {
-                const props = pdf.getImageProperties(b64)
-                const ratio = props.width / props.height
-                const drawW = maxW
-                const drawH = drawW / ratio
-                checkPage(drawH + 10)
-                pdf.addImage(b64, 'JPEG', margin, y, drawW, drawH)
-                y += drawH + 8
-              } catch { /* imagem inválida */ }
-            }
-          }
-        } else {
-          pdf.setFontSize(10); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(60, 60, 60)
-          const lines = pdf.splitTextToSize(getTextValue(value), maxW - 10)
-          lines.forEach((line: string) => { checkPage(); pdf.text(line, margin + 5, y); y += 6 })
-          y += 4
-        }
-
-        if (i < ordered.length - 1) {
-          pdf.setDrawColor(235, 235, 235)
-          pdf.line(margin, y, pageW - margin, y)
-          y += 8
-        }
-      }
-
-      // Rodapé
-      const total = (pdf as any).internal.pages.length - 1
-      for (let p = 1; p <= total; p++) {
-        pdf.setPage(p)
-        pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(160, 160, 160)
-        const pg = `Página ${p} de ${total}`
-        pdf.text(pg, pageW - margin - pdf.getTextWidth(pg), pageH - 10)
-      }
-
-      // Download local
-      pdf.save('Formulario.pdf')
-
-      // Upload para o Drive na subpasta "Formulário"
-      try {
-        const pdfBlob = pdf.output('blob')
-        const pdfFile = new File([pdfBlob], 'Formulario.pdf', { type: 'application/pdf' })
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session && clientId) {
-          const form = new FormData()
-          form.append('kind', 'admin_photo')
-          form.append('client_id', clientId)
-          form.append('subfolder', 'Formulário')
-          form.append('file', pdfFile)
-          await fetch(`${(supabase as any).supabaseUrl}/functions/v1/drive/upload`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${session.access_token}` },
-            body: form,
-          })
-        }
-      } catch (uploadErr) {
-        // Falha silenciosa: o download local já foi feito com sucesso
-        console.warn('PDF gerado localmente, mas não foi possível enviar ao Drive:', uploadErr)
-      }
+      const blob = await buildFormPDFBlob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'Formulario.pdf'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Erro ao gerar PDF:', err)
       alert('Erro ao gerar PDF. Tente novamente.')
@@ -2673,6 +2765,59 @@ function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
       setGeneratingPDF(false)
     }
   }
+
+  // ─── Auto-upload do PDF pro Drive ─────────────────────────────────────────
+  //
+  // Quando o modal abre, geramos o PDF e enviamos pra subpasta "Formulário"
+  // dentro da pasta da cliente, junto das fotos do formulário. O ideal seria
+  // disparar isso no momento em que a cliente envia o formulário (lado do
+  // cliente / Edge Function), mas como stop-gap fazemos aqui na primeira vez
+  // que o admin abre o modal.
+  //
+  // Importante: usamos kind='form_pdf' (em vez de 'admin_photo'), pra que a
+  // Edge Function envie só pro Drive SEM criar entrada em client_photos —
+  // assim o PDF não aparece "vinculado às fotos" da cliente. Veja a nota no
+  // final do arquivo sobre a alteração necessária na Edge Function.
+  const driveUploadedRef = useRef(false)
+  useEffect(() => {
+    if (driveUploadedRef.current) return
+    if (!clientId || !formSubmission?.id) return
+    driveUploadedRef.current = true
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const blob = await buildFormPDFBlob()
+        if (cancelled) return
+        const file = new File([blob], 'Formulario.pdf', { type: 'application/pdf' })
+
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+
+        const fd = new FormData()
+        fd.append('kind', 'form_pdf')          // ⚠ requer suporte na Edge Function
+        fd.append('client_id', clientId)
+        fd.append('subfolder', 'Formulário')
+        fd.append('file', file)
+
+        const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/drive/upload`
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          body: fd,
+        })
+        if (!res.ok) {
+          console.warn('[PDF] Upload silencioso falhou:', res.status, await res.text().catch(() => ''))
+        }
+      } catch (e) {
+        // Falha silenciosa: o admin ainda pode baixar pelo botão.
+        console.warn('[PDF] Auto-upload pro Drive falhou:', e)
+      }
+    })()
+
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, formSubmission?.id])
 
   const orderedEntries: [string, any][] = (() => {
     const result: [string, any][] = []

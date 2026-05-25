@@ -23,6 +23,13 @@ import { supabase } from '../../lib/supabase'
 import { adminService } from '../../lib/services'
 import { GeminiChat } from '../client/GeminiChat'
 
+// ─── Storage keys ──────────────────────────────────────────────────────
+
+// Pasta selecionada é salva por admin pra não conflitar quando mais de uma
+// conta usa o mesmo navegador.
+const selectedFolderStorageKey = (adminId: string) =>
+  `ms_color_ia_selected_folder_${adminId}`
+
 // ─── Types ─────────────────────────────────────────────────────────────
 
 interface FolderOption {
@@ -70,6 +77,21 @@ export function MsColorIAPage() {
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
   }, [folderDropdownOpen])
+
+  // Persiste a pasta selecionada no localStorage sempre que mudar.
+  // Assim qualquer alteração feita pelo admin (troca de pasta no dropdown)
+  // sobrevive a reloads, navegação e fechamento do navegador.
+  useEffect(() => {
+    if (state.kind !== 'ready' || !selectedFolderId) return
+    try {
+      localStorage.setItem(
+        selectedFolderStorageKey(state.data.adminId),
+        selectedFolderId,
+      )
+    } catch {
+      // localStorage indisponível — silencia (UX continua, só não persiste)
+    }
+  }, [selectedFolderId, state])
 
   // ─── Load ─────────────────────────────────────────────────────────
 
@@ -140,8 +162,18 @@ export function MsColorIAPage() {
         },
       })
 
-      // Pré-seleciona a primeira pasta
-      setSelectedFolderId(folders[0].id)
+      // Restaura a pasta da última sessão (se ainda existir),
+      // senão pré-seleciona a primeira.
+      let initialFolderId = folders[0].id
+      try {
+        const saved = localStorage.getItem(selectedFolderStorageKey(admin.id))
+        if (saved && folders.some(f => f.id === saved)) {
+          initialFolderId = saved
+        }
+      } catch {
+        // localStorage indisponível (modo privado etc) — usa a primeira
+      }
+      setSelectedFolderId(initialFolderId)
 
     } catch (e: any) {
       console.error('[MsColorIAPage] load failed:', e)

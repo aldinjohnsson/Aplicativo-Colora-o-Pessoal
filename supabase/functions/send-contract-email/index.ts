@@ -198,13 +198,15 @@ async function generateContractPDF(
   })
   y -= 20
 
-  // Data e hora com segundos
+  // Data e hora com segundos (timezone Brasil — servidor roda em UTC)
   const signDate    = new Date(signedAt)
   const dateStr     = signDate.toLocaleDateString('pt-BR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
+    timeZone: 'America/Sao_Paulo',
   })
   const timeStr     = signDate.toLocaleTimeString('pt-BR', {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZone: 'America/Sao_Paulo',
   })
   const datetimeStr = `${dateStr} às ${timeStr}`
 
@@ -631,6 +633,7 @@ serve(async (req) => {
       const formattedDate = new Date(signedAt).toLocaleString('pt-BR', {
         day: '2-digit', month: 'long', year: 'numeric',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZone: 'America/Sao_Paulo',
       })
 
       const title = contractTitle ?? 'CONTRATO DE PRESTACAO DE SERVICOS'
@@ -726,6 +729,7 @@ serve(async (req) => {
       const formattedDeadline = deadlineDate
         ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', {
             weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+            timeZone: 'America/Sao_Paulo',
           })
         : ''
 
@@ -867,6 +871,7 @@ serve(async (req) => {
       const formattedDeadline = deadlineDate
         ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', {
             weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+            timeZone: 'America/Sao_Paulo',
           })
         : ''
 
