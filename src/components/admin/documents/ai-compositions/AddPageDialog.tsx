@@ -18,7 +18,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   X, Sparkles, Check, AlertCircle, Image as ImageIcon,
-  ChevronDown, ChevronUp, Layers, FolderOpen, ChevronLeft,
+  FolderOpen, ChevronLeft,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { substitutePromptVars, type PromptVarSource } from '../lib/promptVars'
@@ -104,7 +104,6 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   const [loadingPrompts, setLoadingPrompts]     = useState(true)
   const [promptsError, setPromptsError]         = useState<string | null>(null)
   const [selectedPromptId, setSelectedPromptId] = useState<string>('')
-  const [promptOpen, setPromptOpen]             = useState(false)
 
   // ── Foto base ──
   // photoStep: 'category' = escolher categoria primeiro; 'photos' = escolher foto
@@ -164,7 +163,6 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
     return () => { cancelled = true }
   }, [clientId])
 
-  useEffect(() => { setPromptOpen(false) }, [selectedPromptId])
 
   // ── Derived ──
   const selectedPrompt = prompts.find(p => p.id === selectedPromptId) || null
@@ -289,59 +287,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
                   })}
                 </select>
 
-                {/* Preview das partes + info de referência */}
-                {selectedPrompt && (
-                  <div className="mt-2 border border-fuchsia-200 bg-fuchsia-50/40 rounded-xl overflow-hidden">
-                    {/* Sumário */}
-                    <button
-                      type="button"
-                      onClick={() => setPromptOpen(o => !o)}
-                      className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-fuchsia-100/40 transition-colors"
-                    >
-                      <Layers className="h-3.5 w-3.5 text-fuchsia-500 flex-shrink-0" />
-                      <span className="text-[11px] uppercase tracking-wider font-semibold text-fuchsia-700">
-                        {selectedPrompt.parts.length} parte{selectedPrompt.parts.length !== 1 ? 's' : ''} — {selectedPrompt.parts.length} imagem{selectedPrompt.parts.length !== 1 ? 's' : ''} serão geradas
-                      </span>
-                      {selectedPrompt.reference_image_url && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold ml-auto">
-                          + ref. complementar
-                        </span>
-                      )}
-                      {promptOpen
-                        ? <ChevronUp className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                        : <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />}
-                    </button>
 
-                    {/* Detalhes das partes */}
-                    {promptOpen && (
-                      <div className="border-t border-fuchsia-200 bg-white divide-y divide-gray-100">
-                        {/* Imagem de referência (se houver) */}
-                        {selectedPrompt.reference_image_url && (
-                          <div className="px-3 py-2 flex items-center gap-2">
-                            <img
-                              src={selectedPrompt.reference_image_url}
-                              alt="Referência"
-                              className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-blue-200"
-                            />
-                            <p className="text-[11px] text-blue-700 font-medium">
-                              Imagem de referência complementar — enviada junto com todas as partes
-                            </p>
-                          </div>
-                        )}
-                        {selectedPrompt.parts.map((part, idx) => (
-                          <div key={part.id} className="px-3 py-2">
-                            <p className="text-[11px] font-bold text-fuchsia-700 mb-0.5">
-                              {idx + 1}. {part.label}
-                            </p>
-                            <p className="text-[11px] text-gray-600 font-mono line-clamp-2 whitespace-pre-wrap break-words">
-                              {part.prompt}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
               </>
             )}
           </div>

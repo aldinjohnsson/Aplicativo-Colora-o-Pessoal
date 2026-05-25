@@ -127,7 +127,7 @@ export function DriveConnectionSection() {
                 <div className="space-y-2.5">
                   {[
                     { n: 1, text: 'Crie uma pasta no Google Drive onde as fotos das clientes serão salvas (ex: "Clientes Coloração")' },
-                    { n: 2, text: 'Abra essa pasta no Drive — a URL vai ficar assim:' },
+                    { n: 2, text: 'Abra essa pasta no Drive, a URL vai ficar assim:' },
                     { n: 3, text: 'Copie o ID que aparece depois de /folders/ e cole no campo abaixo' },
                   ].map(step => (
                     <div key={step.n} className="flex gap-3 items-start">

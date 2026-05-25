@@ -3538,6 +3538,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [approvingPhotos, setApprovingPhotos] = useState(false)
   const [showRejection, setShowRejection] = useState(false)
   const [rejectingPhotos, setRejectingPhotos] = useState(false)
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
   const [approvingAiPhoto, setApprovingAiPhoto] = useState(false)
   const [showAiPhotoRejectionModal, setShowAiPhotoRejectionModal] = useState(false)
   const [rejectingAiPhoto, setRejectingAiPhoto] = useState(false)
@@ -3596,12 +3597,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     // o conteúdo ao final — evita pisca-pisca quando outras abas chamam load().
     const initialLoad = data === null
     if (initialLoad) setLoading(true)
-    const [detail, foldersRes, templatesRes] = await Promise.all([
+    const [detail, foldersRes, templatesRes, adminRes] = await Promise.all([
       adminService.getClientDetail(clientId),
       supabase.from('ai_folders').select('id, name, config').order('name'),
       supabase.from('ai_info_templates').select('id, name, type, options').order('sort_order'),
+      adminService.getCurrentAdmin(),
     ])
     setData(detail)
+    setIsSuperAdmin(adminRes?.role === 'super_admin')
     setNotes(detail.client.notes || '')
     if (detail.result) setResultForm({ observations: detail.result.observations || '' })
     if (detail.result) setChatEnabled(detail.result.chat_enabled ?? false)
@@ -4540,26 +4543,28 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           {tab === 'documents' && (
             <div className="space-y-4">
               {/* Sub-abas */}
-              <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: t.surface2 }}>
-                {[
-                  { id: 'docs',         label: 'Documentos' },
-                  { id: 'compositions', label: '✨ Geração por IA' },
-                ].map(({ id, label }) => (
-                  <button
-                    key={id}
-                    onClick={() => setDocsSubTab(id as any)}
-                    className="px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors"
-                    style={docsSubTab === id
-                      ? { background: t.surface, color: t.text, boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }
-                      : { background: 'transparent', color: t.text3 }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {isSuperAdmin && (
+                <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: t.surface2 }}>
+                  {[
+                    { id: 'docs',         label: 'Documentos' },
+                    { id: 'compositions', label: '✨ Geração por IA' },
+                  ].map(({ id, label }) => (
+                    <button
+                      key={id}
+                      onClick={() => setDocsSubTab(id as any)}
+                      className="px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors"
+                      style={docsSubTab === id
+                        ? { background: t.surface, color: t.text, boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }
+                        : { background: 'transparent', color: t.text3 }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-              {docsSubTab === 'docs' && <ClientDocumentsTab clientId={clientId!} />}
-              {docsSubTab === 'compositions' && (
+              {isSuperAdmin && docsSubTab === 'docs' && <ClientDocumentsTab clientId={clientId!} />}
+              {(!isSuperAdmin || docsSubTab === 'compositions') && (
                 <AiCompositionsManager
                   clientId={clientId!}
                   clientName={client.full_name}

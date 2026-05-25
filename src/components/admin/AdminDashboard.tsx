@@ -66,7 +66,7 @@ const NAV_ITEMS: NavItem[] = [
 
   { to: '/admin/clients',   label: 'Clientes',       icon: Users,       description: 'Gerenciar clientes',         roles: ['admin', 'super_admin'] },
   { to: '/admin/plans',     label: 'Planos',         icon: Layers,      description: 'Planos e pacotes',           roles: ['admin', 'super_admin'] },
-  { to: '/admin/documents', label: 'Documentos',     icon: FileText,    description: 'Tags e templates de PDF',    roles: ['admin', 'super_admin'] },
+  { to: '/admin/documents', label: 'Documentos',     icon: FileText,    description: 'Tags e templates de PDF',    roles: ['super_admin'] },
   { to: '/admin/folders',   label: 'Pastas IA',      icon: FolderOpen,  description: 'Pastas de análise IA',       roles: ['super_admin'] },
 
   // Configurações é o único item que TODOS veem (chat_admin vê sua versão resumida).
@@ -400,8 +400,8 @@ function AdminDashboardInner({ onLogout }: Props) {
             } />
 
             <Route path="documents/*" element={
-              isChatAdmin
-                ? <Navigate to="/admin/ms-color-ia" replace />
+              !isSuperAdmin
+                ? <Navigate to={fallbackHome} replace />
                 : <div className="h-full">
                     <DocumentsHub />
                   </div>

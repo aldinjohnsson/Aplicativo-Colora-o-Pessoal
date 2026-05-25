@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon, Sparkles, Loader2, Shield } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -134,28 +134,15 @@ interface AppSettings {
 // ── Helpers de admin_content ────────────────────────────────────────────────
 
 async function saveOrUpdate(type: string, content: Record<string, any>, adminId: string) {
-  const { data: existing, error: selectErr } = await supabase
+  // Upsert elimina o SELECT prévio — 1 round-trip em vez de 2.
+  // Requer unique constraint em (admin_id, type) no banco.
+  const { error } = await supabase
     .from('admin_content')
-    .select('id')
-    .eq('admin_id', adminId)
-    .eq('type', type)
-    .maybeSingle()
-
-  if (selectErr) throw new Error(selectErr.message)
-
-  if (existing) {
-    const { error } = await supabase
-      .from('admin_content')
-      .update({ content, updated_at: new Date().toISOString() })
-      .eq('admin_id', adminId)
-      .eq('type', type)
-    if (error) throw new Error(error.message)
-  } else {
-    const { error } = await supabase
-      .from('admin_content')
-      .insert({ admin_id: adminId, type, content })
-    if (error) throw new Error(error.message)
-  }
+    .upsert(
+      { admin_id: adminId, type, content, updated_at: new Date().toISOString() },
+      { onConflict: 'admin_id,type' }
+    )
+  if (error) throw new Error(error.message)
 }
 
 async function deleteRow(type: string, adminId: string) {
@@ -168,7 +155,7 @@ async function deleteRow(type: string, adminId: string) {
 }
 
 const settingsStorageService = {
-  async saveSettings(data: AppSettings) {
+  async saveSettings(data: AppSettings, adminId?: string) {
     try {
       const {
         pdfTemplateBase64:        _omit1,
@@ -179,8 +166,9 @@ const settingsStorageService = {
       localStorage.setItem('app-settings', JSON.stringify(rest))
     } catch {}
 
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    // Usa o adminId já obtido pelo chamador — evita round-trip extra ao auth server.
+    const userId = adminId ?? (await supabase.auth.getUser()).data.user?.id
+    if (!userId) throw new Error('Sessão expirada. Faça login novamente.')
 
     const {
       pdfTemplateBase64,
@@ -189,30 +177,10 @@ const settingsStorageService = {
       ...settingsWithoutBlobs
     } = data
 
-    await saveOrUpdate('settings', settingsWithoutBlobs as any, user.id)
-
-    if (pdfTemplateBase64) {
-      await saveOrUpdate('pdf_template', {
-        pdfTemplateBase64,
-        pdfTemplateFileName: data.pdfTemplateFileName ?? '',
-      } as any, user.id)
-    }
-
-    if (aiCompositionCoverBase64) {
-      await saveOrUpdate('ai_composition_cover', {
-        pdfBase64: aiCompositionCoverBase64,
-        fileName:  data.aiCompositionCoverFileName ?? '',
-      } as any, user.id)
-    }
-
-    if (aiCompositionFinalBase64) {
-      await saveOrUpdate('ai_composition_final', {
-        pdfBase64: aiCompositionFinalBase64,
-        fileName:  data.aiCompositionFinalFileName ?? '',
-      } as any, user.id)
-    }
-
-    return { success: true }
+    // Todos os upserts em paralelo — sem esperar um terminar pra começar o próximo.
+    // Blobs (PDF template, capas) já são salvos pelas suas próprias seções de upload.
+    // Re-enviá-los aqui a cada save seria enviar MBs de base64 desnecessariamente.
+    await saveOrUpdate('settings', settingsWithoutBlobs as any, userId)
   },
 
   async saveAiCompositionBranding(slot: 'cover' | 'final', base64: string, fileName: string) {
@@ -306,127 +274,6 @@ if (typeof window !== 'undefined') {
 //   Componentes extraídos (reusados entre as views full e chat_admin)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── Logo da marca ────────────────────────────────────────────────────────────
-
-const LOGO_BUCKET = 'admin-logos'
-
-function LogoSection({
-  currentPath, onSave, onRemove,
-}: {
-  currentPath: string
-  onSave: (path: string) => void
-  onRemove: () => void
-}) {
-  const [saving, setSaving] = useState(false)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const { theme } = useTheme()
-
-  useEffect(() => {
-    if (!currentPath) { setPreviewUrl(null); return }
-    const { data } = supabase.storage.from(LOGO_BUCKET).getPublicUrl(currentPath)
-    setPreviewUrl(data.publicUrl)
-  }, [currentPath])
-
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file || !file.type.startsWith('image/')) return
-    e.target.value = ''
-    setSaving(true)
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('Sessão expirada')
-      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase() || '.png'
-      const path = `${user.id}/logo${ext}`
-      const { error } = await supabase.storage
-        .from(LOGO_BUCKET)
-        .upload(path, file, { contentType: file.type, upsert: true })
-      if (error) throw error
-      onSave(path)
-    } catch (err: any) {
-      alert('Erro ao salvar logo: ' + err.message)
-    } finally { setSaving(false) }
-  }
-
-  const handleRemove = async () => {
-    if (!confirm('Remover o logo?')) return
-    if (currentPath) {
-      await supabase.storage.from(LOGO_BUCKET).remove([currentPath]).catch(() => {})
-    }
-    onRemove()
-  }
-
-  return (
-    <div className="rounded-2xl shadow-sm overflow-hidden" style={{ background: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}>
-      <div
-        className="px-3 sm:px-6 py-3 sm:py-4"
-        style={{ borderBottom: `1px solid ${theme.border}`, background: `linear-gradient(to right, color-mix(in srgb, #f43f5e 12%, ${theme.surface2}), color-mix(in srgb, #f43f5e 6%, ${theme.surface2}))` }}
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #f43f5e, #ec4899)' }}>
-            <ImageIcon className="h-5 w-5 text-white" />
-          </div>
-          <div>
-            <h2 className="text-base font-semibold" style={{ color: theme.text }}>Logo da sua marca</h2>
-            <p className="text-sm" style={{ color: theme.text2 }}>
-              Usado automaticamente na tag{' '}
-              <code className="px-1 rounded text-xs font-mono" style={{ background: theme.surface }}>{'{{Logo}}'}</code>
-              {' '}dos documentos gerados
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="px-6 py-5">
-        {previewUrl ? (
-          <div className="flex items-center gap-4">
-            <div
-              className="h-16 w-32 rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0"
-              style={{ border: `1px solid ${theme.border}`, background: theme.surface2 }}
-            >
-              <img src={previewUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
-            </div>
-            <div className="flex gap-2">
-              <label
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors"
-                style={{ border: `1px solid ${theme.border}`, color: theme.text2, background: theme.surface }}
-              >
-                <Upload className="h-3.5 w-3.5" />
-                {saving ? 'Salvando...' : 'Trocar'}
-                <input type="file" accept="image/*" className="hidden" onChange={handleUpload} disabled={saving} />
-              </label>
-              <button
-                onClick={handleRemove}
-                className="p-1.5 rounded-lg transition-colors"
-                style={{ background: 'color-mix(in srgb, #ef4444 15%, transparent)', color: '#ef4444' }}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        ) : (
-          <label
-            className={`flex flex-col items-center gap-3 rounded-xl p-8 cursor-pointer transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`}
-            style={{ border: `2px dashed color-mix(in srgb, #f43f5e 40%, ${theme.border})` }}
-          >
-            <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: `color-mix(in srgb, #f43f5e 15%, ${theme.surface2})` }}>
-              {saving
-                ? <div className="animate-spin h-6 w-6 rounded-full" style={{ border: '2px solid #f43f5e', borderTopColor: 'transparent' }} />
-                : <Upload className="h-6 w-6" style={{ color: '#f43f5e' }} />}
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-medium" style={{ color: theme.text }}>
-                {saving ? 'Salvando logo...' : 'Clique para enviar seu logo'}
-              </p>
-              <p className="text-xs mt-1" style={{ color: theme.text3 }}>PNG, JPG ou SVG · Fundo transparente recomendado</p>
-            </div>
-            <input type="file" accept="image/*" className="hidden" onChange={handleUpload} disabled={saving} />
-          </label>
-        )}
-      </div>
-    </div>
-  )
-}
-
 // ── Card de chave Gemini (reusado por full e chat_admin) ────────────────
 
 function GeminiKeyCard({
@@ -489,7 +336,7 @@ function GeminiKeyCard({
         {value && (
           <div className="bg-violet-50 border border-violet-100 rounded-xl p-3">
             <p className="text-sm text-violet-700">
-              {contextLabel || '✓ IA ativada — suas clientes poderão conversar com a consultora de coloração pessoal.'}
+              {contextLabel || '✓ IA ativada, suas clientes poderão conversar com a consultora de coloração pessoal.'}
             </p>
           </div>
         )}
@@ -545,15 +392,15 @@ function PdfTemplateSection({
             <FileText className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h2 className="text-base font-semibold" style={{ color: theme.text }}>PDF Modelo</h2>
-            <p className="text-sm" style={{ color: theme.text2 }}>Template modelo para geração de dossiês</p>
+            <h2 className="text-base font-semibold" style={{ color: theme.text }}>PDF Modelo para dossiê capilar</h2>
+            <p className="text-sm" style={{ color: theme.text2 }}>Template usado pela IA para gerar o dossiê de cada cliente</p>
           </div>
         </div>
       </div>
 
       <div className="px-6 py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
-          Envie seu modelo de PDF para gerar automaticamente o dossiê capilar pela IA.
+          Envie um PDF com <strong>3 páginas</strong>: uma capa, uma página em branco com o fundo nas suas cores (será onde a IA insere o conteúdo do dossiê) e uma contracapa. A IA usa esse modelo como base e adiciona automaticamente as informações capilares de cada cliente na página do meio.
         </p>
 
         {currentFileName ? (
@@ -638,9 +485,9 @@ function AiCompositionBrandingSection({
             <Sparkles className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h2 className="text-base font-semibold" style={{ color: theme.text }}>Branding das Composições IA</h2>
+            <h2 className="text-base font-semibold" style={{ color: theme.text }}>Capa e contracapa do dossiê de coloração pessoal</h2>
             <p className="text-sm" style={{ color: theme.text2 }}>
-              Capa e contracapa anexadas ao PDF gerado pela IA
+              Páginas vetoriais anexadas no início e fim do dossiê gerado pela IA
             </p>
           </div>
         </div>
@@ -648,10 +495,10 @@ function AiCompositionBrandingSection({
 
       <div className="px-6 py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
-          Envie dois PDFs vetoriais (1 página cada). O PDF final fica:{' '}
+          Envie dois PDFs vetoriais (1 página cada) uma capa e uma contracapa. O dossiê final montado pela IA fica:{' '}
           <strong style={{ color: theme.text }}>[Capa]</strong>
           {' + '}
-          <span style={{ color: theme.text3 }}>[imagens geradas pela IA]</span>
+          <span style={{ color: theme.text3 }}>[imagens da análise de coloração pessoal geradas pela IA]</span>
           {' + '}
           <strong style={{ color: theme.text }}>[Contracapa]</strong>.
         </p>
@@ -822,7 +669,7 @@ function BrandingSlot({
 //
 // Três views diferentes baseadas no role do usuário logado:
 //
-//   • super_admin → tudo (Drive, Gemini, OpenAI, Email, PhotoTypes, Tags, Logo,
+//   • super_admin → tudo (Drive, Gemini, OpenAI, Email, PhotoTypes, Tags,
 //                   PDF Modelo, AI Composition Branding, modais de ajuda)
 //   • admin       → tudo EXCETO PhotoTypes/Tags (essas são só do super)
 //   • chat_admin  → SOMENTE Chave Gemini + PDF Modelo (configuração mínima
@@ -917,18 +764,21 @@ export default function SettingsEditor() {
     setSaving(true)
     setMessage(null)
     try {
-      await settingsStorageService.saveSettings(settings)
+      // Busca o usuário uma única vez — getUser() faz round-trip ao auth server.
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Sessão expirada. Faça login novamente.')
 
-      // Super admin: salva também a config global compartilhada.
+      // Passa o userId direto pra evitar um segundo getUser() dentro de saveSettings.
+      const saves: Promise<unknown>[] = [settingsStorageService.saveSettings(settings, user.id)]
+
       if (userRole === 'super_admin') {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-          await saveOrUpdate('global_email_settings', {
-            resendApiKey: globalEmail.resendApiKey,
-            fromEmail:    globalEmail.fromEmail,
-          }, user.id)
-        }
+        saves.push(saveOrUpdate('global_email_settings', {
+          resendApiKey: globalEmail.resendApiKey,
+          fromEmail:    globalEmail.fromEmail,
+        }, user.id))
       }
+
+      await Promise.all(saves)
 
       setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' })
       setTimeout(() => setMessage(null), 5000)
@@ -1201,11 +1051,10 @@ export default function SettingsEditor() {
           {settings.adminEmail ? (
             <div className="bg-green-50 border border-green-200 rounded-xl p-4">
               <p className="text-sm text-green-700">
-                ✓ Notificações ativas — cópia dos contratos será enviada para <strong>{settings.adminEmail}</strong>.
+                ✓ Notificações ativas, uma cópia dos contratos será enviada para <strong>{settings.adminEmail}</strong>.
               </p>
               {!isSuperAdmin && (
                 <p className="text-xs text-green-600 mt-1.5">
-                  As clientes recebem o contrato pelo domínio oficial do MS Colors.
                 </p>
               )}
             </div>
@@ -1310,20 +1159,6 @@ export default function SettingsEditor() {
 
       {isSuperAdmin && <PhotoTypesManager />}
       {isSuperAdmin && <TagsManager />}
-
-      <LogoSection
-        currentPath={settings.logoStoragePath || ''}
-        onSave={(path) => {
-          const updated = { ...settings, logoStoragePath: path }
-          setSettings(updated)
-          settingsStorageService.saveSettings(updated)
-        }}
-        onRemove={() => {
-          const updated = { ...settings, logoStoragePath: '' }
-          setSettings(updated)
-          settingsStorageService.saveSettings(updated)
-        }}
-      />
 
       <PdfTemplateSection
         currentFileName={settings.pdfTemplateFileName || ''}

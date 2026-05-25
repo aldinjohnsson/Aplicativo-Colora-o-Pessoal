@@ -18,28 +18,28 @@ function sanitizePortalUrl(url: string): string {
 
 // ── Monta header "From" em formato RFC 5322 ──────────────────────────────────
 //
-// Recebe o nome do salão (admins.nome) e o endereço de e-mail global
-// (que pode vir como "email puro" ou como "Display <email>"). Retorna
-// o header completo com o NOME DO SALÃO + e-mail do super_admin, ex:
+// Recebe o nome de exibição (do settings do admin) e o endereço de e-mail global
+// (que pode vir como "email puro" ou como "Display <email>"). Retorna o header
+// completo com o nome de exibição + e-mail do remetente, ex:
 //
-//   buildFromHeader('Salão da Fulana', 'contato@mariliasantoscolor.com.br')
-//     → 'Salão da Fulana <contato@mariliasantoscolor.com.br>'
+//   buildFromHeader('Salão da Fulana', 'contato@iacolor.online')
+//     → 'Salão da Fulana <contato@iacolor.online>'
 //
-//   buildFromHeader('', 'MS Color <noreply@x.com>')
-//     → 'MS Color <noreply@x.com>'  (fallback)
+//   buildFromHeader('', 'noreply@x.com')
+//     → 'noreply@x.com'  (fallback sem display name)
 //
 // Caracteres especiais (vírgula, ponto-e-vírgula) forçam aspas duplas
 // no display name pra não quebrar o header.
 function buildFromHeader(displayName: string, fromHeaderOrEmail: string): string {
   const src = (fromHeaderOrEmail || '').trim()
-  if (!src) return 'MS Color <onboarding@resend.dev>'
+  if (!src) return 'onboarding@resend.dev'
 
   // Extrai só o e-mail caso `src` venha como "Display <email>"
   const match = src.match(/<([^>]+)>/)
   const email = (match ? match[1] : src).trim()
 
   const name = (displayName || '').replace(/[<>"]/g, '').trim()
-  if (!name) return src   // sem nome do salão → usa o header global cru
+  if (!name) return src   // sem display name → usa o header global cru
 
   // Quote se tiver vírgula/ponto-e-vírgula/dois-pontos (RFC 5322)
   if (/[,;:]/.test(name)) return `"${name}" <${email}>`
@@ -83,6 +83,7 @@ async function generateContractPDF(
   signedAt: string,
   clientIp?: string,
   signatureDataUrl?: string,
+  brandName?: string,
 ): Promise<Uint8Array> {
   const pdfDoc      = await PDFDocument.create()
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
@@ -312,9 +313,13 @@ async function generateContractPDF(
 
   // ── Rodapé em todas as páginas ────────────────────────────────────────────
   const pages = pdfDoc.getPages()
+  const footerBrand = (brandName || '').trim()
   pages.forEach((p, i) => {
+    const text = footerBrand
+      ? `${footerBrand}  -  Pagina ${i + 1} de ${pages.length}`
+      : `Pagina ${i + 1} de ${pages.length}`
     p.drawText(
-      `MS Color - Coloracao Pessoal  -  Pagina ${i + 1} de ${pages.length}`,
+      text,
       { x: MARGIN, y: 30, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.65) }
     )
   })
@@ -324,7 +329,14 @@ async function generateContractPDF(
 
 // ── Template base de e-mail (responsivo para mobile) ─────────────────────────
 
-function buildEmail(title: string, greeting: string, body: string): string {
+function buildEmail(title: string, greeting: string, body: string, brandName?: string): string {
+  const brand = (brandName || '').trim()
+  const headerBrandHtml = brand
+    ? `<p class="header-brand" style="margin: 0 0 4px; font-size: 11px; color: #ffe4e6; letter-spacing: 2px; text-transform: uppercase;">${brand}</p>`
+    : ''
+  const footerBrandHtml = brand
+    ? `<p class="footer-brand" style="margin: 28px 0 0; color: #9ca3af; font-size: 11px; text-align: center;">${brand}</p>`
+    : ''
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -336,7 +348,7 @@ function buildEmail(title: string, greeting: string, body: string): string {
     body { margin: 0; padding: 0; background: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; -webkit-text-size-adjust: 100%; }
     .wrapper { background: #f3f4f6; padding: 24px 12px; }
     .container { max-width: 600px; width: 100%; margin: 0 auto; }
-    .header { background: linear-gradient(135deg, #fb7185, #ec4899); border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center; }
+    .header { background: #ec4899; background: linear-gradient(135deg, #fb7185, #ec4899); border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center; }
     .header-brand { margin: 0 0 4px; font-size: 11px; color: #ffe4e6; letter-spacing: 2px; text-transform: uppercase; }
     .header-title { margin: 0; font-size: 20px; color: #ffffff; font-weight: 700; line-height: 1.3; }
     .body { background: #ffffff; padding: 28px 24px; border-radius: 0 0 16px 16px; }
@@ -347,7 +359,7 @@ function buildEmail(title: string, greeting: string, body: string): string {
     .info-label { color: #6b7280; min-width: 100px; flex-shrink: 0; }
     .info-value { color: #374151; font-weight: 600; }
     .btn-wrap { text-align: center; margin: 24px 0; }
-    .btn { display: inline-block; background: linear-gradient(135deg, #fb7185, #ec4899); color: #ffffff !important; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 15px; }
+    .btn { display: inline-block; background: #ec4899; background: linear-gradient(135deg, #fb7185, #ec4899); color: #ffffff !important; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 15px; }
     .alert-green { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     .alert-green-title { margin: 0 0 4px; font-size: 14px; color: #166534; font-weight: 600; }
     .alert-green-text { margin: 0; font-size: 13px; color: #15803d; }
@@ -388,14 +400,14 @@ function buildEmail(title: string, greeting: string, body: string): string {
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
       <tr><td align="center">
         <table class="container" cellpadding="0" cellspacing="0" role="presentation">
-          <tr><td class="header">
-            <p class="header-brand">MS Color</p>
-            <h1 class="header-title">${title}</h1>
+          <tr><td class="header" bgcolor="#ec4899" style="background-color: #ec4899; background: linear-gradient(135deg, #fb7185, #ec4899); border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center;">
+            ${headerBrandHtml}
+            <h1 class="header-title" style="margin: 0; font-size: 20px; color: #ffffff; font-weight: 700; line-height: 1.3;">${title}</h1>
           </td></tr>
           <tr><td class="body">
             <p class="greeting">${greeting}</p>
             ${body}
-            <p class="footer-brand">MS Color &middot; Coloracao Pessoal</p>
+            ${footerBrandHtml}
           </td></tr>
         </table>
       </td></tr>
@@ -561,8 +573,20 @@ serve(async (req) => {
     // (A UI já esconde os campos resendApiKey/fromEmail no settings do admin,
     // mas valores legacy do banco poderiam interferir se respeitássemos `cfg`.)
     const RESEND_API_KEY = globalResendKey
-    const FROM_EMAIL_BASE = globalFromEmail || 'MS Color <onboarding@resend.dev>'
+    const FROM_EMAIL_BASE = globalFromEmail || 'onboarding@resend.dev'
     const FROM_EMAIL = buildFromHeader(adminDisplayName, FROM_EMAIL_BASE)
+
+    // Nome de marca usado nos subjects, headers/footers de e-mail e PDF.
+    // Genérico — vem do que o admin definir como `emailDisplayName`. Se vazio,
+    // os e-mails e PDFs não exibem marca (fallback minimalista).
+    const BRAND = adminDisplayName
+    const BRAND_SUFFIX = BRAND ? ` - ${BRAND}` : ''
+    const BRAND_PREFIX = BRAND ? `[${BRAND}] ` : ''
+
+    // Wrapper que injeta o BRAND automaticamente em todas as chamadas de buildEmail.
+    // Evita repetir BRAND como último argumento em cada uma das ~12 chamadas.
+    const renderEmail = (title: string, greeting: string, body: string) =>
+      buildEmail(title, greeting, body, BRAND)
 
     if (!RESEND_API_KEY || !ADMIN_EMAIL) {
       console.warn(`[${emailType}] E-mail nao configurado para admin ${adminId}. Pulando envio. (resendKey=${!!RESEND_API_KEY}, adminEmail=${!!ADMIN_EMAIL})`)
@@ -622,6 +646,7 @@ serve(async (req) => {
           signedAt,
           contractIp           || undefined,
           contractSignatureUrl || undefined,
+          BRAND,
         )
         let binary = ''
         for (let i = 0; i < pdfBytes.length; i++) binary += String.fromCharCode(pdfBytes[i])
@@ -632,9 +657,9 @@ serve(async (req) => {
         ? [{ filename: `Contrato - ${planName}.pdf`, content: pdfBase64 }]
         : []
 
-      const subject = `Contrato de ${planName} - MS Color`
+      const subject = `Contrato de ${planName}${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Contrato Assinado',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-green">
@@ -654,7 +679,7 @@ serve(async (req) => {
         }`
       )
 
-      const adminHtml = buildEmail(
+      const adminHtml = renderEmail(
         'Nova Assinatura de Contrato',
         '&#128221; Nova cliente cadastrada!',
         `${infoTable([
@@ -668,7 +693,7 @@ serve(async (req) => {
 
       const results = await Promise.allSettled([
         sendToClient(subject, clientHtml, attachments),
-        send(ADMIN_EMAIL, `[MS Color] Nova assinatura: ${clientName} - ${planName}`, adminHtml, attachments),
+        send(ADMIN_EMAIL, `${BRAND_PREFIX}Nova assinatura: ${clientName} - ${planName}`, adminHtml, attachments),
       ])
       logResults(results, 'contract_signed')
       return jsonResponse({ success: true, type: 'contract_signed' })
@@ -678,14 +703,14 @@ serve(async (req) => {
     // TIPO 2: FOTOS FINALIZADAS (cliente submeteu fotos)
     // ============================================================
     if (emailType === 'photos_finalized') {
-      const adminHtml = buildEmail(
+      const adminHtml = renderEmail(
         '📷 Fotos para Revisar',
         `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
         `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
       )
 
       const results = await Promise.allSettled([
-        send(ADMIN_EMAIL, `[MS Color] 📷 Fotos para revisar: ${clientName}`, adminHtml),
+        send(ADMIN_EMAIL, `${BRAND_PREFIX}📷 Fotos para revisar: ${clientName}`, adminHtml),
       ])
       logResults(results, 'photos_finalized')
       return jsonResponse({ success: true, type: 'photos_finalized' })
@@ -704,9 +729,9 @@ serve(async (req) => {
           })
         : ''
 
-      const subject = `Sua analise foi aprovada! - MS Color`
+      const subject = `Sua analise foi aprovada!${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Analise em Andamento!',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-green">
@@ -738,7 +763,7 @@ serve(async (req) => {
       const { rejectPhotos, photosReason, rejectForm, formReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
-      const subject = `Ajuste necessario na sua analise - MS Color`
+      const subject = `Ajuste necessario na sua analise${BRAND_SUFFIX}`
 
       const rejectionBlocks = [
         rejectPhotos && photosReason ? `
@@ -753,7 +778,7 @@ serve(async (req) => {
         </div>` : '',
       ].filter(Boolean).join('')
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Ajuste Necessario',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-amber">
@@ -778,9 +803,9 @@ serve(async (req) => {
     // ============================================================
     if (emailType === 'partial_result_released') {
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject   = `Prévia do seu resultado disponível - MS Color`
+      const subject   = `Prévia do seu resultado disponível${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         `Prévia do seu Resultado`,
         `Olá, <strong>${clientName}</strong>!`,
         `<div class="alert-pink">
@@ -808,9 +833,9 @@ serve(async (req) => {
     // ============================================================
     if (emailType === 'result_released') {
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject   = `Sua analise ${planName} esta pronta! - MS Color`
+      const subject   = `Sua analise ${planName} esta pronta!${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         `Sua Analise ${planName} esta Pronta!`,
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-pink">
@@ -845,9 +870,9 @@ serve(async (req) => {
           })
         : ''
 
-      const subject = `Suas fotos foram aprovadas! - MS Color`
+      const subject = `Suas fotos foram aprovadas!${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Fotos Aprovadas!',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-green">
@@ -878,9 +903,9 @@ serve(async (req) => {
     if (emailType === 'photos_rejected') {
       const { reason } = payload
       const portalUrl  = sanitizePortalUrl(payload.portalUrl || '')
-      const subject    = `Suas fotos precisam de um ajuste - MS Color`
+      const subject    = `Suas fotos precisam de um ajuste${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Ajuste nas Fotos',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-amber">
@@ -909,9 +934,9 @@ serve(async (req) => {
     if (emailType === 'form_rejected') {
       const { reason } = payload
       const portalUrl  = sanitizePortalUrl(payload.portalUrl || '')
-      const subject    = `Seu formulario precisa de um ajuste - MS Color`
+      const subject    = `Seu formulario precisa de um ajuste${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Ajuste no Formulario',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-amber">
@@ -940,9 +965,9 @@ serve(async (req) => {
     if (emailType === 'both_rejected') {
       const { formReason, photosReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject   = `Ajustes necessarios na sua analise - MS Color`
+      const subject   = `Ajustes necessarios na sua analise${BRAND_SUFFIX}`
 
-      const clientHtml = buildEmail(
+      const clientHtml = renderEmail(
         'Ajustes Necessarios',
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-amber">
@@ -975,14 +1000,14 @@ serve(async (req) => {
     // ALIAS: photos_submitted → mesmo comportamento de photos_finalized
     // ============================================================
     if (emailType === 'photos_submitted') {
-      const adminHtml = buildEmail(
+      const adminHtml = renderEmail(
         '📷 Fotos para Revisar',
         `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
         `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
       )
 
       const results = await Promise.allSettled([
-        send(ADMIN_EMAIL, `[MS Color] 📷 Fotos para revisar: ${clientName}`, adminHtml),
+        send(ADMIN_EMAIL, `${BRAND_PREFIX}📷 Fotos para revisar: ${clientName}`, adminHtml),
       ])
       logResults(results, 'photos_submitted')
       return jsonResponse({ success: true, type: 'photos_submitted' })
@@ -992,14 +1017,14 @@ serve(async (req) => {
     // TIPO 12: FOTO PARA SIMULAÇÃO (IA) ENVIADA
     // ============================================================
     if (emailType === 'ai_photo_submitted') {
-      const adminHtml = buildEmail(
+      const adminHtml = renderEmail(
         '✨ Foto para simulação enviada',
         `<strong>${clientName}</strong> enviou a foto para a simulação. A consultora deve validar antes de avançar para "Simulações".`,
         `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
       )
 
       const results = await Promise.allSettled([
-        send(ADMIN_EMAIL, `[MS Color] ✨ Foto IA para validar: ${clientName}`, adminHtml),
+        send(ADMIN_EMAIL, `${BRAND_PREFIX}✨ Foto IA para validar: ${clientName}`, adminHtml),
       ])
       logResults(results, 'ai_photo_submitted')
       return jsonResponse({ success: true, type: 'ai_photo_submitted' })
