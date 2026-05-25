@@ -66,7 +66,10 @@ interface CompositionRef {
 interface RequestBody {
   promptId:        string
   clientId:        string
-  photoId:         string
+  /** ID da foto na galeria do cliente. Obrigatório no modo TAG e no modo
+   *  COMPOSITION com galeria. Omitido no modo COMPOSITION standalone
+   *  (quando a foto vem via uploadedImage). */
+  photoId?:        string
   // Texto do prompt já resolvido pelo frontend (ex: texto da Parte N dentro
   // do array parts). Sobrescreve prompt.prompt do banco, que pode estar vazio
   // quando o texto real fica dentro do array parts de cada prompt composto.
@@ -76,6 +79,12 @@ interface RequestBody {
   // Modo COMPOSITION. Se vier (e tagId NÃO vier), sobe a imagem pro Google
   // Drive (sem escrever em DB) e devolve { driveFileId, url, downloadUrl }.
   composition?:    CompositionRef
+  /** Foto base enviada diretamente pelo frontend (modo standalone, sem galeria).
+   *  base64 puro sem prefixo "data:…". Usado em vez de photoId. */
+  uploadedImage?: {
+    base64: string
+    mime:   string
+  }
 }
 
 // Sanitiza string pra uso seguro em path de storage
@@ -160,10 +169,13 @@ serve(async (req) => {
 
     // ── 2. Parse body ───────────────────────────────────────────────
     const body: Partial<RequestBody> = await req.json().catch(() => ({}))
-    const { promptId, clientId, photoId, promptOverride, tagId, composition } = body
+    const { promptId, clientId, photoId, promptOverride, tagId, composition, uploadedImage } = body
 
-    if (!promptId || !clientId || !photoId) {
-      return jsonRes({ error: 'Missing required fields: promptId, clientId, photoId' }, 400)
+    // photoId é obrigatório no modo TAG e no modo COMPOSITION com galeria.
+    // No modo COMPOSITION standalone (StandaloneAiGenerationPage), a foto
+    // chega como uploadedImage.base64 — photoId pode estar ausente.
+    if (!promptId || !clientId || (!photoId && !uploadedImage?.base64)) {
+      return jsonRes({ error: 'Missing required fields: promptId, clientId, and either photoId or uploadedImage' }, 400)
     }
 
     // Determina o modo
@@ -177,14 +189,20 @@ serve(async (req) => {
     }
 
     // ── 3. Carrega prompt + foto ────────────────────────────────────
-    const [{ data: prompt, error: pErr }, { data: photo, error: phErr }] = await Promise.all([
+    // A query de client_photos só é feita quando photoId está presente.
+    // No modo standalone (uploadedImage), pulamos o banco.
+    const [{ data: prompt, error: pErr }, photoResult] = await Promise.all([
       admin.from('ai_image_prompts')
         .select('id, name, prompt, model, size, quality, is_active, reference_image_path')
         .eq('id', promptId).single(),
-      admin.from('client_photos')
-        .select('id, storage_path, photo_name, photo_type, client_id, drive_file_id')
-        .eq('id', photoId).single(),
+      photoId
+        ? admin.from('client_photos')
+            .select('id, storage_path, photo_name, photo_type, client_id, drive_file_id')
+            .eq('id', photoId).single()
+        : Promise.resolve({ data: null, error: null }),
     ])
+    const { data: photo, error: phErr } = photoResult as { data: any; error: any }
+
     if (pErr || !prompt)   return jsonRes({ error: 'Prompt not found' }, 404)
     if (!prompt.is_active) return jsonRes({ error: 'Prompt is inactive' }, 400)
 
@@ -209,45 +227,65 @@ serve(async (req) => {
           `(prompt.prompt="${prompt.prompt}", promptOverride="${promptOverride ?? ''}")`,
       }, 400)
     }
-    if (phErr || !photo)   return jsonRes({ error: 'Photo not found' }, 404)
 
-    // ── 4. Baixa a foto da galeria (Drive → Supabase Storage como fallback) ────
-    let photoBlob: Blob | null = null
-    let photoMime = photo.photo_type || 'image/jpeg'
-
-    if (photo.drive_file_id) {
-      const driveUrl = `https://drive.google.com/uc?export=download&id=${photo.drive_file_id}`
-      try {
-        const driveRes = await fetch(driveUrl)
-        if (driveRes.ok) {
-          photoBlob = await driveRes.blob()
-          photoMime = driveRes.headers.get('content-type') || photoMime
-        } else {
-          console.warn(`Drive download failed (HTTP ${driveRes.status}), trying Supabase Storage…`)
-        }
-      } catch (e) {
-        console.warn('Drive download threw, trying Supabase Storage…', e)
-      }
+    // Só valida foto do banco quando photoId foi fornecido
+    if (photoId && (phErr || !photo)) {
+      return jsonRes({ error: 'Photo not found' }, 404)
     }
 
-    if (!photoBlob && photo.storage_path) {
-      const { data: sb, error: dlErr } = await admin.storage
-        .from('client-photos')
-        .download(photo.storage_path)
-      if (dlErr || !sb) {
-        return jsonRes({
-          error: `Failed to download photo: ${dlErr?.message || 'Object not found'}. ` +
-                 `A foto pode não estar mais disponível no storage. ` +
-                 `Verifique se o Google Drive está conectado e a foto foi enviada corretamente.`,
-        }, 500)
+    // ── 4. Obtém a foto como Blob ───────────────────────────────────
+    let photoBlob: Blob | null = null
+    let photoMime: string = photo?.photo_type || uploadedImage?.mime || 'image/jpeg'
+    const photoFileName: string = photo?.photo_name || 'client.jpg'
+
+    if (uploadedImage?.base64) {
+      // Modo standalone: foto veio como base64 direto do frontend
+      try {
+        const binStr = atob(uploadedImage.base64)
+        const bytes  = new Uint8Array(binStr.length)
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
+        photoBlob = new Blob([bytes], { type: uploadedImage.mime || 'image/jpeg' })
+        photoMime = uploadedImage.mime || 'image/jpeg'
+        console.log(`Foto standalone recebida via uploadedImage (${bytes.length} bytes, ${photoMime})`)
+      } catch (decodeErr) {
+        return jsonRes({ error: `Falha ao decodificar uploadedImage.base64: ${decodeErr}` }, 400)
       }
-      photoBlob = sb
-      photoMime = photo.photo_type || sb.type || 'image/jpeg'
+    } else if (photo) {
+      // Modo galeria: baixa do Drive ou Supabase Storage
+      if (photo.drive_file_id) {
+        const driveUrl = `https://drive.google.com/uc?export=download&id=${photo.drive_file_id}`
+        try {
+          const driveRes = await fetch(driveUrl)
+          if (driveRes.ok) {
+            photoBlob = await driveRes.blob()
+            photoMime = driveRes.headers.get('content-type') || photoMime
+          } else {
+            console.warn(`Drive download failed (HTTP ${driveRes.status}), trying Supabase Storage…`)
+          }
+        } catch (e) {
+          console.warn('Drive download threw, trying Supabase Storage…', e)
+        }
+      }
+
+      if (!photoBlob && photo.storage_path) {
+        const { data: sb, error: dlErr } = await admin.storage
+          .from('client-photos')
+          .download(photo.storage_path)
+        if (dlErr || !sb) {
+          return jsonRes({
+            error: `Failed to download photo: ${dlErr?.message || 'Object not found'}. ` +
+                   `A foto pode não estar mais disponível no storage. ` +
+                   `Verifique se o Google Drive está conectado e a foto foi enviada corretamente.`,
+          }, 500)
+        }
+        photoBlob = sb
+        photoMime = photo.photo_type || sb.type || 'image/jpeg'
+      }
     }
 
     if (!photoBlob) {
       return jsonRes({
-        error: 'Não foi possível baixar a foto. Verifique se o Google Drive está conectado.',
+        error: 'Não foi possível obter a foto. Verifique se o Google Drive está conectado ou envie uma foto válida.',
       }, 500)
     }
 
@@ -354,10 +392,10 @@ serve(async (req) => {
     if (refBlob) {
       const refBytes = new Uint8Array(await refBlob.arrayBuffer())
       form.append('image[]', new Blob([refBytes], { type: 'image/jpeg' }), 'reference.jpg')
-      form.append('image[]', photoFile, photo.photo_name || 'client.jpg')
+      form.append('image[]', photoFile, photoFileName)
       console.log(`Usando imagem de referência: ${prompt.reference_image_path}`)
     } else {
-      form.append('image', photoFile, photo.photo_name || 'input.jpg')
+      form.append('image', photoFile, photoFileName)
     }
 
     const openaiRes = await fetch('https://api.openai.com/v1/images/edits', {
@@ -448,17 +486,40 @@ serve(async (req) => {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //   Caminho COMPOSITION MODE — upload para Google Drive
+    //   Caminho COMPOSITION MODE — dois sub-modos:
+    //
+    //   A) STANDALONE (uploadedImage presente, sem photoId de galeria):
+    //      Não sobe pro Drive — não há pasta de cliente associada.
+    //      Retorna a imagem como base64 diretamente na resposta.
+    //      O frontend (StandaloneAiGenerationPage) guarda em memória e
+    //      monta o PDF sem nenhuma chamada de storage.
+    //
+    //   B) GALERIA (photoId presente, sem uploadedImage):
+    //      Comportamento original: sobe pra pasta do cliente no Google Drive.
+    //      AiCompositionsManager continua funcionando sem alteração.
     // ═══════════════════════════════════════════════════════════════════
-    //
-    // Antes: upload em client-tag-images/{clientId}/compositions/… com signed
-    //        URL de 1h. URL expirava no localStorage e quebrava ao reabrir.
-    // Agora: chama internamente /drive/upload com kind='composition', que
-    //        sobe em "Composições IA" dentro da pasta do cliente no Drive,
-    //        SEM insert em client_photos. URL é estática (sem TTL).
-    //
-    // Imagem fica SEM LOGO embutido — branding fica na capa/contracapa
-    // do PDF, montadas no frontend.
+
+    if (uploadedImage?.base64) {
+      // ── Sub-modo A: standalone — devolve base64, sem Drive ──────────
+      let b64out = ''
+      const chunk = 8192
+      for (let i = 0; i < outBytes.length; i += chunk) {
+        b64out += String.fromCharCode(...outBytes.subarray(i, i + chunk))
+      }
+      b64out = btoa(b64out)
+      console.log(`Composition standalone: retornando base64 (${outBytes.length} bytes), sem Drive.`)
+      return jsonRes({
+        success:            true,
+        mode:               'composition_standalone',
+        imageBase64:        b64out,
+        imageMime:          'image/png',
+        size:               outBytes.length,
+        promptName:         prompt.name,
+        usedReferenceImage: !!refBlob,
+      })
+    }
+
+    // ── Sub-modo B: galeria — upload para Google Drive (fluxo original) ─
     const compId   = safeSlug(composition!.compositionId, 80)
     const idx      = Number.isFinite(composition!.index) ? Math.max(0, Math.floor(composition!.index)) : 0
     const idxStr   = String(idx).padStart(3, '0')

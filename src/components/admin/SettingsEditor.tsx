@@ -667,13 +667,14 @@ function BrandingSlot({
 //   SettingsEditor — render condicional por role
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Três views diferentes baseadas no role do usuário logado:
+// Quatro views baseadas no role:
 //
 //   • super_admin → tudo (Drive, Gemini, OpenAI, Email, PhotoTypes, Tags,
 //                   PDF Modelo, AI Composition Branding, modais de ajuda)
-//   • admin       → tudo EXCETO PhotoTypes/Tags (essas são só do super)
-//   • chat_admin  → SOMENTE Chave Gemini + PDF Modelo (configuração mínima
-//                   pro MS Color IA standalone funcionar)
+//   • admin       → tudo EXCETO PhotoTypes/Tags
+//   • full_admin  → Gemini + OpenAI + PDF Modelo + AI Composition Branding
+//                   (sem Drive, sem clientes, sem e-mail/WhatsApp)
+//   • chat_admin  → SOMENTE Gemini + PDF Modelo
 
 export default function SettingsEditor() {
   const [settings, setSettings] = useState<AppSettings>({
@@ -888,7 +889,198 @@ export default function SettingsEditor() {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // VIEW 2 — admin / super_admin: configuração completa
+  // VIEW 3 — full_admin: Gemini + OpenAI + branding PDF
+  // Salão + IA: tem chat IA E geração de imagem, mas SEM gestão de clientes.
+  // ═══════════════════════════════════════════════════════════════════
+  if (userRole === 'full_admin') {
+    return (
+      <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Chaves de IA e templates do seu plano Salão + IA
+            </p>
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {saving
+              ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+              : <Save className="h-4 w-4" />}
+            Salvar
+          </button>
+        </div>
+
+        {message && (
+          <div className={`flex items-center gap-2 rounded-xl px-4 py-3 text-sm ${
+            message.type === 'success'
+              ? 'bg-green-50 border border-green-200 text-green-800'
+              : 'bg-red-50 border border-red-200 text-red-800'
+          }`}>
+            {message.type === 'success'
+              ? <CheckCircle className="h-4 w-4 shrink-0" />
+              : <AlertCircle className="h-4 w-4 shrink-0" />}
+            {message.text}
+          </div>
+        )}
+
+        {(!settings.geminiApiKey || !settings.openaiApiKey) && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-1">
+            <p className="text-sm text-amber-800 font-medium">⚠️ Configure suas chaves para usar o plano completo</p>
+            {!settings.geminiApiKey && (
+              <p className="text-xs text-amber-700">• Chave Gemini necessária para o chat MS Color IA.</p>
+            )}
+            {!settings.openaiApiKey && (
+              <p className="text-xs text-amber-700">• Chave OpenAI necessária para a geração de imagens.</p>
+            )}
+          </div>
+        )}
+
+        {/* Gemini — chat IA */}
+        <GeminiKeyCard
+          value={settings.geminiApiKey}
+          onChange={v => setSettings({ ...settings, geminiApiKey: v })}
+          onHelp={() => setShowGeminiHelp(true)}
+          contextLabel="✓ Chat MS Color IA ativado. O uso é cobrado direto na sua conta Google Cloud."
+        />
+
+        {/* OpenAI — geração de imagem */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-rose-500 rounded-xl flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+                  <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Geração de Imagem OpenAI</h2>
+                <p className="text-sm text-gray-500">Necessária para gerar composições visuais de coloração</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-6 py-5 space-y-3">
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-sm font-medium text-gray-700">Chave da API OpenAI</label>
+                <button
+                  type="button"
+                  onClick={() => setShowOpenAIHelp(true)}
+                  className="inline-flex items-center gap-1 text-xs text-fuchsia-600 hover:text-fuchsia-800 font-medium"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" />
+                  Como obter?
+                </button>
+              </div>
+              <div className="relative">
+                <input
+                  type="password"
+                  value={settings.openaiApiKey}
+                  onChange={e => setSettings({ ...settings, openaiApiKey: e.target.value })}
+                  placeholder="sk-proj-... ou sk-..."
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-28"
+                />
+                {settings.openaiApiKey && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
+                    ✓ Configurada
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {settings.openaiApiKey && (
+              <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-xl p-3">
+                <p className="text-sm text-fuchsia-700">
+                  ✓ Geração de imagem ativada. Cada imagem gerada usa créditos da sua conta OpenAI.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* PDF Modelo */}
+        <PdfTemplateSection
+          currentFileName={settings.pdfTemplateFileName || ''}
+          onSave={(base64, fileName) => {
+            const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
+            setSettings(updated)
+            settingsStorageService.saveSettings(updated)
+          }}
+        />
+
+        {/* Branding (capa/contracapa do PDF de composições) */}
+        <AiCompositionBrandingSection
+          coverFileName={settings.aiCompositionCoverFileName || ''}
+          finalFileName={settings.aiCompositionFinalFileName || ''}
+          onSaveCover={async (base64, fileName) => {
+            await settingsStorageService.saveAiCompositionBranding('cover', base64, fileName)
+            setSettings(prev => ({ ...prev, aiCompositionCoverBase64: base64, aiCompositionCoverFileName: fileName }))
+          }}
+          onSaveFinal={async (base64, fileName) => {
+            await settingsStorageService.saveAiCompositionBranding('final', base64, fileName)
+            setSettings(prev => ({ ...prev, aiCompositionFinalBase64: base64, aiCompositionFinalFileName: fileName }))
+          }}
+          onRemoveCover={async () => {
+            await settingsStorageService.deleteAiCompositionBranding('cover')
+            setSettings(prev => ({ ...prev, aiCompositionCoverBase64: '', aiCompositionCoverFileName: '' }))
+          }}
+          onRemoveFinal={async () => {
+            await settingsStorageService.deleteAiCompositionBranding('final')
+            setSettings(prev => ({ ...prev, aiCompositionFinalBase64: '', aiCompositionFinalFileName: '' }))
+          }}
+        />
+
+        {showGeminiHelp && (
+          <ApiKeyHelpModal
+            title="Como obter a chave Gemini"
+            subtitle="Gratuita · Google AI Studio"
+            accentColor="#7c3aed"
+            url="https://aistudio.google.com/apikey"
+            urlLabel="Abrir Google AI Studio"
+            onClose={() => setShowGeminiHelp(false)}
+            steps={[
+              { text: 'Acesse o Google AI Studio pelo botão abaixo' },
+              { text: 'Faça login com sua conta Google' },
+              { text: 'Clique em "Create API key" no menu lateral esquerdo' },
+              { text: 'Selecione um projeto existente ou crie um novo' },
+              { text: 'Copie a chave gerada e cole no campo acima', highlight: true },
+            ]}
+          />
+        )}
+
+        {showOpenAIHelp && (
+          <ApiKeyHelpModal
+            title="Como obter a chave OpenAI"
+            subtitle="Requer conta com créditos · platform.openai.com"
+            accentColor="#c026d3"
+            url="https://platform.openai.com/api-keys"
+            urlLabel="Abrir OpenAI Platform"
+            onClose={() => setShowOpenAIHelp(false)}
+            steps={[
+              { text: 'Acesse a OpenAI Platform pelo botão abaixo' },
+              { text: 'Faça login ou crie sua conta' },
+              { text: 'No menu lateral, clique em "API keys"' },
+              { text: 'Clique em "Create new secret key" e dê um nome' },
+              { text: 'Copie a chave imediatamente, ela não será exibida novamente', highlight: true },
+              { text: 'Certifique-se de ter créditos em Billing → Overview para as chamadas funcionarem' },
+            ]}
+          />
+        )}
+
+      </div>
+    )
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VIEW 4 — admin / super_admin: configuração completa
   // ═══════════════════════════════════════════════════════════════════
   const isSuperAdmin = userRole === 'super_admin'
 

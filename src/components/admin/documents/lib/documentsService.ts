@@ -24,16 +24,18 @@ import { formatContrastValue } from './contrastLayout'
 // ══════════════════════════════════════════════════════════════════════
 
 export interface CompositionImageResult {
-  /** ID do arquivo no Google Drive. Use com driveStorage.viewUrl / fetchPhotoBlob. */
+  /** ID do arquivo no Google Drive. Vazio no modo standalone. */
   driveFileId:   string
   driveFolderId: string
-  /** URL pública de thumbnail (estática, sem TTL). Pode usar direto em <img src>. */
+  /** URL pública de thumbnail. Vazia no modo standalone. */
   url:           string
-  /** URL de download (estática, sem TTL). */
   downloadUrl:   string
   photoName:     string
   size?:         number
   promptName?:   string
+  /** Imagem gerada em base64 — presente apenas no modo standalone (sem Drive). */
+  imageBase64?:  string
+  imageMime?:    string
 }
 
 export interface ClientLite {
@@ -1067,12 +1069,13 @@ export const documentsService = {
   async generateCompositionImage(input: {
     promptId:             string
     clientId:             string
-    photoId:              string
+    /** ID da foto na galeria do cliente. Opcional quando uploadedImageBase64 é fornecido. */
+    photoId?:             string
     compositionId:        string    // qualquer string única — agrupa as imagens da mesma sessão
     index:                number    // posição da imagem na composição (pra nome de arquivo)
-    /** Imagem extra de referência em base64 puro (sem prefixo data:…) */
+    /** Foto base em base64 puro (sem prefixo data:…) — usada no modo standalone (sem galeria) */
     uploadedImageBase64?: string
-    /** MIME da imagem extra, ex: 'image/png' */
+    /** MIME da foto base, ex: 'image/jpeg' */
     uploadedImageMime?:   string
     /** Se fornecido, sobrescreve o model salvo no prompt */
     modelOverride?:       string
@@ -1090,16 +1093,20 @@ export const documentsService = {
     const body: Record<string, any> = {
       promptId: input.promptId,
       clientId: input.clientId,
-      photoId:  input.photoId,
       composition: {
         compositionId: input.compositionId,
         index:         input.index,
       },
     }
+    // photoId só entra no body quando presente (modo galeria).
+    // No modo standalone (upload direto), é omitido intencionalmente.
+    if (input.photoId) {
+      body.photoId = input.photoId
+    }
     if (input.uploadedImageBase64) {
       body.uploadedImage = {
         base64: input.uploadedImageBase64,
-        mime:   input.uploadedImageMime || 'image/png',
+        mime:   input.uploadedImageMime || 'image/jpeg',
       }
     }
     if (input.modelOverride) {
@@ -1126,18 +1133,22 @@ export const documentsService = {
       throw new Error(err?.error || `Falha ao gerar imagem (HTTP ${res.status})`)
     }
     const data = await res.json()
-    // A edge function no modo composition agora retorna o arquivo no Drive.
-    if (!data?.driveFileId) {
-      throw new Error('Edge function não retornou driveFileId (composition deve subir pro Drive)')
+    // Modo galeria: edge function retorna driveFileId
+    // Modo standalone: edge function retorna imageBase64 (sem Drive)
+    if (!data?.driveFileId && !data?.imageBase64) {
+      throw new Error('Edge function não retornou driveFileId nem imageBase64')
     }
     return {
-      driveFileId:   data.driveFileId,
-      driveFolderId: data.driveFolderId,
-      url:           data.url,
-      downloadUrl:   data.downloadUrl,
-      photoName:     data.photoName,
+      driveFileId:   data.driveFileId   ?? '',
+      driveFolderId: data.driveFolderId ?? '',
+      url:           data.url           ?? '',
+      downloadUrl:   data.downloadUrl   ?? '',
+      photoName:     data.photoName     ?? '',
       size:          data.size,
       promptName:    data.promptName,
+      // campos extras do modo standalone
+      imageBase64:   data.imageBase64,
+      imageMime:     data.imageMime,
     }
   },
 

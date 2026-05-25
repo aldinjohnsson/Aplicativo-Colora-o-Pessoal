@@ -82,7 +82,7 @@ export function MsColorIAPage() {
         return
       }
 
-      if (admin.role !== 'chat_admin' && admin.role !== 'super_admin') {
+      if (admin.role !== 'chat_admin' && admin.role !== 'full_admin' && admin.role !== 'super_admin') {
         setState({ kind: 'error', message: 'Esta área é exclusiva de contas MS Color IA.' })
         return
       }

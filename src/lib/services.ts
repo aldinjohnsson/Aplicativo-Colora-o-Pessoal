@@ -94,7 +94,8 @@ export interface AdminUser {
   //   • super_admin → Marília. Gerencia tudo.
   //   • admin       → Salão pagante. Full panel.
   //   • chat_admin  → MS Color IA standalone (chat + config resumida).
-  role: 'super_admin' | 'admin' | 'chat_admin'
+  //   • full_admin  → Salão + IA. Chat IA + geração de dossiê por IA, sem gestão de clientes.
+  role: 'super_admin' | 'admin' | 'chat_admin' | 'full_admin'
   license_active: boolean
   license_expires_at: string | null
   observacoes: string | null
@@ -1593,14 +1594,15 @@ export const adminService = {
     // ★ NOVO: tipo de conta. Default 'admin' pra preservar compatibilidade
     //   com todas as chamadas antigas que não passam este campo.
     //   Só super_admin tem permissão pra criar contas (via SuperAdminPanel),
-    //   e o painel oferece a escolha entre 'admin' (salão) e 'chat_admin' (MS Color IA).
-    role?: 'admin' | 'chat_admin'
+    //   e o painel oferece a escolha entre 'admin' (salão), 'chat_admin' (MS Color IA)
+    //   e 'full_admin' (Salão + IA).
+    role?: 'admin' | 'chat_admin' | 'full_admin'
     license_active?: boolean
     license_expires_at?: string | null
     observacoes?: string
   }): Promise<AdminUser> {
     // Validação defensiva — bloqueia tentativas de criar super_admin por aqui.
-    if (input.role && input.role !== 'admin' && input.role !== 'chat_admin') {
+    if (input.role && !['admin', 'chat_admin', 'full_admin'].includes(input.role)) {
       throw new Error('Tipo de conta inválido.')
     }
 
@@ -1628,7 +1630,7 @@ export const adminService = {
         id: signUpData.user.id,
         email: input.email,
         nome: input.nome,
-        // ★ aceita o role escolhido (admin ou chat_admin), default 'admin'
+        // ★ aceita o role escolhido (admin, chat_admin ou full_admin), default 'admin'
         role: input.role ?? 'admin',
         license_active: input.license_active ?? true,
         license_expires_at: input.license_expires_at ?? null,
