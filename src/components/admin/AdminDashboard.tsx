@@ -1,7 +1,36 @@
 // src/components/admin/AdminDashboard.tsx
+//
+// Painel principal do admin com sidebar + rotas filhas.
+//
+// Comportamento por role (carregada de admin_users.role):
+//
+//   • super_admin → todos os menus + acesso a rotas restritas
+//                   (Pastas IA, Administradores). Também enxerga
+//                   "MS Color IA" no menu pra poder testar a experiência
+//                   do chat_admin sem trocar de conta.
+//
+//   • admin       → Clientes, Planos, Documentos, Configurações
+//                   (comportamento legado, full salão pagante).
+//
+//   • chat_admin  → ★ NOVO: apenas "MS Color IA" + "Configurações".
+//                   Tentar abrir qualquer rota restrita via URL
+//                   (ex: /admin/clients direto) → redireciona pra
+//                   /admin/ms-color-ia. Defesa em profundidade contra
+//                   alguém colar URL no navegador.
+//
+// IMPORTANTE: durante o ~200ms inicial em que currentAdmin ainda é null
+// (loading), o filterRole cai pra 'admin' como default sensato. Isso
+// evita flicker no menu pra contas normais. Pro chat_admin, há uma
+// janela brevíssima em que ele veria o menu de admin antes de a query
+// terminar — RLS bloqueia os dados nesse intervalo, então é só
+// cosmético, sem implicação de segurança.
+
 import React, { useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom'
-import { Users, Layers, LogOut, Palette, Settings, FolderOpen, Menu, X, ChevronRight, FileText, Shield } from 'lucide-react'
+import {
+  Users, Layers, LogOut, Palette, Settings, FolderOpen,
+  Menu, X, ChevronRight, FileText, Shield, Sparkles,
+} from 'lucide-react'
 import { adminService, AdminUser } from '../../lib/services'
 import { ClientsManager } from './ClientsManager'
 import { PlansManager } from './PlansManager'
@@ -9,25 +38,41 @@ import { FoldersManager } from './FoldersManager'
 import SettingsEditor from './SettingsEditor'
 import { DocumentsHub } from './documents/DocumentsHub'
 import { SuperAdminPanel } from './SuperAdminPanel'
+import { MsColorIAPage } from './MsColorIAPage'
 import { ThemeProvider, useTheme, THEMES, ThemeName, Theme } from '../../lib/theme'
 
 interface Props {
   onLogout: () => void
 }
 
-const NAV_ITEMS: Array<{
+// Modelo de menu agora declara EXPLICITAMENTE quais roles enxergam cada item,
+// substituindo o flag binário `superOnly?: boolean` anterior. Mais flexível
+// pra futuras roles (ex: 'analytics_admin') e mais explícito sobre quem vê o quê.
+type NavItem = {
   to: string
   label: string
   icon: typeof Users
   description: string
-  superOnly?: boolean
-}> = [
-  { to: '/admin/clients', label: 'Clientes', icon: Users, description: 'Gerenciar clientes' },
-  { to: '/admin/plans', label: 'Planos', icon: Layers, description: 'Planos e pacotes' },
-  { to: '/admin/documents', label: 'Documentos', icon: FileText, description: 'Tags e templates de PDF' },
-  { to: '/admin/folders', label: 'Pastas IA', icon: FolderOpen, description: 'Pastas de análise IA', superOnly: true },
-  { to: '/admin/settings', label: 'Configurações', icon: Settings, description: 'Ajustes do sistema' },
-  { to: '/admin/super', label: 'Administradores', icon: Shield, description: 'Licenças e contas', superOnly: true },
+  roles: AdminUser['role'][]
+}
+
+const NAV_ITEMS: NavItem[] = [
+  // ★ Item novo: MS Color IA. Visível para chat_admin (página principal dele)
+  //   e para super_admin (pra Marília conseguir testar a experiência sem
+  //   precisar criar conta separada).
+  { to: '/admin/ms-color-ia', label: 'MS Color IA', icon: Sparkles,
+    description: 'Simulações de cabelos, maquiagem e mais',
+    roles: ['chat_admin', 'super_admin'] },
+
+  { to: '/admin/clients',   label: 'Clientes',       icon: Users,       description: 'Gerenciar clientes',         roles: ['admin', 'super_admin'] },
+  { to: '/admin/plans',     label: 'Planos',         icon: Layers,      description: 'Planos e pacotes',           roles: ['admin', 'super_admin'] },
+  { to: '/admin/documents', label: 'Documentos',     icon: FileText,    description: 'Tags e templates de PDF',    roles: ['admin', 'super_admin'] },
+  { to: '/admin/folders',   label: 'Pastas IA',      icon: FolderOpen,  description: 'Pastas de análise IA',       roles: ['super_admin'] },
+
+  // Configurações é o único item que TODOS veem (chat_admin vê sua versão resumida).
+  { to: '/admin/settings',  label: 'Configurações',  icon: Settings,    description: 'Ajustes do sistema',         roles: ['admin', 'super_admin', 'chat_admin'] },
+
+  { to: '/admin/super',     label: 'Administradores', icon: Shield,     description: 'Licenças e contas',          roles: ['super_admin'] },
 ]
 
 // Global nav context so ClientsManager can trigger the drawer
@@ -51,13 +96,27 @@ function AdminDashboardInner({ onLogout }: Props) {
   const location = useLocation()
   const drawerRef = useRef<HTMLDivElement>(null)
 
-  // Carrega o admin atual pra saber a role e filtrar o menu
+  // Carrega o admin atual pra saber a role e filtrar o menu + rotas
   useEffect(() => {
     adminService.getCurrentAdmin().then(setCurrentAdmin)
   }, [])
 
-  const isSuperAdmin = currentAdmin?.role === 'super_admin'
-  const visibleNavItems = NAV_ITEMS.filter(item => !item.superOnly || isSuperAdmin)
+  // ── Helpers de role ─────────────────────────────────────────────────
+  //
+  // role real (pode ser null durante a 1ª query async)
+  const role         = currentAdmin?.role ?? null
+  const isSuperAdmin = role === 'super_admin'
+  const isChatAdmin  = role === 'chat_admin'
+
+  // Default sensato durante o load inicial: 'admin' (caso mais comum).
+  // Isso evita o menu piscar/vazar enquanto a query roda.
+  const filterRole: AdminUser['role'] = role ?? 'admin'
+  const visibleNavItems = NAV_ITEMS.filter(item => item.roles.includes(filterRole))
+
+  // Onde redirecionar quando alguém bate em rota proibida.
+  // chat_admin → home dele; outros (admin tentando rota super_admin-only)
+  // → /admin/clients (comportamento legado).
+  const fallbackHome = isChatAdmin ? '/admin/ms-color-ia' : '/admin/clients'
 
   // Close on route change
   useEffect(() => { setNavOpen(false) }, [location.pathname])
@@ -86,6 +145,9 @@ function AdminDashboardInner({ onLogout }: Props) {
   }
 
   const isClientsRoute = location.pathname.startsWith('/admin/clients')
+
+  // Header label muda sutilmente pra chat_admin (mais coerente com o produto)
+  const headerSubtitle = isChatAdmin ? 'MS Color IA' : 'Painel Admin'
 
   return (
     <NavContext.Provider value={{ openNav: () => setNavOpen(true) }}>
@@ -142,7 +204,7 @@ function AdminDashboardInner({ onLogout }: Props) {
               </div>
               <div>
                 <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.headerText }}>MS Colors</p>
-                <p style={{ margin: 0, fontSize: 11, color: t.headerTextDim }}>Painel Admin</p>
+                <p style={{ margin: 0, fontSize: 11, color: t.headerTextDim }}>{headerSubtitle}</p>
               </div>
             </div>
             <button
@@ -311,43 +373,83 @@ function AdminDashboardInner({ onLogout }: Props) {
         {/* ── Main content ── */}
         <main className={isClientsRoute ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1'}>
           <Routes>
-            <Route path="clients/*" element={<ClientsManager onOpenNav={() => setNavOpen(true)} />} />
+
+            {/* ═══ MS Color IA — home do chat_admin ═══════════════════ */}
+            {/* Acessível a chat_admin (uso normal) e super_admin (teste).
+                Admin "normal" (salão) tentando abrir cai no Navigate. */}
+            <Route path="ms-color-ia" element={
+              (isChatAdmin || isSuperAdmin)
+                ? <MsColorIAPage />
+                : <Navigate to={fallbackHome} replace />
+            } />
+
+            {/* ═══ Rotas restritas: chat_admin não passa ══════════════ */}
+
+            <Route path="clients/*" element={
+              isChatAdmin
+                ? <Navigate to="/admin/ms-color-ia" replace />
+                : <ClientsManager onOpenNav={() => setNavOpen(true)} />
+            } />
+
             <Route path="plans/*" element={
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-                <PlansManager />
-              </div>
+              isChatAdmin
+                ? <Navigate to="/admin/ms-color-ia" replace />
+                : <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+                    <PlansManager />
+                  </div>
             } />
+
             <Route path="documents/*" element={
-              <div className="h-full">
-                <DocumentsHub />
-              </div>
+              isChatAdmin
+                ? <Navigate to="/admin/ms-color-ia" replace />
+                : <div className="h-full">
+                    <DocumentsHub />
+                  </div>
             } />
-            {/* Pastas IA: apenas super_admin */}
+
+            {/* ═══ Rotas super_admin only ═════════════════════════════ */}
+
             <Route path="folders" element={
               isSuperAdmin ? (
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
                   <FoldersManager />
                 </div>
               ) : (
-                <Navigate to="/admin/clients" replace />
+                // chat_admin → home dele; admin normal → /admin/clients
+                <Navigate to={fallbackHome} replace />
               )
             } />
-            <Route path="settings" element={
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-                <SettingsEditor />
-              </div>
-            } />
-            {/* Painel Super Admin: apenas super_admin */}
+
             <Route path="super" element={
               isSuperAdmin ? (
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
                   <SuperAdminPanel />
                 </div>
               ) : (
-                <Navigate to="/admin/clients" replace />
+                <Navigate to={fallbackHome} replace />
               )
             } />
-            <Route index element={<Navigate to="clients" replace />} />
+
+            {/* ═══ Settings: todos veem (conteúdo filtrado dentro) ═══ */}
+
+            <Route path="settings" element={
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+                <SettingsEditor />
+              </div>
+            } />
+
+            {/* ═══ Index — redirect baseado em role ═══════════════════ */}
+            {/* Sem isso, /admin (sem path) ficaria em branco. chat_admin
+                vai pra MS Color IA; outros pra clients (legado). */}
+            <Route index element={
+              <Navigate to={isChatAdmin ? 'ms-color-ia' : 'clients'} replace />
+            } />
+
+            {/* Catch-all: qualquer URL inválida vira home do role atual */}
+            <Route path="*" element={
+              <Navigate to={isChatAdmin ? '/admin/ms-color-ia' : '/admin/clients'} replace />
+            } />
+
           </Routes>
         </main>
       </div>

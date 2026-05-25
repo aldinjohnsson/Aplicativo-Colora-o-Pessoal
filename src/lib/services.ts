@@ -90,7 +90,11 @@ export interface AdminUser {
   id: string
   email: string
   nome: string | null
-  role: 'super_admin' | 'admin'
+  // ★ Tipos de conta:
+  //   • super_admin → Marília. Gerencia tudo.
+  //   • admin       → Salão pagante. Full panel.
+  //   • chat_admin  → MS Color IA standalone (chat + config resumida).
+  role: 'super_admin' | 'admin' | 'chat_admin'
   license_active: boolean
   license_expires_at: string | null
   observacoes: string | null
@@ -1586,10 +1590,20 @@ export const adminService = {
     email: string
     password: string
     nome: string
+    // ★ NOVO: tipo de conta. Default 'admin' pra preservar compatibilidade
+    //   com todas as chamadas antigas que não passam este campo.
+    //   Só super_admin tem permissão pra criar contas (via SuperAdminPanel),
+    //   e o painel oferece a escolha entre 'admin' (salão) e 'chat_admin' (MS Color IA).
+    role?: 'admin' | 'chat_admin'
     license_active?: boolean
     license_expires_at?: string | null
     observacoes?: string
   }): Promise<AdminUser> {
+    // Validação defensiva — bloqueia tentativas de criar super_admin por aqui.
+    if (input.role && input.role !== 'admin' && input.role !== 'chat_admin') {
+      throw new Error('Tipo de conta inválido.')
+    }
+
     // Cliente Supabase TEMPORÁRIO sem persistência, pra não substituir
     // a sessão do super admin atual ao criar o usuário.
     const { createClient } = await import('@supabase/supabase-js')
@@ -1614,7 +1628,8 @@ export const adminService = {
         id: signUpData.user.id,
         email: input.email,
         nome: input.nome,
-        role: 'admin',
+        // ★ aceita o role escolhido (admin ou chat_admin), default 'admin'
+        role: input.role ?? 'admin',
         license_active: input.license_active ?? true,
         license_expires_at: input.license_expires_at ?? null,
         observacoes: input.observacoes ?? null,
@@ -1643,6 +1658,38 @@ export const adminService = {
       .delete()
       .eq('id', adminId)
     if (error) throw error
+  },
+
+  // ── MS Color IA: config compartilhada ───────────────────────────────
+  //
+  // chat_admin compartilha as ai_folders globais. A tabela ai_folders
+  // não tem coluna admin_id — folders são compartilhadas entre todos
+  // os admins por design. Esta função pega a folder mais antiga como
+  // "default" pro chat_admin. Se houver múltiplas folders, considere
+  // adicionar um flag is_default ou um setting global pra escolher.
+  //
+  // Requer policy ai_folders_chat_admin_read criada pela
+  // migration_chat_admin.sql (chat_admin não passa pelo filtro da
+  // policy admin_read antiga).
+  async getChatAdminDefaultFolder(): Promise<{ id: string; name: string; config: any } | null> {
+    const { data, error } = await supabase
+      .from('ai_folders')
+      .select('id, name, config')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (error) {
+      console.warn('[adminService.getChatAdminDefaultFolder] falhou:', error)
+      return null
+    }
+    if (!data) return null
+
+    const config = typeof data.config === 'string'
+      ? JSON.parse(data.config)
+      : data.config
+
+    return { id: data.id, name: data.name, config }
   },
 }
 

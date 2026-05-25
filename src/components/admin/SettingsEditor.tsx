@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon, Sparkles } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Image as ImageIcon, Sparkles, Loader2 } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
-import { adminService } from '../../lib/services'
+import { adminService, AdminUser } from '../../lib/services'
 
 // ── Modal de instrução de API Key ────────────────────────────────────────────
 
@@ -31,7 +31,6 @@ function ApiKeyHelpModal({ title, subtitle, steps, url, urlLabel, accentColor, o
         className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3"
           style={{ background: `${accentColor}10` }}>
           <div>
@@ -43,7 +42,6 @@ function ApiKeyHelpModal({ title, subtitle, steps, url, urlLabel, accentColor, o
           </button>
         </div>
 
-        {/* Steps */}
         <div className="px-5 py-4 space-y-3">
           {steps.map((step, i) => (
             <div key={i} className="flex gap-3 items-start">
@@ -60,7 +58,6 @@ function ApiKeyHelpModal({ title, subtitle, steps, url, urlLabel, accentColor, o
           ))}
         </div>
 
-        {/* CTA */}
         <div className="px-5 pb-5">
           <a
             href={url}
@@ -125,52 +122,41 @@ interface AppSettings {
   adminEmail: string
   resendApiKey: string
   fromEmail: string
-  logoStoragePath?: string   // path no bucket 'admin-logos'
+  logoStoragePath?: string
 
-  // ── Branding das Composições IA ─────────────────────────────────────
-  // Capa e contracapa anexadas ao PDF gerado pela feature Composições IA.
-  // Cada PDF (1 página, vetorial) fica em sua própria linha em
-  // admin_content (tipos 'ai_composition_cover' e 'ai_composition_final')
-  // pra evitar inflar o payload da row principal de settings.
   aiCompositionCoverBase64?:   string
   aiCompositionCoverFileName?: string
   aiCompositionFinalBase64?:   string
   aiCompositionFinalFileName?: string
 }
 
-// ── Helper: select → update ou insert ───────────────────────────────────────────
-// Filtra sempre por admin_id (campo FK) — nunca por id (PK da linha).
-// Sem esse filtro explícito o super_admin enxergaria linhas de outros admins
-// via RLS e o upsert poderia sobrescrever dados de outro usuário.
+// ── Helpers de admin_content ────────────────────────────────────────────────
+
 async function saveOrUpdate(type: string, content: Record<string, any>, adminId: string) {
-  // Verifica se já existe uma linha para este admin + type
   const { data: existing, error: selectErr } = await supabase
     .from('admin_content')
     .select('id')
-    .eq('admin_id', adminId)   // ← CORRIGIDO: era .eq('id', adminId)
+    .eq('admin_id', adminId)
     .eq('type', type)
     .maybeSingle()
 
   if (selectErr) throw new Error(selectErr.message)
 
   if (existing) {
-    // Linha existe → UPDATE pela chave composta (admin_id + type)
     const { error } = await supabase
       .from('admin_content')
       .update({ content, updated_at: new Date().toISOString() })
-      .eq('admin_id', adminId)  // ← CORRIGIDO: era .eq('id', adminId)
+      .eq('admin_id', adminId)
       .eq('type', type)
     if (error) throw new Error(error.message)
   } else {
-    // Linha não existe → INSERT com admin_id explícito
     const { error } = await supabase
       .from('admin_content')
-      .insert({ admin_id: adminId, type, content })  // ← CORRIGIDO: era { id: adminId }
+      .insert({ admin_id: adminId, type, content })
     if (error) throw new Error(error.message)
   }
 }
 
-// ── Helper: delete row de admin_content por type ────────────────────────────
 async function deleteRow(type: string, adminId: string) {
   const { error } = await supabase
     .from('admin_content')
@@ -180,10 +166,8 @@ async function deleteRow(type: string, adminId: string) {
   if (error) throw new Error(error.message)
 }
 
-// Serviço de storage — salva no localStorage E no Supabase
 const settingsStorageService = {
   async saveSettings(data: AppSettings) {
-    // ── 1. localStorage: salvar sem os base64 (cada PDF pode ter vários MB)
     try {
       const {
         pdfTemplateBase64:        _omit1,
@@ -192,17 +176,11 @@ const settingsStorageService = {
         ...rest
       } = data
       localStorage.setItem('app-settings', JSON.stringify(rest))
-    } catch {
-      // QuotaExceededError — ignora; Supabase é a fonte de verdade
-    }
+    } catch {}
 
-    // ── 2. Obter usuário atual explicitamente
-    // IMPORTANTE: nunca omitir este filtro. Sem ele, o super_admin (que enxerga
-    // todas as linhas via RLS) pode encontrar a linha de OUTRO admin e sobrescrevê-la.
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
 
-    // ── 3. Supabase: separar cada base64 em linha própria pra não estourar payload
     const {
       pdfTemplateBase64,
       aiCompositionCoverBase64,
@@ -210,10 +188,8 @@ const settingsStorageService = {
       ...settingsWithoutBlobs
     } = data
 
-    // 3a. Salvar configurações principais (sem nenhum base64).
     await saveOrUpdate('settings', settingsWithoutBlobs as any, user.id)
 
-    // 3b. Salvar template PDF do dossiê (Gemini) em linha separada
     if (pdfTemplateBase64) {
       await saveOrUpdate('pdf_template', {
         pdfTemplateBase64,
@@ -221,7 +197,6 @@ const settingsStorageService = {
       } as any, user.id)
     }
 
-    // 3c. Salvar capa das composições IA em linha separada
     if (aiCompositionCoverBase64) {
       await saveOrUpdate('ai_composition_cover', {
         pdfBase64: aiCompositionCoverBase64,
@@ -229,7 +204,6 @@ const settingsStorageService = {
       } as any, user.id)
     }
 
-    // 3d. Salvar contracapa das composições IA em linha separada
     if (aiCompositionFinalBase64) {
       await saveOrUpdate('ai_composition_final', {
         pdfBase64: aiCompositionFinalBase64,
@@ -240,11 +214,13 @@ const settingsStorageService = {
     return { success: true }
   },
 
-  /**
-   * Deleta as rows de capa ou contracapa das composições IA.
-   * Usado quando o admin clica no "trash" do upload — limpa o banco,
-   * não só o estado local.
-   */
+  async saveAiCompositionBranding(slot: 'cover' | 'final', base64: string, fileName: string) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    const type = slot === 'cover' ? 'ai_composition_cover' : 'ai_composition_final'
+    await saveOrUpdate(type, { pdfBase64: base64, fileName }, user.id)
+  },
+
   async deleteAiCompositionBranding(slot: 'cover' | 'final') {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada')
@@ -280,13 +256,9 @@ const settingsStorageService = {
     }
 
     try {
-      // Obter usuário atual — filtro explícito obrigatório para isolar por admin.
-      // Sem isso, o super_admin (USING true via is_super_admin) enxerga todas as
-      // linhas e .maybeSingle() pode retornar a linha de outro admin.
       const { data: { user } } = await supabase.auth.getUser()
       const adminId = user?.id
 
-      // Carrega tudo em paralelo: settings + 3 PDFs (template + capa + contracapa)
       const [
         { data: settingsRow },
         { data: tplRow },
@@ -303,20 +275,16 @@ const settingsStorageService = {
       const coverContent = coverRow?.content as { pdfBase64?: string; fileName?: string } | null
       const finalContent = finalRow?.content as { pdfBase64?: string; fileName?: string } | null
 
-      const merged: AppSettings = {
+      return {
         ...defaults,
         ...(settingsRow?.content as AppSettings ?? {}),
-        // Template do dossiê (Gemini)
         pdfTemplateBase64:   tplContent?.pdfTemplateBase64   ?? (settingsRow?.content as any)?.pdfTemplateBase64   ?? '',
         pdfTemplateFileName: tplContent?.pdfTemplateFileName ?? (settingsRow?.content as any)?.pdfTemplateFileName ?? '',
-        // Branding das composições IA
         aiCompositionCoverBase64:   coverContent?.pdfBase64 ?? '',
         aiCompositionCoverFileName: coverContent?.fileName  ?? '',
         aiCompositionFinalBase64:   finalContent?.pdfBase64 ?? '',
         aiCompositionFinalFileName: finalContent?.fileName  ?? '',
       }
-
-      return merged
     } catch (error) {
       console.error('Erro ao carregar configurações:', error)
       try {
@@ -332,14 +300,16 @@ if (typeof window !== 'undefined') {
   (window as any).settingsStorageService = settingsStorageService
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//   Componentes extraídos (reusados entre as views full e chat_admin)
+// ═══════════════════════════════════════════════════════════════════════════
+
 // ── Logo da marca ────────────────────────────────────────────────────────────
 
 const LOGO_BUCKET = 'admin-logos'
 
 function LogoSection({
-  currentPath,
-  onSave,
-  onRemove,
+  currentPath, onSave, onRemove,
 }: {
   currentPath: string
   onSave: (path: string) => void
@@ -455,11 +425,81 @@ function LogoSection({
   )
 }
 
-// ── PDF Modelo ──────────────────────────────────────────────────────────────
+// ── Card de chave Gemini (reusado por full e chat_admin) ────────────────
+
+function GeminiKeyCard({
+  value, onChange, onHelp, contextLabel,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onHelp: () => void
+  // Texto contextual de rodapé. Difere entre admin (genérico) e
+  // chat_admin (deixa claro que a chave é dele e ele paga pela uso).
+  contextLabel?: string
+}) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-purple-50">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/>
+              <path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/>
+              <path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Chave da IA Gemini</h2>
+            <p className="text-sm text-gray-500">Necessária para o chat MS Color IA funcionar</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-5 space-y-3">
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-sm font-medium text-gray-700">Chave da API Gemini</label>
+            <button
+              type="button"
+              onClick={onHelp}
+              className="inline-flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 font-medium"
+            >
+              <HelpCircle className="h-3.5 w-3.5" />
+              Como obter?
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              type="password"
+              value={value}
+              onChange={e => onChange(e.target.value)}
+              placeholder="AIza..."
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-28"
+            />
+            {value && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
+                ✓ Configurada
+              </span>
+            )}
+          </div>
+        </div>
+
+        {value && (
+          <div className="bg-violet-50 border border-violet-100 rounded-xl p-3">
+            <p className="text-sm text-violet-700">
+              {contextLabel || '✓ IA ativada — suas clientes poderão conversar com a consultora de coloração pessoal.'}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── PDF Modelo (reusado) ────────────────────────────────────────────────────
 
 function PdfTemplateSection({
-  currentFileName,
-  onSave,
+  currentFileName, onSave,
 }: {
   currentFileName: string
   onSave: (base64: string, fileName: string) => void
@@ -564,32 +604,21 @@ function PdfTemplateSection({
 }
 
 // ── Branding das Composições IA ─────────────────────────────────────────────
-//
-// Capa (1ª página) + Contracapa (última página) anexadas automaticamente em
-// todo PDF gerado pela feature "Composições IA". As imagens geradas pela IA
-// ficam entre elas — sem logo embutido. Assim o branding fica vetorial,
-// consistente, e trocar a identidade visual = trocar 2 arquivos aqui sem
-// regerar nenhuma imagem dos clientes.
 
-const AI_BRANDING_ACCENT = '#06b6d4'  // cyan-500 — distinto do PDF Modelo e do logo
+const AI_BRANDING_ACCENT = '#06b6d4'
 
 function AiCompositionBrandingSection({
-  coverFileName,
-  finalFileName,
-  onSaveCover,
-  onSaveFinal,
-  onRemoveCover,
-  onRemoveFinal,
+  coverFileName, finalFileName,
+  onSaveCover, onSaveFinal, onRemoveCover, onRemoveFinal,
 }: {
   coverFileName: string
   finalFileName: string
-  onSaveCover:   (base64: string, fileName: string) => void
-  onSaveFinal:   (base64: string, fileName: string) => void
-  onRemoveCover: () => void
-  onRemoveFinal: () => void
+  onSaveCover:   (base64: string, fileName: string) => Promise<void>
+  onSaveFinal:   (base64: string, fileName: string) => Promise<void>
+  onRemoveCover: () => Promise<void>
+  onRemoveFinal: () => Promise<void>
 }) {
   const { theme } = useTheme()
-
   return (
     <div className="rounded-2xl shadow-sm overflow-hidden" style={{ background: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}>
       <div
@@ -622,11 +651,9 @@ function AiCompositionBrandingSection({
           {' + '}
           <span style={{ color: theme.text3 }}>[imagens geradas pela IA]</span>
           {' + '}
-          <strong style={{ color: theme.text }}>[Contracapa]</strong>. As imagens
-          ficam limpas, sem logo — o branding vive só nessas duas páginas.
+          <strong style={{ color: theme.text }}>[Contracapa]</strong>.
         </p>
 
-        {/* Capa */}
         <BrandingSlot
           label="Capa (1ª página)"
           accent={AI_BRANDING_ACCENT}
@@ -636,7 +663,6 @@ function AiCompositionBrandingSection({
           onRemove={onRemoveCover}
         />
 
-        {/* Contracapa */}
         <BrandingSlot
           label="Contracapa (última página)"
           accent={AI_BRANDING_ACCENT}
@@ -650,51 +676,71 @@ function AiCompositionBrandingSection({
   )
 }
 
-// ─── Slot reutilizável (1 PDF) ─────────────────────────────────────────────
+type SlotPhase = 'idle' | 'reading' | 'saving' | 'saved' | 'error'
 
 function BrandingSlot({
-  label,
-  accent,
-  theme,
-  fileName,
-  onSave,
-  onRemove,
+  label, accent, theme, fileName, onSave, onRemove,
 }: {
   label:    string
   accent:   string
   theme:    any
   fileName: string
-  onSave:   (base64: string, fileName: string) => void
-  onRemove: () => void
+  onSave:   (base64: string, fileName: string) => Promise<void>
+  onRemove: () => Promise<void>
 }) {
-  const [saving, setSaving] = useState(false)
-  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [phase, setPhase]         = useState<SlotPhase>('idle')
+  const [errorMsg, setErrorMsg]   = useState<string | null>(null)
+  const [fileSizeMB, setFileSize] = useState<number>(0)
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || file.type !== 'application/pdf') return
     e.target.value = ''
-    setSaving(true)
+
+    setFileSize(file.size / 1024 / 1024)
+    setErrorMsg(null)
+
     try {
+      setPhase('reading')
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
-        reader.onload = () => resolve(reader.result as string)
-        reader.onerror = reject
+        reader.onload  = () => resolve(reader.result as string)
+        reader.onerror = () => reject(new Error('Falha ao ler arquivo'))
         reader.readAsDataURL(file)
       })
-      onSave(base64, file.name)
-      setStatus('saved')
-      setTimeout(() => setStatus('idle'), 3000)
+
+      setPhase('saving')
+      await onSave(base64, file.name)
+
+      setPhase('saved')
+      setTimeout(() => setPhase('idle'), 4000)
     } catch (err: any) {
-      alert('Erro ao processar PDF: ' + err.message)
-      setStatus('error')
-    } finally { setSaving(false) }
+      console.error('[BrandingSlot] save failed:', err)
+      setErrorMsg(err?.message || 'Erro ao salvar PDF no banco')
+      setPhase('error')
+    }
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!confirm(`Remover "${label.toLowerCase()}"? Composições futuras não terão mais essa página.`)) return
-    onRemove()
+    setErrorMsg(null)
+    setPhase('saving')
+    try {
+      await onRemove()
+      setPhase('idle')
+    } catch (err: any) {
+      console.error('[BrandingSlot] delete failed:', err)
+      setErrorMsg(err?.message || 'Erro ao remover')
+      setPhase('error')
+    }
   }
+
+  const busy = phase === 'reading' || phase === 'saving'
+  const phaseLabel =
+    phase === 'reading' ? `Lendo arquivo (${fileSizeMB.toFixed(1)} MB)…`   :
+    phase === 'saving'  ? `Enviando ao banco (${fileSizeMB.toFixed(1)} MB)…` :
+    phase === 'saved'   ? 'Salvo no banco!' :
+    'Salvando…'
 
   return (
     <div className="space-y-2">
@@ -702,7 +748,7 @@ function BrandingSlot({
         {label}
       </p>
 
-      {fileName ? (
+      {fileName && !busy && phase !== 'error' ? (
         <div className="flex items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, ${accent} 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, ${accent} 30%, ${theme.border})` }}>
           <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `color-mix(in srgb, ${accent} 18%, ${theme.surface2})` }}>
             <FileText className="h-5 w-5" style={{ color: accent }} />
@@ -713,9 +759,8 @@ function BrandingSlot({
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}>
-              <Upload className="h-3.5 w-3.5" />
-              {saving ? 'Salvando...' : 'Trocar'}
-              <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
+              <Upload className="h-3.5 w-3.5" /> Trocar
+              <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} />
             </label>
             <button
               onClick={handleDelete}
@@ -727,32 +772,59 @@ function BrandingSlot({
           </div>
         </div>
       ) : (
-        <label className={`flex flex-col items-center gap-3 rounded-xl p-6 cursor-pointer transition-colors ${saving ? 'opacity-60 pointer-events-none' : ''}`} style={{ border: `2px dashed color-mix(in srgb, ${accent} 40%, ${theme.border})` }}>
+        <label
+          className={`flex flex-col items-center gap-3 rounded-xl p-6 cursor-pointer transition-colors ${busy ? 'opacity-90 pointer-events-none' : ''}`}
+          style={{ border: `2px dashed color-mix(in srgb, ${accent} 40%, ${theme.border})` }}
+        >
           <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `color-mix(in srgb, ${accent} 15%, ${theme.surface2})` }}>
-            {saving
-              ? <div className="animate-spin h-5 w-5 rounded-full" style={{ border: `2px solid ${accent}`, borderTopColor: 'transparent' }} />
+            {busy
+              ? <Loader2 className="h-5 w-5 animate-spin" style={{ color: accent }} />
               : <Upload className="h-5 w-5" style={{ color: accent }} />}
           </div>
           <div className="text-center">
             <p className="text-sm font-medium" style={{ color: theme.text }}>
-              {saving ? 'Salvando PDF no banco...' : 'Clique para enviar o PDF'}
+              {busy ? phaseLabel : (fileName ? `Substituir "${fileName}"` : 'Clique para enviar o PDF')}
             </p>
-            <p className="text-xs mt-1" style={{ color: theme.text3 }}>1 página · vetorial</p>
+            <p className="text-xs mt-1" style={{ color: theme.text3 }}>
+              {busy
+                ? 'NÃO saia desta tela até o save completar'
+                : '1 página · vetorial · até 20 MB'}
+            </p>
           </div>
-          <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={saving} />
+          <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} disabled={busy} />
         </label>
       )}
 
-      {status === 'saved' && (
-        <div className="flex items-center gap-2 text-xs text-green-600">
-          <CheckCircle className="h-3.5 w-3.5" /> Salvo!
+      {phase === 'saved' && (
+        <div className="flex items-center gap-2 text-xs text-green-600 font-medium">
+          <CheckCircle className="h-3.5 w-3.5" /> {phaseLabel}
+        </div>
+      )}
+
+      {phase === 'error' && errorMsg && (
+        <div className="flex items-start gap-2 rounded-lg p-2 text-xs" style={{ background: 'color-mix(in srgb, #ef4444 10%, transparent)', color: '#b91c1c' }}>
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium">Falha ao salvar — tente de novo</p>
+            <p className="opacity-80 break-words mt-0.5">{errorMsg}</p>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-// ── Settings Editor ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//   SettingsEditor — render condicional por role
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Três views diferentes baseadas no role do usuário logado:
+//
+//   • super_admin → tudo (Drive, Gemini, OpenAI, Email, PhotoTypes, Tags, Logo,
+//                   PDF Modelo, AI Composition Branding, modais de ajuda)
+//   • admin       → tudo EXCETO PhotoTypes/Tags (essas são só do super)
+//   • chat_admin  → SOMENTE Chave Gemini + PDF Modelo (configuração mínima
+//                   pro MS Color IA standalone funcionar)
 
 export default function SettingsEditor() {
   const [settings, setSettings] = useState<AppSettings>({
@@ -781,13 +853,13 @@ export default function SettingsEditor() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+  const [userRole, setUserRole] = useState<AdminUser['role'] | null>(null)
   const [showGeminiHelp, setShowGeminiHelp] = useState(false)
   const [showOpenAIHelp, setShowOpenAIHelp] = useState(false)
 
   useEffect(() => {
     loadSettings()
-    adminService.getCurrentAdmin().then(a => setIsSuperAdmin(a?.role === 'super_admin'))
+    adminService.getCurrentAdmin().then(a => setUserRole(a?.role ?? null))
   }, [])
 
   const loadSettings = async () => {
@@ -827,10 +899,101 @@ export default function SettingsEditor() {
     )
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // VIEW 1 — chat_admin: configuração mínima
+  // ═══════════════════════════════════════════════════════════════════
+  if (userRole === 'chat_admin') {
+    return (
+      <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Sua chave Gemini e o template do PDF que o chat gera
+            </p>
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {saving
+              ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+              : <Save className="h-4 w-4" />}
+            Salvar
+          </button>
+        </div>
+
+        {message && (
+          <div className={`flex items-center gap-2 rounded-xl px-4 py-3 text-sm ${
+            message.type === 'success'
+              ? 'bg-green-50 border border-green-200 text-green-800'
+              : 'bg-red-50 border border-red-200 text-red-800'
+          }`}>
+            {message.type === 'success'
+              ? <CheckCircle className="h-4 w-4 shrink-0" />
+              : <AlertCircle className="h-4 w-4 shrink-0" />}
+            {message.text}
+          </div>
+        )}
+
+        {/* Aviso de primeiro uso, se ainda não configurou */}
+        {!settings.geminiApiKey && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <p className="text-sm text-amber-800 font-medium">⚠️ Configure sua chave Gemini para usar o chat</p>
+            <p className="text-xs text-amber-700 mt-1">
+              Sem a chave, o chat MS Color IA não funciona. Clique em "Como obter?" abaixo se ainda não tem uma.
+            </p>
+          </div>
+        )}
+
+        <GeminiKeyCard
+          value={settings.geminiApiKey}
+          onChange={v => setSettings({ ...settings, geminiApiKey: v })}
+          onHelp={() => setShowGeminiHelp(true)}
+          contextLabel="✓ Chave configurada. O uso é cobrado direto no seu Google Cloud — você tem controle total da sua conta."
+        />
+
+        <PdfTemplateSection
+          currentFileName={settings.pdfTemplateFileName || ''}
+          onSave={(base64, fileName) => {
+            const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
+            setSettings(updated)
+            settingsStorageService.saveSettings(updated)
+          }}
+        />
+
+        {showGeminiHelp && (
+          <ApiKeyHelpModal
+            title="Como obter a chave Gemini"
+            subtitle="Gratuita · Google AI Studio"
+            accentColor="#7c3aed"
+            url="https://aistudio.google.com/apikey"
+            urlLabel="Abrir Google AI Studio"
+            onClose={() => setShowGeminiHelp(false)}
+            steps={[
+              { text: 'Acesse o Google AI Studio pelo botão abaixo' },
+              { text: 'Faça login com sua conta Google' },
+              { text: 'Clique em "Create API key" no menu lateral esquerdo' },
+              { text: 'Selecione um projeto existente ou crie um novo' },
+              { text: 'Copie a chave gerada e cole no campo acima', highlight: true },
+            ]}
+          />
+        )}
+
+      </div>
+    )
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VIEW 2 — admin / super_admin: configuração completa
+  // ═══════════════════════════════════════════════════════════════════
+  const isSuperAdmin = userRole === 'super_admin'
+
   return (
     <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
 
-      {/* Cabeçalho */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
@@ -848,7 +1011,6 @@ export default function SettingsEditor() {
         </button>
       </div>
 
-      {/* Feedback */}
       {message && (
         <div className={`flex items-center gap-2 rounded-xl px-4 py-3 text-sm ${
           message.type === 'success'
@@ -862,67 +1024,15 @@ export default function SettingsEditor() {
         </div>
       )}
 
-      {/* ── Google Drive ─────────────────────────────────────────────────── */}
       <DriveConnectionSection />
 
-      {/* ── Assistente de IA Gemini ─────────────────────────────────────────── */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-purple-50">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/>
-                <path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/>
-                <path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-gray-900">Assistente de IA Gemini</h2>
-              <p className="text-sm text-gray-500">Configure a IA para suas clientes</p>
-            </div>
-          </div>
-        </div>
+      <GeminiKeyCard
+        value={settings.geminiApiKey}
+        onChange={v => setSettings({ ...settings, geminiApiKey: v })}
+        onHelp={() => setShowGeminiHelp(true)}
+      />
 
-        <div className="px-6 py-5 space-y-3">
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-sm font-medium text-gray-700">Chave da API Gemini</label>
-              <button
-                type="button"
-                onClick={() => setShowGeminiHelp(true)}
-                className="inline-flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 font-medium"
-              >
-                <HelpCircle className="h-3.5 w-3.5" />
-                Como obter?
-              </button>
-            </div>
-            <div className="relative">
-              <input
-                type="password"
-                value={settings.geminiApiKey}
-                onChange={e => setSettings({ ...settings, geminiApiKey: e.target.value })}
-                placeholder="AIza..."
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-28"
-              />
-              {settings.geminiApiKey && (
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
-                  ✓ Configurada
-                </span>
-              )}
-            </div>
-          </div>
-
-          {settings.geminiApiKey && (
-            <div className="bg-violet-50 border border-violet-100 rounded-xl p-3">
-              <p className="text-sm text-violet-700">
-                ✓ IA ativada — suas clientes poderão conversar com a consultora de coloração pessoal.
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Geração de Imagem OpenAI (gpt-image-1) ───────────────────────── */}
+      {/* ── OpenAI ─────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
           <div className="flex items-center gap-3">
@@ -980,7 +1090,7 @@ export default function SettingsEditor() {
         </div>
       </div>
 
-      {/* ── E-mail (Resend) ─────────────────────────────────────────────────── */}
+      {/* ── E-mail (Resend) ─────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-cyan-50">
           <div className="flex items-center gap-3">
@@ -996,9 +1106,7 @@ export default function SettingsEditor() {
 
         <div className="px-6 py-5 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Seu e-mail (para receber notificações)
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Seu e-mail (para receber notificações)</label>
             <input
               type="email"
               value={settings.adminEmail}
@@ -1006,15 +1114,11 @@ export default function SettingsEditor() {
               placeholder="voce@seudominio.com.br"
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
             />
-            <p className="text-xs text-gray-500 mt-1.5">
-              Você receberá uma cópia do contrato toda vez que uma cliente assinar.
-            </p>
+            <p className="text-xs text-gray-500 mt-1.5">Você receberá uma cópia do contrato toda vez que uma cliente assinar.</p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              E-mail remetente
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">E-mail remetente</label>
             <input
               type="email"
               value={settings.fromEmail}
@@ -1023,15 +1127,12 @@ export default function SettingsEditor() {
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
             />
             <p className="text-xs text-gray-500 mt-1.5">
-              Deve ser um domínio verificado no Resend. Para testes use{' '}
-              <span className="font-mono">onboarding@resend.dev</span>.
+              Deve ser um domínio verificado no Resend. Para testes use <span className="font-mono">onboarding@resend.dev</span>.
             </p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Chave da API Resend
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Chave da API Resend</label>
             <div className="relative">
               <input
                 type="password"
@@ -1048,10 +1149,7 @@ export default function SettingsEditor() {
             </div>
             <p className="text-xs text-gray-500 mt-1.5">
               Crie sua conta grátis em{' '}
-              <a href="https://resend.com" target="_blank" rel="noopener noreferrer"
-                className="text-blue-600 hover:underline font-medium">
-                resend.com
-              </a>
+              <a href="https://resend.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">resend.com</a>
               {' '}· Plano gratuito inclui 3.000 e-mails/mês.
             </p>
           </div>
@@ -1064,21 +1162,15 @@ export default function SettingsEditor() {
             </div>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-              <p className="text-sm text-amber-700">
-                ⚠️ Sem e-mail configurado, contratos não serão enviados por e-mail.
-              </p>
+              <p className="text-sm text-amber-700">⚠️ Sem e-mail configurado, contratos não serão enviados por e-mail.</p>
             </div>
           )}
         </div>
       </div>
 
-      {/* Tipos de fotos — apenas super admin gerencia */}
       {isSuperAdmin && <PhotoTypesManager />}
-
-      {/* Tags de Informação IA — apenas super admin gerencia */}
       {isSuperAdmin && <TagsManager />}
 
-      {/* Logo da marca */}
       <LogoSection
         currentPath={settings.logoStoragePath || ''}
         onSave={(path) => {
@@ -1093,7 +1185,6 @@ export default function SettingsEditor() {
         }}
       />
 
-      {/* PDF Modelo (Gemini → dossiê capilar) */}
       <PdfTemplateSection
         currentFileName={settings.pdfTemplateFileName || ''}
         onSave={(base64, fileName) => {
@@ -1103,41 +1194,43 @@ export default function SettingsEditor() {
         }}
       />
 
-      {/* Branding das Composições IA (capa + contracapa anexadas ao PDF gerado pela OpenAI) */}
       <AiCompositionBrandingSection
         coverFileName={settings.aiCompositionCoverFileName || ''}
         finalFileName={settings.aiCompositionFinalFileName || ''}
-        onSaveCover={(base64, fileName) => {
-          const updated = { ...settings, aiCompositionCoverBase64: base64, aiCompositionCoverFileName: fileName }
-          setSettings(updated)
-          settingsStorageService.saveSettings(updated)
+        onSaveCover={async (base64, fileName) => {
+          await settingsStorageService.saveAiCompositionBranding('cover', base64, fileName)
+          setSettings(prev => ({
+            ...prev,
+            aiCompositionCoverBase64:   base64,
+            aiCompositionCoverFileName: fileName,
+          }))
         }}
-        onSaveFinal={(base64, fileName) => {
-          const updated = { ...settings, aiCompositionFinalBase64: base64, aiCompositionFinalFileName: fileName }
-          setSettings(updated)
-          settingsStorageService.saveSettings(updated)
+        onSaveFinal={async (base64, fileName) => {
+          await settingsStorageService.saveAiCompositionBranding('final', base64, fileName)
+          setSettings(prev => ({
+            ...prev,
+            aiCompositionFinalBase64:   base64,
+            aiCompositionFinalFileName: fileName,
+          }))
         }}
-        onRemoveCover={() => {
-          const updated = { ...settings, aiCompositionCoverBase64: '', aiCompositionCoverFileName: '' }
-          setSettings(updated)
-          // Apaga a linha do banco direto — só zerar o estado não basta porque
-          // saveSettings só faz upsert quando há base64.
-          settingsStorageService.deleteAiCompositionBranding('cover').catch(err =>
-            console.warn('Falha ao deletar capa do banco (estado local limpo mesmo assim):', err)
-          )
-          settingsStorageService.saveSettings(updated)
+        onRemoveCover={async () => {
+          await settingsStorageService.deleteAiCompositionBranding('cover')
+          setSettings(prev => ({
+            ...prev,
+            aiCompositionCoverBase64:   '',
+            aiCompositionCoverFileName: '',
+          }))
         }}
-        onRemoveFinal={() => {
-          const updated = { ...settings, aiCompositionFinalBase64: '', aiCompositionFinalFileName: '' }
-          setSettings(updated)
-          settingsStorageService.deleteAiCompositionBranding('final').catch(err =>
-            console.warn('Falha ao deletar contracapa do banco (estado local limpo mesmo assim):', err)
-          )
-          settingsStorageService.saveSettings(updated)
+        onRemoveFinal={async () => {
+          await settingsStorageService.deleteAiCompositionBranding('final')
+          setSettings(prev => ({
+            ...prev,
+            aiCompositionFinalBase64:   '',
+            aiCompositionFinalFileName: '',
+          }))
         }}
       />
 
-      {/* ── Modais de ajuda de API Key ────────────────────────── */}
       {showGeminiHelp && (
         <ApiKeyHelpModal
           title="Como obter a chave Gemini"
