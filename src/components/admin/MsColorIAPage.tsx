@@ -8,16 +8,16 @@
 //   3. Esta página:
 //      a) Confirma a role
 //      b) Verifica chave Gemini
-//      c) Carrega ai_folder configurada pelo super_admin
+//      c) Carrega TODAS as ai_folders disponíveis → admin escolhe qual usar
 //      d) Permite ao admin fazer upload de uma foto de referência
-//         (obrigatória para as simulações — sem ela o Gemini não tem base)
+//         (independente da pasta — persiste mesmo ao trocar de pasta)
 //      e) Renderiza GeminiChat em modo STANDALONE com a foto como referência
 
 import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, AlertCircle, Loader2, Settings as SettingsIcon,
-  Camera, ImagePlus, X, RefreshCw,
+  Camera, ImagePlus, X, RefreshCw, FolderOpen, ChevronDown, Check,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { adminService } from '../../lib/services'
@@ -25,12 +25,17 @@ import { GeminiChat } from '../client/GeminiChat'
 
 // ─── Types ─────────────────────────────────────────────────────────────
 
+interface FolderOption {
+  id: string
+  name: string
+  config: any
+}
+
 interface LoadedConfig {
   adminName:        string
   adminId:          string
-  systemPrompt:     string
-  folderConfig:     any
   geminiKeyPresent: boolean
+  folders:          FolderOption[]
 }
 
 // ─── Component ─────────────────────────────────────────────────────────
@@ -45,6 +50,10 @@ export function MsColorIAPage() {
     | { kind: 'ready'; data: LoadedConfig }
   >({ kind: 'loading' })
 
+  // ── Pasta selecionada ────────────────────────────────────────────────
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null)
+  const [folderDropdownOpen, setFolderDropdownOpen] = useState(false)
+
   // Foto de referência: guardamos a URL pública do Supabase Storage
   // (blob URL não funciona com o fetch interno do GeminiChat).
   const [refPhotoUrl,     setRefPhotoUrl]     = useState<string | null>(null)
@@ -53,6 +62,14 @@ export function MsColorIAPage() {
   const [uploadError,     setUploadError]     = useState<string | null>(null)
 
   useEffect(() => { void load() }, [])
+
+  // Fecha dropdown ao clicar fora
+  useEffect(() => {
+    if (!folderDropdownOpen) return
+    const handler = () => setFolderDropdownOpen(false)
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [folderDropdownOpen])
 
   // ─── Load ─────────────────────────────────────────────────────────
 
@@ -80,15 +97,14 @@ export function MsColorIAPage() {
       const geminiKey = (settingsRow?.content as any)?.geminiApiKey as string | undefined
       const geminiKeyPresent = !!(geminiKey && geminiKey.trim())
 
-      const { data: folderRow, error: folderErr } = await supabase
+      // ── Carrega TODAS as pastas disponíveis ──────────────────────────
+      const { data: folderRows, error: folderErr } = await supabase
         .from('ai_folders')
         .select('id, name, config')
         .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle()
 
       if (folderErr) {
-        console.error('[MsColorIAPage] erro ao carregar ai_folder:', folderErr)
+        console.error('[MsColorIAPage] erro ao carregar ai_folders:', folderErr)
         setState({
           kind: 'error',
           message: 'Não foi possível carregar as categorias de simulação. ' +
@@ -97,7 +113,7 @@ export function MsColorIAPage() {
         return
       }
 
-      if (!folderRow) {
+      if (!folderRows || folderRows.length === 0) {
         setState({
           kind: 'error',
           message: 'Nenhuma pasta de IA foi configurada pelo administrador. Entre em contato com o suporte.',
@@ -105,19 +121,28 @@ export function MsColorIAPage() {
         return
       }
 
-      const folderConfig = typeof folderRow.config === 'string'
-        ? JSON.parse(folderRow.config)
-        : folderRow.config
-
-      const systemPrompt = buildSystemPrompt(admin.nome || 'Você', folderConfig)
+      const folders: FolderOption[] = folderRows.map(row => ({
+        id: row.id,
+        name: row.name,
+        config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+      }))
 
       // Tenta carregar foto salva de uma sessão anterior
       await loadPersistedRefPhoto(admin.id)
 
       setState({
         kind: 'ready',
-        data: { adminName: admin.nome || 'Você', adminId: admin.id, systemPrompt, folderConfig, geminiKeyPresent },
+        data: {
+          adminName:        admin.nome || 'Você',
+          adminId:          admin.id,
+          geminiKeyPresent,
+          folders,
+        },
       })
+
+      // Pré-seleciona a primeira pasta
+      setSelectedFolderId(folders[0].id)
+
     } catch (e: any) {
       console.error('[MsColorIAPage] load failed:', e)
       setState({ kind: 'error', message: e?.message || 'Erro ao carregar' })
@@ -125,16 +150,12 @@ export function MsColorIAPage() {
   }
 
   // ─── Foto persistida ──────────────────────────────────────────────
-  // Se o admin já tiver enviado uma foto nesta sessão / sessão anterior,
-  // restaura a URL pública do Supabase Storage pro `referencePhotoUrl`.
 
   async function loadPersistedRefPhoto(adminId: string) {
     const path = `ms-color-ia-ref/${adminId}/ref_photo.jpg`
-    // Só chama getPublicUrl — não bate na rede, é apenas montagem de URL.
     const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
     if (!data?.publicUrl) return
 
-    // Valida se o arquivo realmente existe (HEAD request barato).
     try {
       const res = await fetch(data.publicUrl, { method: 'HEAD' })
       if (res.ok) {
@@ -163,7 +184,6 @@ export function MsColorIAPage() {
     if (state.kind !== 'ready') return
     const adminId = state.data.adminId
 
-    // Preview imediato via object URL (só pra mostrar enquanto sobe)
     const previewUrl = URL.createObjectURL(file)
     setRefPhotoPreview(previewUrl)
     setRefPhotoUrl(null)
@@ -171,7 +191,6 @@ export function MsColorIAPage() {
     setUploadingPhoto(true)
 
     try {
-      // Converte pra JPEG pra economizar espaço (canvas resize)
       const compressedBlob = await compressImage(file, 1280, 0.88)
 
       const path = `ms-color-ia-ref/${adminId}/ref_photo.jpg`
@@ -184,8 +203,6 @@ export function MsColorIAPage() {
       const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
       if (!data?.publicUrl) throw new Error('Não foi possível obter a URL pública da foto.')
 
-      // Adiciona cache-buster pra forçar o browser (e o Gemini) a buscar a
-      // versão recém-enviada, ignorando qualquer cache de CDN.
       setRefPhotoUrl(`${data.publicUrl}?t=${Date.now()}`)
     } catch (e: any) {
       console.error('[MsColorIAPage] upload ref photo failed:', e)
@@ -193,7 +210,6 @@ export function MsColorIAPage() {
       setRefPhotoPreview(null)
     } finally {
       setUploadingPhoto(false)
-      // Limpa o input pra permitir re-seleção do mesmo arquivo
       if (fileRef.current) fileRef.current.value = ''
     }
   }
@@ -203,7 +219,6 @@ export function MsColorIAPage() {
     setRefPhotoPreview(null)
     setUploadError(null)
     if (fileRef.current) fileRef.current.value = ''
-    // Opcional: remove do storage também
     if (state.kind === 'ready') {
       const path = `ms-color-ia-ref/${state.data.adminId}/ref_photo.jpg`
       supabase.storage.from('client-photos').remove([path]).catch(() => {})
@@ -246,7 +261,7 @@ export function MsColorIAPage() {
     )
   }
 
-  const { adminName, adminId, systemPrompt, folderConfig, geminiKeyPresent } = state.data
+  const { adminName, adminId, geminiKeyPresent, folders } = state.data
 
   if (!geminiKeyPresent) {
     return (
@@ -277,6 +292,11 @@ export function MsColorIAPage() {
     )
   }
 
+  // ── Pasta ativa ──────────────────────────────────────────────────────
+  const activeFolder  = folders.find(f => f.id === selectedFolderId) ?? folders[0]
+  const folderConfig  = activeFolder.config
+  const systemPrompt  = buildSystemPrompt(adminName, folderConfig)
+
   return (
     <div className="max-w-4xl mx-auto p-3 sm:p-4 space-y-4">
 
@@ -293,10 +313,85 @@ export function MsColorIAPage() {
         </div>
       </div>
 
+      {/* ── Seletor de pasta ──────────────────────────────────────────────
+          Aparece só se houver mais de uma pasta disponível.
+          A foto de referência é independente — não muda ao trocar de pasta.
+      ──────────────────────────────────────────────────────────────────── */}
+      {folders.length > 1 && (
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <FolderOpen className="h-4 w-4 text-fuchsia-500 flex-shrink-0" />
+            <p className="text-sm font-semibold text-gray-900">Pasta de simulação</p>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            Escolha qual conjunto de prompts usar nesta sessão. A foto de referência é compartilhada entre todas as pastas.
+          </p>
+
+          {/* Dropdown */}
+          <div className="relative" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={() => setFolderDropdownOpen(prev => !prev)}
+              className="w-full sm:w-auto min-w-[220px] flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 text-sm font-medium text-gray-800 transition-colors"
+            >
+              <span className="flex items-center gap-2 truncate">
+                <FolderOpen className="h-4 w-4 text-fuchsia-400 flex-shrink-0" />
+                <span className="truncate">{activeFolder.name}</span>
+              </span>
+              <ChevronDown
+                className={`h-4 w-4 text-gray-400 flex-shrink-0 transition-transform duration-150 ${folderDropdownOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {folderDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden min-w-[220px] max-w-xs">
+                {folders.map(folder => (
+                  <button
+                    key={folder.id}
+                    onClick={() => {
+                      setSelectedFolderId(folder.id)
+                      setFolderDropdownOpen(false)
+                    }}
+                    className={`
+                      w-full flex items-center justify-between gap-3 px-4 py-3 text-sm text-left
+                      transition-colors hover:bg-fuchsia-50
+                      ${folder.id === activeFolder.id ? 'bg-fuchsia-50 text-fuchsia-700 font-semibold' : 'text-gray-700'}
+                    `}
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <FolderOpen className={`h-4 w-4 flex-shrink-0 ${folder.id === activeFolder.id ? 'text-fuchsia-500' : 'text-gray-400'}`} />
+                      <span className="truncate">{folder.name}</span>
+                    </span>
+                    {folder.id === activeFolder.id && (
+                      <Check className="h-4 w-4 text-fuchsia-500 flex-shrink-0" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Resumo das categorias da pasta selecionada */}
+          {folderConfig?.categories?.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {folderConfig.categories.map((cat: any) => (
+                <span
+                  key={cat.id}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-100 rounded-full px-2.5 py-0.5"
+                >
+                  {cat.name}
+                  {cat.prompts?.length > 0 && (
+                    <span className="text-fuchsia-400">({cat.prompts.length})</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Foto de referência ─────────────────────────────────────────
-          Painel compacto que fica ACIMA do chat. O admin precisa definir
-          a foto da cliente antes de fazer simulações — sem ela o Gemini
-          não tem base para preservar o rosto e traços.
+          Painel compacto que fica ACIMA do chat. A foto é independente
+          da pasta selecionada — persiste entre trocas de pasta.
       ─────────────────────────────────────────────────────────────── */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4">
         <div className="flex items-start gap-4">
@@ -315,7 +410,6 @@ export function MsColorIAPage() {
                     <Loader2 className="h-5 w-5 text-white animate-spin" />
                   </div>
                 )}
-                {/* Botão remover */}
                 {!uploadingPhoto && (
                   <button
                     onClick={handleRemovePhoto}
@@ -395,7 +489,13 @@ export function MsColorIAPage() {
       </div>
 
       {/* ── GeminiChat ──────────────────────────────────────────────── */}
+      {/*
+        key={activeFolder.id} força o GeminiChat a reiniciar o chat
+        quando a pasta muda — assim os prompts no chat refletem
+        a pasta correta sem misturar histórico de pastas diferentes.
+      */}
       <GeminiChat
+        key={activeFolder.id}
         clientName={adminName}
         systemPrompt={systemPrompt}
         folderConfig={folderConfig}
@@ -405,7 +505,7 @@ export function MsColorIAPage() {
         resultFileUrls={[]}
         resultObservations=""
         unlimited
-        chatStorageKey={`ms_color_ia_${adminId}`}
+        chatStorageKey={`ms_color_ia_${adminId}_${activeFolder.id}`}
         // onSavePdf NÃO informado → PDF só baixa, sem persistência
       />
     </div>
@@ -416,7 +516,6 @@ export function MsColorIAPage() {
 
 /**
  * Redimensiona e comprime a imagem via canvas antes de subir pro Supabase.
- * Reduz o tamanho do payload enviado pro Gemini (menos tokens de imagem = menor custo).
  */
 async function compressImage(
   file: File,
@@ -455,7 +554,7 @@ async function compressImage(
 }
 
 /**
- * Gera o systemPrompt da IA a partir do folderConfig do super_admin.
+ * Gera o systemPrompt da IA a partir do folderConfig da pasta selecionada.
  */
 function buildSystemPrompt(name: string, folderConfig: any): string {
   const catLines = (folderConfig?.categories || [])
