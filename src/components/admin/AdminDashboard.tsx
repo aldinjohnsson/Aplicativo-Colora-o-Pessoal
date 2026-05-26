@@ -100,13 +100,19 @@ function AdminDashboardInner({ onLogout }: Props) {
   const { theme: t, themeName, setThemeName } = useTheme()
   const [navOpen, setNavOpen] = useState(false)
   const [currentAdmin, setCurrentAdmin] = useState<AdminUser | null>(null)
+  const [adminLoading, setAdminLoading] = useState(true)
   const navigate = useNavigate()
   const location = useLocation()
   const drawerRef = useRef<HTMLDivElement>(null)
 
-  // Carrega o admin atual pra saber a role e filtrar o menu + rotas
+  // Carrega o admin atual pra saber a role e filtrar o menu + rotas.
+  // adminLoading garante que as rotas só renderizam depois que a role é conhecida,
+  // evitando o redirect errado ao recarregar em /admin/documents, /admin/folders, etc.
   useEffect(() => {
-    adminService.getCurrentAdmin().then(setCurrentAdmin)
+    adminService.getCurrentAdmin().then(admin => {
+      setCurrentAdmin(admin)
+      setAdminLoading(false)
+    })
   }, [])
 
   // ── Helpers de role ─────────────────────────────────────────────────
@@ -151,6 +157,20 @@ function AdminDashboardInner({ onLogout }: Props) {
     await adminService.logout()
     onLogout()
     navigate('/admin/login')
+  }
+
+  // Aguarda a role carregar antes de renderizar as rotas.
+  // Sem isso, recarregar em /admin/documents ou /admin/folders redireciona
+  // porque isSuperAdmin=false durante o ~200ms da query do getCurrentAdmin.
+  if (adminLoading) {
+    return (
+      <div style={{
+        minHeight: '100vh', background: t.bg,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-rose-500" />
+      </div>
+    )
   }
 
   const isClientsRoute = location.pathname.startsWith('/admin/clients')
