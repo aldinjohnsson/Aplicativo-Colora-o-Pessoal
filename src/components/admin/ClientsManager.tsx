@@ -2472,7 +2472,67 @@ function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
   const fieldMap = Object.fromEntries(fields.map((f: any) => [f.id, f]))
   const [generatingPDF, setGeneratingPDF] = useState(false)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+  const [lightboxName, setLightboxName] = useState<string>('imagem')
   const lightboxState = useHeicSafeSrc(lightboxUrl ?? undefined)
+  const [downloadingLightbox, setDownloadingLightbox] = useState(false)
+
+  const openLightbox = (url: string, suggestedName: string) => {
+    setLightboxUrl(url)
+    setLightboxName(suggestedName)
+  }
+  const closeLightbox = () => setLightboxUrl(null)
+
+  // Download da foto aberta no lightbox.
+  // Igual ao fetchBase64 do PDF: pra URL do Drive vai via proxy (CORS-safe),
+  // pra outras URLs faz fetch direto. HEIC é convertido pra JPEG antes de
+  // baixar — assim o arquivo abre em qualquer visualizador (sem precisar
+  // de software que entenda HEIC). O nome do arquivo vem do `lightboxName`
+  // que é definido no momento em que o lightbox é aberto.
+  const handleDownloadLightboxImage = async () => {
+    if (!lightboxUrl) return
+    setDownloadingLightbox(true)
+    try {
+      let blob: Blob
+      const driveId = extractDriveFileId(lightboxUrl)
+      if (driveId) {
+        blob = await driveStorage.fetchPhotoBlob(driveId)
+      } else if (lightboxState.src && lightboxState.src.startsWith('blob:')) {
+        // HEIC já foi convertido pelo hook; pega o blob diretamente
+        const r = await fetch(lightboxState.src)
+        blob = await r.blob()
+      } else {
+        const r = await fetch(lightboxUrl)
+        blob = await r.blob()
+      }
+
+      // HEIC → JPEG antes de baixar
+      let ext = 'jpg'
+      if (await detectHeicFromBytes(blob)) {
+        const heic2any = (await import('heic2any')).default
+        const result = await heic2any({ blob, toType: 'image/jpeg', quality: 0.92 })
+        blob = (Array.isArray(result) ? result[0] : result) as Blob
+      } else if (blob.type === 'image/png') {
+        ext = 'png'
+      } else if (blob.type === 'image/webp') {
+        ext = 'webp'
+      }
+
+      const safeName = lightboxName.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${safeName}.${ext}`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('[Lightbox] Download falhou:', e)
+      alert('Não foi possível baixar a imagem.')
+    } finally {
+      setDownloadingLightbox(false)
+    }
+  }
 
   const downloadFormPhoto = async (url: string, name: string) => {
     try {
@@ -2842,8 +2902,29 @@ function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
   return (
     <>
       {lightboxUrl && (
-        <div className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4" onClick={() => setLightboxUrl(null)}>
-          <button className="absolute top-4 right-4 text-white/70 hover:text-white" onClick={() => setLightboxUrl(null)}><X className="h-7 w-7" /></button>
+        <div className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4" onClick={closeLightbox}>
+          {/* Botões no canto superior direito: baixar + fechar.
+              stopPropagation no container pra que clicar nos botões não feche o lightbox. */}
+          <div className="absolute top-4 right-4 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={handleDownloadLightboxImage}
+              disabled={downloadingLightbox || lightboxState.loading || !!lightboxState.error}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-white bg-white/10 hover:bg-white/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg backdrop-blur-sm transition-colors"
+              title="Baixar imagem"
+            >
+              {downloadingLightbox
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Download className="h-4 w-4" />}
+              <span className="hidden sm:inline">Baixar</span>
+            </button>
+            <button
+              onClick={closeLightbox}
+              className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+              title="Fechar"
+            >
+              <X className="h-6 w-6" />
+            </button>
+          </div>
           {lightboxState.loading ? (
             <div className="text-white text-center" onClick={e => e.stopPropagation()}>
               <Loader2 className="h-12 w-12 animate-spin mx-auto mb-3" />
@@ -2899,7 +2980,7 @@ function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
                       ) : (
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                           {imgUrls.map((url, idx) => (
-                            <SafeImage key={idx} src={url} alt={`${label} ${idx + 1}`} className="w-full aspect-square object-cover rounded-lg cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxUrl(url)} />
+                            <SafeImage key={idx} src={url} alt={`${label} ${idx + 1}`} className="w-full aspect-square object-cover rounded-lg cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openLightbox(url, `${label}_${idx + 1}`)} />
                           ))}
                         </div>
                       )

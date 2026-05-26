@@ -882,7 +882,7 @@ serve(async (req) => {
         `Ola, <strong>${clientName}</strong>!`,
         `<div class="alert-green">
           <p class="alert-green-title">&#10003; Suas fotos foram aprovadas!</p>
-          <p class="alert-green-text">Tudo certo por aqui. Sua analise de coloracao pessoal ja esta em andamento.</p>
+          <p class="alert-green-text">Tudo certo por aqui. Sua analise ja está em andamento.</p>
         </div>
         ${formattedDeadline ? `
         <div class="alert-yellow">
