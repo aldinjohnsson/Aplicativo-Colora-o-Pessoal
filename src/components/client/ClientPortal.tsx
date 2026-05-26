@@ -90,7 +90,7 @@ export function ClientPortal() {
             <div className="w-7 h-7 bg-gradient-to-br from-rose-400 to-pink-500 rounded-lg flex items-center justify-center">
               <Palette className="h-4 w-4 text-white" />
             </div>
-            <span className="font-semibold text-gray-800">MS Colors</span>
+            <span className="font-semibold text-gray-800">IA Color</span>
           </div>
           <div className="text-right">
             <p className="text-sm font-medium text-gray-800">{data.client.full_name.split(' ')[0]}</p>
@@ -2089,7 +2089,7 @@ function ResultScreen({
         <div className="space-y-2">
           <div className="flex items-center gap-2 px-1">
             <div className="h-px flex-1 bg-gradient-to-r from-transparent to-violet-200" />
-            <span className="text-xs font-medium text-violet-500 px-2">Consultora de Estilo IA</span>
+            <span className="text-xs font-medium text-violet-500 px-2">Consultora de Coloração Pessoal</span>
             <div className="h-px flex-1 bg-gradient-to-l from-transparent to-violet-200" />
           </div>
           <GeminiChat

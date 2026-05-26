@@ -298,7 +298,7 @@ export function ClientSignup() {
             <Palette className="h-4 w-4 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-gray-900 leading-tight">MS Colors</p>
+            <p className="text-sm font-semibold text-gray-900 leading-tight">IA Color</p>
             <p className="text-xs text-gray-400 truncate">{plan.name}</p>
           </div>
           <Lock className="h-4 w-4 text-gray-300" />
@@ -713,7 +713,7 @@ export function ClientSignup() {
         )}
 
         <p className="text-center text-xs text-gray-400 pb-4">
-          MS Colors · Coloração Pessoal por Marília Santos
+          IA Color · Coloração Pessoal por Marília Santos
         </p>
       </div>
     </div>

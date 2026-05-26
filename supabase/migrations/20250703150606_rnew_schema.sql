@@ -1,5 +1,5 @@
 -- ============================================================
--- MS Colors - Sistema de Gestão de Clientes
+-- IA Color - Sistema de Gestão de Clientes
 -- Migration 001 - Schema completo
 -- ============================================================
 
@@ -1010,7 +1010,7 @@ CREATE POLICY "Authenticated upload instructions"
   ADD COLUMN IF NOT EXISTS instruction_items jsonb NOT NULL DEFAULT '[]'::jsonb;
 
   -- ══════════════════════════════════════════════════════════════════════════
--- MS Colors — Migração para fluxo de rejeição/reenvio (CORRIGIDA v4)
+-- IA Color — Migração para fluxo de rejeição/reenvio (CORRIGIDA v4)
 -- Execute no SQL Editor do Supabase de uma vez só.
 -- ══════════════════════════════════════════════════════════════════════════
 

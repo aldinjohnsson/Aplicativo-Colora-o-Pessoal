@@ -139,10 +139,10 @@ export function LandingPage() {
             color: '#1a1a1a',
             lineHeight: 1,
           }}>
-            MS <span style={{
+            IA <span style={{
               fontStyle: 'italic',
               color: '#e91e63',
-            }}>Colors</span>
+            }}>Color</span>
           </h1>
           <p style={{
             margin: '10px 0 0',
@@ -357,7 +357,7 @@ export function LandingPage() {
           opacity: mounted ? 1 : 0,
           transition: 'opacity 0.6s ease 0.9s',
         }}>
-          © {new Date().getFullYear()} MS Colors · Todos os direitos reservados
+          © {new Date().getFullYear()} IA Color · Todos os direitos reservados
         </p>
       </div>
 

@@ -232,7 +232,7 @@ function AdminDashboardInner({ onLogout }: Props) {
                 <Palette size={18} color={t.accentFg} />
               </div>
               <div>
-                <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.headerText }}>MS Colors</p>
+                <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.headerText }}>IA Color</p>
                 <p style={{ margin: 0, fontSize: 11, color: t.headerTextDim }}>{headerSubtitle}</p>
               </div>
             </div>
@@ -371,7 +371,7 @@ function AdminDashboardInner({ onLogout }: Props) {
               }}>
                 <Palette size={14} color={t.accentFg} />
               </div>
-              <span style={{ fontSize: 14, fontWeight: 700, color: t.headerText, whiteSpace: 'nowrap' }}>MS Colors</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: t.headerText, whiteSpace: 'nowrap' }}>IA Color</span>
             </div>
 
             {/* Inline nav for non-kanban pages — visível apenas em sm+; em mobile o drawer cobre */}
