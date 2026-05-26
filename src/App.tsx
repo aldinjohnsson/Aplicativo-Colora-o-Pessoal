@@ -1,15 +1,19 @@
 // src/App.tsx
 import React, { useEffect, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { AdminLogin } from './components/admin/AdminLogin'
 import { AdminDashboard } from './components/admin/AdminDashboard'
+import { PasswordRecovery } from './components/admin/PasswordRecovery'
 import { ClientPortal } from './components/client/ClientPortal'
 import { ClientLogin } from './components/client/ClientLogin'
 import { adminService } from './lib/services'
+import { supabase } from './lib/supabase'
 import { ClientSignup } from './components/client/ClientSignup'
 import { LandingPage } from './components/LandingPage'
 
-function App() {
+// AppRoutes precisa ficar dentro de <Router> para que useNavigate funcione.
+function AppRoutes() {
+  const navigate = useNavigate()
   const [adminUser, setAdminUser] = useState<any>(null)
   const [checkingAuth, setCheckingAuth] = useState(true)
 
@@ -39,48 +43,63 @@ function App() {
   }
 
   return (
-    <Router>
-      <Routes>
+    <Routes>
 
-        {/* ── Landing page de entrada ── */}
-        <Route path="/" element={<LandingPage />} />
+      {/* ── Landing page de entrada ── */}
+      <Route path="/" element={<LandingPage />} />
 
-        {/* Portal do cliente via token (link direto) */}
-        <Route path="/c/:token" element={<ClientPortal />} />
+      {/* Portal do cliente via token (link direto) */}
+      <Route path="/c/:token" element={<ClientPortal />} />
 
-        {/* Login do cliente (email + data de nascimento) */}
-        <Route path="/acesso" element={<ClientLogin />} />
+      {/* Login do cliente (email + data de nascimento) */}
+      <Route path="/acesso" element={<ClientLogin />} />
 
-        {/* Cadastro via link compartilhado */}
-        <Route path="/p/:shareToken" element={<ClientSignup />} />
+      {/* Cadastro via link compartilhado */}
+      <Route path="/p/:shareToken" element={<ClientSignup />} />
 
-        {/* Admin */}
-        <Route
-          path="/admin/login"
-          element={
-            adminUser
-              ? <Navigate to="/admin" replace />
-              : <AdminLogin onLogin={setAdminUser} />
-          }
-        />
-        <Route
-          path="/admin/*"
-          element={
-            adminUser
-              ? <AdminDashboard onLogout={() => setAdminUser(null)} />
-              : <Navigate to="/admin/login" replace />
-          }
-        />
+      {/* Admin */}
+      <Route
+        path="/admin/login"
+        element={
+          adminUser
+            ? <Navigate to="/admin" replace />
+            : <AdminLogin onLogin={setAdminUser} />
+        }
+      />
+      <Route
+        path="/admin/reset-password"
+        element={
+          <PasswordRecovery
+            onBackToLogin={() => navigate('/admin/login')}
+            supabase={supabase}
+          />
+        }
+      />
+      <Route
+        path="/admin/*"
+        element={
+          adminUser
+            ? <AdminDashboard onLogout={() => setAdminUser(null)} />
+            : <Navigate to="/admin/login" replace />
+        }
+      />
 
-        <Route path="*" element={
-          <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-            <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-800 mb-2">Página não encontrada</h1>
-              <p className="text-gray-500">Verifique o link de acesso.</p>
-            </div>
+      <Route path="*" element={
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <div className="text-center">
+            <h1 className="text-2xl font-bold text-gray-800 mb-2">Página não encontrada</h1>
+            <p className="text-gray-500">Verifique o link de acesso.</p>
           </div>
-        } />
-      </Routes>
+        </div>
+      } />
+    </Routes>
+  )
+}
+
+function App() {
+  return (
+    <Router>
+      <AppRoutes />
     </Router>
   )
 }

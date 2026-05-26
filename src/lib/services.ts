@@ -90,6 +90,7 @@ export interface AdminUser {
   id: string
   email: string
   nome: string | null
+  telefone: string | null
   // ★ Tipos de conta:
   //   • super_admin → Marília. Gerencia tudo.
   //   • admin       → Salão pagante. Full panel.
@@ -223,11 +224,53 @@ export const adminService = {
 
     const { data } = await supabase
       .from('admin_users')
-      .select('id, email, nome, role, license_active, license_expires_at, observacoes, created_at')
+      .select('id, email, nome, telefone, role, license_active, license_expires_at, observacoes, created_at')
       .eq('id', user.id)
       .single()
 
     return (data as AdminUser | null) ?? null
+  },
+
+  /**
+   * Atualiza nome e telefone do admin logado na tabela admin_users.
+   */
+  async updateAdminProfile({ nome, telefone }: { nome: string; telefone: string }): Promise<void> {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    const { error } = await supabase
+      .from('admin_users')
+      .update({
+        nome:     nome     || null,
+        telefone: telefone || null,
+      })
+      .eq('id', user.id)
+    if (error) throw error
+  },
+
+  /**
+   * Troca a senha do usuário autenticado (sessão ativa).
+   * Também funciona quando o usuário chega via link de recuperação:
+   * o Supabase já estabelece a sessão de recovery antes de redirecionar.
+   */
+  async updatePassword(newPassword: string): Promise<void> {
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    if (error) throw error
+  },
+
+  /**
+   * Envia e-mail de recuperação de senha via Supabase Auth.
+   * O link redireciona para redirectTo (padrão: /admin — Supabase
+   * anexa os parâmetros de recovery automaticamente).
+   *
+   * Configure em Supabase > Authentication > URL Configuration:
+   *   Site URL: https://seu-dominio.com
+   *   Redirect URLs: https://seu-dominio.com/admin/**
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const redirectTo = `${window.location.origin}/admin/reset-password`
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+    if (error) throw error
+    // Supabase não revela se o e-mail existe (segurança); sempre resolve.
   },
 
   // ---- Plans ----

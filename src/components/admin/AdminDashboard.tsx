@@ -29,7 +29,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import {
   Users, Layers, LogOut, Palette, Settings, FolderOpen,
-  Menu, X, ChevronRight, FileText, Shield, Sparkles, Image,
+  Menu, X, ChevronRight, FileText, Shield, Sparkles, Image, User,
 } from 'lucide-react'
 import { adminService, AdminUser } from '../../lib/services'
 import { ClientsManager } from './ClientsManager'
@@ -40,6 +40,7 @@ import { DocumentsHub } from './documents/DocumentsHub'
 import { SuperAdminPanel } from './SuperAdminPanel'
 import { MsColorIAPage } from './MsColorIAPage'
 import { StandaloneAiGenerationPage } from './StandaloneAiGenerationPage'
+import { AdminProfile } from './AdminProfile'
 import { ThemeProvider, useTheme, THEMES, ThemeName, Theme } from '../../lib/theme'
 
 interface Props {
@@ -75,6 +76,9 @@ const NAV_ITEMS: NavItem[] = [
 
   // Configurações: todos os roles veem (conteúdo filtrado dentro do componente).
   { to: '/admin/settings',  label: 'Configurações',  icon: Settings,    description: 'Ajustes do sistema',         roles: ['admin', 'super_admin', 'chat_admin', 'full_admin'] },
+
+  // Perfil: todos os roles veem.
+  { to: '/admin/profile',   label: 'Meu Perfil',     icon: User,        description: 'Dados pessoais e senha',     roles: ['admin', 'super_admin', 'chat_admin', 'full_admin'] },
 
   { to: '/admin/super',     label: 'Administradores', icon: Shield,     description: 'Licenças e contas',          roles: ['super_admin'] },
 ]
@@ -445,6 +449,12 @@ function AdminDashboardInner({ onLogout }: Props) {
             } />
 
             {/* ═══ Settings: todos veem (conteúdo filtrado dentro) ═══ */}
+
+            <Route path="profile" element={
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+                <AdminProfile />
+              </div>
+            } />
 
             <Route path="settings" element={
               <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
