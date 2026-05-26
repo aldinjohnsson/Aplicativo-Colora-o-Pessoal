@@ -15,7 +15,7 @@ import {
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
   SlidersHorizontal, ChevronDown, Palette, Pencil,
-  Loader2, AlertCircle, Bell, Wand2,
+  Loader2, AlertCircle, Bell, Wand2, Mic, Square, Music,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { supabase } from '../../lib/supabase'
@@ -231,6 +231,87 @@ function SafeImage({
   )
 }
 
+// ─── Corrige metadados de duração em arquivos WEBM do MediaRecorder ─────────
+// O MediaRecorder do Chrome gera WEBM sem o campo Duration no header, o que
+// faz o <audio> mostrar 0:00 e não conseguir reproduzir corretamente.
+// Esta função localiza o elemento EBML Duration (ID 0x44 0x89) e grava o
+// valor correto em big-endian float64 antes do upload.
+async function fixWebmDuration(blob: Blob, durationMs: number): Promise<Blob> {
+  try {
+    const buf = await blob.arrayBuffer()
+    const arr = new Uint8Array(buf)
+    for (let i = 0; i < arr.length - 10; i++) {
+      if (arr[i] !== 0x44 || arr[i + 1] !== 0x89) continue
+      const vint = arr[i + 2]
+      let dataSize: number
+      let dataOffset: number
+      if (vint & 0x80)       { dataSize = vint & 0x7f; dataOffset = i + 3 }
+      else if (vint & 0x40)  { dataSize = ((vint & 0x3f) << 8) | arr[i + 3]; dataOffset = i + 4 }
+      else if (vint & 0x20)  { dataSize = ((vint & 0x1f) << 16) | (arr[i + 3] << 8) | arr[i + 4]; dataOffset = i + 5 }
+      else continue
+      if (dataSize === 8) {
+        new DataView(buf, dataOffset, 8).setFloat64(0, durationMs, false)
+        return new Blob([new Uint8Array(buf)], { type: blob.type })
+      }
+      if (dataSize === 4) {
+        new DataView(buf, dataOffset, 4).setFloat32(0, durationMs, false)
+        return new Blob([new Uint8Array(buf)], { type: blob.type })
+      }
+    }
+  } catch {}
+  return blob
+}
+
+// ─── DriveAudioPlayer ─────────────────────────────────────────────────────────
+// Para arquivos do Drive no painel admin: busca via photo-proxy (autenticado)
+// e cria um blob: URL local — evita CORS e o problema de range requests do Drive.
+function DriveAudioPlayer({ driveFileId, className }: { driveFileId: string; className?: string }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loadErr, setLoadErr] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let created: string | null = null
+    ;(async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token
+        if (!token) throw new Error('sem sessão')
+        const base = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined
+          ?? supabase.supabaseUrl as string
+        const res = await fetch(
+          `${base}/functions/v1/drive/photo-proxy?id=${encodeURIComponent(driveFileId)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+        if (!res.ok) throw new Error(`proxy ${res.status}`)
+        const blob = await res.blob()
+        if (cancelled) return
+        created = URL.createObjectURL(blob)
+        setBlobUrl(created)
+      } catch {
+        if (!cancelled) setLoadErr(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (created) URL.revokeObjectURL(created)
+    }
+  }, [driveFileId])
+
+  if (loadErr) return (
+    <p className="text-xs text-red-400 py-2 flex items-center gap-1">
+      <AlertCircle className="h-3.5 w-3.5" /> Erro ao carregar áudio
+    </p>
+  )
+  if (!blobUrl) return (
+    <div className="flex items-center gap-2 py-2">
+      <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400" />
+      <span className="text-xs text-gray-400">Carregando áudio…</span>
+    </div>
+  )
+  return <audio src={blobUrl} controls preload="auto" className={className ?? 'w-full'} />
+}
+
 // ─── Status Config ────────────────────────────────────────────────────────
 const STATUSES: Record<string, {
   label: string; short: string; color: string; bg: string; textColor: string
@@ -310,6 +391,24 @@ const STATUSES: Record<string, {
 }
 // photos_submitted is between awaiting_photos and in_analysis
 const COL_ORDER = ['awaiting_contract', 'awaiting_form', 'awaiting_photos', 'photos_submitted', 'in_analysis', 'preparing_materials', 'validating_materials', 'sending_dossier', 'awaiting_ai_photo', 'simulating', 'making_capillary_dossier', 'validating_capillary_dossier', 'sending_capillary_dossier', 'completed']
+
+/** Classifica um arquivo de resultado pelo nome — usado pra separar PDFs,
+ *  áudios e fotos na aba Resultado e no ClientPortal. */
+function getResultFileKind(fileName: string): 'pdf' | 'audio' | 'image' | 'other' {
+  const ext = (fileName.split('.').pop() || '').toLowerCase()
+  if (ext === 'pdf') return 'pdf'
+  if (['mp3','wav','ogg','webm','m4a','aac','opus','oga','flac','mpga','mpeg'].includes(ext)) return 'audio'
+  if (['jpg','jpeg','png','webp','heic','heif','gif','bmp'].includes(ext)) return 'image'
+  return 'other'
+}
+
+/** mm:ss a partir de duração em milissegundos */
+function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const mm = String(Math.floor(s / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+}
 
 /** Retorna o nome de exibição: customizado > short padrão */
 function getColLabel(
@@ -3743,8 +3842,30 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [showFormModal, setShowFormModal] = useState(false)
   const [resultForm, setResultForm] = useState({ observations: '', custom_link_url: '' })
   const [savingResult, setSavingResult] = useState(false)
-  const [uploadingFile, setUploadingFile] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  // Upload de arquivos do Resultado — separados por tipo pra que cada botão
+  // tenha seu próprio loading spinner sem afetar os outros.
+  const [uploadingKind, setUploadingKind] = useState<null | 'pdf' | 'audio' | 'photo'>(null)
+  const pdfInputRef = useRef<HTMLInputElement>(null)
+  const audioInputRef = useRef<HTMLInputElement>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
+  // Estado do gravador de áudio. Lifecycle:
+  //   idle → (clica Gravar) → recording → (clica Parar) → preview
+  //   preview → (Salvar)  → uploading → idle
+  //   preview → (Descartar) → idle
+  type RecState =
+    | { kind: 'idle' }
+    | { kind: 'recording'; startedAt: number; recorder: MediaRecorder; stream: MediaStream }
+    | { kind: 'preview'; blob: Blob; url: string; durationMs: number }
+    | { kind: 'uploading' }
+  const [recState, setRecState] = useState<RecState>({ kind: 'idle' })
+  const [recTick, setRecTick] = useState(0) // tick pra atualizar timer no UI
+  useEffect(() => {
+    if (recState.kind !== 'recording') return
+    const id = setInterval(() => setRecTick(t => t + 1), 250)
+    return () => clearInterval(id)
+  }, [recState.kind])
+  // Lightbox pras fotos do Resultado (reaproveita PhotoLightbox existente)
+  const [resultLightbox, setResultLightbox] = useState<{ photos: any[]; index: number } | null>(null)
   const [aiFolders, setAiFolders] = useState<any[]>([])
   const [tagTemplates, setTagTemplates] = useState<any[]>([])
   const [clientTags, setClientTags] = useState<{ templateId: string; name: string; value: string }[]>([])
@@ -4201,7 +4322,123 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     } catch { setAiSaveStatus('error') } finally { setSavingAI(false) }
   }
   const handleLinkFolder = async (folderId: string | null) => { setLinkedFolderId(folderId); if (folderId) { const fc = aiFolders.find((f: any) => f.id === folderId); const config = fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null; setLinkedFolderConfig(config) } else { setLinkedFolderConfig(null) } }
-  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (!file) return; setUploadingFile(true); try { await adminService.uploadResultFile(clientId!, file); load() } catch (e: any) { alert(e.message) } finally { setUploadingFile(false); if (fileInputRef.current) fileInputRef.current.value = '' } }
+  // Handler genérico de upload de arquivo de resultado. O `kind` é só pra
+  // controlar o spinner do botão correto. O backend (Edge Function `drive`)
+  // já detecta o tipo pelo file.type/extensão e armazena em client_result_files
+  // sem distinção.
+  const handleUploadResultFile = async (file: File, kind: 'pdf' | 'audio' | 'photo') => {
+    setUploadingKind(kind)
+    try {
+      await adminService.uploadResultFile(clientId!, file)
+      load()
+    } catch (e: any) {
+      alert(e.message || 'Erro ao enviar arquivo')
+    } finally {
+      setUploadingKind(null)
+    }
+  }
+  const onPickPdf = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) await handleUploadResultFile(file, 'pdf')
+    if (pdfInputRef.current) pdfInputRef.current.value = ''
+  }
+  const onPickAudio = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) await handleUploadResultFile(file, 'audio')
+    if (audioInputRef.current) audioInputRef.current.value = ''
+  }
+  const onPickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    for (const file of files) await handleUploadResultFile(file, 'photo')
+    if (photoInputRef.current) photoInputRef.current.value = ''
+  }
+
+  // ─── Gravação de áudio ─────────────────────────────────────────────────
+  const startRecording = async () => {
+    try {
+      // Constraints explícitas pra qualidade decente:
+      //   • echoCancellation: tira eco da própria voz pelo speaker (sem isso
+      //     fica "metálico" em laptop com mic embutido).
+      //   • noiseSuppression: filtra ruído de fundo.
+      //   • autoGainControl: normaliza volume — é o que resolve o "baixo".
+      //     Sem isso, browsers capturam no ganho cru do mic, que varia muito.
+      //   • channelCount: 1 (mono) — voz não precisa de stereo, economiza 50%
+      //     do tamanho do arquivo.
+      //   • sampleRate: 48000 — padrão pra Opus, melhor que o default em
+      //     alguns navegadores (que pode cair pra 16k).
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+        },
+      })
+      // Codec: Chrome/Firefox → webm/opus; Safari → mp4/aac (deixa default).
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : ''
+      // 128 kbps é "voice quality" — quase 4x o default (~32k). Pra voz é
+      // suficiente pra som limpo sem inflar muito o tamanho (~1MB por minuto).
+      const recorder = new MediaRecorder(stream, {
+        ...(mime ? { mimeType: mime } : {}),
+        audioBitsPerSecond: 128000,
+      })
+      const chunks: Blob[] = []
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        const durationMs = Date.now() - (rec.startedAt ?? Date.now())
+        const url = URL.createObjectURL(blob)
+        setRecState({ kind: 'preview', blob, url, durationMs })
+        stream.getTracks().forEach(t => t.stop())
+      }
+      // Pequena espera pra pipeline de áudio do browser "esquentar".
+      // Sem isso, os primeiros ~200-400ms da gravação saem mudos ou cortados —
+      // é o que dá a sensação de "atrasado" (você fala mas o início some).
+      await new Promise(r => setTimeout(r, 250))
+      const rec = { startedAt: Date.now() }
+      recorder.start(250) // emite chunk a cada 250ms (não afeta áudio, ajuda em recovery)
+      setRecState({ kind: 'recording', startedAt: rec.startedAt, recorder, stream })
+    } catch (e: any) {
+      alert('Não foi possível acessar o microfone. Verifique a permissão do navegador.')
+    }
+  }
+  const stopRecording = () => {
+    if (recState.kind !== 'recording') return
+    try { recState.recorder.stop() } catch {}
+  }
+  const discardRecording = () => {
+    if (recState.kind === 'preview') URL.revokeObjectURL(recState.url)
+    setRecState({ kind: 'idle' })
+  }
+  const saveRecording = async () => {
+    if (recState.kind !== 'preview') return
+    const { blob: rawBlob, url, durationMs } = recState
+    const ext = rawBlob.type.includes('mp4') ? 'm4a' : 'webm'
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    // Corrige o metadado de duração no WEBM antes de enviar —
+    // MediaRecorder não grava Duration no header, o que faz o <audio>
+    // mostrar 0:00 e travar. Com a duração correta o player funciona normalmente.
+    const fixedBlob = rawBlob.type.includes('webm')
+      ? await fixWebmDuration(rawBlob, durationMs)
+      : rawBlob
+    const file = new File([fixedBlob], `Audio_${stamp}.${ext}`, { type: rawBlob.type })
+    setRecState({ kind: 'uploading' })
+    try {
+      await adminService.uploadResultFile(clientId!, file)
+      load()
+      URL.revokeObjectURL(url)
+      setRecState({ kind: 'idle' })
+    } catch (e: any) {
+      alert(e.message || 'Erro ao enviar áudio')
+      // mantém preview pra usuário tentar de novo
+      setRecState({ kind: 'preview', blob: rawBlob, url, durationMs })
+    }
+  }
   const handleDeleteFile = async (fileId: string, storagePath: string) => { if (!confirm('Remover este arquivo?')) return; await adminService.deleteResultFile(fileId, storagePath); load() }
 
   if (loading) return <div className="flex justify-center py-20" style={{ background: t.bg, flex: 1 }}><div className="animate-spin h-8 w-8 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
@@ -5126,34 +5363,164 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             <div>
               <div className="flex items-center justify-between mb-3">
                 <label className="text-sm font-medium" style={{ color: t.text2 }}>Arquivos PDF</label>
-                <Btn variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} loading={uploadingFile}>
+                <Btn variant="outline" size="sm" onClick={() => pdfInputRef.current?.click()} loading={uploadingKind === 'pdf'}>
                   <Upload className="h-3.5 w-3.5" /> Upload PDF
                 </Btn>
-                <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden" onChange={handleUploadFile} />
+                <input ref={pdfInputRef} type="file" accept="application/pdf" className="hidden" onChange={onPickPdf} />
               </div>
-              {!resultFiles || resultFiles.length === 0 ? (
-              <p className="text-sm py-4 text-center rounded-lg" style={{ color: t.text3, border: `1px dashed ${t.border}` }}>Nenhum arquivo adicionado</p>
-              ) : (
-                <div className="space-y-2">
-                  {resultFiles.map((f: any) => (
-                    <div key={f.id} className="flex items-center justify-between gap-2 p-3 rounded-lg" style={{ background: t.surface2 }}>
-                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <FileText className="h-4 w-4 text-red-500 flex-shrink-0" />
-                        <span className="text-sm truncate min-w-0" style={{ color: t.text }}>{f.file_name}</span>
-                        <span className="text-xs whitespace-nowrap flex-shrink-0" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
+              {(() => {
+                const pdfs = (resultFiles || []).filter((f: any) => getResultFileKind(f.file_name) === 'pdf')
+                if (pdfs.length === 0) return <p className="text-sm py-4 text-center rounded-lg" style={{ color: t.text3, border: `1px dashed ${t.border}` }}>Nenhum PDF adicionado</p>
+                return (
+                  <div className="space-y-2">
+                    {pdfs.map((f: any) => (
+                      <div key={f.id} className="flex items-center justify-between gap-2 p-3 rounded-lg" style={{ background: t.surface2 }}>
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <FileText className="h-4 w-4 text-red-500 flex-shrink-0" />
+                          <span className="text-sm truncate min-w-0" style={{ color: t.text }}>{f.file_name}</span>
+                          <span className="text-xs whitespace-nowrap flex-shrink-0" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <a href={adminService.getResultFileUrl(f)} target="_blank" rel="noopener noreferrer">
+                            <Btn variant="ghost" size="sm"><Download className="h-3.5 w-3.5" /></Btn>
+                          </a>
+                          <Btn variant="ghost" size="sm" onClick={() => handleDeleteFile(f.id, f.storage_path)} className="text-red-500 hover:bg-red-50">
+                            <X className="h-3.5 w-3.5" />
+                          </Btn>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <a href={adminService.getResultFileUrl(f)} target="_blank" rel="noopener noreferrer">
-                          <Btn variant="ghost" size="sm"><Download className="h-3.5 w-3.5" /></Btn>
-                        </a>
-                        <Btn variant="ghost" size="sm" onClick={() => handleDeleteFile(f.id, f.storage_path)} className="text-red-500 hover:bg-red-50">
-                          <X className="h-3.5 w-3.5" />
-                        </Btn>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+
+            {/* ── Áudios ──────────────────────────────────────────────── */}
+            <div>
+              <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                <label className="text-sm font-medium" style={{ color: t.text2 }}>Áudios</label>
+                <div className="flex gap-2">
+                  <Btn variant="outline" size="sm" onClick={() => audioInputRef.current?.click()} loading={uploadingKind === 'audio'} disabled={recState.kind === 'recording' || recState.kind === 'uploading'}>
+                    <Upload className="h-3.5 w-3.5" /> Upload áudio
+                  </Btn>
+                  {recState.kind === 'idle' || recState.kind === 'preview' ? (
+                    <Btn variant="outline" size="sm" onClick={startRecording} disabled={uploadingKind === 'audio' || recState.kind === 'preview'}>
+                      <Mic className="h-3.5 w-3.5" /> Gravar
+                    </Btn>
+                  ) : recState.kind === 'recording' ? (
+                    <Btn variant="outline" size="sm" onClick={stopRecording} className="text-red-600 border-red-300 hover:bg-red-50">
+                      <Square className="h-3.5 w-3.5 fill-current" /> Parar ({formatDuration(Date.now() - recState.startedAt)})
+                    </Btn>
+                  ) : (
+                    <Btn variant="outline" size="sm" loading>Enviando…</Btn>
+                  )}
+                </div>
+                <input ref={audioInputRef} type="file" accept="audio/*" className="hidden" onChange={onPickAudio} />
+              </div>
+
+              {/* Indicador de gravação ao vivo */}
+              {recState.kind === 'recording' && (
+                <div className="mb-3 px-4 py-3 rounded-lg flex items-center gap-3" style={{ background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.25)' }}>
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+                  </span>
+                  <span className="text-sm font-medium text-red-700">Gravando… {formatDuration(Date.now() - recState.startedAt)}</span>
                 </div>
               )}
+
+              {/* Preview pós-gravação */}
+              {recState.kind === 'preview' && (
+                <div className="mb-3 px-4 py-3 rounded-lg" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                  <p className="text-sm font-medium mb-2" style={{ color: t.text }}>Áudio gravado ({formatDuration(recState.durationMs)}) — confira antes de salvar:</p>
+                  <audio src={recState.url} controls className="w-full mb-3" />
+                  <div className="flex gap-2">
+                    <Btn size="sm" onClick={saveRecording}><Save className="h-3.5 w-3.5" /> Salvar</Btn>
+                    <Btn variant="outline" size="sm" onClick={discardRecording}><X className="h-3.5 w-3.5" /> Descartar</Btn>
+                  </div>
+                </div>
+              )}
+
+              {(() => {
+                const audios = (resultFiles || []).filter((f: any) => getResultFileKind(f.file_name) === 'audio')
+                if (audios.length === 0) return <p className="text-sm py-4 text-center rounded-lg" style={{ color: t.text3, border: `1px dashed ${t.border}` }}>Nenhum áudio adicionado</p>
+                return (
+                  <div className="space-y-2">
+                    {audios.map((f: any) => (
+                      <div key={f.id} className="p-3 rounded-lg" style={{ background: t.surface2 }}>
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <Music className="h-4 w-4 text-violet-500 flex-shrink-0" />
+                            <span className="text-sm truncate min-w-0" style={{ color: t.text }}>{f.file_name}</span>
+                            <span className="text-xs whitespace-nowrap flex-shrink-0" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <a href={adminService.getResultFileUrl(f)} target="_blank" rel="noopener noreferrer">
+                              <Btn variant="ghost" size="sm"><Download className="h-3.5 w-3.5" /></Btn>
+                            </a>
+                            <Btn variant="ghost" size="sm" onClick={() => handleDeleteFile(f.id, f.storage_path)} className="text-red-500 hover:bg-red-50">
+                              <X className="h-3.5 w-3.5" />
+                            </Btn>
+                          </div>
+                        </div>
+                        {f.drive_file_id
+                          ? <DriveAudioPlayer driveFileId={f.drive_file_id} className="w-full" />
+                          : <audio src={adminService.getResultFileUrl(f)} controls preload="auto" className="w-full" />
+                        }
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+
+            {/* ── Fotos ───────────────────────────────────────────────── */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-sm font-medium" style={{ color: t.text2 }}>Fotos</label>
+                <Btn variant="outline" size="sm" onClick={() => photoInputRef.current?.click()} loading={uploadingKind === 'photo'}>
+                  <Upload className="h-3.5 w-3.5" /> Upload foto
+                </Btn>
+                <input ref={photoInputRef} type="file" accept="image/*" multiple className="hidden" onChange={onPickPhoto} />
+              </div>
+              {(() => {
+                const images = (resultFiles || []).filter((f: any) => getResultFileKind(f.file_name) === 'image')
+                if (images.length === 0) return <p className="text-sm py-4 text-center rounded-lg" style={{ color: t.text3, border: `1px dashed ${t.border}` }}>Nenhuma foto adicionada</p>
+                // Mapeia pro shape esperado pelo PhotoLightbox: { id, url, photo_name }
+                const lightboxPhotos = images.map((f: any) => ({
+                  id: f.id,
+                  url: f.drive_file_id ? driveStorage.viewUrl(f.drive_file_id) : adminService.getResultFileUrl(f),
+                  photo_name: f.file_name,
+                  storage_path: f.storage_path,
+                }))
+                return (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {images.map((f: any, idx: number) => {
+                      const url = f.drive_file_id ? driveStorage.viewUrl(f.drive_file_id, 400) : adminService.getResultFileUrl(f)
+                      return (
+                        <div key={f.id} className="relative group aspect-square rounded-lg overflow-hidden" style={{ background: t.surface2 }}>
+                          <button
+                            type="button"
+                            onClick={() => setResultLightbox({ photos: lightboxPhotos, index: idx })}
+                            className="block w-full h-full"
+                            title={f.file_name}
+                          >
+                            <SafeImage src={url} alt={f.file_name} className="w-full h-full object-cover hover:opacity-80 transition-opacity" />
+                          </button>
+                          <Btn
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteFile(f.id, f.storage_path)}
+                            className="absolute top-1 right-1 text-red-500 bg-white/80 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Btn>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
             </div>
             <div className="flex flex-col items-start sm:flex-row sm:items-center gap-3 pt-3" style={{ borderTop: `1px solid ${t.border}` }}>
               <Btn onClick={async () => { await handleSaveResult(); await handleSaveAIConfig(); await load() }} loading={savingResult || savingAI} className="w-full sm:w-auto justify-center">
@@ -5250,6 +5617,27 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       {showFormModal && formSubmission && (
         <FormResponseModal formSubmission={formSubmission} planForm={planForm} clientId={client.id} onClose={() => setShowFormModal(false)} />
       )}
+
+      {/* Lightbox para fotos do Resultado — reaproveita o PhotoLightbox que
+          já tem zoom, pan, pinch, navegação por teclado e prev/next. Quando
+          o admin clica em "deletar" dentro do lightbox, delega pro handler
+          comum handleDeleteFile (mesmo usado nas listas de PDF/áudio). */}
+      {resultLightbox && (
+        <PhotoLightbox
+          photos={resultLightbox.photos}
+          initialIndex={resultLightbox.index}
+          onClose={() => setResultLightbox(null)}
+          onDelete={async photo => {
+            await handleDeleteFile(photo.id, photo.storage_path)
+            // remove a foto deletada do array local pra navegação seguir certa
+            setResultLightbox(s => {
+              if (!s) return null
+              const next = s.photos.filter((p: any) => p.id !== photo.id)
+              if (next.length === 0) return null
+              return { photos: next, index: Math.min(s.index, next.length - 1) }
+            })
+          }}
+        />)}
       {/* Modal de rejeição de Foto IA */}
       {showAiPhotoRejectionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}

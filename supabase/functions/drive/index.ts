@@ -634,6 +634,20 @@ Deno.serve(async (req: Request) => {
         }
       }
 
+      // ── Tornar público arquivos acessados via URL direta pelo cliente ───
+      //
+      // Resultados (PDF/áudio/foto) e imagens de formulário são apresentados
+      // pra cliente no ClientPortal, que NÃO tem auth. Por isso o arquivo
+      // precisa ser publicamente acessível por link — caso contrário <audio>
+      // e <img src=drive.google.com/...> falham com 403. PDFs funcionam mesmo
+      // sem isso porque abrem via window.open() (Drive serve a página de
+      // download), mas áudio/imagem inline exigem permission anyone:reader.
+      if (kind === 'result_file' || kind === 'form_image') {
+        try { await makeAnyoneReader(accessToken, uploaded.id) } catch (e) {
+          console.warn(`[drive] makeAnyoneReader (${kind}) falhou:`, e)
+        }
+      }
+
       // URL pública pra exibir direto no <img>
       const viewUrl     = `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`
       const downloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`

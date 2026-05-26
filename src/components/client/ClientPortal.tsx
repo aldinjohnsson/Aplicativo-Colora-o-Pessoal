@@ -6,7 +6,7 @@ import {
   Camera, AlertCircle, FileText, ExternalLink, Download,
   ChevronLeft, ChevronRight, Play, Image as ImageIcon,
   CheckCircle2, ArrowRight, Loader2, ChevronDown, ChevronUp,
-  Package, Sparkles,
+  Package, Sparkles, ZoomIn, ZoomOut, Mic,
 } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
@@ -139,6 +139,18 @@ export function ClientPortal() {
       </div>
     </div>
   )
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Classifica um arquivo de resultado pelo nome (extensão). Usado pra separar
+ *  PDFs, áudios e fotos em seções distintas na tela de Resultado. */
+function getResultFileKind(fileName: string): 'pdf' | 'audio' | 'image' | 'other' {
+  const ext = (fileName.split('.').pop() || '').toLowerCase()
+  if (ext === 'pdf') return 'pdf'
+  if (['mp3','wav','ogg','webm','m4a','aac','opus','oga','flac','mpga','mpeg'].includes(ext)) return 'audio'
+  if (['jpg','jpeg','png','webp','heic','heif','gif','bmp'].includes(ext)) return 'image'
+  return 'other'
 }
 
 // ── Step Header ──────────────────────────────────────────────────────────────
@@ -1734,6 +1746,178 @@ interface RefPhoto {
   url: string
 }
 
+// ── Lightbox para fotos do Resultado ─────────────────────────────────────────
+//
+// Modal fullscreen com zoom + pan + download. Usado quando a cliente clica
+// numa miniatura na seção "Fotos" da tela de Resultado.
+//
+//  • Zoom: botões +/− no canto superior + pinch nativo no mobile (browser
+//    cuida do scaling em <img> com touch-action: pinch-zoom no container).
+//  • Pan: drag com mouse quando zoom > 1, dedo único no mobile.
+//  • Download: usa fetch + blob URL pra forçar download (em vez de window.open).
+//    Drive precisa estar com permission anyone:reader (patch da Edge Function).
+//  • Navegação: setas ← →, ChevronLeft/Right quando há múltiplas fotos.
+function ResultPhotoLightbox({ photos, initialIndex, onClose }: {
+  photos: Array<{ id: string; url: string; file_name: string; drive_file_id?: string | null }>
+  initialIndex: number
+  onClose: () => void
+}) {
+  const [index, setIndex] = useState(initialIndex)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null)
+  const photo = photos[index]
+  const [downloading, setDownloading] = useState(false)
+
+  // Reseta zoom/pan ao trocar de foto
+  useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [index])
+
+  // Navegação por teclado
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === 'ArrowLeft' && photos.length > 1) setIndex(i => (i - 1 + photos.length) % photos.length)
+      if (e.key === 'ArrowRight' && photos.length > 1) setIndex(i => (i + 1) % photos.length)
+      if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z * 1.5, 5))
+      if (e.key === '-') setZoom(z => Math.max(z / 1.5, 0.5))
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [photos.length, onClose])
+
+  const handleDownload = async () => {
+    if (!photo) return
+    setDownloading(true)
+    try {
+      const url = photo.drive_file_id
+        ? `https://drive.google.com/uc?export=download&id=${photo.drive_file_id}`
+        : photo.url
+      // Tenta fetch+blob pra forçar download com nome certo. Pode falhar
+      // se o Drive servir página de scan antivírus pra arquivos grandes —
+      // nesse caso cai pra window.open.
+      try {
+        const r = await fetch(url)
+        if (!r.ok) throw new Error('fetch failed')
+        const blob = await r.blob()
+        if (blob.size < 1024 && blob.type.startsWith('text/html')) throw new Error('drive html page')
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = photo.file_name
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        URL.revokeObjectURL(blobUrl)
+      } catch {
+        window.open(url, '_blank')
+      }
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  // Drag pra pan quando zoom > 1
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (zoom <= 1) return
+    if ((e.target as HTMLElement).closest('button')) return
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y }
+  }
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return
+    setPan({
+      x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+      y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+    })
+  }
+  const onPointerUp = () => { dragRef.current = null }
+
+  if (!photo) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center"
+      style={{ touchAction: 'pinch-zoom' }}
+      onClick={onClose}
+    >
+      {/* Top bar: download + close */}
+      <div className="absolute top-4 right-4 flex gap-2 z-10" onClick={e => e.stopPropagation()}>
+        <button
+          onClick={handleDownload}
+          disabled={downloading}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-white bg-white/10 hover:bg-white/20 disabled:opacity-40 rounded-lg backdrop-blur-sm transition-colors"
+          title="Baixar foto"
+        >
+          {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          <span className="hidden sm:inline">Baixar</span>
+        </button>
+        <button
+          onClick={onClose}
+          className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+          title="Fechar"
+        >
+          <X className="h-6 w-6" />
+        </button>
+      </div>
+
+      {/* Zoom controls (canto inferior) */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1 z-10 bg-white/10 backdrop-blur-sm rounded-lg p-1" onClick={e => e.stopPropagation()}>
+        <button onClick={() => setZoom(z => Math.max(z / 1.5, 0.5))} className="p-2 text-white hover:bg-white/20 rounded" title="Diminuir"><ZoomOut className="h-4 w-4" /></button>
+        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} className="px-3 py-2 text-xs text-white hover:bg-white/20 rounded font-medium" title="Ajustar à tela">{Math.round(zoom * 100)}%</button>
+        <button onClick={() => setZoom(z => Math.min(z * 1.5, 5))} className="p-2 text-white hover:bg-white/20 rounded" title="Aumentar"><ZoomIn className="h-4 w-4" /></button>
+      </div>
+
+      {/* Prev/Next quando há mais de uma foto */}
+      {photos.length > 1 && (
+        <>
+          <button
+            onClick={e => { e.stopPropagation(); setIndex(i => (i - 1 + photos.length) % photos.length) }}
+            className="absolute left-4 top-1/2 -translate-y-1/2 z-10 p-2 text-white bg-white/10 hover:bg-white/20 rounded-full backdrop-blur-sm transition-colors"
+            title="Anterior"
+          >
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+          <button
+            onClick={e => { e.stopPropagation(); setIndex(i => (i + 1) % photos.length) }}
+            className="absolute right-4 top-1/2 -translate-y-1/2 z-10 p-2 text-white bg-white/10 hover:bg-white/20 rounded-full backdrop-blur-sm transition-colors"
+            title="Próxima"
+          >
+            <ChevronRight className="h-6 w-6" />
+          </button>
+        </>
+      )}
+
+      {/* Container da imagem com pan via pointer events */}
+      <div
+        className="w-full h-full flex items-center justify-center overflow-hidden select-none"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{ cursor: zoom > 1 ? (dragRef.current ? 'grabbing' : 'grab') : 'default' }}
+      >
+        <img
+          src={photo.url}
+          alt={photo.file_name}
+          className="max-w-full max-h-full object-contain"
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transition: dragRef.current ? 'none' : 'transform 0.2s',
+            touchAction: 'none',
+            pointerEvents: 'none', // o drag fica no container
+          }}
+          draggable={false}
+        />
+      </div>
+
+      {/* Contador */}
+      {photos.length > 1 && (
+        <div className="absolute top-4 left-4 z-10 px-3 py-1.5 bg-white/10 backdrop-blur-sm rounded-lg text-white text-sm">
+          {index + 1} / {photos.length}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ResultScreen({
   token, data,
   simulatingMode = false,
@@ -1879,6 +2063,17 @@ function ResultScreen({
   )
 
   const files: typeof result.files = result.files ?? []
+
+  // Separa os arquivos do resultado por tipo pra renderizar em seções
+  // distintas (Documentos / Áudios / Fotos). Tipo é detectado pela extensão
+  // do nome — não temos coluna mime_type em client_result_files.
+  const pdfs   = files.filter((f: any) => getResultFileKind(f.file_name) === 'pdf')
+  const audios = files.filter((f: any) => getResultFileKind(f.file_name) === 'audio')
+  const images = files.filter((f: any) => getResultFileKind(f.file_name) === 'image')
+  const others = files.filter((f: any) => getResultFileKind(f.file_name) === 'other')
+
+  // Lightbox de foto (state local — abre quando a cliente clica numa miniatura)
+  const [photoLightbox, setPhotoLightbox] = useState<{ photos: any[]; index: number } | null>(null)
 
   // Visibilidade do `folder_url` (link da pasta vinda do FoldersManager).
   // Regra de produto: SÓ aparece pra clientes pertencentes a um super_admin.
@@ -2038,13 +2233,13 @@ function ResultScreen({
         </div>
       )}
 
-      {files.length > 0 && (
+      {(pdfs.length > 0 || others.length > 0) && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <FileText className="h-5 w-5 text-rose-400" /> Documentos
           </h3>
           <div className="space-y-2">
-            {files.map((file: any) => (
+            {[...pdfs, ...others].map((file: any) => (
               <button
                 key={file.id}
                 onClick={() => handleDownload(file)}
@@ -2064,6 +2259,113 @@ function ResultScreen({
                 }
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Mensagens em áudio do consultor(a) ──────────────────────────
+          Player via /audio-proxy (portal_token) — sem auth JWT, sem CORS.
+          Não exibe nome/extensão do arquivo: mostra só "Mensagem do
+          consultor(a)" com contador quando há mais de um áudio. */}
+      {audios.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
+          <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Mic className="h-5 w-5 text-rose-400" />
+            {audios.length === 1 ? 'Mensagem do consultor(a)' : 'Mensagens do consultor(a)'}
+          </h3>
+          <div className="space-y-4">
+            {audios.map((file: any, idx: number) => {
+              // Usa o proxy da Edge Function pra evitar bloqueio de CORS/auth do Drive
+              const supabaseUrl = (supabase as any).supabaseUrl as string ?? ''
+              const audioSrc = file.drive_file_id && token
+                ? `${supabaseUrl}/functions/v1/drive/audio-proxy?token=${encodeURIComponent(token)}&id=${encodeURIComponent(file.drive_file_id)}`
+                : clientService.getResultFileUrl(file)
+
+              return (
+                <div
+                  key={file.id}
+                  className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-50 via-purple-50 to-pink-50 border border-violet-100 p-4"
+                >
+                  {/* Detalhe decorativo de fundo */}
+                  <div className="absolute -top-4 -right-4 w-24 h-24 bg-gradient-to-br from-violet-200/40 to-purple-200/40 rounded-full pointer-events-none" />
+
+                  <div className="relative flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+                      <Mic className="h-5 w-5 text-white" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-violet-900">
+                        {audios.length > 1 ? `Mensagem ${idx + 1}` : 'Mensagem do consultor(a)'}
+                      </p>
+                      <p className="text-xs text-violet-400 mt-0.5">Toque para ouvir</p>
+                    </div>
+                    <button
+                      onClick={() => handleDownload(file)}
+                      disabled={downloadingId === file.id}
+                      className="p-2 text-violet-300 hover:text-violet-600 hover:bg-violet-100 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
+                      title="Baixar áudio"
+                    >
+                      {downloadingId === file.id
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Download className="h-4 w-4" />}
+                    </button>
+                  </div>
+
+                  <audio
+                    src={audioSrc}
+                    controls
+                    preload="metadata"
+                    className="w-full rounded-xl"
+                    style={{ colorScheme: 'light' }}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Fotos ───────────────────────────────────────────────────────
+          Grid de miniaturas. Clica → abre o lightbox com zoom + download. */}
+      {images.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
+          <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+            <ImageIcon className="h-5 w-5 text-rose-400" /> Fotos
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
+            {images.map((file: any, idx: number) => {
+              // Lista pro lightbox precisa ter `url` (high-res) e `file_name`
+              const lightboxPhotos = images.map((f: any) => ({
+                id: f.id,
+                file_name: f.file_name,
+                drive_file_id: f.drive_file_id,
+                url: f.drive_file_id
+                  ? `https://drive.google.com/thumbnail?id=${f.drive_file_id}&sz=w2000`
+                  : clientService.getResultFileUrl(f),
+              }))
+              // Thumbnail menor pra grid
+              const thumbUrl = file.drive_file_id
+                ? `https://drive.google.com/thumbnail?id=${file.drive_file_id}&sz=w400`
+                : clientService.getResultFileUrl(file)
+              return (
+                <button
+                  key={file.id}
+                  onClick={() => setPhotoLightbox({ photos: lightboxPhotos, index: idx })}
+                  className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group focus:outline-none focus:ring-2 focus:ring-rose-400"
+                  title={file.file_name}
+                >
+                  <img
+                    src={thumbUrl}
+                    alt={file.file_name}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                    loading="lazy"
+                  />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                    <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                  </div>
+                </button>
+              )
+            })}
           </div>
         </div>
       )}
@@ -2089,7 +2391,7 @@ function ResultScreen({
         <div className="space-y-2">
           <div className="flex items-center gap-2 px-1">
             <div className="h-px flex-1 bg-gradient-to-r from-transparent to-violet-200" />
-            <span className="text-xs font-medium text-violet-500 px-2">Consultora de Coloração Pessoal</span>
+            <span className="text-xs font-medium text-violet-500 px-2">Mensagem consultor(a)</span>
             <div className="h-px flex-1 bg-gradient-to-l from-transparent to-violet-200" />
           </div>
           <GeminiChat
@@ -2106,6 +2408,16 @@ function ResultScreen({
             resultObservations={result.observations || ''}
           />
         </div>
+      )}
+
+      {/* Lightbox de foto — abre quando a cliente clica numa miniatura na
+          seção Fotos acima. Renderiza no fim do JSX pra ficar acima de tudo. */}
+      {photoLightbox && (
+        <ResultPhotoLightbox
+          photos={photoLightbox.photos}
+          initialIndex={photoLightbox.index}
+          onClose={() => setPhotoLightbox(null)}
+        />
       )}
     </div>
   )
