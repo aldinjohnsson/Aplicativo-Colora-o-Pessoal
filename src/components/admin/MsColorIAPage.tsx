@@ -30,6 +30,12 @@ import { GeminiChat } from '../client/GeminiChat'
 const selectedFolderStorageKey = (adminId: string) =>
   `ms_color_ia_selected_folder_${adminId}`
 
+// Timestamp do último upload da foto de referência — persiste o cache-buster
+// para que o reload use a mesma URL ?t=... gerada no upload e não sirva
+// a versão antiga do CDN.
+const refPhotoTimestampKey = (adminId: string) =>
+  `ms_color_ia_ref_photo_ts_${adminId}`
+
 // ─── Types ─────────────────────────────────────────────────────────────
 
 interface FolderOption {
@@ -191,8 +197,13 @@ export function MsColorIAPage() {
     try {
       const res = await fetch(data.publicUrl, { method: 'HEAD' })
       if (res.ok) {
-        setRefPhotoUrl(data.publicUrl)
-        setRefPhotoPreview(data.publicUrl)
+        // Restaura o mesmo ?t= que foi usado no último upload para que o browser
+        // e o CDN não sirvam a versão anterior em cache.
+        let ts: string | null = null
+        try { ts = localStorage.getItem(refPhotoTimestampKey(adminId)) } catch {}
+        const url = ts ? `${data.publicUrl}?t=${ts}` : data.publicUrl
+        setRefPhotoUrl(url)
+        setRefPhotoPreview(url)
       }
     } catch {
       // arquivo não existe ainda — sem problema
@@ -235,7 +246,9 @@ export function MsColorIAPage() {
       const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
       if (!data?.publicUrl) throw new Error('Não foi possível obter a URL pública da foto.')
 
-      setRefPhotoUrl(`${data.publicUrl}?t=${Date.now()}`)
+      const ts = Date.now()
+      try { localStorage.setItem(refPhotoTimestampKey(adminId), String(ts)) } catch {}
+      setRefPhotoUrl(`${data.publicUrl}?t=${ts}`)
     } catch (e: any) {
       console.error('[MsColorIAPage] upload ref photo failed:', e)
       setUploadError(e?.message || 'Erro ao enviar a foto. Tente novamente.')
@@ -254,6 +267,7 @@ export function MsColorIAPage() {
     if (state.kind === 'ready') {
       const path = `ms-color-ia-ref/${state.data.adminId}/ref_photo.jpg`
       supabase.storage.from('client-photos').remove([path]).catch(() => {})
+      try { localStorage.removeItem(refPhotoTimestampKey(state.data.adminId)) } catch {}
     }
   }
 
