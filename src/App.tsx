@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { AdminLogin } from './components/admin/AdminLogin'
 import { AdminDashboard } from './components/admin/AdminDashboard'
-import { PasswordRecovery } from './components/admin/PasswordRecovery'
+import ResetPasswordPage from './components/admin/ResetPasswordPage'
 import { ClientPortal } from './components/client/ClientPortal'
 import { ClientLogin } from './components/client/ClientLogin'
 import { adminService } from './lib/services'
@@ -69,8 +69,8 @@ function AppRoutes() {
       <Route
         path="/admin/reset-password"
         element={
-          <PasswordRecovery
-            onBackToLogin={() => navigate('/admin/login')}
+          <ResetPasswordPage
+            onSuccess={() => navigate('/admin/login')}
             supabase={supabase}
           />
         }
