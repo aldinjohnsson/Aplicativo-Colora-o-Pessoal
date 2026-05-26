@@ -8,7 +8,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
-  FileText, CheckSquare, Square, Save, CheckCircle2
+  FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp
 } from 'lucide-react'
 import {
   chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64,
@@ -145,6 +145,11 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [pdfSaving, setPdfSaving] = useState(false)
   const [pdfSaveSuccess, setPdfSaveSuccess] = useState(false)
   const [pdfSaveError, setPdfSaveError] = useState<string | null>(null)
+  // ── Modo de seleção para apagar mensagens ────────────────────────────
+  const [selectMode, setSelectMode]     = useState(false)
+  const [selectedMsgs, setSelectedMsgs] = useState<Set<string>>(new Set())
+  // ── Mensagens longas expandidas ──────────────────────────────────────
+  const [expandedMsgs, setExpandedMsgs] = useState<Set<string>>(new Set())
   // Object URLs criados pro preview do PDF. Acumulamos e revogamos no unmount
   // (revogar enquanto a aba ainda mostra o PDF pode quebrar a visualização
   // em alguns browsers).
@@ -574,27 +579,96 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     return acc
   }, {} as Record<string, ChatMsg[]>)
 
+  // ── Apaga as mensagens selecionadas e sai do modo de seleção ──────────
+  function handleDeleteSelected() {
+    if (selectedMsgs.size === 0) return
+    setMessages(prev => {
+      const next = prev.filter(m => !selectedMsgs.has(m.id))
+      // Persiste no localStorage se houver storageKey
+      if (storageKey) {
+        try {
+          const toSave = serializeMessages(next)
+          if (toSave) localStorage.setItem(storageKey, toSave)
+          else        localStorage.removeItem(storageKey)
+        } catch {}
+      }
+      return next
+    })
+    setSelectedMsgs(new Set())
+    setSelectMode(false)
+  }
+
+  function toggleMsgSelection(id: string) {
+    setSelectedMsgs(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
   const renderMsg = (msg: ChatMsg) => {
     const isU = msg.role === 'user'
+    const isSel = selectedMsgs.has(msg.id)
     return (
-      <div key={msg.id} className={`flex gap-2 sm:gap-3 ${isU ? 'flex-row-reverse' : 'flex-row'}`}>
-        <div className={`flex-shrink-0 w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-white ${isU ? 'bg-gradient-to-br from-rose-400 to-pink-500' : 'bg-gradient-to-br from-violet-500 to-purple-600'}`}>
+      <div
+        key={msg.id}
+        className={`flex gap-2 sm:gap-3 ${isU ? 'flex-row-reverse' : 'flex-row'} ${selectMode ? 'cursor-pointer' : ''}`}
+        onClick={selectMode ? () => toggleMsgSelection(msg.id) : undefined}
+      >
+        {/* Checkbox de seleção — aparece só no selectMode */}
+        {selectMode && (
+          <div className={`flex-shrink-0 self-center ${isU ? 'order-last ml-1' : 'order-first mr-1'}`}>
+            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${isSel ? 'bg-violet-600 border-violet-600' : 'bg-white border-gray-300'}`}>
+              {isSel && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+            </div>
+          </div>
+        )}
+        <div className={`flex-shrink-0 w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-white ${isU ? 'bg-gradient-to-br from-rose-400 to-pink-500' : 'bg-gradient-to-br from-violet-500 to-purple-600'} ${selectMode && isSel ? 'ring-2 ring-violet-400 ring-offset-1' : ''}`}>
           {isU ? <User className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> : <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
         </div>
-        <div className={`flex flex-col gap-2 max-w-[85%] sm:max-w-[80%] ${isU ? 'items-end' : 'items-start'}`}>
+        <div className={`flex flex-col gap-2 max-w-[85%] sm:max-w-[80%] ${isU ? 'items-end' : 'items-start'} ${selectMode && isSel ? 'opacity-75' : ''}`}>
           {msg.imagePreview && <div className="rounded-2xl overflow-hidden shadow-md max-w-[180px] sm:max-w-[200px]"><img src={msg.imagePreview} alt="" className="w-full object-cover" /></div>}
-          {(msg.text || msg.loading || msg.error) && (
-            <div className={`rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 shadow-sm text-sm leading-relaxed ${isU ? 'bg-gradient-to-br from-rose-400 to-pink-500 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>
-              {msg.loading ? (
-                <div className="flex items-center gap-2 text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /><span className="text-xs">{loadingResults ? 'Carregando materiais...' : 'Gerando...'}</span></div>
-              ) : msg.error ? (
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-start gap-2 text-red-600"><AlertCircle className="h-4 w-4 mt-0.5" /><span className="text-xs">{msg.error}</span></div>
-                  <button onClick={handleRetry} disabled={loading} className="self-start text-xs flex items-center gap-1 px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg"><RefreshCw className="h-3 w-3" /> Tentar novamente</button>
-                </div>
-              ) : <MdText text={msg.text} />}
-            </div>
-          )}
+          {(msg.text || msg.loading || msg.error) && (() => {
+            // Considera "longa" qualquer mensagem do assistente com mais de
+            // 3 quebras de linha OU mais de 220 caracteres (exclui loading/erro).
+            const isLong = !isU && !msg.loading && !msg.error &&
+              (msg.text.split('\n').length > 3 || msg.text.length > 220)
+            const isExpanded = expandedMsgs.has(msg.id)
+            return (
+              <div className={`rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 shadow-sm text-sm leading-relaxed ${isU ? 'bg-gradient-to-br from-rose-400 to-pink-500 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>
+                {msg.loading ? (
+                  <div className="flex items-center gap-2 text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /><span className="text-xs">{loadingResults ? 'Carregando materiais...' : 'Gerando...'}</span></div>
+                ) : msg.error ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-start gap-2 text-red-600"><AlertCircle className="h-4 w-4 mt-0.5" /><span className="text-xs">{msg.error}</span></div>
+                    <button onClick={handleRetry} disabled={loading} className="self-start text-xs flex items-center gap-1 px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg"><RefreshCw className="h-3 w-3" /> Tentar novamente</button>
+                  </div>
+                ) : isLong ? (
+                  <>
+                    <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? '' : 'max-h-[4.5rem]'}`} style={isExpanded ? {} : { WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent 100%)' }}>
+                      <MdText text={msg.text} />
+                    </div>
+                    <button
+                      onClick={e => {
+                        e.stopPropagation()
+                        setExpandedMsgs(prev => {
+                          const next = new Set(prev)
+                          next.has(msg.id) ? next.delete(msg.id) : next.add(msg.id)
+                          return next
+                        })
+                      }}
+                      className="mt-2 flex items-center gap-1 text-xs font-semibold text-violet-600 hover:text-violet-800 transition-colors"
+                    >
+                      {isExpanded
+                        ? <><ChevronUp className="h-3.5 w-3.5" /> Ver menos</>
+                        : <><ChevronDown className="h-3.5 w-3.5" /> Ver mais</>
+                      }
+                    </button>
+                  </>
+                ) : <MdText text={msg.text} />}
+              </div>
+            )
+          })()}
           {msg.responseParts?.filter(p => p.type === 'image' && p.imageBase64).map((p, i) => (
             <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border w-full max-w-[260px] sm:max-w-[300px]">
               <img src={`data:${p.imageMimeType};base64,${p.imageBase64}`} alt="" className="w-full object-cover" />
@@ -904,7 +978,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
           {creditsImage !== null && <span className="hidden sm:inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
-          {storageKey && messages.length > 1 && (
+          {messages.length > 1 && (
+            <button
+              onClick={() => { setSelectMode(p => { if (p) { setSelectedMsgs(new Set()); return false } return true }) }}
+              title={selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0 ${selectMode ? 'bg-white text-violet-700 font-semibold' : 'bg-white/20 hover:bg-white/30'}`}
+            >
+              <ListChecks className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {storageKey && messages.length > 1 && !selectMode && (
             <button onClick={() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -913,6 +996,41 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 sm:py-5 space-y-4 sm:space-y-5 bg-gray-50/50">
+          {/* Barra de ação do modo seleção */}
+          {selectMode && (
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-violet-50 border border-violet-200 rounded-xl px-3 py-2 shadow-sm mb-1">
+              <span className="text-xs font-semibold text-violet-700">
+                {selectedMsgs.size === 0 ? 'Toque nas mensagens para selecionar' : `${selectedMsgs.size} selecionada${selectedMsgs.size > 1 ? 's' : ''}`}
+              </span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setSelectedMsgs(new Set(messages.map(m => m.id)))}
+                  className="text-xs text-violet-600 font-medium hover:text-violet-800"
+                >Todas</button>
+                <button
+                  onClick={() => setSelectedMsgs(new Set())}
+                  className="text-xs text-gray-400 hover:text-gray-600"
+                >Nenhuma</button>
+                <button
+                  onClick={() => {
+                    if (selectedMsgs.size === 0) return
+                    if (!confirm(`Apagar ${selectedMsgs.size} mensagem${selectedMsgs.size > 1 ? 's' : ''}?`)) return
+                    handleDeleteSelected()
+                  }}
+                  disabled={selectedMsgs.size === 0}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Trash2 className="h-3 w-3" />Apagar
+                </button>
+                <button
+                  onClick={() => { setSelectMode(false); setSelectedMsgs(new Set()) }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
           {messages.map(renderMsg)}
           <div ref={endRef} />
         </div>

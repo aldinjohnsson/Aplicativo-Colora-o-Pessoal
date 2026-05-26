@@ -662,6 +662,65 @@ Deno.serve(async (req: Request) => {
       })
     }
 
+    // ─── GET /audio-proxy ──────────────────────────────────────────────────
+    // Proxy de áudio para o ClientPortal (sem JWT — usa portal_token).
+    // O <audio> nativo não envia cabeçalhos de auth, então não podemos usar
+    // /photo-proxy (que exige JWT). Aqui validamos pelo portal_token da cliente
+    // e buscamos o arquivo do Drive com o token OAuth do admin dono.
+    if (req.method === 'GET' && path === '/audio-proxy') {
+      const portalToken = url.searchParams.get('token')
+      const fileId      = url.searchParams.get('id')
+
+      if (!portalToken) return json({ error: 'token obrigatório' }, 400)
+      if (!fileId)      return json({ error: 'id obrigatório' }, 400)
+
+      const sb = adminSb()
+
+      const { data: client } = await sb
+        .from('clients')
+        .select('id, admin_id')
+        .eq('token', portalToken)
+        .maybeSingle()
+      if (!client) return json({ error: 'Token inválido' }, 401)
+
+      // Verifica que o drive_file_id realmente pertence a um arquivo de resultado
+      // desta cliente — evita usar o proxy como gateway aberto pro Drive.
+      const { data: resultFile } = await sb
+        .from('client_result_files')
+        .select('id')
+        .eq('client_id', client.id)
+        .eq('drive_file_id', fileId)
+        .maybeSingle()
+      if (!resultFile) return json({ error: 'Arquivo não encontrado' }, 404)
+
+      let accessToken: string
+      try {
+        const t = await getAdminToken(sb, client.admin_id)
+        accessToken = t.accessToken
+      } catch (e: any) {
+        return json({ error: e.message }, 412)
+      }
+
+      const driveRes = await fetch(
+        `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      )
+      if (!driveRes.ok) {
+        return json({ error: `Drive: ${driveRes.status}` }, driveRes.status as number)
+      }
+
+      const contentType = driveRes.headers.get('content-type') || 'audio/mpeg'
+      return new Response(driveRes.body, {
+        status: 200,
+        headers: {
+          ...CORS,
+          'Content-Type':  contentType,
+          'Cache-Control': 'private, max-age=3600',
+          'Accept-Ranges': 'bytes',
+        },
+      })
+    }
+
     // ─── GET /photo-proxy ──────────────────────────────────────────────────
     // Proxy autenticado pra baixar fotos do Drive sem CORS no browser.
     // O browser não consegue fazer fetch() direto de drive.google.com

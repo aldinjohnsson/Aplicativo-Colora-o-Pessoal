@@ -17,7 +17,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, AlertCircle, Loader2, Settings as SettingsIcon,
-  Camera, ImagePlus, X, RefreshCw, FolderOpen, ChevronDown, Check,
+  Camera, ImagePlus, X, RefreshCw, FolderOpen, ChevronDown, Check, User,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { adminService } from '../../lib/services'
@@ -66,6 +66,9 @@ export function MsColorIAPage() {
   // ── Pasta selecionada ────────────────────────────────────────────────
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null)
   const [folderDropdownOpen, setFolderDropdownOpen] = useState(false)
+
+  // Nome da cliente — usado no PDF e na saudação do chat
+  const [clientName, setClientName] = useState<string>('')
 
   // Foto de referência: guardamos a URL pública do Supabase Storage
   // (blob URL não funciona com o fetch interno do GeminiChat).
@@ -341,7 +344,9 @@ export function MsColorIAPage() {
   // ── Pasta ativa ──────────────────────────────────────────────────────
   const activeFolder  = folders.find(f => f.id === selectedFolderId) ?? folders[0]
   const folderConfig  = activeFolder.config
-  const systemPrompt  = buildSystemPrompt(adminName, folderConfig)
+  // Usa o nome digitado pelo admin; cai para adminName se o campo estiver vazio
+  const effectiveName = clientName.trim() || adminName
+  const systemPrompt  = buildSystemPrompt(effectiveName, folderConfig)
 
   return (
     <div className="max-w-4xl mx-auto p-3 sm:p-4 space-y-4">
@@ -357,6 +362,27 @@ export function MsColorIAPage() {
             Simulações de cabelos, maquiagem, roupas e mais
           </p>
         </div>
+      </div>
+
+      {/* ── Nome da cliente ───────────────────────────────────────────
+          Campo preenchido pelo admin antes ou durante o atendimento.
+          É usado como clientName no GeminiChat e, portanto, no PDF gerado.
+      ─────────────────────────────────────────────────────────────── */}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <User className="h-4 w-4 text-fuchsia-500 flex-shrink-0" />
+          <p className="text-sm font-semibold text-gray-900">Nome da cliente</p>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Informe o nome da cliente para que ele apareça corretamente no PDF gerado.
+        </p>
+        <input
+          type="text"
+          value={clientName}
+          onChange={e => setClientName(e.target.value)}
+          placeholder="Ex.: Mariana Silva"
+          className="w-full sm:max-w-xs px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent transition"
+        />
       </div>
 
       {/* ── Seletor de pasta ──────────────────────────────────────────────
@@ -542,7 +568,7 @@ export function MsColorIAPage() {
       */}
       <GeminiChat
         key={activeFolder.id}
-        clientName={adminName}
+        clientName={effectiveName}
         systemPrompt={systemPrompt}
         folderConfig={folderConfig}
         clientId={adminId}

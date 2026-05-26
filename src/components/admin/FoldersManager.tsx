@@ -3,7 +3,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   FolderOpen, Plus, Trash2, Save, CheckCircle, AlertCircle,
   ChevronDown, ChevronUp, X, Scissors, Palette, Shirt, Gem,
-  Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera, Layout, RotateCcw
+  Image, FileText, Upload, ArrowLeft, Sparkles, Copy, Link2, Camera, Layout, RotateCcw,
+  ArrowUp, ArrowDown
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { CategoryTypeModal, usePhotoTypes } from './CategoryTypeModal'
@@ -461,6 +462,20 @@ export function FoldersManager() {
     updateCat(catId, { prompts: cat.prompts.filter(p => p.id !== pId) })
     if (activePrompt === pId) setActivePrompt(null)
     setPromptSnapshots(prev => { const n = { ...prev }; delete n[pId]; return n })
+  }
+
+  /** Move um prompt para cima (dir = -1) ou para baixo (dir = +1) dentro da categoria */
+  const reorderPrompt = (catId: string, pId: string, dir: -1 | 1) => {
+    const cat = config.categories.find(c => c.id === catId)
+    if (!cat) return
+    const idx = cat.prompts.findIndex(p => p.id === pId)
+    const newIdx = idx + dir
+    if (newIdx < 0 || newIdx >= cat.prompts.length) return
+    const next = [...cat.prompts]
+    ;[next[idx], next[newIdx]] = [next[newIdx], next[idx]]
+    // Atualiza o campo order para refletir a nova posição
+    const reindexed = next.map((p, i) => ({ ...p, order: i }))
+    updateCat(catId, { prompts: reindexed })
   }
 
   const updatePrompt = (catId: string, pId: string, u: Partial<Prompt>) => {
@@ -1608,7 +1623,7 @@ export function FoldersManager() {
                   )}
 
                   {/* Prompts */}
-                  {cat.prompts.map(prompt => (
+                  {cat.prompts.map((prompt, promptIdx) => (
                     <div key={prompt.id} className={`border rounded-lg overflow-hidden ${activePrompt === prompt.id ? 'border-violet-300 bg-violet-50/50' : 'border-gray-200'}`}>
                       <div
                         className="px-3 py-2 flex items-center gap-2 cursor-pointer"
@@ -1621,6 +1636,27 @@ export function FoldersManager() {
                           }
                         }}
                       >
+                        {/* Botões de reordenação — lado esquerdo, longe da lixeira */}
+                        {activePrompt !== prompt.id && (
+                          <div className="flex flex-col flex-shrink-0 mr-1" onClick={e => e.stopPropagation()}>
+                            <button
+                              onClick={() => reorderPrompt(cat.id, prompt.id, -1)}
+                              disabled={promptIdx === 0}
+                              className="text-gray-300 hover:text-violet-500 disabled:opacity-20 disabled:cursor-not-allowed leading-none"
+                              title="Mover para cima"
+                            >
+                              <ArrowUp className="h-3 w-3" />
+                            </button>
+                            <button
+                              onClick={() => reorderPrompt(cat.id, prompt.id, 1)}
+                              disabled={promptIdx === cat.prompts.length - 1}
+                              className="text-gray-300 hover:text-violet-500 disabled:opacity-20 disabled:cursor-not-allowed leading-none"
+                              title="Mover para baixo"
+                            >
+                              <ArrowDown className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
                         {prompt.thumbnail ? (
                           <img src={prompt.thumbnail.url} alt="" className="w-8 h-8 rounded object-cover flex-shrink-0 border" />
                         ) : (
