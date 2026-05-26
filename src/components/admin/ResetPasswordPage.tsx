@@ -6,6 +6,23 @@ interface ResetPasswordPageProps {
   supabase: any
 }
 
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-rose-50 to-pink-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-rose-400 to-pink-500 rounded-2xl mb-4 shadow-lg">
+            <Palette className="h-8 w-8 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900">MS Colors</h1>
+          <p className="text-gray-500 mt-1">Painel Administrativo</p>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export default function ResetPasswordPage({ onSuccess, supabase }: ResetPasswordPageProps) {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -39,21 +56,6 @@ export default function ResetPasswordPage({ onSuccess, supabase }: ResetPassword
       setLoading(false)
     }
   }
-
-  const Shell = ({ children }: { children: React.ReactNode }) => (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 to-pink-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-rose-400 to-pink-500 rounded-2xl mb-4 shadow-lg">
-            <Palette className="h-8 w-8 text-white" />
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900">MS Colors</h1>
-          <p className="text-gray-500 mt-1">Painel Administrativo</p>
-        </div>
-        {children}
-      </div>
-    </div>
-  )
 
   if (done) {
     return (
