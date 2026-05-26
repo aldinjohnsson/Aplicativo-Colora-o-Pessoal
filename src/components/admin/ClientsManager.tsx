@@ -3741,7 +3741,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [tab, setTab] = useState<'overview' | 'photos' | 'result' | 'documents' | 'ai' | 'chat'>('overview')
   const [docsSubTab, setDocsSubTab] = useState<'docs' | 'compositions'>('docs')
   const [showFormModal, setShowFormModal] = useState(false)
-  const [resultForm, setResultForm] = useState({ observations: '' })
+  const [resultForm, setResultForm] = useState({ observations: '', custom_link_url: '' })
   const [savingResult, setSavingResult] = useState(false)
   const [uploadingFile, setUploadingFile] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -3832,7 +3832,10 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setData(detail)
     setIsSuperAdmin(adminRes?.role === 'super_admin')
     setNotes(detail.client.notes || '')
-    if (detail.result) setResultForm({ observations: detail.result.observations || '' })
+    if (detail.result) setResultForm({
+      observations: detail.result.observations || '',
+      custom_link_url: (detail.result as any).custom_link_url || '',
+    })
     if (detail.result) setChatEnabled(detail.result.chat_enabled ?? false)
     const folders = foldersRes.data || []
     setAiFolders(folders)
@@ -4187,8 +4190,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     try {
       const prompt = buildSystemPrompt(data.client.full_name, linkedFolderConfig, clientTags)
       await supabase.from('clients').update({ ai_folder_id: linkedFolderId, ai_info_tags: clientTags, ai_prompt: prompt }).eq('id', clientId)
+      // O folder_url do FoldersManager só é propagado pro client_results de
+      // clientes pertencentes ao super_admin. Pra admins comuns o link da
+      // pasta nunca é salvo, então também nunca aparece no ClientPortal.
       const driveLink = linkedFolderConfig?.driveLink || ''
-      if (driveLink) await adminService.saveResult(clientId!, { ...resultForm, folder_url: driveLink })
+      if (driveLink && isSuperAdmin) {
+        await adminService.saveResult(clientId!, { ...resultForm, folder_url: driveLink })
+      }
       setAiSaveStatus('saved'); setTimeout(() => setAiSaveStatus('idle'), 3000)
     } catch { setAiSaveStatus('error') } finally { setSavingAI(false) }
   }
@@ -5095,6 +5103,25 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <div>
                   <label className="block text-sm font-medium mb-1" style={{ color: t.text2 }}>Observações</label>
                   <textarea value={resultForm.observations} onChange={e => setResultForm({ ...resultForm, observations: e.target.value })} rows={4} placeholder="Comentários, recomendações, paleta de cores..." className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1" style={{ color: t.text2 }}>
+                Link de acesso <span className="font-normal" style={{ color: t.text3 }}>(opcional)</span>
+              </label>
+              <div className="relative">
+                <Link2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: t.text3 }} />
+                <input
+                  type="url"
+                  value={resultForm.custom_link_url}
+                  onChange={e => setResultForm({ ...resultForm, custom_link_url: e.target.value })}
+                  placeholder="https://..."
+                  className="w-full pl-9 pr-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+                  style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }}
+                />
+              </div>
+              <p className="text-xs mt-1.5" style={{ color: t.text3 }}>
+                Aparece pra cliente como botão "Acessar link" no Resultado.
+              </p>
             </div>
             <div>
               <div className="flex items-center justify-between mb-3">

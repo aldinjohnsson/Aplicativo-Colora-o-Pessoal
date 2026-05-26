@@ -1753,6 +1753,27 @@ function ResultScreen({
   const [loadingPrompt, setLoadingPrompt] = useState(true)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
 
+  // Role do admin dono do cliente. Buscado via RPC `get_client_owner_role` que
+  // roda como SECURITY DEFINER (o ClientPortal não tem auth, acesso via token).
+  // Começa null e fica hidratado depois — default é "esconder folder_url",
+  // garantindo que não pisca a pasta pra cliente de admin comum durante o load.
+  const [ownerRole, setOwnerRole] = useState<string | null>(null)
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data: role, error } = await supabase.rpc('get_client_owner_role', { p_token: token })
+        if (cancelled) return
+        if (error) console.warn('[ClientPortal] get_client_owner_role:', error)
+        setOwnerRole(typeof role === 'string' ? role : null)
+      } catch (e) {
+        if (!cancelled) console.warn('[ClientPortal] owner_role fetch falhou:', e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [token])
+
   const handleDownload = async (file: any) => {
     if (downloadingId) return
     setDownloadingId(file.id)
@@ -1858,7 +1879,18 @@ function ResultScreen({
   )
 
   const files: typeof result.files = result.files ?? []
-  const hasContent = result.folder_url || files.length > 0 || result.observations
+
+  // Visibilidade do `folder_url` (link da pasta vinda do FoldersManager).
+  // Regra de produto: SÓ aparece pra clientes pertencentes a um super_admin.
+  // Pra clientes de admin comum o link da pasta nunca é mostrado, mesmo que
+  // o campo esteja preenchido no banco.
+  const canSeeFolderUrl = ownerRole === 'super_admin'
+  const folderUrl = canSeeFolderUrl ? result.folder_url : null
+
+  // Link manual extra colocado pelo admin na aba Resultado. Sempre aparece
+  // pra cliente (independente do role do admin dono).
+  const customLinkUrl = (result as any).custom_link_url as string | undefined
+  const hasContent = folderUrl || customLinkUrl || files.length > 0 || result.observations
 
   return (
     <div className="space-y-4">
@@ -1952,13 +1984,13 @@ function ResultScreen({
         </div>
       )}
 
-      {result.folder_url && (
+      {folderUrl && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
             <ExternalLink className="h-5 w-5 text-rose-400" /> Pasta com Materiais
           </h3>
           <a
-            href={result.folder_url}
+            href={folderUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-3 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100 hover:from-rose-100 hover:to-pink-100 transition-all group"
@@ -1969,6 +2001,35 @@ function ResultScreen({
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-rose-700">Acessar pasta completa</p>
               <p className="text-xs text-rose-400 mt-0.5">Clique para abrir seus materiais</p>
+            </div>
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
+              <ExternalLink className="h-3.5 w-3.5 text-rose-500" />
+            </div>
+          </a>
+        </div>
+      )}
+
+      {/* Link manual da consultora — vem do campo custom_link_url do client_results,
+          editado em ClientsManager → aba Resultado → "Link de acesso". Aparece pra
+          QUALQUER cliente (independente do role do admin dono), diferente do
+          folderUrl acima que é só pra cliente de super_admin. */}
+      {customLinkUrl && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
+          <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+            <ExternalLink className="h-5 w-5 text-rose-400" /> Link de Acesso
+          </h3>
+          <a
+            href={customLinkUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100 hover:from-rose-100 hover:to-pink-100 transition-all group"
+          >
+            <div className="w-11 h-11 bg-gradient-to-br from-rose-400 to-pink-500 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0">
+              <ExternalLink className="h-5 w-5 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-rose-700">Acessar link</p>
+              <p className="text-xs text-rose-400 mt-0.5">Clique para abrir o link enviado pela consultora</p>
             </div>
             <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
               <ExternalLink className="h-3.5 w-3.5 text-rose-500" />

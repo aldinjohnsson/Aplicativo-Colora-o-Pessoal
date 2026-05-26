@@ -141,6 +141,7 @@ export interface ClientPortalData {
   result: {
     folder_url: string | null
     observations: string | null
+    custom_link_url: string | null
     released_at: string
     chat_enabled: boolean
     files: Array<{ id: string; file_name: string; storage_path: string; file_size: number }>
@@ -1292,7 +1293,7 @@ export const adminService = {
 
   async saveResult(
     clientId: string,
-    result: { folder_url?: string; observations?: string }
+    result: { folder_url?: string; observations?: string; custom_link_url?: string }
   ): Promise<void> {
     const { error } = await supabase
       .from('client_results')
@@ -1800,18 +1801,20 @@ export const clientService = {
       }
     }
 
-    // ── Buscar chat_enabled da tabela client_results ──────────────────────
-    // O RPC get_client_portal não retorna este campo, então buscamos direto.
+    // ── Buscar chat_enabled + custom_link_url da tabela client_results ────
+    // O RPC get_client_portal não retorna esses campos, então buscamos direto.
     if (portalData.result) {
       try {
         const { data: resultRow } = await supabase
           .from('client_results')
-          .select('chat_enabled')
+          .select('chat_enabled, custom_link_url')
           .eq('client_id', portalData.client.id)
           .single()
         portalData.result.chat_enabled = resultRow?.chat_enabled ?? true
+        portalData.result.custom_link_url = resultRow?.custom_link_url ?? null
       } catch (e) {
         portalData.result.chat_enabled = true
+        portalData.result.custom_link_url = null
       }
     }
 
