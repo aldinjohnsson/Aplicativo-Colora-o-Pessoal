@@ -262,7 +262,9 @@ const WELCOME = (name: string, lang: LanguageCode = 'pt-BR') =>
  */
 function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
   const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(src)
+  const [failed, setFailed] = useState(false)
   useEffect(() => {
+    setFailed(false)
     if (!src) return
     const m = src.match(/[?&]id=([^&]+)/)
     if (!src.includes('drive.google.com') || !m) { setResolvedSrc(src); return }
@@ -272,7 +274,10 @@ function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageEleme
       .catch(() => setResolvedSrc(src)) // fallback: tenta a URL direta
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [src])
-  return <img src={resolvedSrc} {...props} />
+  // iOS Safari mostra um quadrado azul com '?' pra <img> sem src ou que falhou.
+  // Evita renderizar a tag até ter src válido e antes de qualquer erro.
+  if (!resolvedSrc || failed) return null
+  return <img src={resolvedSrc} {...props} onError={() => setFailed(true)} />
 }
 
 export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR' }: GeminiChatProps) {
@@ -1022,7 +1027,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           {isU ? <User className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> : <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
         </div>
         <div className={`flex flex-col gap-2 max-w-[85%] sm:max-w-[80%] ${isU ? 'items-end' : 'items-start'} ${selectMode && isSel ? 'opacity-75' : ''}`}>
-          {msg.imagePreview && <div className="rounded-2xl overflow-hidden shadow-md max-w-[180px] sm:max-w-[200px]"><img src={msg.imagePreview} alt="" className="w-full object-cover" /></div>}
+          {msg.imagePreview && (
+            <div className="rounded-2xl overflow-hidden shadow-md max-w-[180px] sm:max-w-[200px]">
+              <img
+                src={msg.imagePreview}
+                alt=""
+                className="w-full object-cover"
+                // iOS Safari renderiza um quadrado azul com '?' quando uma <img>
+                // está com src vazio/inválido/revogado. Quando isso acontece,
+                // esconde o container inteiro em vez de mostrar o placeholder.
+                onError={e => { const c = e.currentTarget.parentElement; if (c) c.style.display = 'none' }}
+              />
+            </div>
+          )}
           {(msg.text || msg.loading || msg.error) && (() => {
             // Considera "longa" qualquer mensagem do assistente com mais de
             // 3 quebras de linha OU mais de 220 caracteres (exclui loading/erro).
