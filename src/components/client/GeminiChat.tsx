@@ -8,7 +8,8 @@ import React, { useState, useRef, useEffect } from 'react'
 import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
-  FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp
+  FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp,
+  ZoomIn, ZoomOut, Maximize2,
 } from 'lucide-react'
 import {
   chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64, translateText, translateTexts,
@@ -127,6 +128,55 @@ async function uploadChatImage(clientId: string, msgId: string, idx: number, bas
   } catch { return null }
 }
 
+/**
+ * Força o download de uma imagem sem CORS.
+ *
+ * O atributo `download` do <a> é ignorado pelo browser para URLs cross-origin,
+ * e um `fetch()` simples falha por CORS no domínio do Supabase Storage.
+ *
+ * Estratégia:
+ *  1. Detecta se a URL é de um bucket do Supabase → usa supabase.storage.download()
+ *     que retorna um Blob diretamente via o cliente autenticado (sem CORS).
+ *  2. Se não for Supabase (ex: base64 já inline), cai pro fetch normal.
+ *  3. Último fallback: window.open (abre nova aba).
+ */
+async function downloadImage(url: string, fileName: string): Promise<void> {
+  try {
+    // Extrai bucket e path da URL pública do Supabase Storage
+    // Formato: https://[id].supabase.co/storage/v1/object/public/[bucket]/[path]
+    const m = url.match(/\/storage\/v1\/object\/public\/([^/?#]+)\/(.+?)(?:\?|#|$)/)
+    if (m) {
+      const [, bucket, path] = m
+      const { data, error } = await supabase.storage.from(bucket).download(path)
+      if (data && !error) {
+        const objUrl = URL.createObjectURL(data)
+        const a = document.createElement('a')
+        a.href = objUrl
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
+        return
+      }
+    }
+    // Fallback fetch (URLs não-Supabase com CORS permissivo)
+    const res = await fetch(url)
+    if (!res.ok) throw new Error('fetch failed')
+    const blob = await res.blob()
+    const objUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objUrl
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
 const WELCOME_TEXTS: Record<string, (name: string) => string> = {
   'pt-BR': (name) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`,
   'en-US': (name) => `Hello! I'm **MS Color IA**, your personal color consultant assistant 🌈\n\nI was trained based on the methodology and expertise of specialist **Marília Santos**, a reference in personal coloring and image analysis.\n\nAll my recommendations are **personalized exclusively for you**, using information from your analysis by Marília.\n\nHere, you can:\n• View simulations of hair, makeup, outfits, and accessories.\n• Ask questions about your analysis.\n\nWhenever you need, I'll be here to guide you 🌈`,
@@ -188,6 +238,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [selectedMsgs, setSelectedMsgs] = useState<Set<string>>(new Set())
   // ── Mensagens longas expandidas ──────────────────────────────────────
   const [expandedMsgs, setExpandedMsgs] = useState<Set<string>>(new Set())
+  // ── Lightbox — foto em tela cheia com zoom ────────────────────────────
+  const [lightbox, setLightbox] = useState<{ src: string; mimeType?: string } | null>(null)
   // Object URLs criados pro preview do PDF. Acumulamos e revogamos no unmount
   // (revogar enquanto a aba ainda mostra o PDF pode quebrar a visualização
   // em alguns browsers).
@@ -884,20 +936,59 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               </div>
             )
           })()}
-          {msg.responseParts?.filter(p => p.type === 'image' && p.imageBase64).map((p, i) => (
-            <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border w-full max-w-[260px] sm:max-w-[300px]">
-              <img src={`data:${p.imageMimeType};base64,${p.imageBase64}`} alt="" className="w-full object-cover" />
-              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
-                <button onClick={() => { const a = document.createElement('a'); a.href = `data:${p.imageMimeType};base64,${p.imageBase64}`; a.download = 'Simulação IA.png'; a.click() }} className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg"><Download className="h-5 w-5" /></button>
+          {msg.responseParts?.filter(p => p.type === 'image' && p.imageBase64).map((p, i) => {
+            const src = `data:${p.imageMimeType};base64,${p.imageBase64}`
+            return (
+              <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border w-full max-w-[260px] sm:max-w-[300px]">
+                <img
+                  src={src}
+                  alt=""
+                  className="w-full object-cover cursor-zoom-in"
+                  onClick={() => setLightbox({ src, mimeType: p.imageMimeType })}
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center gap-2.5">
+                  <button
+                    onClick={() => setLightbox({ src, mimeType: p.imageMimeType })}
+                    className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg transition-opacity"
+                    title="Ver em tela cheia"
+                  >
+                    <Maximize2 className="h-5 w-5" />
+                  </button>
+                  <button
+                    onClick={() => { const a = document.createElement('a'); a.href = src; a.download = 'Simulação IA.png'; a.click() }}
+                    className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg transition-opacity"
+                    title="Baixar imagem"
+                  >
+                    <Download className="h-5 w-5" />
+                  </button>
+                </div>
+                <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
               </div>
-              <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
-            </div>
-          ))}
+            )
+          })}
           {!msg.responseParts?.some(p => p.type === 'image' && p.imageBase64) && msg.savedImageUrls?.map((url, i) => (
             <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border w-full max-w-[260px] sm:max-w-[300px]">
-              <img src={url} alt="" className="w-full object-cover" />
-              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
-                <a href={url} download="Simulação IA.png" target="_blank" rel="noopener noreferrer" className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg"><Download className="h-5 w-5" /></a>
+              <img
+                src={url}
+                alt=""
+                className="w-full object-cover cursor-zoom-in"
+                onClick={() => setLightbox({ src: url })}
+              />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center gap-2.5">
+                <button
+                  onClick={() => setLightbox({ src: url })}
+                  className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg transition-opacity"
+                  title="Ver em tela cheia"
+                >
+                  <Maximize2 className="h-5 w-5" />
+                </button>
+                <button
+                  onClick={() => downloadImage(url, 'Simulação IA.png')}
+                  className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg transition-opacity"
+                  title="Baixar imagem"
+                >
+                  <Download className="h-5 w-5" />
+                </button>
               </div>
               <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
             </div>
@@ -1359,7 +1450,207 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           </div>
         </div>
       </div>
+
+      {/* ── Lightbox ─────────────────────────────────────────────────── */}
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox.src}
+          mimeType={lightbox.mimeType}
+          onClose={() => setLightbox(null)}
+        />
+      )}
     </>
+  )
+}
+
+// ─── ImageLightbox ─────────────────────────────────────────────────────────
+// Foto em tela cheia com zoom por scroll/botões e arraste para mover.
+
+function ImageLightbox({
+  src,
+  mimeType,
+  onClose,
+}: {
+  src: string
+  mimeType?: string
+  onClose: () => void
+}) {
+  const [scale, setScale]   = useState(1)
+  const [pos,   setPos]     = useState({ x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Zoom via scroll do mouse
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setScale(s => Math.min(5, Math.max(0.5, s * (1 - e.deltaY * 0.001))))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // Fecha com Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  // Arraste para mover (só quando zoom > 1)
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (scale <= 1) return
+    e.preventDefault()
+    setDragging(true)
+    dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }
+  }
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!dragging || !dragStart.current) return
+    setPos({
+      x: dragStart.current.px + (e.clientX - dragStart.current.mx),
+      y: dragStart.current.py + (e.clientY - dragStart.current.my),
+    })
+  }
+  const handleMouseUp = () => { setDragging(false); dragStart.current = null }
+
+  // Touch: pinch-to-zoom + drag simples
+  const lastTouch = useRef<{ dist: number; scale: number } | null>(null)
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      lastTouch.current = { dist: Math.hypot(dx, dy), scale }
+    }
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && lastTouch.current) {
+      e.preventDefault()
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      const dist = Math.hypot(dx, dy)
+      const next = Math.min(5, Math.max(0.5, lastTouch.current.scale * (dist / lastTouch.current.dist)))
+      setScale(next)
+    }
+  }
+
+  const resetZoom = () => { setScale(1); setPos({ x: 0, y: 0 }) }
+
+  const handleDownload = () => {
+    const ext = mimeType?.includes('png') ? 'png' : 'jpg'
+    // Se for base64 (data URL), pode baixar diretamente.
+    // Se for URL externa (cross-origin storage), usa o helper que faz fetch→blob.
+    if (src.startsWith('data:')) {
+      const a = document.createElement('a')
+      a.href = src
+      a.download = `Simulação IA.${ext}`
+      a.click()
+    } else {
+      void downloadImage(src, `Simulação IA.${ext}`)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/92 flex items-center justify-center"
+      onClick={onClose}
+      ref={containerRef}
+    >
+      {/* ── Barra superior ────────────────────────────────────────────── */}
+      <div
+        className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3 z-10"
+        onClick={e => e.stopPropagation()}
+      >
+        <span className="text-white/60 text-xs select-none">✨ Simulação IA</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold rounded-full px-3.5 py-1.5 shadow-lg shadow-violet-900/40 transition-colors"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Baixar
+          </button>
+          <button
+            onClick={onClose}
+            className="bg-violet-500 hover:bg-violet-400 text-white rounded-full p-1.5 shadow-lg shadow-violet-900/40 transition-colors"
+            title="Fechar (Esc)"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+
+      {/* ── Imagem ────────────────────────────────────────────────────── */}
+      <div
+        className="relative select-none"
+        style={{ cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onClick={e => e.stopPropagation()}
+      >
+        <img
+          src={src}
+          alt="Simulação IA"
+          draggable={false}
+          style={{
+            transform: `scale(${scale}) translate(${pos.x / scale}px, ${pos.y / scale}px)`,
+            transition: dragging ? 'none' : 'transform 0.12s ease',
+            maxWidth:  '92vw',
+            maxHeight: '82vh',
+            objectFit: 'contain',
+          }}
+          className="rounded-xl shadow-2xl"
+        />
+      </div>
+
+      {/* ── Barra inferior de zoom ─────────────────────────────────────── */}
+      <div
+        className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/50 backdrop-blur-md border border-white/10 rounded-full px-4 py-2 z-10"
+        onClick={e => e.stopPropagation()}
+      >
+        <button
+          onClick={() => setScale(s => Math.max(0.5, +(s - 0.25).toFixed(2)))}
+          className="text-white/70 hover:text-white transition-colors"
+          title="Diminuir zoom"
+        >
+          <ZoomOut className="h-4 w-4" />
+        </button>
+
+        <button
+          onClick={resetZoom}
+          className="text-white text-xs font-mono min-w-[3rem] text-center hover:text-white/70 transition-colors"
+          title="Resetar zoom"
+        >
+          {Math.round(scale * 100)}%
+        </button>
+
+        <button
+          onClick={() => setScale(s => Math.min(5, +(s + 0.25).toFixed(2)))}
+          className="text-white/70 hover:text-white transition-colors"
+          title="Aumentar zoom"
+        >
+          <ZoomIn className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* ── Dica (desaparece após 3s via CSS) ───────────────────────── */}
+      <p
+        className="absolute bottom-14 left-1/2 -translate-x-1/2 text-white/30 text-[11px] whitespace-nowrap pointer-events-none select-none"
+        style={{ animation: 'fadeOutHint 0.5s ease 2.5s forwards' }}
+      >
+        Scroll para zoom · Arraste para mover · Esc para fechar
+      </p>
+
+      <style>{`
+        @keyframes fadeOutHint { to { opacity: 0 } }
+      `}</style>
+    </div>
   )
 }
 
