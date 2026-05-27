@@ -143,6 +143,10 @@ const MG            = 39.7
 const HEADER_TEXT_Y = PH - 41
 const CONTENT_TOP   = PH - 72
 const CONTENT_BTM   = PH - 800
+// No modo freeform o designer posiciona blocos explicitamente (incluindo seções
+// próximas ao rodapé, ex.: EVITAR). Limite inferior ao CONTENT_BTM do flow para
+// não cortar essas seções — o texto do template footer está em ~y=28pt.
+const FREEFORM_BTM  = 20
 
 const IMG_COL_X     = MG
 const IMG_COL_W     = 192   // largura padrão da foto (pt)
@@ -269,6 +273,7 @@ export async function generateStylePDF(
   clientName:    string,
   items:         PdfImageItem[],
   styleConfig?:  PdfStyleConfig,
+  collageTitle?: string,
 ): Promise<Uint8Array> {
 
   const templateDoc = await PDFDocument.load(templateBytes)
@@ -295,7 +300,7 @@ export async function generateStylePDF(
 
   // ── Página de Colagem (todas as fotos juntas) ────────────────────────────────
   if (items.length > 0) {
-    await renderCollagePage(pdf, templateDoc, items, imgCache, clientName, style)
+    await renderCollagePage(pdf, templateDoc, items, imgCache, clientName, style, collageTitle)
   }
 
   // ── Renderizar cada item individualmente ─────────────────────────────────────
@@ -344,6 +349,7 @@ async function renderCollagePage(
   imgCache:  Map<string, { image: any; width: number; height: number }>,
   clientName: string,
   style:     ResolvedStyle,
+  collageTitle?: string,
 ): Promise<void> {
   // Divide os items em páginas de 9
   const pageChunks: PdfImageItem[][] = []
@@ -352,7 +358,7 @@ async function renderCollagePage(
   }
 
   for (let pIdx = 0; pIdx < pageChunks.length; pIdx++) {
-    await renderCollageSinglePage(pdf, templateDoc, pageChunks[pIdx], imgCache, clientName, style, pIdx, pageChunks.length)
+    await renderCollageSinglePage(pdf, templateDoc, pageChunks[pIdx], imgCache, clientName, style, pIdx, pageChunks.length, collageTitle)
   }
 }
 
@@ -365,11 +371,13 @@ async function renderCollageSinglePage(
   style:     ResolvedStyle,
   pageIdx:   number,
   totalPages:number,
+  collageTitle?: string,
 ): Promise<void> {
   const [tpl] = await pdf.copyPages(templateDoc, [1])
   const page  = pdf.addPage(tpl)
 
-  const title = totalPages > 1 ? `Simulações — ${pageIdx + 1}/${totalPages}` : 'Simulações'
+  const baseTitle = collageTitle ?? 'Simulações'
+  const title = totalPages > 1 ? `${baseTitle} — ${pageIdx + 1}/${totalPages}` : baseTitle
   drawPageHeader(page, title, clientName, style)
 
   const margin = MG
@@ -687,6 +695,49 @@ async function renderFlowItem(
 }
 
 // ─── FREEFORM layout renderer ─────────────────────────────────────────────────
+//
+// Estratégia (em 3 passos) para garantir que NENHUM texto seja cortado, mesmo
+// quando o conteúdo é traduzido para idiomas que produzem texto mais longo
+// que o português original:
+//
+//   1. MEDIR   — para cada bloco, calcular a altura natural do conteúdo
+//                (sem aplicar limite de block.h).
+//   2. ACOMODAR — caminhar pelos blocos em ordem de Y. O Y original vira um
+//                MÍNIMO: se um bloco ficou maior, empurra os blocos seguintes
+//                pra baixo (cascata). Se um bloco seria empurrado pra fora da
+//                página, ele migra pra próxima página (e os subsequentes vão
+//                junto).
+//   3. RENDERIZAR — desenhar cada bloco na sua página/posição computada,
+//                com TODAS as linhas (sem slice/truncate).
+//
+// O design do editor é preservado quando o conteúdo cabe; quando não cabe
+// (típico em traduções), os blocos descem naturalmente e novas páginas são
+// criadas conforme necessário.
+
+interface FreeformRendered {
+  block:    EditorBlock
+  bStyle:   ResolvedStyle
+  variant:  BlockVariant
+  hPad:     { left: number; right: number }
+  vPad:     { top: number; bottom: number }
+  rlines:   RendLine[]
+  /** Largura do bloco (caixa, inclui padding interno) */
+  bw:       number
+  /** Posição X do bloco */
+  bx:       number
+  /** Altura natural do conteúdo + padding (sem cap) */
+  naturalH: number
+  /** Y original definido pelo designer (em coords de doc, page-top, somando offset de página) */
+  originalDocY: number
+  /** Página final (0-based) onde o bloco será renderizado */
+  finalPage:    number
+  /** Y final dentro da página (page-top) */
+  finalPageY:   number
+  /** Altura final desenhada (max entre block.h e naturalH) */
+  finalH:       number
+  /** Gap depois do bloco (vem de marginBelow) */
+  gapBelow:     number
+}
 
 async function renderFreeformItem(
   pdf: PDFDocument,
@@ -701,23 +752,119 @@ async function renderFreeformItem(
   styleConfig?: PdfStyleConfig,
 ) {
   const blocks      = layout.blocks ?? []
-  const mgH         = layout.pageMarginH ?? MG
-  // Foto padrão: 192 × 256 pt (combina com a caixa do editor "Pré-visualização").
   const photoConfig = layout.photo ?? { x: MG, y: 72, w: IMG_COL_W, h: IMG_DEFAULT_H }
 
-  // Ordenar por y crescente (topo → rodapé em coordenadas de page-top).
-  // Necessário para calcular a altura disponível de cada bloco sem h explícito,
-  // usando a distância até o início do bloco seguinte na mesma página.
+  // Ordenar por Y crescente (em coordenadas absolutas do doc; designer pode
+  // usar valores > PH pra forçar páginas adicionais).
   const sortedBlocks = [...blocks].sort((a, b) => (a.y ?? 72) - (b.y ?? 72))
 
-  const maxBottom   = sortedBlocks.reduce((m, b) => Math.max(m, (b.y ?? 72) + (b.h ?? 40)), photoConfig.y + photoConfig.h)
-  const totalPages  = Math.max(1, Math.ceil(maxBottom / PH))
+  // ── PASSO 1: MEDIR ────────────────────────────────────────────────────────
+  // Cada bloco é renderizado virtualmente pra descobrir a altura natural do
+  // conteúdo. Isso é feito ANTES de qualquer decisão de página/posição.
+  const measured: FreeformRendered[] = sortedBlocks.map(block => {
+    const bStyle  = resolveBlockStyle(itemStyle, block)
+    const variant: BlockVariant = block.blockVariant ?? 'plain'
+    const hPad    = blockHPad(variant)
+    const vPad    = blockVPad(variant)
 
-  const blocksByPage = new Map<number, typeof sortedBlocks>()
-  for (const block of sortedBlocks) {
-    const pi = Math.floor((block.y ?? 72) / PH)
-    if (!blocksByPage.has(pi)) blocksByPage.set(pi, [])
-    blocksByPage.get(pi)!.push(block)
+    const bx = block.x ?? (MG + 192 + 16)
+    const bw = block.w ?? (PW - bx - MG)
+    const textW = bw - hPad.left - hPad.right
+
+    const rlines = renderBlockLines(
+      {
+        lines:        block.rawLines,
+        isSection:    block.isSection,
+        gapBelow:     block.marginBelow ?? 8,
+        titleAlign:   block.titleAlign,
+        textAlign:    block.textAlign,
+        blockVariant: block.blockVariant,
+        blockBgColor: block.blockBgColor,
+      },
+      textW, bStyle,
+    )
+
+    const naturalH = rlines.length * bStyle.lineH + vPad.top + vPad.bottom
+
+    return {
+      block, bStyle, variant, hPad, vPad, rlines, bw, bx,
+      naturalH,
+      originalDocY: block.y ?? 72,
+      finalPage:    0,
+      finalPageY:   0,
+      finalH:       Math.max(block.h ?? 0, naturalH),
+      gapBelow:     block.marginBelow ?? 8,
+    }
+  })
+
+  // ── PASSO 2: ACOMODAR ─────────────────────────────────────────────────────
+  // Caminha pelos blocos em ordem. Mantém um "cursor" (Y mínimo livre na
+  // página atual). Para cada bloco:
+  //   - desiredPageY = max(originalY na página, cursor)
+  //   - se desiredPageY + finalH ultrapassa o limite inferior da página,
+  //     migra pro topo da próxima página (cursor reseta pra CONTENT_TOP).
+  //
+  // Área útil de conteúdo por página: de CONTENT_TOP (~72pt do topo) até
+  // PH - FREEFORM_BTM (~PH - 20). Convertendo pra coords page-top:
+  //   topo  = 72
+  //   base  = PH - FREEFORM_BTM  (ex.: 822 num A4)
+  const pageContentTop = 72
+  const pageContentBtm = PH - FREEFORM_BTM
+
+  let curPage   = 0
+  let curCursor = pageContentTop  // próximo Y livre (page-top coords)
+
+  // Na página 0, a foto ocupa o canto definido pela photoConfig. Blocos cujo
+  // x não conflite com a foto ignoram esse limite. Para simplificar (e
+  // preservar o comportamento atual em que o designer cuida disso), o cursor
+  // não bloqueia em torno da foto — o designer já posicionou os blocos com Y
+  // adequado. Reflow só acontece quando o conteúdo cresce.
+
+  for (const m of measured) {
+    // Página "preferida" segundo o Y original do designer:
+    const preferredPage  = Math.floor(m.originalDocY / PH)
+    const preferredPageY = m.originalDocY - preferredPage * PH
+
+    // Se preferida está adiante da página atual do cursor, avançamos o cursor.
+    // Importante: nunca recuamos páginas — blocos são processados em ordem.
+    while (curPage < preferredPage) {
+      curPage++
+      curCursor = pageContentTop
+    }
+
+    // Y desejado na página atual: o máximo entre o cursor e o Y preferido
+    // (quando estamos na mesma página que o designer pensou).
+    let desiredY = curPage === preferredPage
+      ? Math.max(curCursor, preferredPageY)
+      : curCursor
+
+    // Se o bloco não cabe na página atual, migra pra próxima.
+    // (Exceção: se o bloco é mais alto que uma página inteira, deixamos ele
+    // começar onde for — o overflow será tratado pelo flow em outra hora.)
+    const pageBudget = pageContentBtm - pageContentTop
+    const tooTallForAnyPage = m.finalH > pageBudget
+
+    if (!tooTallForAnyPage && desiredY + m.finalH > pageContentBtm) {
+      curPage++
+      curCursor = pageContentTop
+      desiredY  = pageContentTop
+    }
+
+    m.finalPage  = curPage
+    m.finalPageY = desiredY
+    curCursor    = desiredY + m.finalH + m.gapBelow
+  }
+
+  // Total de páginas necessárias (pelo menos 1; nunca menos do que o designer
+  // explicitamente indicou via Y > PH).
+  const totalPages = Math.max(1, curPage + 1)
+
+  // ── PASSO 3: RENDERIZAR ───────────────────────────────────────────────────
+  // Agrupa os blocos por página final, depois cria as páginas e desenha tudo.
+  const byPage = new Map<number, FreeformRendered[]>()
+  for (const m of measured) {
+    if (!byPage.has(m.finalPage)) byPage.set(m.finalPage, [])
+    byPage.get(m.finalPage)!.push(m)
   }
 
   for (let pi = 0; pi < totalPages; pi++) {
@@ -725,8 +872,7 @@ async function renderFreeformItem(
     const page  = pdf.addPage(tpl)
     drawPageHeader(page, sectionTitle, clientName, itemStyle)
 
-    // ── Photo (page 0 only) ──────────────────────────────────────────────────
-    let photoBottomPdfY = PH - photoConfig.y - photoConfig.h
+    // ── Photo (page 0 only) ────────────────────────────────────────────────
     if (pi === 0 && imgEntry) {
       const { image, width: iw, height: ih } = imgEntry
       const scale = Math.min(photoConfig.w / iw, photoConfig.h / ih)
@@ -734,100 +880,37 @@ async function renderFreeformItem(
       const ox = photoConfig.x + (photoConfig.w - rw) / 2
       const oy = PH - photoConfig.y - rh
       page.drawImage(image, { x: ox, y: oy, width: rw, height: rh })
-      photoBottomPdfY = oy
 
-      // Label below photo (page 0)
-      drawItemLabel(page, item.label, ox, rw, photoBottomPdfY, layout.labelConfig, itemStyle)
+      // Label below photo
+      drawItemLabel(page, item.label, ox, rw, oy, layout.labelConfig, itemStyle)
     }
 
-    // ── Text blocks ──────────────────────────────────────────────────────────
-    const pageBlocks      = blocksByPage.get(pi) ?? []
-    const pageYOffsetPts  = pi * PH
+    const pageBlocks = byPage.get(pi) ?? []
 
     for (let bi = 0; bi < pageBlocks.length; bi++) {
-      const block  = pageBlocks[bi]
-      const bStyle = resolveBlockStyle(itemStyle, block)
-      const variant: BlockVariant = block.blockVariant ?? 'plain'
-      const hPad = blockHPad(variant)
-      const vPad = blockVPad(variant)
+      const m       = pageBlocks[bi]
+      const { block, bStyle, variant, hPad, vPad, rlines, bw, bx, finalPageY, finalH } = m
 
-      const bx     = block.x ?? (MG + 192 + 16)
-      const bw     = block.w ?? (PW - bx - MG)
-      const byPage = (block.y ?? 72) - pageYOffsetPts
-
-      // Dimensões efetivas do TEXTO (dentro do padding do card)
       const textX = bx + hPad.left
       const textW = bw - hPad.left - hPad.right
 
-      // block.y é o TOPO do bloco (igual ao preview do editor).
-      // Em PDF, drawText y é a BASELINE do texto.
-      // Offset por lineH pra primeira baseline ficar uma linha abaixo do topo,
-      // mais o padding superior quando há variant visual.
-      let textY = PH - byPage - bStyle.lineH - vPad.top
+      // Baseline da primeira linha = topo + lineH + padding superior.
+      let textY = PH - finalPageY - bStyle.lineH - vPad.top
 
-      const rlines = renderBlockLines(
-        {
-          lines:        block.rawLines,
-          isSection:    block.isSection,
-          gapBelow:     block.marginBelow ?? 8,
-          titleAlign:   block.titleAlign,
-          textAlign:    block.textAlign,
-          blockVariant: block.blockVariant,
-          blockBgColor: block.blockBgColor,
-        },
-        textW, bStyle,
-      )
-
-      // ── Altura efetiva do bloco ──────────────────────────────────────────
-      // Se block.h está definido: usa ele (mantém o comportamento original).
-      // Se NÃO está: calcula a distância até o próximo bloco na mesma página
-      // (ou até CONTENT_BTM), impedindo que o texto transborde e sobreponha
-      // o bloco seguinte — principal causa de textos sobrepostos no PDF.
-      let effectiveBlockH: number
-      if (block.h != null) {
-        effectiveBlockH = block.h
-      } else {
-        const nextBlock = pageBlocks[bi + 1]
-        if (nextBlock) {
-          const nextByPage = (nextBlock.y ?? 72) - pageYOffsetPts
-          const gap = block.marginBelow ?? 8
-          effectiveBlockH = Math.max(
-            bStyle.lineH + vPad.top + vPad.bottom,
-            nextByPage - byPage - gap,
-          )
-        } else {
-          // Último bloco da página: ocupa até CONTENT_BTM
-          effectiveBlockH = Math.max(
-            bStyle.lineH + vPad.top + vPad.bottom,
-            PH - byPage - CONTENT_BTM - 4,
-          )
-        }
-      }
-
-      const textAvailH     = effectiveBlockH - vPad.top - vPad.bottom
-      const effectiveLines = rlines.slice(0, Math.max(1, Math.floor(textAvailH / bStyle.lineH)))
-
-      // ── Fundo do bloco (card/outline/accent/soft) — desenhado PRIMEIRO ────
+      // Fundo do bloco
       if (variant !== 'plain') {
-        // Usa a altura natural das linhas visíveis + padding (limitada a effectiveBlockH).
-        const bgH = block.h != null
-          ? block.h
-          : Math.min(effectiveBlockH, effectiveLines.length * bStyle.lineH + vPad.top + vPad.bottom)
-        const bgY = PH - byPage - bgH
-        drawBlockBackground(page, variant, bx, bgY, bw, bgH, bStyle, block.blockBgColor)
+        const bgY = PH - finalPageY - finalH
+        drawBlockBackground(page, variant, bx, bgY, bw, finalH, bStyle, block.blockBgColor)
       }
 
-      // Barra lateral só no variant 'plain' (nos outros o fundo já delimita o bloco)
-      if (variant === 'plain' && block.isSection && effectiveLines.length > 0) {
-        // Acompanha o tamanho real das linhas:
-        //  - topo da barra = textY (baseline 1ª linha) + cap-height do título (~75% do size)
-        //  - base da barra = baseline da última linha - descender (~15% do size)
-        const firstLineSize = effectiveLines[0].size
-        const lastLineSize  = effectiveLines[effectiveLines.length - 1].size
+      // Barra lateral só no variant 'plain'
+      if (variant === 'plain' && block.isSection && rlines.length > 0) {
+        const firstLineSize = rlines[0].size
+        const lastLineSize  = rlines[rlines.length - 1].size
         const topExtra      = firstLineSize * 0.75
         const bottomExtra   = lastLineSize  * 0.15
         const barTopY       = textY + topExtra
-        const barBottomY    = textY - (effectiveLines.length - 1) * bStyle.lineH - bottomExtra
+        const barBottomY    = textY - (rlines.length - 1) * bStyle.lineH - bottomExtra
         page.drawLine({
           start: { x: bx - 4, y: barTopY },
           end:   { x: bx - 4, y: barBottomY },
@@ -837,24 +920,22 @@ async function renderFreeformItem(
 
       const forcedColor = variant === 'accent' ? rgb(1, 1, 1) : undefined
 
-      for (const rl of effectiveLines) {
-        if (textY < CONTENT_BTM) break
+      // Renderiza TODAS as linhas. Sem slice/truncate. O reflow do passo 2
+      // já garantiu que o bloco coube na página com finalH suficiente.
+      for (const rl of rlines) {
+        if (textY < FREEFORM_BTM) break  // proteção final contra estouro absoluto
         const font = rl.bold ? bStyle.fontHeaderBold : bStyle.fontBody
         drawAlignedLine(page, rl, textX, textW, font, textY, forcedColor)
         textY -= bStyle.lineH
       }
 
-      if (bi < pageBlocks.length - 1) {
-        // Separador só quando o bloco é 'plain' (nos outros o fundo já delimita)
-        if (variant === 'plain') {
-          const sepY = block.h
-            ? PH - byPage - block.h
-            : textY + 1
-          page.drawLine({
-            start: { x: bx, y: sepY }, end: { x: bx + bw, y: sepY },
-            thickness: 0.3, color: itemStyle.colorAccent, opacity: 0.2,
-          })
-        }
+      // Separador entre blocos plain
+      if (bi < pageBlocks.length - 1 && variant === 'plain') {
+        const sepY = PH - finalPageY - finalH
+        page.drawLine({
+          start: { x: bx, y: sepY }, end: { x: bx + bw, y: sepY },
+          thickness: 0.3, color: itemStyle.colorAccent, opacity: 0.2,
+        })
       }
     }
   }
@@ -1239,10 +1320,10 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
 // Resultado" do chat IA no ClientsManager).
 
 export async function buildStylePdfBlob({
-  clientName, items, styleOverride,
-}: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig }): Promise<Blob> {
+  clientName, items, styleOverride, collageTitle,
+}: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig; collageTitle?: string }): Promise<Blob> {
   const { templateBytes, style } = await loadTemplateFromSettings()
-  const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style)
+  const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style, collageTitle)
   return new Blob([pdfBytes], { type: 'application/pdf' })
 }
 

@@ -541,3 +541,170 @@ function addNotice(parts: GeminiResponsePart[]): GeminiResponsePart[] {
   }
   return cleaned
 }
+
+// ──────────────────────────────────────────────────────────────
+// 9. TRADUÇÃO DE TEXTO VIA GEMINI
+// Traduz textos de referência (tintReference, reference) para o
+// idioma selecionado. Usado nos handlers de prompt do GeminiChat.
+//
+// Duas funções públicas:
+//   • translateText(text, lang, key)        → traduz UM texto.
+//   • translateTexts(texts[], lang, key)    → traduz vários em LOTE
+//                                             (1 chamada HTTP só).
+//
+// Ambas são robustas contra truncamento (finishReason MAX_TOKENS):
+// quando a Gemini corta a resposta, dividimos o texto em duas metades
+// e recursamos. Garante que nenhum texto retorne incompleto.
+// ──────────────────────────────────────────────────────────────
+
+// Teto generoso. Gemini 2.5 Flash suporta dezenas de milhares de tokens
+// de saída; 8192 cobre folgadamente um dossiê de cabelo inteiro. Quando
+// mesmo assim algo passar (texto muito longo), o auto-split entra.
+const TRANSLATE_MAX_OUTPUT_TOKENS = 8192
+
+// Separador usado em translateTexts (lote). Escolhido pra ser único e
+// não-confundível com texto natural. Posto na própria linha pra facilitar
+// o split.
+const BATCH_SEPARATOR = '===BLOCK#7K9X==='
+const BATCH_SEPARATOR_RE = /\n*===BLOCK#7K9X===\n*/g
+
+/**
+ * Traduz `text` para `targetLanguage`. Retorna o texto original em caso
+ * de erro irrecuperável ou se o idioma já for pt-BR.
+ *
+ * Resiliente a truncamento: se a Gemini cortar a resposta (finishReason
+ * MAX_TOKENS), divide o texto e traduz cada metade recursivamente.
+ */
+export async function translateText(
+  text: string,
+  targetLanguage: string,
+  apiKey: string,
+): Promise<string> {
+  if (!text?.trim() || targetLanguage === 'pt-BR') return text
+
+  try {
+    const body = {
+      contents: [{
+        role: 'user',
+        parts: [{ text: `Translate the following text to ${targetLanguage}.\nReturn ONLY the translated text — no explanations, no quotes, no preamble. Preserve line breaks and punctuation exactly.\n\n${text}` }],
+      }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: TRANSLATE_MAX_OUTPUT_TOKENS },
+    }
+    const res = await fetchWithTimeout(
+      `${GEMINI_BASE}/models/${GEMINI_MODELS.TEXT_ONLY}:generateContent?key=${apiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      30_000,
+    )
+    if (!res.ok) return text
+    const data = await res.json()
+    const out = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? ''
+    const finishReason: string | undefined = data?.candidates?.[0]?.finishReason
+
+    // Truncamento detectado: divide o texto no meio (preferindo quebra
+    // de linha) e traduz cada metade. Só faz isso pra textos longos o
+    // suficiente pra justificar a recursão.
+    if (finishReason === 'MAX_TOKENS' && text.length > 240) {
+      const mid     = Math.floor(text.length / 2)
+      const nlIdx   = text.lastIndexOf('\n', mid)
+      const splitAt = nlIdx > text.length * 0.2 ? nlIdx : mid
+      const [aRaw, bRaw] = [text.slice(0, splitAt), text.slice(splitAt)]
+      const [a, b] = await Promise.all([
+        translateText(aRaw, targetLanguage, apiKey),
+        translateText(bRaw, targetLanguage, apiKey),
+      ])
+      // Preserva a quebra original entre as metades, se houver
+      return aRaw.endsWith('\n') || bRaw.startsWith('\n') ? `${a}\n${b.replace(/^\n+/, '')}` : `${a}${b}`
+    }
+
+    return out || text
+  } catch {
+    return text
+  }
+}
+
+/**
+ * Traduz um ARRAY de textos em uma única chamada HTTP à Gemini.
+ * Junta tudo separando por um sentinel único, depois divide a resposta
+ * de volta no mesmo sentinel.
+ *
+ * Garantias:
+ *  • Retorna SEMPRE um array do mesmo tamanho que `texts`.
+ *  • Posições com string vazia ou só-whitespace passam intactas.
+ *  • Em qualquer falha (HTTP, sentinel perdido, truncamento), cai pra
+ *    traduções individuais em paralelo via translateText.
+ *  • Quando o array tem 0 ou 1 elementos, ou já está em pt-BR, faz o
+ *    caminho mais curto sem custo extra.
+ *
+ * Use isto sempre que houver 3+ textos pra traduzir do mesmo idioma:
+ * é dramaticamente mais rápido que N chamadas paralelas (1 round-trip
+ * vs N, e não esbarra em rate limit da Gemini).
+ */
+export async function translateTexts(
+  texts: string[],
+  targetLanguage: string,
+  apiKey: string,
+): Promise<string[]> {
+  if (targetLanguage === 'pt-BR' || texts.length === 0) return [...texts]
+  if (texts.length === 1) return [await translateText(texts[0] ?? '', targetLanguage, apiKey)]
+
+  // Lista de índices não-vazios. Vazios são preservados na posição.
+  const live = texts
+    .map((t, i) => ({ t: t ?? '', i }))
+    .filter(x => x.t.trim().length > 0)
+  if (live.length === 0) return [...texts]
+  if (live.length === 1) {
+    const out = [...texts]
+    out[live[0].i] = await translateText(live[0].t, targetLanguage, apiKey)
+    return out
+  }
+
+  const sep = `\n${BATCH_SEPARATOR}\n`
+  const joined = live.map(x => x.t).join(sep)
+
+  // Fallback individual em paralelo. Reutilizado em 2 caminhos de erro.
+  const fallback = async (): Promise<string[]> => {
+    const out = [...texts]
+    await Promise.all(live.map(async x => {
+      out[x.i] = await translateText(x.t, targetLanguage, apiKey)
+    }))
+    return out
+  }
+
+  try {
+    const promptText =
+      `Translate each of the ${live.length} text blocks below to ${targetLanguage}.\n` +
+      `The blocks are separated by a line containing exactly "${BATCH_SEPARATOR}".\n` +
+      `Return ONLY the translations, in the SAME ORDER, separated by the EXACT SAME line "${BATCH_SEPARATOR}".\n` +
+      `Preserve line breaks and punctuation WITHIN each block. Do not add explanations, quotes, or preamble.\n` +
+      `Do not merge blocks. Do not skip blocks. The number of separators in your output must be exactly ${live.length - 1}.\n\n` +
+      joined
+
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: promptText }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: TRANSLATE_MAX_OUTPUT_TOKENS },
+    }
+    const res = await fetchWithTimeout(
+      `${GEMINI_BASE}/models/${GEMINI_MODELS.TEXT_ONLY}:generateContent?key=${apiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      45_000,
+    )
+    if (!res.ok) return fallback()
+    const data = await res.json()
+    const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? ''
+    const finishReason: string | undefined = data?.candidates?.[0]?.finishReason
+
+    // Truncado ou vazio → fallback individual (translateText sabe lidar com
+    // truncamento via auto-split).
+    if (!raw || finishReason === 'MAX_TOKENS') return fallback()
+
+    const parts = raw.split(BATCH_SEPARATOR_RE).map(p => p.trim()).filter(p => p.length > 0)
+    // Contagem não bateu → o modelo perdeu/mesclou separadores; cai pro fallback.
+    if (parts.length !== live.length) return fallback()
+
+    const out = [...texts]
+    live.forEach((x, k) => { out[x.i] = parts[k] || x.t })
+    return out
+  } catch {
+    return fallback()
+  }
+}

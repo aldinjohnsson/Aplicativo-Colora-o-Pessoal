@@ -11,7 +11,7 @@ import {
   FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp
 } from 'lucide-react'
 import {
-  chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64,
+  chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64, translateText, translateTexts,
   GeminiMessage, GeminiResponsePart, MaterialData,
 } from '../../lib/geminiService'
 import { supabase } from '../../lib/supabase'
@@ -49,7 +49,7 @@ interface ChatMsg {
   id: string; role: 'user' | 'assistant'; text: string
   imagePreview?: string; imageBase64?: string; imageMimeType?: string
   responseParts?: GeminiResponsePart[]; timestamp: Date
-  loading?: boolean; error?: string; imageGenerationFailed?: boolean
+  loading?: boolean; translating?: boolean; error?: string; imageGenerationFailed?: boolean
   savedImageUrls?: string[]
   pdfMeta?: PdfMeta
 }
@@ -73,6 +73,8 @@ interface GeminiChatProps {
   clientId?: string
   resultFileUrls?: ResultFile[]
   resultObservations?: string
+  /** Código BCP-47 do idioma de resposta (ex: 'en-US'). Default: 'pt-BR'. */
+  defaultLanguage?: LanguageCode
   /** Quando true, desativa verificação e consumo de créditos (modo admin). */
   unlimited?: boolean
   /** Chave customizada para persistência no localStorage. Útil para o admin
@@ -84,6 +86,17 @@ interface GeminiChatProps {
    *  cliente não passa essa prop, então não vê o botão. */
   onSavePdf?: (blob: Blob, fileName: string) => Promise<void>
 }
+
+// ── Idiomas suportados ──────────────────────────────────────────────────────
+export const SUPPORTED_LANGUAGES = [
+  { code: 'pt-BR', label: '🇧🇷 Português', name: 'Português (Brasil)' },
+  { code: 'en-US', label: '🇺🇸 English',   name: 'English (US)' },
+  { code: 'es-ES', label: '🇪🇸 Español',   name: 'Español' },
+  { code: 'fr-FR', label: '🇫🇷 Français',  name: 'Français' },
+  { code: 'it-IT', label: '🇮🇹 Italiano',  name: 'Italiano' },
+  { code: 'de-DE', label: '🇩🇪 Deutsch',   name: 'Deutsch' },
+] as const
+export type LanguageCode = typeof SUPPORTED_LANGUAGES[number]['code']
 
 const uid = () => Math.random().toString(36).slice(2)
 const ftime = (d: Date) => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
@@ -114,9 +127,18 @@ async function uploadChatImage(clientId: string, msgId: string, idx: number, bas
   } catch { return null }
 }
 
-const WELCOME = (name: string) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`
+const WELCOME_TEXTS: Record<string, (name: string) => string> = {
+  'pt-BR': (name) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`,
+  'en-US': (name) => `Hello! I'm **MS Color IA**, your personal color consultant assistant 🌈\n\nI was trained based on the methodology and expertise of specialist **Marília Santos**, a reference in personal coloring and image analysis.\n\nAll my recommendations are **personalized exclusively for you**, using information from your analysis by Marília.\n\nHere, you can:\n• View simulations of hair, makeup, outfits, and accessories.\n• Ask questions about your analysis.\n\nWhenever you need, I'll be here to guide you 🌈`,
+  'es-ES': (name) => `¡Hola! Soy **MS Color IA**, tu asistente virtual de coloración personal 🌈\n\nFui entrenada con base en la metodología y la experiencia de la especialista **Marília Santos**, referencia en coloración personal y análisis de imagen.\n\nTodas mis recomendaciones son **personalizadas exclusivamente para ti**, usando la información de tu análisis hecho por Marília.\n\nAquí podrás:\n• Ver simulaciones de cabello, maquillaje, ropa y accesorios.\n• Resolver dudas sobre tu análisis.\n\nSiempre que necesites, estaré aquí para guiarte 🌈`,
+  'fr-FR': (name) => `Bonjour ! Je suis **MS Color IA**, votre assistante virtuelle en colorimétrie personnelle 🌈\n\nJ'ai été formée sur la méthodologie et l'expertise de la spécialiste **Marília Santos**, référence en colorimétrie personnelle et analyse d'image.\n\nToutes mes recommandations sont **personnalisées exclusivement pour vous**, à partir des informations de votre analyse réalisée par Marília.\n\nIci, vous pourrez :\n• Visualiser des simulations de coiffures, maquillages, tenues et accessoires.\n• Poser des questions sur votre analyse.\n\nChaque fois que vous en aurez besoin, je serai là pour vous guider 🌈`,
+  'it-IT': (name) => `Ciao! Sono **MS Color IA**, la tua assistente virtuale di colorazione personale 🌈\n\nSono stata addestrata sulla metodologia e l'esperienza della specialista **Marília Santos**, punto di riferimento nella colorazione personale e nell'analisi dell'immagine.\n\nTutti i miei consigli sono **personalizzati esclusivamente per te**, utilizzando le informazioni della tua analisi effettuata da Marília.\n\nQui potrai:\n• Visualizzare simulazioni di capelli, trucco, abbigliamento e accessori.\n• Chiedere informazioni sulla tua analisi.\n\nOgni volta che ne avrai bisogno, sarò qui per guidarti 🌈`,
+  'de-DE': (name) => `Hallo! Ich bin **MS Color IA**, deine virtuelle Farbberatungs-Assistentin 🌈\n\nIch wurde auf der Grundlage der Methodik und des Fachwissens der Spezialistin **Marília Santos** trainiert, einer Referenz in persönlicher Farbanalyse und Imageberatung.\n\nAlle meine Empfehlungen sind **ausschließlich für dich personalisiert**, basierend auf den Informationen aus deiner Analyse von Marília.\n\nHier kannst du:\n• Simulationen von Haaren, Make-up, Outfits und Accessoires ansehen.\n• Fragen zu deiner Analyse stellen.\n\nWann immer du Hilfe brauchst, bin ich für dich da 🌈`,
+}
+const WELCOME = (name: string, lang: LanguageCode = 'pt-BR') =>
+  (WELCOME_TEXTS[lang] ?? WELCOME_TEXTS['pt-BR'])(name)
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, onSavePdf }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, onSavePdf, defaultLanguage = 'pt-BR' }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -141,10 +163,26 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [showPdfModal, setShowPdfModal] = useState(false)
   const [pdfSelected, setPdfSelected] = useState<Set<string>>(new Set())
   const [pdfGenerating, setPdfGenerating] = useState(false)
+  // Progresso da geração do PDF. `total` inclui os N itens (cada um traduzido
+  // em uma chamada-lote à Gemini via translateTexts) + 1 unidade pra montagem
+  // final do PDF. Valor `null` = nada em andamento (estado limpo).
+  const [pdfProgress, setPdfProgress] = useState<{ done: number; total: number } | null>(null)
   const [pdfBlob, setPdfBlob] = useState<Blob | null>(null)
   const [pdfSaving, setPdfSaving] = useState(false)
   const [pdfSaveSuccess, setPdfSaveSuccess] = useState(false)
   const [pdfSaveError, setPdfSaveError] = useState<string | null>(null)
+  const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>(() => {
+    try {
+      const stored = localStorage.getItem('mscolors_language')
+      if (stored && SUPPORTED_LANGUAGES.some(l => l.code === stored)) return stored as LanguageCode
+    } catch {}
+    return defaultLanguage
+  })
+  const [showLangMenu, setShowLangMenu] = useState(false)
+
+  useEffect(() => {
+    try { localStorage.setItem('mscolors_language', selectedLanguage) } catch {}
+  }, [selectedLanguage])
   // ── Modo de seleção para apagar mensagens ────────────────────────────
   const [selectMode, setSelectMode]     = useState(false)
   const [selectedMsgs, setSelectedMsgs] = useState<Set<string>>(new Set())
@@ -155,9 +193,23 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   // em alguns browsers).
   const pdfUrlsRef = useRef<string[]>([])
 
+  // Fecha o menu de idioma ao clicar fora
+  const langMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!showLangMenu) return
+    const handler = (e: MouseEvent) => {
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node)) setShowLangMenu(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showLangMenu])
+
   const lastCtx = useRef<any>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  // Permite que handlers internos chamen handleSend mesmo com loading=true
+  // (eles já mostram o estado de loading antes de chamar handleSend)
+  const skipLoadingGuard = useRef(false)
 
   const categories = (folderConfig?.categories || []).map(c => ({
     ...c, type: c.type || (c.icon === 'scissors' ? 'cabelos' : 'geral'),
@@ -225,7 +277,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       const saved = localStorage.getItem(storageKey)
       if (saved) { const msgs = deserializeMessages(saved); if (msgs.length > 0) { setMessages(msgs); return } }
     }
-    setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
+    setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
   }, [clientName, storageKey])
 
   useEffect(() => {
@@ -289,12 +341,31 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       if (prompt.options.length > 0) { setNavState('options'); return }
     }
     setNavState('hidden')
-    const mats = await loadPromptMaterials(prompt); setPromptMaterials(mats)
+    skipLoadingGuard.current = true
+    setLoading(true)
+    // Adiciona mensagens imediatamente, antes da tradução
+    const earlyUserMsgId = uid(); const earlyLid = uid()
+    setMessages(prev => [...prev,
+      { id: earlyUserMsgId, role: 'user', text: `✨ ${prompt.name}`, timestamp: new Date() },
+      { id: earlyLid, role: 'assistant', text: '', loading: true, translating: true, timestamp: new Date() },
+    ])
     const refOverride = getRefPhotoForCategory(cat)
-    const afterImageText = (prompt.tintReference || prompt.reference)?.trim() || undefined
+    const rawAfterImageText = (prompt.tintReference || prompt.reference)?.trim() || undefined
+    const rawCaption = prompt.tintReference || prompt.reference || prompt.name
     const catIsAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
-    const meta: PdfMeta = { section: getCategorySection(cat), label: prompt.name, caption: prompt.tintReference || prompt.reference || prompt.name, promptId: prompt.id }
-    handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, ''), true, prompt, mats, refOverride, `✨ ${prompt.name}`, catIsAccessory, meta, afterImageText)
+    const apiKey = await getGeminiApiKey()
+    // Carrega imagens e traduz apenas label e section para exibição no chat.
+    // caption e afterImageText ficam em PT-BR e são traduzidos somente ao gerar o PDF.
+    const rawSection = getCategorySection(cat)
+    const [mats, translatedLabel, translatedSection] = await Promise.all([
+      loadPromptMaterials(prompt),
+      selectedLanguage !== 'pt-BR' ? translateText(prompt.name, selectedLanguage, apiKey) : Promise.resolve(prompt.name),
+      selectedLanguage !== 'pt-BR' ? translateText(rawSection, selectedLanguage, apiKey) : Promise.resolve(rawSection),
+    ])
+    const afterImageText = rawAfterImageText  // exibe em PT no chat; tradução ocorre só no PDF
+    setPromptMaterials(mats)
+    const meta: PdfMeta = { section: translatedSection, label: translatedLabel, caption: rawCaption, promptId: prompt.id }
+    handleSend(buildPromptInstruction(cat, prompt.instructions || prompt.name, ''), true, prompt, mats, refOverride, `✨ ${translatedLabel}`, catIsAccessory, meta, afterImageText, earlyLid, earlyUserMsgId)
   }
 
   const handleLengthClick = (length: SubOption) => {
@@ -308,27 +379,69 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const sendHairResult = async (length: SubOption | null, texture: SubOption | null) => {
     if (!selectedPrompt || !selectedCat) return
     setNavState('hidden')
-    const [promptMats, lengthMats, textureMats] = await Promise.all([loadPromptMaterials(selectedPrompt), length ? loadImages(length.images) : Promise.resolve([]), texture ? loadImages(texture.images) : Promise.resolve([])])
-    const allMats = [...promptMats, ...lengthMats, ...textureMats]; setPromptMaterials(allMats)
+    skipLoadingGuard.current = true
+    setLoading(true)
+    // Adiciona mensagens imediatamente, antes da tradução
+    const rawDisplayLabel = [selectedPrompt.name, length?.name, texture?.name].filter(Boolean).join(' — ')
+    const earlyUserMsgId = uid(); const earlyLid = uid()
+    setMessages(prev => [...prev,
+      { id: earlyUserMsgId, role: 'user', text: `✨ ${rawDisplayLabel}`, timestamp: new Date() },
+      { id: earlyLid, role: 'assistant', text: '', loading: true, translating: true, timestamp: new Date() },
+    ])
     const refOverride = getRefPhotoForCategory(selectedCat)
-    const afterImageText = selectedPrompt.tintReference?.trim() || undefined
+    const rawAfterImageText = selectedPrompt.tintReference?.trim() || undefined
+    const rawCaption = selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name
     const lengthPart = length?.instruction ? `\n\n═══ COMPRIMENTO ═══\n${length.instruction}` : ''
     const texturePart = texture?.instruction ? `\n\n═══ TEXTURA ═══\n${texture.instruction}` : ''
     const combinedInstructions = `${selectedPrompt.instructions || selectedPrompt.name}${lengthPart}${texturePart}`
-    const displayLabel = [selectedPrompt.name, length?.name, texture?.name].filter(Boolean).join(' — ')
-    const meta: PdfMeta = { section: getCategorySection(selectedCat), label: selectedPrompt.name, caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name, promptId: selectedPrompt.id }
-    handleSend(buildPromptInstruction(selectedCat, combinedInstructions, ''), true, selectedPrompt, allMats, refOverride, `✨ ${displayLabel}`, false, meta, afterImageText)
+    const apiKey = await getGeminiApiKey()
+    // Carrega imagens e traduz apenas label, nomes e section para exibição no chat.
+    // caption e afterImageText ficam em PT-BR e são traduzidos somente ao gerar o PDF.
+    const rawSection = getCategorySection(selectedCat)
+    const [promptMats, lengthMats, textureMats, translatedLabel, translatedLengthName, translatedTextureName, translatedSection] = await Promise.all([
+      loadPromptMaterials(selectedPrompt),
+      length ? loadImages(length.images) : Promise.resolve([]),
+      texture ? loadImages(texture.images) : Promise.resolve([]),
+      selectedLanguage !== 'pt-BR' ? translateText(selectedPrompt.name, selectedLanguage, apiKey) : Promise.resolve(selectedPrompt.name),
+      length?.name && selectedLanguage !== 'pt-BR' ? translateText(length.name, selectedLanguage, apiKey) : Promise.resolve(length?.name),
+      texture?.name && selectedLanguage !== 'pt-BR' ? translateText(texture.name, selectedLanguage, apiKey) : Promise.resolve(texture?.name),
+      selectedLanguage !== 'pt-BR' ? translateText(rawSection, selectedLanguage, apiKey) : Promise.resolve(rawSection),
+    ])
+    const afterImageText = rawAfterImageText  // exibe em PT no chat; tradução ocorre só no PDF
+    const translatedDisplayLabel = [translatedLabel, translatedLengthName, translatedTextureName].filter(Boolean).join(' — ')
+    const allMats = [...promptMats, ...lengthMats, ...textureMats]; setPromptMaterials(allMats)
+    const meta: PdfMeta = { section: translatedSection, label: translatedLabel, caption: rawCaption, promptId: selectedPrompt.id }
+    handleSend(buildPromptInstruction(selectedCat, combinedInstructions, ''), true, selectedPrompt, allMats, refOverride, `✨ ${translatedDisplayLabel}`, false, meta, afterImageText, earlyLid, earlyUserMsgId)
   }
 
   const handleOptionClick = async (option: string) => {
     if (!selectedPrompt || !selectedCat) return
     setNavState('hidden')
-    const mats = await loadPromptMaterials(selectedPrompt); setPromptMaterials(mats)
+    skipLoadingGuard.current = true
+    setLoading(true)
+    // Adiciona mensagens imediatamente, antes da tradução
+    const earlyUserMsgId = uid(); const earlyLid = uid()
+    setMessages(prev => [...prev,
+      { id: earlyUserMsgId, role: 'user', text: `✨ ${selectedPrompt.name} — ${option}`, timestamp: new Date() },
+      { id: earlyLid, role: 'assistant', text: '', loading: true, translating: true, timestamp: new Date() },
+    ])
     const refOverride = getRefPhotoForCategory(selectedCat)
-    const afterImageText = selectedPrompt.tintReference?.trim() || undefined
+    const rawAfterImageText = selectedPrompt.tintReference?.trim() || undefined
+    const rawCaption = selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name
     const catIsAccessory = selectedCat.icon === 'gem' || selectedCat.name.toLowerCase().includes('acess')
-    const meta: PdfMeta = { section: getCategorySection(selectedCat), label: selectedPrompt.name, caption: selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name, promptId: selectedPrompt.id }
-    handleSend(buildPromptInstruction(selectedCat, `${selectedPrompt.instructions || selectedPrompt.name} - comprimento ${option}`, ''), true, selectedPrompt, mats, refOverride, `✨ ${selectedPrompt.name} — ${option}`, catIsAccessory, meta, afterImageText)
+    const apiKey = await getGeminiApiKey()
+    // Carrega imagens e traduz apenas label e section para exibição no chat.
+    // caption e afterImageText ficam em PT-BR e são traduzidos somente ao gerar o PDF.
+    const rawSection = getCategorySection(selectedCat)
+    const [mats, translatedLabel, translatedSection] = await Promise.all([
+      loadPromptMaterials(selectedPrompt),
+      selectedLanguage !== 'pt-BR' ? translateText(selectedPrompt.name, selectedLanguage, apiKey) : Promise.resolve(selectedPrompt.name),
+      selectedLanguage !== 'pt-BR' ? translateText(rawSection, selectedLanguage, apiKey) : Promise.resolve(rawSection),
+    ])
+    const afterImageText = rawAfterImageText  // exibe em PT no chat; tradução ocorre só no PDF
+    setPromptMaterials(mats)
+    const meta: PdfMeta = { section: translatedSection, label: translatedLabel, caption: rawCaption, promptId: selectedPrompt.id }
+    handleSend(buildPromptInstruction(selectedCat, `${selectedPrompt.instructions || selectedPrompt.name} - comprimento ${option}`, ''), true, selectedPrompt, mats, refOverride, `✨ ${translatedLabel} — ${option}`, catIsAccessory, meta, afterImageText, earlyLid, earlyUserMsgId)
   }
 
   const goBack = () => {
@@ -338,10 +451,11 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     else if (navState === 'prompts') { setNavState('categories'); setSelectedCat(null) }
   }
 
-  const handleSend = async (overrideText?: string, isImage: boolean = false, contextPrompt?: Prompt, mats?: MaterialData[], refPhotoOverride?: { base64: string; mime: string }, displayText?: string, isAccessory: boolean = false, pdfMeta?: PdfMeta, afterImageText?: string) => {
+  const handleSend = async (overrideText?: string, isImage: boolean = false, contextPrompt?: Prompt, mats?: MaterialData[], refPhotoOverride?: { base64: string; mime: string }, displayText?: string, isAccessory: boolean = false, pdfMeta?: PdfMeta, afterImageText?: string, preLid?: string, preUserMsgId?: string) => {
     const text = (overrideText || input).trim()
     if (!text && !pendingImage) return
-    if (loading) return
+    if (loading && !skipLoadingGuard.current) return
+    skipLoadingGuard.current = false
 
     setApiError(null)
     const apiKey = await getGeminiApiKey()
@@ -355,10 +469,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     let uB64: string | undefined, uMime: string | undefined, prev: string | undefined
     if (pendingImage) { const c = await fileToBase64(pendingImage.file); uB64 = c.base64; uMime = c.mimeType; prev = pendingImage.preview; setPendingImage(null) }
 
-    const userMsg: ChatMsg = { id: uid(), role: 'user', text: displayText || text || '(foto)', imagePreview: prev, imageBase64: uB64, imageMimeType: uMime, timestamp: new Date() }
-    const lid = uid()
-    setMessages(prev => [...prev, userMsg, { id: lid, role: 'assistant', text: '', loading: true, timestamp: new Date(), pdfMeta }])
-    setInput(''); setLoading(true)
+    const lid = preLid ?? uid()
+    if (!preLid) {
+      const userMsg: ChatMsg = { id: uid(), role: 'user', text: displayText || text || '(foto)', imagePreview: prev, imageBase64: uB64, imageMimeType: uMime, timestamp: new Date() }
+      setMessages(prev => [...prev, userMsg, { id: lid, role: 'assistant', text: '', loading: true, timestamp: new Date(), pdfMeta }])
+      setInput(''); setLoading(true)
+    } else {
+      // Pre-created messages already exist; upgrade loading bubble: clear translating flag and set final pdfMeta
+      setMessages(prev => prev.map(m => {
+        if (m.id === lid) return { ...m, translating: false, pdfMeta }
+        if (preUserMsgId && m.id === preUserMsgId) return { ...m, text: displayText || text || '(foto)', imagePreview: prev, imageBase64: uB64, imageMimeType: uMime }
+        return m
+      }))
+    }
     lastCtx.current = { text, isImage, refPhotoOverride, displayText, mats, isAccessory, pdfMeta, afterImageText }
 
     try {
@@ -461,9 +584,18 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   // Extrai e prepara os items prontos pro template PDF a partir das mensagens
   // selecionadas no modal. Reutilizado pelo download e pelo "Salvar em
   // Resultado" — single source of truth pra não divergir os dois fluxos.
+  //
+  // A tradução do caption (tintReference / reference) só ocorre aqui —
+  // nunca durante a geração da imagem — para não atrasar o fluxo principal
+  // e nunca modificar o prompt enviado ao Gemini.
   const buildPdfItems = async (): Promise<any[]> => {
     const selected = imageMsgs.filter(m => pdfSelected.has(m.id))
     if (!selected.length) return []
+    // Obtém a chave uma única vez para todas as traduções do lote
+    const apiKey = await getGeminiApiKey()
+    // Guarda os layouts PUROS (sem sincronizar texto).
+    // O texto de cada bloco é traduzido diretamente abaixo, preservando a
+    // estrutura exata do layout (número e ordem de blocos inalterados).
     const freshLayoutMap = new Map<string, ItemLayout>()
     try {
       if (folderConfig?.folderName) {
@@ -472,23 +604,89 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         for (const cat of cfg?.categories ?? []) {
           for (const p of cat?.prompts ?? []) {
             if (p?.id && p?.pdfLayout) {
-              const refText = (cat.type === 'cabelo' ? p.tintReference : p.reference) || ''
-              freshLayoutMap.set(p.id, pdfSyncLayout(p.pdfLayout, refText))
+              freshLayoutMap.set(p.id, p.pdfLayout)
             }
           }
         }
       }
     } catch {}
-    const getLayout = (promptId?: string): ItemLayout | undefined =>
-      (promptId ? freshLayoutMap.get(promptId) : undefined) ?? findPromptLayout(promptId)
+
+    // Traduz, em UMA ÚNICA chamada por item, todos os textos do PDF:
+    //   caption + label + section + rawLines de cada bloco do layout.
+    //
+    // Isso resolve dois problemas que apareciam quando se traduzia bloco-a-bloco
+    // em paralelo:
+    //   1. LENTIDÃO: para N itens com M blocos, tínhamos N × (3 + M) requisições
+    //      HTTP paralelas (ex.: 5 itens × 9 = 45 calls), o que esbarrava no rate
+    //      limit da Gemini (15 RPM no free tier) e amontoava os tempos.
+    //      Agora: 1 chamada por item (5 ao invés de 45).
+    //   2. TRUNCAMENTO: cada translateText antigo tinha maxOutputTokens=2048 sem
+    //      detecção de finishReason — quando a resposta cortava, voltava texto
+    //      incompleto pro PDF (ex.: "harmonious effect" sem ponto final).
+    //      A nova translateTexts/translateText têm cap de 8192 + auto-split
+    //      recursivo quando MAX_TOKENS dispara, então o texto NUNCA volta
+    //      incompleto.
     const items = await Promise.all(selected.map(async (msg) => {
-      const dataUrl = await getImgDataUrl(msg); if (!dataUrl) return null
+      const dataUrl = await getImgDataUrl(msg); if (!dataUrl) {
+        // Mesmo quando o item não é válido, conta como concluído pra barra
+        // não travar (caso contrário a porcentagem final ficaria abaixo de 100%).
+        setPdfProgress(p => p ? { ...p, done: p.done + 1 } : p)
+        return null
+      }
+      const rawCap   = msg.pdfMeta?.caption
+      const rawLabel = msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada'
+      const rawSec   = msg.pdfMeta?.section
+      // Busca o layout fresco do Supabase; cai pro in-memory como fallback.
+      const baseLayout = (msg.pdfMeta?.promptId
+        ? freshLayoutMap.get(msg.pdfMeta.promptId)
+        : undefined) ?? findPromptLayout(msg.pdfMeta?.promptId)
+
+      // Caminho rápido: pt-BR ou sem chave → não traduz nada.
+      if (selectedLanguage === 'pt-BR' || !apiKey) {
+        setPdfProgress(p => p ? { ...p, done: p.done + 1 } : p)
+        return {
+          dataUrl,
+          label:   rawLabel,
+          caption: rawCap,
+          section: rawSec,
+          layout:  baseLayout,
+        }
+      }
+
+      // Monta um único array com toda a informação textual deste item.
+      // Ordem fixa: [caption, label, section, blockText_1, blockText_2, ...].
+      // Strings vazias são preservadas posicionalmente pela translateTexts.
+      const blocks     = baseLayout?.blocks ?? []
+      const blockTexts = blocks.map(b => b.rawLines.join('\n'))
+      const allInputs  = [rawCap ?? '', rawLabel ?? '', rawSec ?? '', ...blockTexts]
+
+      const translated = await translateTexts(allInputs, selectedLanguage, apiKey)
+      const [tCap, tLabel, tSec, ...tBlockTexts] = translated
+
+      let finalLayout: ItemLayout | undefined = baseLayout
+      if (baseLayout && blocks.length > 0) {
+        finalLayout = {
+          ...baseLayout,
+          blocks: blocks.map((block, i) => {
+            const txt = tBlockTexts[i]
+            if (!txt || !txt.trim()) return { ...block, h: undefined }
+            const lines = txt.split('\n').map(l => l.trim()).filter(Boolean)
+            // Remove h fixo: o texto traduzido pode ter mais linhas que o original,
+            // então deixamos o renderer calcular a altura natural em vez de cortar.
+            return { ...block, rawLines: lines.length ? lines : block.rawLines, h: undefined }
+          }),
+        }
+      }
+
+      // Marca este item como concluído pro progresso da UI.
+      setPdfProgress(p => p ? { ...p, done: p.done + 1 } : p)
+
       return {
         dataUrl,
-        label:   msg.pdfMeta?.label || msg.text?.replace(/\n/g, ' ')?.slice(0, 30) || 'Imagem gerada',
-        caption: msg.pdfMeta?.caption,
-        section: msg.pdfMeta?.section,
-        layout:  getLayout(msg.pdfMeta?.promptId),
+        label:   (tLabel && tLabel.trim()) || rawLabel,
+        caption: (tCap   && tCap.trim())   ? tCap : rawCap,
+        section: (tSec   && tSec.trim())   ? tSec : rawSec,
+        layout:  finalLayout,
       }
     }))
     return items.filter(Boolean) as any[]
@@ -502,10 +700,26 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     setPdfGenerating(true)
     setPdfSaveSuccess(false)
     setPdfSaveError(null)
+    // Inicializa progresso: total = N itens selecionados + 1 unidade pra
+    // montagem final do PDF. Cada item traduzido incrementa `done`; depois
+    // a montagem do blob incrementa o último ponto.
+    const totalUnits = pdfSelected.size + 1
+    setPdfProgress({ done: 0, total: totalUnits })
     try {
       const validItems = await buildPdfItems()
       if (validItems.length === 0) return
-      const blob = await buildStylePdfBlob({ clientName, items: validItems })
+      // Traduz o título da página de colagem ("Simulações") para o idioma selecionado.
+      // A chave é reutilizada — buildPdfItems já a buscou; getGeminiApiKey é cacheada.
+      let collageTitle: string | undefined
+      if (selectedLanguage !== 'pt-BR') {
+        try {
+          const apiKey = await getGeminiApiKey()
+          if (apiKey) collageTitle = await translateText('Simulações', selectedLanguage, apiKey)
+        } catch {}
+      }
+      const blob = await buildStylePdfBlob({ clientName, items: validItems, collageTitle })
+      // Última unidade: PDF montado.
+      setPdfProgress(p => p ? { ...p, done: p.total } : p)
       setPdfBlob(blob)
       const url = URL.createObjectURL(blob)
       pdfUrlsRef.current.push(url)
@@ -522,6 +736,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       alert('Erro ao gerar PDF: ' + e.message)
     } finally {
       setPdfGenerating(false)
+      setPdfProgress(null)
     }
   }
 
@@ -637,7 +852,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             return (
               <div className={`rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 shadow-sm text-sm leading-relaxed ${isU ? 'bg-gradient-to-br from-rose-400 to-pink-500 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>
                 {msg.loading ? (
-                  <div className="flex items-center gap-2 text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /><span className="text-xs">{loadingResults ? 'Carregando materiais...' : 'Gerando...'}</span></div>
+                  <div className="flex items-center gap-2 text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /><span className="text-xs">{msg.translating ? 'Traduzindo...' : loadingResults ? 'Carregando materiais...' : 'Gerando...'}</span></div>
                 ) : msg.error ? (
                   <div className="flex flex-col gap-2">
                     <div className="flex items-start gap-2 text-red-600"><AlertCircle className="h-4 w-4 mt-0.5" /><span className="text-xs">{msg.error}</span></div>
@@ -908,14 +1123,31 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div className="px-4 sm:px-5 py-4 border-t border-gray-100">
               {/* ── Etapa 1: ainda não gerou o PDF ─────────────────────────── */}
               {!pdfBlob && (
-                <button
-                  onClick={handleGeneratePdf}
-                  disabled={pdfSelected.size === 0 || pdfGenerating}
-                  className="w-full py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {pdfGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                  {pdfGenerating ? 'Gerando...' : 'Gerar PDF'}
-                </button>
+                <>
+                  <button
+                    onClick={handleGeneratePdf}
+                    disabled={pdfSelected.size === 0 || pdfGenerating}
+                    className="w-full py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {pdfGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                    {pdfGenerating
+                      ? (pdfProgress
+                          ? `Gerando PDF... ${Math.round((pdfProgress.done / pdfProgress.total) * 100)}%`
+                          : 'Gerando...')
+                      : 'Gerar PDF'}
+                  </button>
+                  {/* Barra de progresso — só aparece durante a geração e quando
+                      pdfProgress já foi inicializado. transition-all suaviza o
+                      salto de cada item finalizado. */}
+                  {pdfGenerating && pdfProgress && (
+                    <div className="mt-2 w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-violet-500 to-purple-600 transition-all duration-300 ease-out"
+                        style={{ width: `${Math.min(100, Math.round((pdfProgress.done / pdfProgress.total) * 100))}%` }}
+                      />
+                    </div>
+                  )}
+                </>
               )}
 
               {/* ── Etapa 2: PDF gerado, mostra ações ──────────────────────── */}
@@ -972,6 +1204,33 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           </div>
           {refBase64 && referencePhotoUrl && <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full overflow-hidden border-2 border-white/40 flex-shrink-0"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>}
           <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse" /><span className="hidden sm:inline">Online</span></span>
+          {/* Seletor de idioma */}
+          <div ref={langMenuRef} className="relative flex-shrink-0">
+            <button
+              onClick={() => setShowLangMenu(p => !p)}
+              title="Idioma da resposta"
+              className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors"
+            >
+              {SUPPORTED_LANGUAGES.find(l => l.code === selectedLanguage)?.label.split(' ')[0] ?? '🌐'}
+              <ChevronDown className="h-3 w-3 opacity-70" />
+            </button>
+            {showLangMenu && (
+              <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden min-w-[160px]">
+                {SUPPORTED_LANGUAGES.map(lang => (
+                  <button
+                    key={lang.code}
+                    onClick={() => { setSelectedLanguage(lang.code); setShowLangMenu(false) }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-violet-50 transition-colors ${
+                      selectedLanguage === lang.code ? 'font-semibold text-violet-700 bg-violet-50' : 'text-gray-700'
+                    }`}
+                  >
+                    <span>{lang.label}</span>
+                    {selectedLanguage === lang.code && <span className="ml-auto text-violet-500">✓</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {onSavePdf && imageMsgs.length > 0 && (
             <button onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors flex-shrink-0">
               <FileText className="h-3.5 w-3.5" /><span className="hidden sm:inline">PDF</span>
@@ -988,7 +1247,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
           {storageKey && messages.length > 1 && !selectMode && (
-            <button onClick={() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0]), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
+            <button onClick={() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
