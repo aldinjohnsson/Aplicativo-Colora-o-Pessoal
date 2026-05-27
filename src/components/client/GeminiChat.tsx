@@ -115,7 +115,14 @@ const chatKey = (clientId: string) => `mscolors_chat_${clientId}`
 function serializeMessages(msgs: ChatMsg[]): string {
   const lean = msgs.filter(m => !m.loading && !m.error).map(m => ({
     ...m, imagePreview: undefined,
-    responseParts: m.responseParts?.map(p => p.type === 'image' ? { type: 'image', imageMimeType: p.imageMimeType } : p),
+    responseParts: m.responseParts?.map(p => {
+      if (p.type !== 'image') return p
+      // Só descarta o base64 se o upload pro Drive já terminou (savedImageUrls preenchido).
+      // Se ainda não terminou, mantém o base64 para não perder a imagem numa recarga
+      // enquanto o upload ainda está em andamento (race condition).
+      const hasDriveBackup = m.savedImageUrls && m.savedImageUrls.length > 0
+      return hasDriveBackup ? { type: 'image', imageMimeType: p.imageMimeType } : p
+    }),
   }))
   return JSON.stringify(lean)
 }
@@ -182,6 +189,26 @@ async function uploadChatImageToDrive(
  */
 async function downloadImage(url: string, fileName: string): Promise<void> {
   try {
+    // ── Google Drive → proxy autenticado (evita CORS) ──────────────────────
+    // URLs geradas por driveStorage.viewUrl():
+    //   https://drive.google.com/thumbnail?id=XXXX&sz=w2000
+    // Não é possível fazer fetch() direto: o Google bloqueia por CORS.
+    // Usa o mesmo proxy da DriveProxyImg (/photo-proxy na Edge Function).
+    const driveMatch = url.match(/[?&]id=([^&]+)/)
+    if (url.includes('drive.google.com') && driveMatch) {
+      const blob = await driveStorage.fetchPhotoBlob(driveMatch[1])
+      const objUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objUrl
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
+      return
+    }
+
+    // ── Supabase Storage → cliente autenticado (evita CORS) ────────────────
     // Extrai bucket e path da URL pública do Supabase Storage
     // Formato: https://[id].supabase.co/storage/v1/object/public/[bucket]/[path]
     const m = url.match(/\/storage\/v1\/object\/public\/([^/?#]+)\/(.+?)(?:\?|#|$)/)
@@ -1763,7 +1790,7 @@ function ImageLightbox({
         onTouchMove={handleTouchMove}
         onClick={e => e.stopPropagation()}
       >
-        <img
+        <DriveProxyImg
           src={src}
           alt="Simulação IA"
           draggable={false}
