@@ -188,6 +188,25 @@ export const driveStorage = {
     return r.blob()
   },
 
+  /**
+   * Upload de imagem gerada pela IA na tela MS Color IA (sem cliente vinculado).
+   * Autenticado com JWT do admin; a Edge Function cria/reutiliza uma pasta
+   * fixa "MS Color IA" dentro da pasta raiz do admin no Drive.
+   * kind='ms_color_ia' — não usa client_id nem portal_token.
+   */
+  async uploadMsColorIaPhoto(opts: { file: File }): Promise<DriveUploadResult> {
+    const fd = new FormData()
+    fd.append('kind', 'ms_color_ia')
+    fd.append('file', opts.file)
+
+    const r = await authedFetch('/upload', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Upload falhou: HTTP ${r.status}`)
+    }
+    return r.json()
+  },
+
   // ─── URLs ──────────────────────────────────────────────────────────────
 
   /** URL pra usar em <img src> direto (Drive público). */

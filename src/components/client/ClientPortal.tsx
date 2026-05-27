@@ -2401,6 +2401,7 @@ function ResultScreen({
             referencePhotos={aiRefPhotos}
             folderConfig={aiFolderConfig}
             clientId={data.client.id}
+            portalToken={token}
             resultFileUrls={files.map((f: any) => ({
               url: clientService.getResultFileUrl(f),
               name: f.file_name,

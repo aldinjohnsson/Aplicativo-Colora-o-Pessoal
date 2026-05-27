@@ -81,6 +81,14 @@ interface GeminiChatProps {
   /** Chave customizada para persistência no localStorage. Útil para o admin
    *  manter um histórico separado do chat real da cliente. */
   chatStorageKey?: string
+  /** Token do portal da cliente (UUID). Quando presente, as imagens geradas
+   *  pela IA são salvas no Google Drive do admin via driveStorage.uploadPhoto()
+   *  (autenticado com o token da cliente, sem JWT).
+   *  No modo admin (unlimited=true) o upload usa adminUploadPhoto() com JWT. */
+  portalToken?: string
+  /** Quando true, as imagens geradas vão para a pasta "MS Color IA" no Drive
+   *  do admin (sem vínculo com cliente). Não requer clientId nem portalToken. */
+  msColorIaMode?: boolean
   /** Quando provido, exibe o botão "Salvar em Resultado" no modal de PDF.
    *  Recebe o Blob do PDF montado e o nome do arquivo já formatado.
    *  Atualmente passado apenas pelo ClientsManager (admin); o portal da
@@ -115,17 +123,49 @@ function deserializeMessages(raw: string): ChatMsg[] {
   try { return (JSON.parse(raw) as any[]).map(m => ({ ...m, timestamp: new Date(m.timestamp) })) } catch { return [] }
 }
 
-async function uploadChatImage(clientId: string, msgId: string, idx: number, base64: string, mimeType: string): Promise<string | null> {
+/**
+ * Salva uma imagem gerada pela IA no Google Drive do admin.
+ *
+ * • Admin (unlimited): usa adminUploadPhoto() com JWT — não precisa de token.
+ * • Portal da cliente: usa uploadPhoto() com portalToken — sem JWT.
+ *
+ * Retorna a URL de thumbnail do Drive para usar em <img src>, ou null em caso de falha.
+ * As imagens ficam dentro da pasta do cliente no Drive (kind='ai_photo'),
+ * sem ocupar espaço no Supabase Storage.
+ */
+async function uploadChatImageToDrive(
+  clientId: string | undefined,
+  base64: string,
+  mimeType: string,
+  portalToken?: string,
+  msColorIaMode?: boolean,
+): Promise<string | null> {
   try {
     const ext = mimeType.includes('png') ? 'png' : 'jpg'
-    const path = `ai-chat-images/${clientId}/${msgId}_${idx}.${ext}`
-    const byteString = atob(base64); const arr = new Uint8Array(byteString.length)
-    for (let i = 0; i < byteString.length; i++) arr[i] = byteString.charCodeAt(i)
-    const blob = new Blob([arr], { type: mimeType })
-    const { error } = await supabase.storage.from('client-photos').upload(path, blob, { contentType: mimeType, upsert: true })
-    if (error) return null
-    return supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl
-  } catch { return null }
+    const fileName = `ia_${Date.now()}.${ext}`
+    const byteStr = atob(base64)
+    const arr = new Uint8Array(byteStr.length)
+    for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i)
+    const file = new File([arr], fileName, { type: mimeType })
+
+    let result
+    if (msColorIaMode) {
+      // Pasta fixa "MS Color IA" no Drive do admin — sem cliente vinculado
+      result = await driveStorage.uploadMsColorIaPhoto({ file })
+    } else if (portalToken) {
+      // Contexto cliente: autenticado pelo token do portal, sem JWT
+      result = await driveStorage.uploadPhoto({ portalToken, file, categoryId: null, kind: 'ai_photo' })
+    } else {
+      // Contexto admin: autenticado pelo JWT da sessão
+      result = await driveStorage.adminUploadPhoto({ clientId: clientId!, file, categoryId: null })
+    }
+
+    // Retorna URL de thumbnail pública do Drive para exibir no chat
+    return driveStorage.viewUrl(result.driveFileId, 2000)
+  } catch (err) {
+    console.error('[uploadChatImageToDrive] falhou:', err)
+    return null
+  }
 }
 
 /**
@@ -188,7 +228,7 @@ const WELCOME_TEXTS: Record<string, (name: string) => string> = {
 const WELCOME = (name: string, lang: LanguageCode = 'pt-BR') =>
   (WELCOME_TEXTS[lang] ?? WELCOME_TEXTS['pt-BR'])(name)
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, onSavePdf, defaultLanguage = 'pt-BR' }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR' }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -569,10 +609,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       if (hasImage && !response.imageGenerationFailed && afterImageText?.trim()) {
         setMessages(prev => [...prev, { id: uid(), role: 'assistant', text: afterImageText.trim(), responseParts: [{ type: 'text', text: afterImageText.trim() }], timestamp: new Date() }])
       }
-      if (clientId) {
+      if (clientId || msColorIaMode) {
         const imageParts = response.parts.filter(p => p.type === 'image' && p.imageBase64)
         if (imageParts.length > 0) {
-          Promise.all(imageParts.map((p, i) => uploadChatImage(clientId, lid, i, p.imageBase64!, p.imageMimeType || 'image/png'))).then(urls => {
+          Promise.all(imageParts.map(p => uploadChatImageToDrive(clientId, p.imageBase64!, p.imageMimeType || 'image/png', portalToken, msColorIaMode))).then(urls => {
             const saved = urls.filter(Boolean) as string[]
             if (saved.length > 0) setMessages(prev => prev.map(m => m.id === lid ? { ...m, savedImageUrls: saved } : m))
           })

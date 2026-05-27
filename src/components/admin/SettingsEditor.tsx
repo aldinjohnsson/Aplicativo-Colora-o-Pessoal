@@ -299,9 +299,9 @@ function GeminiKeyCard({
         </div>
       </div>
 
-      <div className="px-6 py-5 space-y-3">
+      <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-3">
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
             <label className="text-sm font-medium text-gray-700">Chave da API Gemini</label>
             <button
               type="button"
@@ -318,11 +318,11 @@ function GeminiKeyCard({
               value={value}
               onChange={e => onChange(e.target.value)}
               placeholder="AIza..."
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-28"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-24"
             />
             {value && (
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
-                ✓ Configurada
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                ✓<span className="hidden sm:inline"> Configurada</span>
               </span>
             )}
           </div>
@@ -393,13 +393,13 @@ function PdfTemplateSection({
         </div>
       </div>
 
-      <div className="px-6 py-5 space-y-4">
+      <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
           Envie um PDF com <strong>3 páginas</strong>: uma capa, uma página em branco com o fundo nas suas cores (será onde a IA insere o conteúdo do dossiê) e uma contracapa. A IA usa esse modelo como base e adiciona automaticamente as informações capilares de cada cliente na página do meio.
         </p>
 
         {currentFileName ? (
-          <div className="flex items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, #d946ef 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, #d946ef 30%, ${theme.border})` }}>
+          <div className="flex flex-wrap items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, #d946ef 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, #d946ef 30%, ${theme.border})` }}>
             <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `color-mix(in srgb, #d946ef 18%, ${theme.surface2})` }}>
               <FileText className="h-5 w-5" style={{ color: '#d946ef' }} />
             </div>
@@ -407,7 +407,7 @@ function PdfTemplateSection({
               <p className="text-sm font-medium" style={{ color: theme.text }}>PDF modelo carregado</p>
               <p className="text-xs truncate" style={{ color: theme.text2 }}>{currentFileName}</p>
             </div>
-            <div className="flex gap-2 flex-shrink-0">
+            <div className="flex gap-2 flex-shrink-0 ml-auto">
               <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}>
                 <Upload className="h-3.5 w-3.5" />
                 {saving ? 'Salvando...' : 'Trocar'}
@@ -488,7 +488,7 @@ function AiCompositionBrandingSection({
         </div>
       </div>
 
-      <div className="px-6 py-5 space-y-4">
+      <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
           Envie dois PDFs vetoriais (1 página cada) uma capa e uma contracapa. O dossiê final montado pela IA fica:{' '}
           <strong style={{ color: theme.text }}>[Capa]</strong>
@@ -593,7 +593,7 @@ function BrandingSlot({
       </p>
 
       {fileName && !busy && phase !== 'error' ? (
-        <div className="flex items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, ${accent} 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, ${accent} 30%, ${theme.border})` }}>
+        <div className="flex flex-wrap items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, ${accent} 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, ${accent} 30%, ${theme.border})` }}>
           <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `color-mix(in srgb, ${accent} 18%, ${theme.surface2})` }}>
             <FileText className="h-5 w-5" style={{ color: accent }} />
           </div>
@@ -601,7 +601,7 @@ function BrandingSlot({
             <p className="text-sm font-medium" style={{ color: theme.text }}>PDF carregado</p>
             <p className="text-xs truncate" style={{ color: theme.text2 }}>{fileName}</p>
           </div>
-          <div className="flex gap-2 flex-shrink-0">
+          <div className="flex gap-2 flex-shrink-0 ml-auto">
             <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}>
               <Upload className="h-3.5 w-3.5" /> Trocar
               <input type="file" accept="application/pdf" className="hidden" onChange={handleUpload} />
@@ -842,7 +842,7 @@ export default function SettingsEditor() {
     return (
       <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
             <p className="text-sm text-gray-500 mt-0.5">
@@ -852,7 +852,7 @@ export default function SettingsEditor() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-5 py-2.5 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {saving
               ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
@@ -930,7 +930,7 @@ export default function SettingsEditor() {
     return (
       <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
             <p className="text-sm text-gray-500 mt-0.5">
@@ -940,7 +940,7 @@ export default function SettingsEditor() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-5 py-2.5 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {saving
               ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
@@ -999,9 +999,9 @@ export default function SettingsEditor() {
             </div>
           </div>
 
-          <div className="px-6 py-5 space-y-3">
+          <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-3">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
                 <label className="text-sm font-medium text-gray-700">Chave da API OpenAI</label>
                 <button
                   type="button"
@@ -1020,11 +1020,11 @@ export default function SettingsEditor() {
                   placeholder="sk-proj-... ou sk-..."
                   autoComplete="off"
                   spellCheck={false}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-28"
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-24"
                 />
                 {settings.openaiApiKey && (
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
-                    ✓ Configurada
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                    ✓<span className="hidden sm:inline"> Configurada</span>
                   </span>
                 )}
               </div>
@@ -1121,7 +1121,7 @@ export default function SettingsEditor() {
   return (
     <div className="space-y-4 sm:space-y-6 max-w-3xl mx-auto px-4 py-6">
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-base sm:text-xl font-semibold text-gray-900">Configurações</h1>
           <p className="text-sm text-gray-500 mt-0.5">Gerencie integrações, tipos de fotos e templates</p>
@@ -1129,7 +1129,7 @@ export default function SettingsEditor() {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-5 py-2.5 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {saving
             ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
@@ -1176,9 +1176,9 @@ export default function SettingsEditor() {
           </div>
         </div>
 
-        <div className="px-6 py-5 space-y-3">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-3">
           <div>
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
               <label className="text-sm font-medium text-gray-700">Chave da API OpenAI</label>
               <button
                 type="button"
@@ -1197,11 +1197,11 @@ export default function SettingsEditor() {
                 placeholder="sk-proj-... ou sk-..."
                 autoComplete="off"
                 spellCheck={false}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-28"
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-24"
               />
               {settings.openaiApiKey && (
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
-                  ✓ Configurada
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                  ✓<span className="hidden sm:inline"> Configurada</span>
                 </span>
               )}
             </div>
@@ -1238,7 +1238,7 @@ export default function SettingsEditor() {
           </div>
         </div>
 
-        <div className="px-6 py-5 space-y-4">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Nome que aparece como remetente</label>
             <input
@@ -1252,7 +1252,7 @@ export default function SettingsEditor() {
             <p className="text-xs text-gray-500 mt-1.5">
               Esse nome aparece na caixa de entrada da sua cliente como remetente do e-mail.
               {settings.emailDisplayName && (
-                <span className="block mt-1 font-mono text-gray-600">
+                <span className="block mt-1 font-mono text-gray-600 break-all">
                   Prévia: <strong>{settings.emailDisplayName}</strong> &lt;contato@...&gt;
                 </span>
               )}
@@ -1316,12 +1316,12 @@ export default function SettingsEditor() {
             </div>
           </div>
 
-          <div className="px-6 py-5 space-y-4">
+          <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
             <div className="bg-violet-50 border border-violet-100 rounded-xl p-3">
               <p className="text-xs text-violet-700 leading-relaxed">
                 ℹ️ Esta configuração é usada por <strong>todos os admins (salões)</strong> do sistema.
                 Os e-mails saem do seu domínio com o <strong>nome do salão</strong> como remetente
-                (ex: <span className="font-mono">"Salão da Fulana &lt;{globalEmail.fromEmail || 'contato@seudominio.com.br'}&gt;"</span>),
+                (ex: <span className="font-mono break-all">"Salão da Fulana &lt;{globalEmail.fromEmail || 'contato@seudominio.com.br'}&gt;"</span>),
                 mas cada admin recebe a cópia no e-mail dele.
               </p>
             </div>
@@ -1336,7 +1336,7 @@ export default function SettingsEditor() {
                 className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent"
               />
               <p className="text-xs text-gray-500 mt-1.5">
-                Domínio verificado no Resend. Para testes: <span className="font-mono">onboarding@resend.dev</span>.
+                Domínio verificado no Resend. Para testes: <span className="font-mono break-all">onboarding@resend.dev</span>.
               </p>
             </div>
 
@@ -1350,11 +1350,11 @@ export default function SettingsEditor() {
                   placeholder="re_..."
                   autoComplete="off"
                   spellCheck={false}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-28"
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-24"
                 />
                 {globalEmail.resendApiKey && (
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full">
-                    ✓ Configurada
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                    ✓<span className="hidden sm:inline"> Configurada</span>
                   </span>
                 )}
               </div>

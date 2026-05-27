@@ -597,7 +597,7 @@ export function MsColorIAPage() {
         clientName={effectiveName}
         systemPrompt={systemPrompt}
         folderConfig={folderConfig}
-        clientId={adminId}
+        msColorIaMode
         referencePhotoUrl={refPhotoUrl ?? undefined}
         referencePhotos={[]}
         resultFileUrls={[]}
