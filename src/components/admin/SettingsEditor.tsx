@@ -197,6 +197,23 @@ const settingsStorageService = {
     await deleteRow(type, user.id)
   },
 
+  // ── PDF Modelo de Estilo ────────────────────────────────────────────────
+  // O blob do PDF modelo é salvo em admin_content type='pdf_template', do
+  // mesmo jeito que as capas/contracapas IA. NÃO entra no row 'settings'
+  // pra evitar enviar MBs de base64 a cada save de configuração geral.
+  // O templatePDFGenerator busca esse row sob demanda na hora de gerar o dossiê.
+  async savePdfTemplate(base64: string, fileName: string) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    await saveOrUpdate('pdf_template', { pdfBase64: base64, fileName }, user.id)
+  },
+
+  async deletePdfTemplate() {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada')
+    await deleteRow('pdf_template', user.id)
+  },
+
   async getSettings(): Promise<AppSettings> {
     const defaults: AppSettings = {
       whatsappNumber: '',
@@ -893,10 +910,21 @@ export default function SettingsEditor() {
 
         <PdfTemplateSection
           currentFileName={settings.pdfTemplateFileName || ''}
-          onSave={(base64, fileName) => {
-            const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
-            setSettings(updated)
-            settingsStorageService.saveSettings(updated)
+          onSave={async (base64, fileName) => {
+            try {
+              // Blob (pdf_template) — salvo em row próprio do admin_content.
+              // saveSettings descarta o base64 pra não duplicar MBs no row 'settings'.
+              if (base64) {
+                await settingsStorageService.savePdfTemplate(base64, fileName)
+              } else {
+                await settingsStorageService.deletePdfTemplate()
+              }
+              const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
+              setSettings(updated)
+              await settingsStorageService.saveSettings(updated)
+            } catch (e: any) {
+              alert('Erro ao salvar PDF modelo: ' + e.message)
+            }
           }}
         />
 
@@ -1043,10 +1071,19 @@ export default function SettingsEditor() {
         {/* PDF Modelo */}
         <PdfTemplateSection
           currentFileName={settings.pdfTemplateFileName || ''}
-          onSave={(base64, fileName) => {
-            const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
-            setSettings(updated)
-            settingsStorageService.saveSettings(updated)
+          onSave={async (base64, fileName) => {
+            try {
+              if (base64) {
+                await settingsStorageService.savePdfTemplate(base64, fileName)
+              } else {
+                await settingsStorageService.deletePdfTemplate()
+              }
+              const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
+              setSettings(updated)
+              await settingsStorageService.saveSettings(updated)
+            } catch (e: any) {
+              alert('Erro ao salvar PDF modelo: ' + e.message)
+            }
           }}
         />
 
@@ -1388,10 +1425,19 @@ export default function SettingsEditor() {
 
       <PdfTemplateSection
         currentFileName={settings.pdfTemplateFileName || ''}
-        onSave={(base64, fileName) => {
-          const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
-          setSettings(updated)
-          settingsStorageService.saveSettings(updated)
+        onSave={async (base64, fileName) => {
+          try {
+            if (base64) {
+              await settingsStorageService.savePdfTemplate(base64, fileName)
+            } else {
+              await settingsStorageService.deletePdfTemplate()
+            }
+            const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
+            setSettings(updated)
+            await settingsStorageService.saveSettings(updated)
+          } catch (e: any) {
+            alert('Erro ao salvar PDF modelo: ' + e.message)
+          }
         }}
       />
 
