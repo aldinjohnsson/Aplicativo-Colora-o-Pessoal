@@ -422,7 +422,39 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
   useEffect(() => {
     if (!storageKey || messages.length === 0 || messages.some(m => m.loading)) return
-    localStorage.setItem(storageKey, serializeMessages(messages))
+    // localStorage.setItem pode lançar QuotaExceededError — especialmente em
+    // iOS Safari (~5MB por origem; 2.5MB em modo privado). Imagens geradas
+    // pela IA em base64 (1-3MB) somadas ao histórico estouram o limite e
+    // a exception fora de try/catch dentro de useEffect propaga durante o
+    // commit e branqueia a tela. handleDeleteSelected já faz isso desde
+    // sempre — replicado aqui pra fechar a brecha do save automático.
+    try {
+      localStorage.setItem(storageKey, serializeMessages(messages))
+    } catch (err) {
+      console.warn('[GeminiChat] localStorage cheio, tentando salvar versão sem base64:', err)
+      try {
+        // Fallback: descarta TODO o base64 (mesmo sem savedImageUrls).
+        // Se a página recarregar antes do upload pro Drive terminar, a imagem
+        // dessa msg específica somem do histórico — mas é raro e prefere-se isso
+        // a quebrar o app.
+        const lean = JSON.stringify(
+          messages.filter(m => !m.loading && !m.error).map(m => ({
+            ...m,
+            imagePreview: undefined,
+            imageBase64: undefined,
+            responseParts: m.responseParts?.map(p =>
+              p.type === 'image'
+                ? { type: 'image', imageMimeType: p.imageMimeType }
+                : p,
+            ),
+          })),
+        )
+        localStorage.setItem(storageKey, lean)
+      } catch {
+        // Ainda estourou — limpa pra não deixar dado inconsistente.
+        try { localStorage.removeItem(storageKey) } catch {}
+      }
+    }
   }, [messages, storageKey])
 
   // Scroll só dentro do container de mensagens, NUNCA a página inteira.
