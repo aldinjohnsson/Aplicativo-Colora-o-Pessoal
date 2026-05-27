@@ -1582,19 +1582,14 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           </div>
         )}
 
-        {/* CTA prominente de Gerar PDF (modo cliente — quando NÃO recebe
-            onSavePdf). No admin do ClientsManager o acesso vem pela pílula
-            "PDF" do header, que já tem o fluxo de salvar em Resultados.
-            Em mobile o botão fica no header; aqui só aparece no desktop. */}
+        {/* CTA de Gerar PDF — só mobile sem onSavePdf. Desktop usa o botão do header. */}
         {!onSavePdf && imageMsgs.length > 0 && (
-          <div className="hidden sm:block px-3 sm:px-4 pb-2 flex-shrink-0">
+          <div className="sm:hidden px-3 pb-2 flex-shrink-0">
             <button
               onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }}
-              className="w-full py-3 px-4 bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500 hover:from-violet-600 hover:via-purple-600 hover:to-fuchsia-600 text-white rounded-2xl font-semibold text-sm shadow-lg shadow-purple-500/30 hover:shadow-xl hover:shadow-purple-500/40 transition-all flex items-center justify-center gap-2.5 group"
+              className="w-full py-3 px-4 bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500 text-white rounded-2xl font-semibold text-sm shadow-lg flex items-center justify-center gap-2.5"
             >
-              <span className="w-7 h-7 rounded-full bg-white/25 flex items-center justify-center group-hover:bg-white/35 transition-colors">
-                <FileText className="h-4 w-4" />
-              </span>
+              <FileText className="h-4 w-4" />
               <span>Gerar PDF das simulações</span>
               <span className="bg-white/25 px-2 py-0.5 rounded-full text-xs font-bold">{imageMsgs.length}</span>
             </button>
