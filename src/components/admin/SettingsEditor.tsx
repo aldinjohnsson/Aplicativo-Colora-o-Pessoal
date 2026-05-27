@@ -226,34 +226,29 @@ const settingsStorageService = {
     }
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const adminId = user?.id
+      // getSession() — sem round-trip de rede, lê do localStorage.
+      const { data: { session } } = await supabase.auth.getSession()
+      const adminId = session?.user?.id
 
-      const [
-        { data: settingsRow },
-        { data: tplRow },
-        { data: coverRow },
-        { data: finalRow },
-      ] = await Promise.all([
-        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'settings').maybeSingle(),
-        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'pdf_template').maybeSingle(),
-        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'ai_composition_cover').maybeSingle(),
-        supabase.from('admin_content').select('content').eq('admin_id', adminId ?? '').eq('type', 'ai_composition_final').maybeSingle(),
-      ])
+      // Apenas o row de settings — blobs não são necessários aqui.
+      // Os nomes de arquivo ficam dentro do próprio settingsRow.content.
+      const { data: settingsRow } = await supabase
+        .from('admin_content')
+        .select('content')
+        .eq('admin_id', adminId ?? '')
+        .eq('type', 'settings')
+        .maybeSingle()
 
-      const tplContent   = tplRow?.content   as { pdfTemplateBase64?: string; pdfTemplateFileName?: string } | null
-      const coverContent = coverRow?.content as { pdfBase64?: string; fileName?: string } | null
-      const finalContent = finalRow?.content as { pdfBase64?: string; fileName?: string } | null
-
+      const s = settingsRow?.content as AppSettings | null
       return {
         ...defaults,
-        ...(settingsRow?.content as AppSettings ?? {}),
-        pdfTemplateBase64:   tplContent?.pdfTemplateBase64   ?? (settingsRow?.content as any)?.pdfTemplateBase64   ?? '',
-        pdfTemplateFileName: tplContent?.pdfTemplateFileName ?? (settingsRow?.content as any)?.pdfTemplateFileName ?? '',
-        aiCompositionCoverBase64:   coverContent?.pdfBase64 ?? '',
-        aiCompositionCoverFileName: coverContent?.fileName  ?? '',
-        aiCompositionFinalBase64:   finalContent?.pdfBase64 ?? '',
-        aiCompositionFinalFileName: finalContent?.fileName  ?? '',
+        ...(s ?? {}),
+        pdfTemplateBase64:          '',
+        aiCompositionCoverBase64:   '',
+        aiCompositionFinalBase64:   '',
+        pdfTemplateFileName:        (s as any)?.pdfTemplateFileName        ?? '',
+        aiCompositionCoverFileName: (s as any)?.aiCompositionCoverFileName ?? '',
+        aiCompositionFinalFileName: (s as any)?.aiCompositionFinalFileName ?? '',
       }
     } catch (error) {
       console.error('Erro ao carregar configurações:', error)
@@ -718,41 +713,80 @@ export default function SettingsEditor() {
 
   useEffect(() => {
     loadSettings()
-    adminService.getCurrentAdmin().then(a => setUserRole(a?.role ?? null))
   }, [])
 
   const loadSettings = async () => {
     setLoading(true)
     try {
-      const loaded = await settingsStorageService.getSettings()
-      setSettings(loaded)
+      // getSession() lê o token do localStorage — sem round-trip de rede ao auth server.
+      const { data: { session } } = await supabase.auth.getSession()
+      const adminId = session?.user?.id ?? ''
 
-      // Carrega config global de e-mail (só super_admin precisa, mas é seguro
-      // tentar ler — RLS bloqueia se não for super_admin). A query é barata.
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: meRow } = await supabase
-          .from('admin_users')
-          .select('role')
-          .eq('id', user.id)
-          .maybeSingle()
+      const defaults: AppSettings = {
+        whatsappNumber: '',
+        googleDriveFolderId: '',
+        enableWhatsAppNotification: true,
+        notificationMessage: 'Olá! Finalizei todas as etapas da análise de coloração pessoal. Aguardo o retorno! 🎨',
+        redirectUrl: '',
+        enablePdfGeneration: true,
+        saveContractAsPdf: true,
+        saveFormAsPdf: true,
+        googleDriveAttachmentsFolder: '',
+        geminiApiKey: '',
+        openaiApiKey: '',
+        pdfTemplateUrl: '',
+        pdfTemplateBase64: '',
+        pdfTemplateFileName: '',
+        pdfStyle: PDF_STYLE_DEFAULTS,
+        adminEmail: '',
+        resendApiKey: '',
+        fromEmail: '',
+        emailDisplayName: '',
+        logoStoragePath: '',
+        aiCompositionCoverBase64:   '',
+        aiCompositionCoverFileName: '',
+        aiCompositionFinalBase64:   '',
+        aiCompositionFinalFileName: '',
+      }
 
-        if (meRow?.role === 'super_admin') {
-          const { data: globalRow } = await supabase
-            .from('admin_content')
-            .select('content')
-            .eq('admin_id', user.id)
-            .eq('type', 'global_email_settings')
-            .maybeSingle()
+      // 3 queries em paralelo — blobs (pdf_template, ai_composition_cover/final)
+      // NÃO são buscados aqui. Cada um pode ter vários MBs de base64 e só são
+      // necessários na hora de gerar PDF, não para renderizar a página de config.
+      // Os nomes de arquivo já vêm dentro de settingsRow.content (salvos pelo saveSettings).
+      // global_email_settings vai otimisticamente — RLS retorna vazio para não-super_admin.
+      const [
+        { data: meRow },
+        { data: settingsRow },
+        { data: globalRow },
+      ] = await Promise.all([
+        supabase.from('admin_users').select('role').eq('id', adminId).maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'settings').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'global_email_settings').maybeSingle(),
+      ])
 
-          if (globalRow?.content) {
-            const c = globalRow.content as any
-            setGlobalEmail({
-              resendApiKey: c.resendApiKey || '',
-              fromEmail:    c.fromEmail    || '',
-            })
-          }
-        }
+      const role = meRow?.role as AdminUser['role'] | undefined
+      setUserRole(role ?? null)
+
+      const s = settingsRow?.content as AppSettings | null
+      setSettings({
+        ...defaults,
+        ...(s ?? {}),
+        // base64 permanece vazio — carregado sob demanda ao gerar PDF
+        pdfTemplateBase64:          '',
+        aiCompositionCoverBase64:   '',
+        aiCompositionFinalBase64:   '',
+        // nomes de arquivo vêm do settings row (salvos junto com o resto das configs)
+        pdfTemplateFileName:        (s as any)?.pdfTemplateFileName        ?? '',
+        aiCompositionCoverFileName: (s as any)?.aiCompositionCoverFileName ?? '',
+        aiCompositionFinalFileName: (s as any)?.aiCompositionFinalFileName ?? '',
+      })
+
+      if (role === 'super_admin' && globalRow?.content) {
+        const c = globalRow.content as any
+        setGlobalEmail({
+          resendApiKey: c.resendApiKey || '',
+          fromEmail:    c.fromEmail    || '',
+        })
       }
     } catch {
       setMessage({ type: 'error', text: 'Erro ao carregar configurações' })

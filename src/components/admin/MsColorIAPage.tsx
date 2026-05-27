@@ -20,7 +20,7 @@ import {
   Camera, ImagePlus, X, RefreshCw, FolderOpen, ChevronDown, Check, User,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
-import { adminService } from '../../lib/services'
+import type { AdminUser } from '../../lib/services'
 import { GeminiChat } from '../client/GeminiChat'
 
 // ─── Storage keys ──────────────────────────────────────────────────────
@@ -103,36 +103,65 @@ export function MsColorIAPage() {
   }, [selectedFolderId, state])
 
   // ─── Load ─────────────────────────────────────────────────────────
+  //
+  // Estratégia de performance:
+  //   • getSession() lê o JWT do localStorage — zero round-trip de rede.
+  //     Com o userId em mãos disparamos TUDO em paralelo de imediato.
+  //   • Antes: getUser() → admin_users → Promise.all(...)  = 3 bloqueios seriais
+  //   • Agora: getSession() [~0 ms] → Promise.all(admin_users, settings,
+  //            folders, HEAD ref-photo) = 1 único round-trip paralelo.
 
   async function load() {
     setState({ kind: 'loading' })
     try {
-      const admin = await adminService.getCurrentAdmin()
-      if (!admin) {
+      // ── 1. Lê a sessão local — sem rede ────────────────────────────
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user) {
         setState({ kind: 'error', message: 'Sessão expirada. Faça login novamente.' })
         return
       }
+      const userId = session.user.id
+
+      // ── 2. Dispara todas as queries em paralelo de uma vez ─────────
+      const [
+        { data: adminData },
+        { data: settingsRow },
+        { data: folderRows, error: folderErr },
+      ] = await Promise.all([
+        supabase
+          .from('admin_users')
+          .select('id, email, nome, telefone, role, license_active, license_expires_at, observacoes, created_at')
+          .eq('id', userId)
+          .single(),
+        supabase
+          .from('admin_content')
+          .select('content')
+          .eq('admin_id', userId)
+          .eq('type', 'settings')
+          .maybeSingle(),
+        supabase
+          .from('ai_folders')
+          .select('id, name, config')
+          .order('created_at', { ascending: true }),
+        loadPersistedRefPhoto(userId),   // HEAD request — corre junto
+      ])
+
+      // ── 3. Valida admin ────────────────────────────────────────────
+      if (!adminData) {
+        setState({ kind: 'error', message: 'Sessão expirada. Faça login novamente.' })
+        return
+      }
+
+      const admin = adminData as AdminUser
 
       if (admin.role !== 'chat_admin' && admin.role !== 'full_admin' && admin.role !== 'super_admin') {
         setState({ kind: 'error', message: 'Esta área é exclusiva de contas MS Color IA.' })
         return
       }
 
-      const { data: settingsRow } = await supabase
-        .from('admin_content')
-        .select('content')
-        .eq('admin_id', admin.id)
-        .eq('type', 'settings')
-        .maybeSingle()
-
+      // ── 4. Processa resultados ─────────────────────────────────────
       const geminiKey = (settingsRow?.content as any)?.geminiApiKey as string | undefined
       const geminiKeyPresent = !!(geminiKey && geminiKey.trim())
-
-      // ── Carrega TODAS as pastas disponíveis ──────────────────────────
-      const { data: folderRows, error: folderErr } = await supabase
-        .from('ai_folders')
-        .select('id, name, config')
-        .order('created_at', { ascending: true })
 
       if (folderErr) {
         console.error('[MsColorIAPage] erro ao carregar ai_folders:', folderErr)
@@ -157,9 +186,6 @@ export function MsColorIAPage() {
         name: row.name,
         config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
       }))
-
-      // Tenta carregar foto salva de uma sessão anterior
-      await loadPersistedRefPhoto(admin.id)
 
       setState({
         kind: 'ready',
