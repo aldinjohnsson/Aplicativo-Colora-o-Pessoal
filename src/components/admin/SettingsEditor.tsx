@@ -201,11 +201,14 @@ const settingsStorageService = {
   // O blob do PDF modelo é salvo em admin_content type='pdf_template', do
   // mesmo jeito que as capas/contracapas IA. NÃO entra no row 'settings'
   // pra evitar enviar MBs de base64 a cada save de configuração geral.
-  // O templatePDFGenerator busca esse row sob demanda na hora de gerar o dossiê.
+  //
+  // ⚠ NOME DO CAMPO: 'pdfTemplateBase64' (não 'pdfBase64'). Esse é o nome
+  // que o templatePDFGenerator.loadTemplateFromSettings() procura ao ler
+  // tplRow.content. Mudar aqui sem mudar lá quebra a geração do dossiê.
   async savePdfTemplate(base64: string, fileName: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
-    await saveOrUpdate('pdf_template', { pdfBase64: base64, fileName }, user.id)
+    await saveOrUpdate('pdf_template', { pdfTemplateBase64: base64, fileName }, user.id)
   },
 
   async deletePdfTemplate() {
