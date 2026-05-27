@@ -58,7 +58,7 @@ export async function cleanClientFiles(clientId: string): Promise<CleanupResult>
 
     // 3. Limpeza recursiva da pasta completa do cliente nos dois buckets
     // Isso garante que subpastas como /form/ também sejam deletadas
-    const buckets = ['client-photos', 'client-attachments']
+    const buckets = ['client-photos', 'client-attachments', 'client-tag-images']
     for (const bucket of buckets) {
       try {
         await deleteFolderRecursive(bucket, clientId)

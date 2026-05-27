@@ -4171,113 +4171,43 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     setCleaningFiles(true)
     setShowCleanupModal(false)
     try {
-      // Helper: lista TODOS os arquivos de um prefixo recursivamente
-      // (supabase .list() só retorna um nível; pastas precisam ser percorridas)
-      const listAllFiles = async (bucket: string, prefix: string): Promise<string[]> => {
-        const { data: items } = await supabase.storage
-          .from(bucket)
-          .list(prefix, { limit: 1000 })
-        if (!items || items.length === 0) return []
-        const paths: string[] = []
-        for (const item of items) {
-          const fullPath = `${prefix}/${item.name}`
-          if (item.id) {
-            paths.push(fullPath) // é um arquivo real
-          } else {
-            // é uma sub-pasta — lista recursivamente
-            const sub = await listAllFiles(bucket, fullPath)
-            paths.push(...sub)
-          }
-        }
-        return paths
+      // 0. Usa cleanClientFiles (mesmo caminho do handleDelete) para remover
+      //    todos os arquivos do Storage com as permissões corretas.
+      //    O removePaths inline falhava silenciosamente por RLS no client-side.
+      const storageCleanup = await cleanClientFiles(clientId!)
+      if (!storageCleanup.success && storageCleanup.errors.length > 0) {
+        console.warn('⚠️ Limpeza parcial do storage:', storageCleanup.errors)
       }
 
-      const removePaths = async (bucket: string, paths: string[]) => {
-        for (let i = 0; i < paths.length; i += 100) {
-          const { error } = await supabase.storage.from(bucket).remove(paths.slice(i, i + 100))
-          if (error) console.warn(`Aviso ao remover arquivos de ${bucket}:`, error.message)
-        }
-      }
+      // 1. Remove registros da tabela client_photos
+      await supabase.from('client_photos').delete().eq('client_id', clientId)
 
-      // 1. Remove registros e arquivos do bucket client-photos (upload do admin)
-      const { data: photoRecords, error: photoFetchErr } = await supabase
-        .from('client_photos')
-        .select('storage_path')
-        .eq('client_id', clientId)
-
-      if (photoFetchErr) console.warn('Aviso ao buscar fotos:', photoFetchErr.message)
-
-      if (photoRecords && photoRecords.length > 0) {
-        const paths = photoRecords.map((p: any) => p.storage_path).filter(Boolean)
-        await removePaths('client-photos', paths)
-        await supabase.from('client_photos').delete().eq('client_id', clientId)
-      }
-
-      // 1b. Limpeza recursiva de TODA a pasta do cliente no bucket client-photos
-      //     (cobre /form/ e quaisquer subpastas enviadas pelo portal que não estão na tabela client_photos)
-      try {
-        const allClientPhotoPaths = await listAllFiles('client-photos', `${clientId}`)
-        if (allClientPhotoPaths.length > 0) {
-          await removePaths('client-photos', allClientPhotoPaths)
-        }
-      } catch { /* pasta pode não existir */ }
-
-      // 2. Remove imagens de tags do bucket client-tag-images
-      //    (criado na migration client_tag_values — nunca era limpo antes)
-      try {
-        const { data: tagValueRecords } = await supabase
-          .from('client_tag_values')
-          .select('image_storage_path')
-          .eq('client_id', clientId)
-          .not('image_storage_path', 'is', null)
-
-        if (tagValueRecords && tagValueRecords.length > 0) {
-          const tagPaths = tagValueRecords
-            .map((r: any) => r.image_storage_path)
-            .filter(Boolean)
-          if (tagPaths.length > 0) {
-            await removePaths('client-tag-images', tagPaths)
-          }
-        }
-
-        // Limpa também via listAllFiles como fallback (cobre uploads órfãos não rastreados no banco)
-        const listedTagPaths = await listAllFiles('client-tag-images', `${clientId}`)
-        if (listedTagPaths.length > 0) {
-          await removePaths('client-tag-images', listedTagPaths)
-        }
-      } catch { /* bucket pode não existir para este cliente */ }
-
-      // 3. Remove registros de client_tag_values (limpa texto e referências de imagem)
+      // 2. Remove registros de client_tag_values (texto + refs de imagem)
+      //    O storage de client-tag-images já foi coberto pelo cleanClientFiles acima.
       try {
         await supabase.from('client_tag_values').delete().eq('client_id', clientId)
       } catch { /* tabela pode não existir em instâncias antigas */ }
 
-      // 4. Remove TODOS os arquivos do bucket client-files para este cliente
-      //    (cobre fotos e anexos enviados pelo portal, em qualquer sub-pasta)
+      // 3. Remove registros de anexos da tabela client_attachments
+      await supabase.from('client_attachments').delete().eq('client_id', clientId)
+
+      // 4. Remove dados do formulário de client_form_submissions
       try {
-        const clientFilePaths = await listAllFiles('client-files', `${clientId}`)
-        if (clientFilePaths.length > 0) {
-          await removePaths('client-files', clientFilePaths)
-        }
-      } catch { /* bucket pode não existir para este cliente */ }
+        const { error: formErr } = await supabase
+          .from('client_form_submissions')
+          .delete()
+          .eq('client_id', clientId)
+        if (formErr) console.warn('Aviso ao limpar client_form_submissions:', formErr.message)
+      } catch { /* tabela pode não existir em instâncias antigas */ }
 
-      // 5. Remove registros de anexos da tabela client_attachments
-      const { data: attachRecords } = await supabase
-        .from('client_attachments')
-        .select('id')
-        .eq('client_id', clientId)
-      if (attachRecords && attachRecords.length > 0) {
-        await supabase.from('client_attachments').delete().eq('client_id', clientId)
-      }
-
-      // 6. Remove dados do formulário da tabela client_progress
-      //    (a tabela real do schema — form_submissions não existe)
-      const { error: progressErr } = await supabase
-        .from('client_progress')
-        .delete()
-        .eq('user_id', clientId)
-        .eq('step', 2) // etapa 2 = formulário
-      if (progressErr) console.warn('Aviso ao limpar progresso do formulário:', progressErr.message)
+      // 4b. Fallback: remove da tabela client_progress (legado)
+      try {
+        await supabase
+          .from('client_progress')
+          .delete()
+          .eq('user_id', clientId)
+          .eq('step', 2)
+      } catch { /* ignorar se não existir */ }
 
       setFilesCleanedUp(true)
       await load()
@@ -5056,12 +4986,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               ) : (client.status === 'preparing_materials' || client.status === 'validating_materials' || client.status === 'sending_dossier') ? (
                 <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-teal-600 flex-shrink-0" />
-                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado — preparando materiais</p><p className="text-xs text-teal-600">Continue avançando as etapas internas no Controle de Etapas. O resultado só é liberado ao avançar de "Enviar Dossiê Capilar" para "Resultado".</p></div>
+                  <div><p className="text-sm font-medium text-teal-800">Resultado registrado, preparando materiais</p><p className="text-xs text-teal-600">Continue avançando as etapas internas no Controle de Etapas. O resultado só é liberado ao avançar de "Enviar Dossiê Capilar" para "Resultado".</p></div>
                 </div>
               ) : (client.status === 'simulating' || client.status === 'making_capillary_dossier' || client.status === 'validating_capillary_dossier' || client.status === 'sending_capillary_dossier') ? (
                 <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex items-center gap-3">
                   <CheckCircle className="h-5 w-5 text-violet-600 flex-shrink-0" />
-                  <div><p className="text-sm font-medium text-violet-800">Resultado registrado — finalizando dossiê capilar</p><p className="text-xs text-violet-600">A cliente vê "simulações sendo feitas". O resultado é liberado ao avançar de "Enviar Dossiê Capilar" para "Resultado".</p></div>
+                  <div><p className="text-sm font-medium text-violet-800">Resultado registrado, finalizando dossiê capilar</p><p className="text-xs text-violet-600">A cliente vê "simulações sendo feitas". O resultado é liberado ao avançar de "Enviar Dossiê Capilar" para "Resultado".</p></div>
                 </div>
               ) : (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
