@@ -83,6 +83,8 @@ export interface Client {
   form_rejected_at?: string | null
   photos_rejection_reason?: string | null
   photos_rejected_at?: string | null
+  // ── Arquivamento ──
+  is_archived: boolean
 }
 
 
@@ -467,6 +469,22 @@ export const adminService = {
 
   async updateClient(id: string, updates: Partial<Client>): Promise<void> {
     const { error } = await supabase.from('clients').update(updates).eq('id', id)
+    if (error) throw error
+  },
+
+  async archiveClient(id: string): Promise<void> {
+    const { error } = await supabase
+      .from('clients')
+      .update({ is_archived: true })
+      .eq('id', id)
+    if (error) throw error
+  },
+
+  async restoreClient(id: string): Promise<void> {
+    const { error } = await supabase
+      .from('clients')
+      .update({ is_archived: false })
+      .eq('id', id)
     if (error) throw error
   },
 

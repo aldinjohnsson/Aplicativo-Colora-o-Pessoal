@@ -1569,7 +1569,6 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<'board' | 'board-compact' | 'list'>(() => {
     const saved = localStorage.getItem('kanban-view-mode')
@@ -1916,8 +1915,29 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     } catch (e: any) { alert(e.message) }
   }
 
-  const handleArchive = useCallback((id: string) => setArchivedIds(prev => new Set([...prev, id])), [])
-  const handleRestore = useCallback((id: string) => setArchivedIds(prev => { const s = new Set(prev); s.delete(id); return s }), [])
+  const handleArchive = useCallback(async (id: string) => {
+    // Optimistic update
+    setClients(prev => prev.map(c => c.id === id ? { ...c, is_archived: true } : c))
+    try {
+      await adminService.archiveClient(id)
+    } catch (e) {
+      // Reverte em caso de erro
+      setClients(prev => prev.map(c => c.id === id ? { ...c, is_archived: false } : c))
+      alert('Erro ao arquivar cliente. Tente novamente.')
+    }
+  }, [])
+
+  const handleRestore = useCallback(async (id: string) => {
+    // Optimistic update
+    setClients(prev => prev.map(c => c.id === id ? { ...c, is_archived: false } : c))
+    try {
+      await adminService.restoreClient(id)
+    } catch (e) {
+      // Reverte em caso de erro
+      setClients(prev => prev.map(c => c.id === id ? { ...c, is_archived: true } : c))
+      alert('Erro ao restaurar cliente. Tente novamente.')
+    }
+  }, [])
   const handleStar = useCallback((id: string) => setStarredIds(prev => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s }), [])
   const handleDelete = async (id: string) => {
     const client = clients.find(c => c.id === id)
@@ -2083,8 +2103,8 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     })
   }, [clients])
 
-  const activeClients = useMemo(() => clients.filter(c => !archivedIds.has(c.id)), [clients, archivedIds])
-  const archivedClients = useMemo(() => clients.filter(c => archivedIds.has(c.id)), [clients, archivedIds])
+  const activeClients = useMemo(() => clients.filter(c => !c.is_archived), [clients])
+  const archivedClients = useMemo(() => clients.filter(c => c.is_archived), [clients])
 
   const filteredActive = useMemo(() => {
     let list = activeClients
