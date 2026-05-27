@@ -9,7 +9,7 @@ import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
   FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp,
-  ZoomIn, ZoomOut, Maximize2,
+  ZoomIn, ZoomOut, Maximize2, Menu, Globe,
 } from 'lucide-react'
 import {
   chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64, translateText, translateTexts,
@@ -228,6 +228,26 @@ const WELCOME_TEXTS: Record<string, (name: string) => string> = {
 const WELCOME = (name: string, lang: LanguageCode = 'pt-BR') =>
   (WELCOME_TEXTS[lang] ?? WELCOME_TEXTS['pt-BR'])(name)
 
+/**
+ * <img> que carrega URLs do Google Drive pelo proxy autenticado (/photo-proxy)
+ * para evitar o bloqueio de CORS ao usar drive.google.com diretamente no browser.
+ * Para outras URLs, funciona como um <img> normal.
+ */
+function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(src)
+  useEffect(() => {
+    if (!src) return
+    const m = src.match(/[?&]id=([^&]+)/)
+    if (!src.includes('drive.google.com') || !m) { setResolvedSrc(src); return }
+    let objectUrl: string | null = null
+    driveStorage.fetchPhotoBlob(m[1])
+      .then(blob => { objectUrl = URL.createObjectURL(blob); setResolvedSrc(objectUrl) })
+      .catch(() => setResolvedSrc(src)) // fallback: tenta a URL direta
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [src])
+  return <img src={resolvedSrc} {...props} />
+}
+
 export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR' }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
@@ -269,6 +289,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     return defaultLanguage
   })
   const [showLangMenu, setShowLangMenu] = useState(false)
+  const [showSideMenu, setShowSideMenu] = useState(false)
 
   useEffect(() => {
     try { localStorage.setItem('mscolors_language', selectedLanguage) } catch {}
@@ -639,6 +660,14 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const part = msg.responseParts?.find(p => p.type === 'image' && p.imageBase64)
     if (part?.imageBase64) return `data:${part.imageMimeType || 'image/jpeg'};base64,${part.imageBase64}`
     const url = msg.savedImageUrls?.[0]; if (!url) return null
+    // Drive thumbnail → proxy autenticado (evita CORS de drive.google.com)
+    const driveMatch = url.match(/[?&]id=([^&]+)/)
+    if (url.includes('drive.google.com') && driveMatch) {
+      try {
+        const blob = await driveStorage.fetchPhotoBlob(driveMatch[1])
+        return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(blob) })
+      } catch { return null }
+    }
     try { const blob = await (await fetch(url)).blob(); return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(blob) }) } catch { return null }
   }
 
@@ -1008,7 +1037,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           })}
           {!msg.responseParts?.some(p => p.type === 'image' && p.imageBase64) && msg.savedImageUrls?.map((url, i) => (
             <div key={i} className="relative group rounded-2xl overflow-hidden shadow-lg border w-full max-w-[260px] sm:max-w-[300px]">
-              <img
+              <DriveProxyImg
                 src={url}
                 alt=""
                 className="w-full object-cover cursor-zoom-in"
@@ -1200,7 +1229,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                           })}
                           className={`relative rounded-xl overflow-hidden border-2 text-left transition-all ${sel ? 'border-violet-500 ring-2 ring-violet-200' : 'border-gray-200'}`}
                         >
-                          {imgSrc && <img src={imgSrc} alt="" className="w-full aspect-square object-cover" />}
+                          {imgSrc && <DriveProxyImg src={imgSrc} alt="" className="w-full aspect-square object-cover" />}
                           <div className={`absolute top-2 right-2 ${sel ? 'text-violet-600' : 'text-gray-400'}`}>
                             {sel ? <CheckSquare className="h-5 w-5 bg-white rounded" /> : <Square className="h-5 w-5 bg-white/80 rounded" />}
                           </div>
@@ -1320,11 +1349,127 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           vaza em laptops com tela pequena.
       */}
       <div
-        className="flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-[75dvh] min-h-[480px] max-h-[720px] sm:h-[780px] sm:max-h-[calc(100dvh_-_120px)]"
+        className="relative flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-[75dvh] min-h-[480px] max-h-[720px] sm:h-[780px] sm:max-h-[calc(100dvh_-_120px)]"
       >
+        {/* ── Drawer lateral mobile ─────────────────────────────────────── */}
+        {showSideMenu && (
+          <div className="sm:hidden absolute inset-0 z-40 flex">
+            {/* Overlay escuro */}
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowSideMenu(false)} />
+            {/* Painel */}
+            <div className="relative ml-auto w-72 h-full bg-white flex flex-col shadow-2xl">
+              {/* Cabeçalho do drawer */}
+              <div className="flex items-center justify-between px-5 py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
+                <p className="font-semibold text-sm">Opções</p>
+                <button onClick={() => setShowSideMenu(false)} className="p-1 rounded-full hover:bg-white/20 transition-colors">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto py-2">
+                {/* Idioma */}
+                <div className="px-4 pt-3 pb-1">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <Globe className="h-3.5 w-3.5" /> Idioma das respostas
+                  </p>
+                  <div className="rounded-xl border border-gray-100 overflow-hidden">
+                    {SUPPORTED_LANGUAGES.map((lang, i) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => { setSelectedLanguage(lang.code); setShowSideMenu(false) }}
+                        className={`w-full flex items-center gap-3 px-4 py-3 text-sm text-left transition-colors ${i > 0 ? 'border-t border-gray-100' : ''} ${selectedLanguage === lang.code ? 'bg-violet-50 text-violet-700 font-semibold' : 'text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        <span className="text-base">{lang.label.split(' ')[0]}</span>
+                        <span className="flex-1">{lang.label.split(' ').slice(1).join(' ')}</span>
+                        {selectedLanguage === lang.code && <span className="text-violet-500 text-xs font-bold">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Mensagens */}
+                {messages.length > 1 && (
+                  <div className="px-4 pt-4 pb-1">
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <ListChecks className="h-3.5 w-3.5" /> Mensagens
+                    </p>
+                    <div className="rounded-xl border border-gray-100 overflow-hidden">
+                      <button
+                        onClick={() => { setSelectMode(p => { if (p) { setSelectedMsgs(new Set()); return false } return true }); setShowSideMenu(false) }}
+                        className={`w-full flex items-center gap-3 px-4 py-3.5 text-sm text-left transition-colors ${selectMode ? 'bg-violet-50 text-violet-700 font-semibold' : 'text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        <ListChecks className="h-4 w-4 flex-shrink-0" />
+                        <span>{selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}</span>
+                      </button>
+                      {storageKey && !selectMode && (
+                        <button
+                          onClick={() => { setShowSideMenu(false); setTimeout(() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }, 200) }}
+                          className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-left text-red-600 hover:bg-red-50 border-t border-gray-100 transition-colors"
+                        >
+                          <Trash2 className="h-4 w-4 flex-shrink-0" />
+                          <span>Limpar histórico</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Créditos */}
+                {creditsImage !== null && (
+                  <div className="px-4 pt-4">
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Créditos</p>
+                    <div className="rounded-xl border border-gray-100 px-4 py-3 flex items-center gap-4">
+                      <span className="text-sm text-gray-700">📸 <span className="font-semibold">{creditsImage}</span> imagens</span>
+                      <span className="text-sm text-gray-700">💬 <span className="font-semibold">{creditsText}</span> textos</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
-        <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-5 py-3 sm:py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
-          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0"><Wand2 className="h-4 w-4 sm:h-5 sm:w-5" /></div>
+        {/* ── Mobile ─────────────────────────────────────────────────────── */}
+        <div className="sm:hidden flex items-center gap-3 px-3 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
+          {/* Avatar / ícone */}
+          {refBase64 && referencePhotoUrl
+            ? <div className="w-9 h-9 rounded-full overflow-hidden border-2 border-white/50 flex-shrink-0 shadow-md"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>
+            : <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0"><Wand2 className="h-5 w-5" /></div>
+          }
+          {/* Nome + status */}
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-sm leading-tight">MS Color IA</p>
+            <p className="text-white/70 text-xs truncate leading-tight mt-0.5">
+              {loadingRef || loadingResults
+                ? 'Carregando...'
+                : [refBase64 && 'Foto ✓', resultMaterials.length > 0 && `${resultMaterials.length} doc${resultMaterials.length > 1 ? 's' : ''} ✓`].filter(Boolean).join(' · ') || <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse inline-block" /> Online</span>
+              }
+            </p>
+          </div>
+          {/* PDF */}
+          {imageMsgs.length > 0 && (
+            <button
+              onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }}
+              className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors flex-shrink-0"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              <span>PDF</span>
+              <span className="bg-white/30 px-1.5 py-0.5 rounded-full text-xs font-bold leading-none">{imageMsgs.length}</span>
+            </button>
+          )}
+          {/* Menu */}
+          <button
+            onClick={() => setShowSideMenu(true)}
+            className="w-9 h-9 rounded-xl bg-white/20 hover:bg-white/30 active:bg-white/40 flex items-center justify-center flex-shrink-0 transition-colors"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* ── Desktop ─────────────────────────────────────────────────────── */}
+        <div className="hidden sm:flex items-center gap-3 px-5 py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0"><Wand2 className="h-5 w-5" /></div>
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-sm">MS Color IA</p>
             <p className="text-white/70 text-xs truncate">
@@ -1333,28 +1478,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               {!loadingRef && !loadingResults && resultMaterials.length > 0 ? ` · ${resultMaterials.length} doc${resultMaterials.length > 1 ? 's' : ''} ✓` : ''}
             </p>
           </div>
-          {refBase64 && referencePhotoUrl && <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full overflow-hidden border-2 border-white/40 flex-shrink-0"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>}
-          <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse" /><span className="hidden sm:inline">Online</span></span>
-          {/* Seletor de idioma */}
+          {refBase64 && referencePhotoUrl && <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-white/40 flex-shrink-0"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>}
+          <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse" /><span>Online</span></span>
+          {/* Seletor de idioma desktop */}
           <div ref={langMenuRef} className="relative flex-shrink-0">
-            <button
-              onClick={() => setShowLangMenu(p => !p)}
-              title="Idioma da resposta"
-              className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors"
-            >
+            <button onClick={() => setShowLangMenu(p => !p)} title="Idioma da resposta" className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors">
               {SUPPORTED_LANGUAGES.find(l => l.code === selectedLanguage)?.label.split(' ')[0] ?? '🌐'}
               <ChevronDown className="h-3 w-3 opacity-70" />
             </button>
             {showLangMenu && (
               <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden min-w-[160px]">
                 {SUPPORTED_LANGUAGES.map(lang => (
-                  <button
-                    key={lang.code}
-                    onClick={() => { setSelectedLanguage(lang.code); setShowLangMenu(false) }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-violet-50 transition-colors ${
-                      selectedLanguage === lang.code ? 'font-semibold text-violet-700 bg-violet-50' : 'text-gray-700'
-                    }`}
-                  >
+                  <button key={lang.code} onClick={() => { setSelectedLanguage(lang.code); setShowLangMenu(false) }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-violet-50 transition-colors ${selectedLanguage === lang.code ? 'font-semibold text-violet-700 bg-violet-50' : 'text-gray-700'}`}>
                     <span>{lang.label}</span>
                     {selectedLanguage === lang.code && <span className="ml-auto text-violet-500">✓</span>}
                   </button>
@@ -1362,18 +1498,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               </div>
             )}
           </div>
-          {onSavePdf && imageMsgs.length > 0 && (
+          {(onSavePdf || !onSavePdf) && imageMsgs.length > 0 && (
             <button onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors flex-shrink-0">
-              <FileText className="h-3.5 w-3.5" /><span className="hidden sm:inline">PDF</span>
+              <FileText className="h-3.5 w-3.5" /><span>PDF</span>
             </button>
           )}
-          {creditsImage !== null && <span className="hidden sm:inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
+          {creditsImage !== null && <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
           {messages.length > 1 && (
-            <button
-              onClick={() => { setSelectMode(p => { if (p) { setSelectedMsgs(new Set()); return false } return true }) }}
-              title={selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0 ${selectMode ? 'bg-white text-violet-700 font-semibold' : 'bg-white/20 hover:bg-white/30'}`}
-            >
+            <button onClick={() => { setSelectMode(p => { if (p) { setSelectedMsgs(new Set()); return false } return true }) }} title={selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0 ${selectMode ? 'bg-white text-violet-700 font-semibold' : 'bg-white/20 hover:bg-white/30'}`}>
               <ListChecks className="h-3.5 w-3.5" />
             </button>
           )}
@@ -1451,9 +1584,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
         {/* CTA prominente de Gerar PDF (modo cliente — quando NÃO recebe
             onSavePdf). No admin do ClientsManager o acesso vem pela pílula
-            "PDF" do header, que já tem o fluxo de salvar em Resultados. */}
+            "PDF" do header, que já tem o fluxo de salvar em Resultados.
+            Em mobile o botão fica no header; aqui só aparece no desktop. */}
         {!onSavePdf && imageMsgs.length > 0 && (
-          <div className="px-3 sm:px-4 pb-2 flex-shrink-0">
+          <div className="hidden sm:block px-3 sm:px-4 pb-2 flex-shrink-0">
             <button
               onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }}
               className="w-full py-3 px-4 bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500 hover:from-violet-600 hover:via-purple-600 hover:to-fuchsia-600 text-white rounded-2xl font-semibold text-sm shadow-lg shadow-purple-500/30 hover:shadow-xl hover:shadow-purple-500/40 transition-all flex items-center justify-center gap-2.5 group"
