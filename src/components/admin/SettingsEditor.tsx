@@ -363,7 +363,7 @@ function PdfTemplateSection({
   currentFileName, onSave,
 }: {
   currentFileName: string
-  onSave: (base64: string, fileName: string) => void
+  onSave: (base64: string, fileName: string) => void | Promise<void>
 }) {
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
@@ -380,18 +380,27 @@ function PdfTemplateSection({
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
-      onSave(base64, file.name)
+      // onSave agora é async (salva no Supabase). Sem await, o spinner some
+      // antes do save real terminar e erros caem em unhandled-rejection.
+      await onSave(base64, file.name)
       setStatus('saved')
       setTimeout(() => setStatus('idle'), 3000)
     } catch (err: any) {
-      alert('Erro ao processar PDF: ' + err.message)
+      console.error('[PdfTemplateSection] upload falhou:', err)
+      alert('Erro ao processar PDF: ' + (err?.message || err))
       setStatus('error')
     } finally { setSaving(false) }
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!confirm('Remover o PDF modelo?')) return
-    onSave('', '')
+    setSaving(true)
+    try {
+      await onSave('', '')
+    } catch (err: any) {
+      console.error('[PdfTemplateSection] delete falhou:', err)
+      alert('Erro ao remover PDF: ' + (err?.message || err))
+    } finally { setSaving(false) }
   }
 
   const { theme } = useTheme()
