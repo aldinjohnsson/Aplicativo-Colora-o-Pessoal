@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { supabase } from '../../../../lib/supabase'
+import { REF_CATEGORIES } from './refCategories'
+export { REF_CATEGORIES } from './refCategories'
 
 // ── Btn ────────────────────────────────────────────────────────────────
 
@@ -58,6 +60,8 @@ export interface AiImagePrompt {
   parts:                 AiPromptPart[]
   reference_image_path:  string | null
   reference_image_url:   string | null   // signed URL (API devolve)
+  prompt_kind:           'composition' | 'ref_standardize'
+  ref_category:          string | null
   model:                 string
   size:                  string
   quality:               string
@@ -84,6 +88,8 @@ type Draft = {
   refImagePath?:    string | null   // path existente (modo edição)
   refImageUrl?:     string | null   // URL assinada existente (modo edição)
   removeRefImage:   boolean         // true = apagar imagem existente
+  prompt_kind:  'composition' | 'ref_standardize'
+  ref_category: string | null
   model:    string
   size:     string
   quality:  string
@@ -98,6 +104,8 @@ const DEFAULT_DRAFT: Draft = {
   refImagePath:   null,
   refImageUrl:    null,
   removeRefImage: false,
+  prompt_kind:  'composition',
+  ref_category: null,
   model:    'gpt-image-2',
   size:     '1024x1024',
   quality:  'medium',
@@ -261,6 +269,11 @@ export function AiImagePromptsManager() {
                     <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-fuchsia-100 text-fuchsia-700 font-semibold flex-shrink-0">
                       {partCount} parte{partCount !== 1 ? 's' : ''}
                     </span>
+                    {p.prompt_kind === 'ref_standardize' ? (
+                      <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-semibold flex-shrink-0">
+                        ✨ {REF_CATEGORIES.find(c => c.value === p.ref_category)?.label || 'Aprimorar ref'}
+                      </span>
+                    ) : null}
                     {p.reference_image_url && (
                       <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold flex-shrink-0 flex items-center gap-1">
                         <ImageIcon className="h-2.5 w-2.5" /> ref
@@ -389,6 +402,8 @@ function PromptFormDialog({
         refImagePath:   item.reference_image_path,
         refImageUrl:    item.reference_image_url,
         removeRefImage: false,
+        prompt_kind:    item.prompt_kind || 'composition',
+        ref_category:   item.ref_category || null,
         model:          item.model,
         size:           item.size,
         quality:        item.quality,
@@ -545,6 +560,8 @@ function PromptFormDialog({
         name:                 draft.name,
         parts:                draft.parts,
         reference_image_path: refPath,
+        prompt_kind:          draft.prompt_kind,
+        ref_category:         draft.prompt_kind === 'ref_standardize' ? (draft.ref_category || null) : null,
         model:                draft.model,
         size:                 draft.size,
         quality:              draft.quality,
@@ -605,6 +622,51 @@ function PromptFormDialog({
                 maxLength={120}
                 className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
               />
+            </div>
+
+            {/* Tipo de prompt */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                  Tipo de prompt
+                </label>
+                <select
+                  value={draft.prompt_kind}
+                  onChange={e => setDraft({ ...draft, prompt_kind: e.target.value as any, ref_category: null })}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-rose-400"
+                >
+                  <option value="composition">🎨 Composição (documentos)</option>
+                  <option value="ref_standardize">✨ Aprimorar foto de referência</option>
+                </select>
+                <p className="mt-1 text-[10px] text-gray-400">
+                  {draft.prompt_kind === 'composition'
+                    ? 'Gera imagens para PDFs e composições'
+                    : 'Aprimora fotos de referência da aba IA'}
+                </p>
+              </div>
+
+              {draft.prompt_kind === 'ref_standardize' && (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                    Categoria vinculada
+                  </label>
+                  <select
+                    value={draft.ref_category || ''}
+                    onChange={e => setDraft({ ...draft, ref_category: e.target.value || null })}
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-rose-400"
+                  >
+                    <option value="">Qualquer categoria</option>
+                    {REF_CATEGORIES.map(c => (
+                      <option key={c.value} value={c.value}>{c.emoji} {c.label}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[10px] text-gray-400">
+                    {draft.ref_category
+                      ? `Aparece só no card de ${REF_CATEGORIES.find(c => c.value === draft.ref_category)?.label}`
+                      : 'Aparece em todos os tipos de referência'}
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Partes */}

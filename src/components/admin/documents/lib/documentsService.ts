@@ -921,13 +921,15 @@ export const documentsService = {
   //   • O campo `prompt` é mantido por retrocompatibilidade (pode ser '')
   // ════════════════════════════════════════════════════════════════════
 
-  async listAiImagePrompts(opts?: { includeInactive?: boolean }): Promise<Array<{
+  async listAiImagePrompts(opts?: { includeInactive?: boolean; promptKind?: 'composition' | 'ref_standardize' }): Promise<Array<{
     id: string
     name: string
     prompt: string
     parts: Array<{ id: string; label: string; prompt: string }>
     reference_image_path: string | null
     reference_image_url:  string | null
+    prompt_kind: 'composition' | 'ref_standardize'
+    ref_category: string | null
     model: string
     size: string
     quality: string
@@ -937,6 +939,7 @@ export const documentsService = {
   }>> {
     let q = supabase.from('ai_image_prompts').select('*').order('name')
     if (!opts?.includeInactive) q = q.eq('is_active', true)
+    if (opts?.promptKind) q = (q as any).eq('prompt_kind', opts.promptKind)
     const { data, error } = await q
     if (error) throw error
 
@@ -954,6 +957,8 @@ export const documentsService = {
         parts: Array.isArray(row.parts) ? row.parts : [],
         reference_image_path: row.reference_image_path ?? null,
         reference_image_url,
+        prompt_kind: (row.prompt_kind || 'composition') as 'composition' | 'ref_standardize',
+        ref_category: row.ref_category || null,
       }
     })
   },
@@ -963,6 +968,8 @@ export const documentsService = {
     prompt?: string
     parts?: Array<{ id: string; label: string; prompt: string }>
     reference_image_path?: string | null
+    prompt_kind?: 'composition' | 'ref_standardize'
+    ref_category?: string | null
     model?: string
     size?: string
     quality?: string
@@ -974,12 +981,14 @@ export const documentsService = {
         prompt:               input.prompt ?? '',
         parts:                input.parts ?? [],
         reference_image_path: input.reference_image_path ?? null,
+        prompt_kind:          input.prompt_kind || 'composition',
+        ref_category:         input.ref_category || null,
         model:                input.model   || 'gpt-image-1',
         size:                 input.size    || '1024x1024',
         quality:              input.quality || 'medium',
         is_active: true,
       })
-      .select('id, name, prompt, parts, reference_image_path, model, size, quality, is_active')
+      .select('id, name, prompt, parts, reference_image_path, prompt_kind, ref_category, model, size, quality, is_active')
       .single()
     if (error) throw error
     return data as any
@@ -990,6 +999,8 @@ export const documentsService = {
     prompt: string
     parts: Array<{ id: string; label: string; prompt: string }>
     reference_image_path: string | null
+    prompt_kind: 'composition' | 'ref_standardize'
+    ref_category: string | null
     model: string
     size: string
     quality: string

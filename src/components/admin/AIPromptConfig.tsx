@@ -1,13 +1,16 @@
 // src/components/admin/AIPromptConfig.tsx
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   Wand2, Save, CheckCircle, Camera, Trash2,
   Coins, Plus, Minus, Lock, Unlock, RefreshCw, MessageSquare,
-  X, FolderOpen, Loader2, Upload, ImagePlus
+  X, FolderOpen, Loader2, Upload, ImagePlus, Sparkles, AlertTriangle,
+  ZoomIn, ZoomOut, Download,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { driveStorage } from '../../lib/driveStorage'
 import { photoTypesService, PhotoType } from './PhotoTypesManager'
+import { documentsService } from './documents/lib/documentsService'
+import { REF_CATEGORIES } from './documents/prompts/refCategories'
 
 interface AIPromptConfigProps {
   clientId: string
@@ -45,6 +48,10 @@ export function AIPromptConfig({
   const [uploadingTypeId, setUploadingTypeId] = useState<string | null>(null)
   /** typeId da categoria IA em que o usuário clicou "+ Adicionar" / "Trocar" via galeria */
   const [galleryPickerTypeId, setGalleryPickerTypeId] = useState<string | null>(null)
+  /** Aprimorar foto — tipo selecionado para padronização */
+  const [standardizeTypeId, setStandardizeTypeId] = useState<string | null>(null)
+  /** Lightbox — URL da foto a ampliar nos cards de referência */
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
 
   const [creditsImage, setCreditsImage] = useState(0)
   const [creditsText, setCreditsText] = useState(0)
@@ -254,7 +261,16 @@ export function AIPromptConfig({
                   {/* Foto */}
                   {photo ? (
                     <div className="flex items-center gap-2">
-                      <img src={photo.url} alt="" className="w-12 h-12 rounded-lg object-cover border-2 border-violet-200" />
+                      <button
+                        onClick={() => setLightboxUrl(photo.url)}
+                        className="w-12 h-12 rounded-lg overflow-hidden border-2 border-violet-200 hover:border-violet-500 transition-all flex-shrink-0 group relative"
+                        title="Clique para ampliar"
+                      >
+                        <img src={photo.url} alt="" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-200" />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                          <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-[10px]">🔍</span>
+                        </div>
+                      </button>
                       <div className="flex flex-col gap-1">
                         {/* Trocar via galeria (se clientPhotos disponível) ou upload */}
                         {clientPhotos ? (
@@ -270,6 +286,13 @@ export function AIPromptConfig({
                             {isUploading ? '...' : 'Trocar'}
                           </label>
                         )}
+                        <button
+                          onClick={() => setStandardizeTypeId(type.id)}
+                          className="text-xs px-2 py-1 bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200 rounded-lg hover:bg-fuchsia-100 whitespace-nowrap flex items-center gap-1 justify-center"
+                          title="Aprimorar foto com IA para uso como referência"
+                        >
+                          <Sparkles className="h-3 w-3" /> Aprimorar
+                        </button>
                         <button
                           onClick={() => handleDeletePhoto(type.id)}
                           className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
@@ -377,6 +400,30 @@ export function AIPromptConfig({
         </div>
       </div>
 
+      {/* ── Modal Aprimorar foto com IA ── */}
+      {standardizeTypeId && (() => {
+        const type = photoTypes.find(t => t.id === standardizeTypeId)
+        const photo = refPhotos.find(p => p.typeId === standardizeTypeId)
+        if (!type || !photo) return null
+        return (
+          <StandardizeModal
+            clientId={clientId}
+            type={type}
+            photo={photo}
+            onClose={() => setStandardizeTypeId(null)}
+            onDone={async (newPhoto) => {
+              setStandardizeTypeId(null)
+              const updated = [...refPhotos.filter(p => p.typeId !== type.id), newPhoto]
+              setRefPhotos(updated)
+              await supabase.from('clients').update({ ai_reference_photos: updated }).eq('id', clientId)
+              setSaveStatus('saved')
+              setTimeout(() => setSaveStatus('idle'), 2000)
+              onAfterSaveRefPhotos?.()
+            }}
+          />
+        )
+      })()}
+
       {/* ── GalleryPhotoPicker modal ── */}
       {galleryPickerTypeId && (
         <GalleryPhotoPicker
@@ -458,7 +505,420 @@ export function AIPromptConfig({
         </div>
 
       </div>
+
+      {/* ── Lightbox de zoom para fotos de referência dos cards ── */}
+      {lightboxUrl && (
+        <ImageLightbox src={lightboxUrl} onClose={() => setLightboxUrl(null)} />
+      )}
     </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// StandardizeModal — aprimora foto de referência via prompt IA
+// ══════════════════════════════════════════════════════════════════════════
+
+// Mapeamento: type.id (slug do photoType) → ref_category do prompt
+// O type.id pode ser o slug direto ('cabelo', 'roupa', etc.) ou qualquer string.
+// Tentamos correspondência exata; se não bater, usamos prompt sem categoria.
+function inferRefCategory(typeId: string): string | null {
+  const map: Record<string, string> = {
+    cabelo:    'cabelo',
+    roupa:     'roupa',
+    roupas:    'roupa',
+    maquiagem: 'maquiagem',
+    acessorio: 'acessorio',
+    acessórios:'acessorio',
+    acessorios:'acessorio',
+  }
+  return map[typeId.toLowerCase()] ?? null
+}
+
+interface StandardizeModalProps {
+  clientId: string
+  type: PhotoType
+  photo: RefPhoto
+  onClose: () => void
+  onDone: (newPhoto: RefPhoto) => void
+}
+
+function StandardizeModal({ clientId, type, photo, onClose, onDone }: StandardizeModalProps) {
+  const [prompts, setPrompts]               = useState<any[]>([])
+  const [loadingPrompts, setLoadingPrompts] = useState(true)
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
+  const [running, setRunning]               = useState(false)
+  const [error, setError]                   = useState<string | null>(null)
+  const [progress, setProgress]             = useState<string>('')
+  const [saving, setSaving]                 = useState(false)
+
+  // Preview da imagem gerada — fica aqui até o usuário confirmar ou descartar
+  const [previewB64, setPreviewB64]         = useState<string | null>(null)
+  const [previewBlob, setPreviewBlob]       = useState<Uint8Array | null>(null)
+  // Lightbox — URL da imagem ampliada (null = fechado)
+  const [lightbox, setLightbox]             = useState<string | null>(null)
+
+  const refCategory = inferRefCategory(type.id)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingPrompts(true)
+    documentsService.listAiImagePrompts({ promptKind: 'ref_standardize' })
+      .then(all => {
+        if (cancelled) return
+        // Filtrar: sem categoria (qualquer) OU categoria bate com o tipo
+        const filtered = all.filter(p =>
+          !p.ref_category || p.ref_category === refCategory
+        )
+        setPrompts(filtered)
+        if (filtered.length === 1) setSelectedPromptId(filtered[0].id)
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingPrompts(false) })
+    return () => { cancelled = true }
+  }, [type.id])
+
+  const handleRun = async () => {
+    const prompt = prompts.find(p => p.id === selectedPromptId)
+    if (!prompt) return
+    setRunning(true)
+    setError(null)
+
+    try {
+      // 1. Baixar a foto original como blob
+      setProgress('Carregando foto original…')
+      let photoBlob: Blob
+      if (photo.driveFileId) {
+        photoBlob = await driveStorage.fetchPhotoBlob(photo.driveFileId)
+      } else if (photo.storagePath) {
+        const url = supabase.storage.from('client-photos').getPublicUrl(photo.storagePath).data.publicUrl
+        const r = await fetch(url)
+        if (!r.ok) throw new Error('Erro ao baixar foto do Storage')
+        photoBlob = await r.blob()
+      } else {
+        throw new Error('Foto sem origem válida')
+      }
+
+      // 2. Converter para base64 para enviar à API
+      setProgress('Preparando imagem…')
+      const base64Photo = await new Promise<string>((res, rej) => {
+        const reader = new FileReader()
+        reader.onload = () => res((reader.result as string).split(',')[1])
+        reader.onerror = () => rej(new Error('Erro ao converter imagem'))
+        reader.readAsDataURL(photoBlob)
+      })
+
+      // 3. Montar o prompt final (usa a primeira parte)
+      const promptText = Array.isArray(prompt.parts) && prompt.parts.length > 0
+        ? prompt.parts[0].prompt
+        : ''
+      if (!promptText) throw new Error('O prompt não tem texto definido.')
+
+      // 4. Chamar a Edge Function generate-tag-image (modo standalone)
+      setProgress('Enviando para a IA… (pode levar até 30s)')
+      const { data: { session } } = await supabase.auth.getSession()
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-tag-image`
+      const resp = await fetch(fnUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          promptId: prompt.id,
+          clientId,
+          promptOverride: promptText,
+          uploadedImage: {
+            base64: base64Photo,
+            mime: photoBlob.type || 'image/jpeg',
+          },
+          // composition mode standalone — não toca em client_tag_values
+          composition: { compositionId: `ref_standardize_${type.id}`, index: 0 },
+        }),
+      })
+      if (!resp.ok) {
+        const j = await resp.json().catch(() => ({}))
+        throw new Error(j.error || `Erro da API: HTTP ${resp.status}`)
+      }
+      const result = await resp.json() as { success?: boolean; imageBase64?: string; imageMime?: string; error?: string }
+      if (!result.success || !result.imageBase64) {
+        throw new Error(result.error || 'A IA não retornou imagem.')
+      }
+
+      // 5. Guardar resultado como preview (sem salvar ainda)
+      setProgress('Imagem gerada!')
+      const byteStr = atob(result.imageBase64)
+      const arr = new Uint8Array(byteStr.length)
+      for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i)
+
+      // Data URL para exibir no preview
+      const blob = new Blob([arr], { type: 'image/png' })
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const reader = new FileReader()
+        reader.onload = () => res(reader.result as string)
+        reader.onerror = () => rej(new Error('Erro ao converter preview'))
+        reader.readAsDataURL(blob)
+      })
+
+      setPreviewB64(dataUrl)
+      setPreviewBlob(arr)
+      setRunning(false)
+
+    } catch (err: any) {
+      setError(err.message || 'Erro ao aprimorar foto')
+      setRunning(false)
+    }
+  }
+
+  // Chamado quando o usuário confirma "Usar esta foto"
+  const handleConfirm = async () => {
+    if (!previewBlob) return
+    setSaving(true)
+    try {
+      const resultFile = new File([previewBlob], `ref_${type.id}_aprimorada_${Date.now()}.png`, { type: 'image/png' })
+      const uploadResult = await driveStorage.adminUploadPhoto({
+        clientId,
+        file: resultFile,
+        categoryId: null,
+      })
+      const newPhoto: RefPhoto = {
+        typeId: type.id,
+        typeName: type.name,
+        storagePath: '',
+        url: uploadResult.url,
+        driveFileId: uploadResult.driveFileId,
+      }
+      onDone(newPhoto)
+    } catch (err: any) {
+      setError(err.message || 'Erro ao salvar foto')
+      setSaving(false)
+    }
+  }
+
+  const selectedPrompt = prompts.find(p => p.id === selectedPromptId)
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+        onClick={e => { if (e.target === e.currentTarget && !running && !saving) onClose() }}
+      >
+        <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-violet-50">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-violet-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                <Sparkles className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <p className="font-semibold text-sm text-gray-900">
+                  {previewB64 ? 'Resultado gerado' : 'Aprimorar foto de referência'}
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {type.name} · Padronização Profissional para IA Capilar
+                </p>
+              </div>
+            </div>
+            {!running && !saving && (
+              <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400">
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 space-y-4">
+
+            {/* ── TELA DE PREVIEW ── */}
+            {previewB64 ? (
+              <>
+                <p className="text-xs text-gray-500 text-center">
+                  Toque na imagem para ampliar. Se gostar, clique em <strong>Usar esta foto</strong>.
+                </p>
+
+                {/* Comparação: antes × depois */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold text-gray-500 text-center uppercase tracking-wide">Antes</p>
+                    <button
+                      onClick={() => setLightbox(photo.url)}
+                      className="w-full aspect-square rounded-xl overflow-hidden border border-gray-200 hover:border-gray-400 transition-all relative group"
+                    >
+                      <img
+                        src={photo.url}
+                        alt="Antes"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                        <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 text-white text-[11px] px-2 py-1 rounded-lg">
+                          🔍 Ampliar
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold text-fuchsia-600 text-center uppercase tracking-wide">Depois ✨</p>
+                    <button
+                      onClick={() => setLightbox(previewB64)}
+                      className="w-full aspect-square rounded-xl overflow-hidden border-2 border-fuchsia-300 hover:border-fuchsia-500 transition-all relative group"
+                    >
+                      <img
+                        src={previewB64}
+                        alt="Resultado"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                        <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 text-white text-[11px] px-2 py-1 rounded-lg">
+                          🔍 Ampliar
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {error && (
+                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                    <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-red-700">{error}</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {/* ── TELA DE CONFIGURAÇÃO ── */}
+
+                {/* Preview da foto atual */}
+                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
+                  <img src={photo.url} alt="" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200" />
+                  <div>
+                    <p className="text-xs font-semibold text-gray-700">Foto atual — {type.name}</p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      A IA vai aprimorar esta foto e a nova versão virará a referência.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Seletor de prompt */}
+                {loadingPrompts ? (
+                  <div className="flex items-center justify-center py-6 gap-2 text-violet-500">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span className="text-sm">Carregando prompts…</span>
+                  </div>
+                ) : prompts.length === 0 ? (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-1">
+                    <AlertTriangle className="h-5 w-5 text-amber-500 mx-auto" />
+                    <p className="text-sm font-medium text-amber-800">Nenhum prompt cadastrado</p>
+                    <p className="text-xs text-amber-600">
+                      Acesse <strong>Documentos → Prompts IA</strong> e crie um prompt do tipo
+                      <strong> "Aprimorar foto de referência"</strong>
+                      {refCategory ? ` para a categoria "${REF_CATEGORIES.find(c => c.value === refCategory)?.label}"` : ''}.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-gray-700">
+                      Prompt de aprimoramento
+                    </label>
+                    {prompts.map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => setSelectedPromptId(p.id)}
+                        disabled={running}
+                        className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 text-left transition-all ${
+                          selectedPromptId === p.id
+                            ? 'border-fuchsia-400 bg-fuchsia-50'
+                            : 'border-gray-200 hover:border-fuchsia-200 hover:bg-fuchsia-50/40'
+                        }`}
+                      >
+                        <Sparkles className={`h-4 w-4 flex-shrink-0 ${selectedPromptId === p.id ? 'text-fuchsia-500' : 'text-gray-400'}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-800 truncate">{p.name}</p>
+                          {p.ref_category && (
+                            <p className="text-[11px] text-fuchsia-600 mt-0.5">
+                              {REF_CATEGORIES.find(c => c.value === p.ref_category)?.emoji}{' '}
+                              {REF_CATEGORIES.find(c => c.value === p.ref_category)?.label}
+                            </p>
+                          )}
+                        </div>
+                        {selectedPromptId === p.id && (
+                          <CheckCircle className="h-4 w-4 text-fuchsia-500 flex-shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Progresso / erro */}
+                {running && (
+                  <div className="flex items-center gap-3 p-3 bg-fuchsia-50 border border-fuchsia-200 rounded-xl">
+                    <Loader2 className="h-5 w-5 text-fuchsia-500 animate-spin flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-fuchsia-800">Processando…</p>
+                      <p className="text-xs text-fuchsia-600 mt-0.5">{progress}</p>
+                    </div>
+                  </div>
+                )}
+                {error && (
+                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                    <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-red-700">{error}</p>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex gap-2 px-5 py-3 border-t border-gray-100 bg-gray-50">
+            {previewB64 ? (
+              <>
+                <button
+                  onClick={() => { setPreviewB64(null); setPreviewBlob(null); setError(null) }}
+                  disabled={saving}
+                  className="flex-1 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Tentar novamente
+                </button>
+                <button
+                  onClick={handleConfirm}
+                  disabled={saving}
+                  className="flex-1 py-2 text-sm font-semibold text-white bg-gradient-to-r from-fuchsia-500 to-violet-500 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {saving
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Salvando…</>
+                    : <><CheckCircle className="h-4 w-4" /> Usar esta foto</>
+                  }
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={onClose}
+                  disabled={running}
+                  className="flex-1 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleRun}
+                  disabled={running || !selectedPromptId || prompts.length === 0}
+                  className="flex-1 py-2 text-sm font-semibold text-white bg-gradient-to-r from-fuchsia-500 to-violet-500 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {running
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Processando…</>
+                    : <><Sparkles className="h-4 w-4" /> Aprimorar foto</>
+                  }
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Lightbox de zoom ── */}
+      {lightbox && (
+        <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
+      )}
+    </>
   )
 }
 
@@ -878,6 +1338,202 @@ function GalleryPhotoPicker({
         </div>
 
       </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// DriveProxyImg — carrega URLs do Drive pelo proxy autenticado
+// ══════════════════════════════════════════════════════════════════════════
+
+function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(src)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    setFailed(false)
+    if (!src) return
+    const m = src.match(/[?&]id=([^&]+)/)
+    if (!src.includes('drive.google.com') || !m) { setResolvedSrc(src); return }
+    let objectUrl: string | null = null
+    driveStorage.fetchPhotoBlob(m[1])
+      .then(blob => { objectUrl = URL.createObjectURL(blob); setResolvedSrc(objectUrl) })
+      .catch(() => setResolvedSrc(src))
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [src])
+  if (!resolvedSrc || failed) return null
+  return <img src={resolvedSrc} {...props} onError={() => setFailed(true)} />
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ImageLightbox — foto em tela cheia com zoom, arraste, pinch e download
+// ══════════════════════════════════════════════════════════════════════════
+
+function ImageLightbox({ src, mimeType, onClose }: { src: string; mimeType?: string; onClose: () => void }) {
+  const [scale, setScale]   = useState(1)
+  const [pos,   setPos]     = useState({ x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Zoom via scroll do mouse
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setScale(s => Math.min(5, Math.max(0.5, s * (1 - e.deltaY * 0.001))))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // Fecha com Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  // Arraste para mover (só quando zoom > 1)
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (scale <= 1) return
+    e.preventDefault()
+    setDragging(true)
+    dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }
+  }
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!dragging || !dragStart.current) return
+    setPos({
+      x: dragStart.current.px + (e.clientX - dragStart.current.mx),
+      y: dragStart.current.py + (e.clientY - dragStart.current.my),
+    })
+  }
+  const handleMouseUp = () => { setDragging(false); dragStart.current = null }
+
+  // Touch: pinch-to-zoom
+  const lastTouch = useRef<{ dist: number; scale: number } | null>(null)
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      lastTouch.current = { dist: Math.hypot(dx, dy), scale }
+    }
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && lastTouch.current) {
+      e.preventDefault()
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      const dist = Math.hypot(dx, dy)
+      const next = Math.min(5, Math.max(0.5, lastTouch.current.scale * (dist / lastTouch.current.dist)))
+      setScale(next)
+    }
+  }
+
+  const resetZoom = () => { setScale(1); setPos({ x: 0, y: 0 }) }
+
+  const handleDownload = async () => {
+    const ext = mimeType?.includes('png') ? 'png' : 'jpg'
+    const fileName = `foto_referencia.${ext}`
+    if (src.startsWith('data:')) {
+      const a = document.createElement('a'); a.href = src; a.download = fileName; a.click(); return
+    }
+    // Drive URL — usa proxy
+    const driveMatch = src.includes('drive.google.com') && src.match(/[?&]id=([^&]+)/)
+    if (driveMatch) {
+      try {
+        const blob = await driveStorage.fetchPhotoBlob(driveMatch[1])
+        const objUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a'); a.href = objUrl; a.download = fileName
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
+        return
+      } catch {}
+    }
+    window.open(src, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/92 flex items-center justify-center"
+      onClick={onClose}
+      ref={containerRef}
+    >
+      {/* Barra superior */}
+      <div
+        className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3 z-10"
+        onClick={e => e.stopPropagation()}
+      >
+        <span className="text-white/60 text-xs select-none">📸 Foto de referência</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold rounded-full px-3.5 py-1.5 shadow-lg shadow-violet-900/40 transition-colors"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Baixar
+          </button>
+          <button
+            onClick={onClose}
+            className="bg-violet-500 hover:bg-violet-400 text-white rounded-full p-1.5 shadow-lg shadow-violet-900/40 transition-colors"
+            title="Fechar (Esc)"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Imagem */}
+      <div
+        className="relative select-none"
+        style={{ cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onClick={e => e.stopPropagation()}
+      >
+        <DriveProxyImg
+          src={src}
+          alt="Foto de referência"
+          draggable={false}
+          style={{
+            transform: `scale(${scale}) translate(${pos.x / scale}px, ${pos.y / scale}px)`,
+            transition: dragging ? 'none' : 'transform 0.12s ease',
+            maxWidth:  '92vw',
+            maxHeight: '82vh',
+            objectFit: 'contain',
+          }}
+          className="rounded-xl shadow-2xl"
+        />
+      </div>
+
+      {/* Barra de zoom */}
+      <div
+        className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/50 backdrop-blur-md border border-white/10 rounded-full px-4 py-2 z-10"
+        onClick={e => e.stopPropagation()}
+      >
+        <button onClick={() => setScale(s => Math.max(0.5, +(s - 0.25).toFixed(2)))} className="text-white/70 hover:text-white transition-colors" title="Diminuir zoom">
+          <ZoomOut className="h-4 w-4" />
+        </button>
+        <button onClick={resetZoom} className="text-white text-xs font-mono min-w-[3rem] text-center hover:text-white/70 transition-colors" title="Resetar zoom">
+          {Math.round(scale * 100)}%
+        </button>
+        <button onClick={() => setScale(s => Math.min(5, +(s + 0.25).toFixed(2)))} className="text-white/70 hover:text-white transition-colors" title="Aumentar zoom">
+          <ZoomIn className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Dica */}
+      <p
+        className="absolute bottom-14 left-1/2 -translate-x-1/2 text-white/30 text-[11px] whitespace-nowrap pointer-events-none select-none"
+        style={{ animation: 'fadeOutHint 0.5s ease 2.5s forwards' }}
+      >
+        Scroll para zoom · Arraste para mover · Esc para fechar
+      </p>
+      <style>{`@keyframes fadeOutHint { to { opacity: 0 } }`}</style>
     </div>
   )
 }
