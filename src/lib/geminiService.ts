@@ -20,7 +20,12 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 
 export const GEMINI_MODELS = {
   IMAGE_GEN: 'gemini-2.5-flash-image',
-  IMAGE_GEN_FALLBACK: 'gemini-3.1-flash-image-preview', // cota separada
+  // Mantido na constante mas NÃO É MAIS USADO no fluxo de geração de imagem.
+  // Decisão de produto: se o 2.5 falhar, a imagem não é gerada (aviso ao
+  // usuário) em vez de cair pra esse fallback. Para reativar, basta voltar
+  // a chamar callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, ...) em
+  // chatWithGemini logo após o primary retornar null.
+  IMAGE_GEN_FALLBACK: 'gemini-3.1-flash-image-preview',
   TEXT_ONLY: 'gemini-2.5-flash',
 } as const
 
@@ -579,15 +584,13 @@ NÃO escreva texto. NÃO comente. NÃO se apresente. Apenas devolva a IMAGEM ger
     }
 
     const imgResult = await queueImageRequest(async () => {
-      // 1ª tentativa: modelo principal (3 tentativas, 60s cada)
+      // Só usa o modelo principal (gemini-2.5-flash-image), 3 tentativas com
+      // backoff. Decisão de produto: preferimos que a imagem NÃO seja gerada
+      // a usar o fallback gemini-3.1-flash-image-preview. Se as 3 tentativas
+      // falharem, retorna null e o fluxo cai pro texto puro com aviso
+      // "⚠️ Geração de imagem indisponível".
       const primary = await callImageModel(GEMINI_MODELS.IMAGE_GEN, apiKey, imgBody, 3, 60_000)
       if (primary) return { ...primary, model: GEMINI_MODELS.IMAGE_GEN as string }
-
-      // Fallback: modelo alternativo (2 tentativas, 90s cada — costuma demorar mais)
-      if (DEBUG) console.warn(`[Gemini] modelo principal falhou, tentando fallback ${GEMINI_MODELS.IMAGE_GEN_FALLBACK}`)
-      const fallback = await callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, apiKey, imgBody, 2, 90_000)
-      if (fallback) return { ...fallback, model: GEMINI_MODELS.IMAGE_GEN_FALLBACK as string }
-
       return null
     })
 
