@@ -2275,11 +2275,25 @@ function ResultScreen({
           </h3>
           <div className="space-y-4">
             {audios.map((file: any, idx: number) => {
-              // Usa o proxy da Edge Function pra evitar bloqueio de CORS/auth do Drive
-              const supabaseUrl = (supabase as any).supabaseUrl as string ?? ''
+              // ✅ Usa env var — confiável no browser, não depende de propriedade
+              //    interna do cliente Supabase (que pode ser undefined em alguns builds).
+              const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
               const audioSrc = file.drive_file_id && token
                 ? `${supabaseUrl}/functions/v1/drive/audio-proxy?token=${encodeURIComponent(token)}&id=${encodeURIComponent(file.drive_file_id)}`
                 : clientService.getResultFileUrl(file)
+
+              // iOS Safari exige type correto no <source> para aceitar o áudio.
+              const ext = (file.file_name?.split('.').pop() || 'mp3').toLowerCase()
+              const mimeMap: Record<string, string> = {
+                mp3: 'audio/mpeg', mpga: 'audio/mpeg', mpeg: 'audio/mpeg',
+                wav: 'audio/wav',
+                ogg: 'audio/ogg', oga: 'audio/ogg',
+                opus: 'audio/ogg; codecs=opus',
+                webm: 'audio/webm',
+                m4a: 'audio/mp4', aac: 'audio/aac',
+                flac: 'audio/flac',
+              }
+              const mimeType = mimeMap[ext] || 'audio/mpeg'
 
               return (
                 <div
@@ -2311,13 +2325,24 @@ function ResultScreen({
                     </button>
                   </div>
 
+                  {/*
+                    ✅ Fixes mobile (especialmente iOS Safari):
+                    - preload="none" evita request antecipado sem suporte a Range
+                    - playsInline obrigatório no iOS para tocar inline (sem fullscreen forçado)
+                    - <source type=...> com MIME correto: iOS rejeita áudio sem type declarado
+                    - A Edge Function /audio-proxy DEVE responder com Accept-Ranges: bytes
+                      e suportar Range requests (HTTP 206) para streaming funcionar no mobile
+                  */}
                   <audio
-                    src={audioSrc}
                     controls
-                    preload="metadata"
+                    preload="none"
+                    playsInline
                     className="w-full rounded-xl"
                     style={{ colorScheme: 'light' }}
-                  />
+                  >
+                    <source src={audioSrc} type={mimeType} />
+                    Seu navegador não suporta reprodução de áudio.
+                  </audio>
                 </div>
               )
             })}
