@@ -24,13 +24,87 @@ export const GEMINI_MODELS = {
   TEXT_ONLY: 'gemini-2.5-flash',
 } as const
 
-// Liga/desliga logs detalhados. Útil quando estiver investigando algo —
-// deixe true em dev, false em produção.
-const DEBUG = true
+// Liga/desliga logs detalhados. Agora atrelado ao ambiente de build:
+// `true` em desenvolvimento (vite dev), `false` no bundle de produção.
+// Isso garante que nenhum log de debug (incluindo qualquer coisa
+// relacionada à chave) apareça no console do navegador em produção.
+const DEBUG = import.meta.env.DEV
 
 export interface GeminiMessage { role: 'user' | 'model'; text: string }
 export interface GeminiResponsePart { type: 'text' | 'image'; text?: string; imageBase64?: string; imageMimeType?: string }
 export interface GeminiResponse { parts: GeminiResponsePart[]; raw: any; imageGenerationFailed: boolean; modelUsed?: string }
+
+// ──────────────────────────────────────────────────────────────
+// 0. MODO PROXY (Edge Function) — chave nunca vai pro navegador
+// ──────────────────────────────────────────────────────────────
+//
+// Quando VITE_USE_GEMINI_PROXY === 'true', todas as chamadas ao Gemini
+// passam pela Edge Function `gemini-proxy`, que lê a chave do admin_content
+// com service role e chama o Google no servidor. A chave nunca trafega
+// até o browser.
+//
+// Quando a flag está OFF (default), o comportamento é EXATAMENTE o atual:
+// o front lê a chave e chama o Google direto. Isso permite ligar/desligar
+// o proxy sem deploy de banco e sem mudar nada para os admins existentes
+// (a chave continua no mesmo lugar, admin_content).
+//
+// Mecânica do sentinel: em modo proxy, getGeminiApiKey() NÃO retorna a
+// chave real (o front não a tem). Retorna um sentinel que codifica o
+// contexto (token do cliente, se houver). chatWithGemini/translateText/
+// translateTexts detectam o sentinel e roteiam pela Edge Function,
+// extraindo o token. Assim as ASSINATURAS das funções não mudam — o
+// token viaja "dentro" do parâmetro apiKey.
+
+const USE_PROXY = (import.meta as any).env?.VITE_USE_GEMINI_PROXY === 'true'
+
+const PROXY_SENTINEL = '__GEMINI_PROXY__'
+
+/** Monta o sentinel de proxy, embutindo o token do cliente se houver. */
+function makeProxyKey(clientToken?: string): string {
+  return clientToken ? `${PROXY_SENTINEL}::${clientToken}` : PROXY_SENTINEL
+}
+
+/** Detecta se um "apiKey" é na verdade o sentinel de proxy e extrai o token. */
+function parseProxyKey(apiKey?: string): { isProxy: boolean; clientToken?: string } {
+  if (!apiKey || !apiKey.startsWith(PROXY_SENTINEL)) return { isProxy: false }
+  const rest = apiKey.slice(PROXY_SENTINEL.length)
+  const clientToken = rest.startsWith('::') ? rest.slice(2) : undefined
+  return { isProxy: true, clientToken: clientToken || undefined }
+}
+
+/**
+ * Chama a Edge Function gemini-proxy.
+ * - Contexto admin: o JWT da sessão vai automaticamente via functions.invoke.
+ * - Contexto cliente: passamos portalToken no body; a função resolve o admin
+ *   dono via clients.admin_id (não precisa de JWT).
+ * Extrai a mensagem de erro limpa que a função retorna em { error }.
+ */
+async function callGeminiProxy(
+  action: 'chat' | 'translate' | 'translateBatch',
+  payload: any,
+  clientToken?: string,
+): Promise<any> {
+  const { data, error } = await supabase.functions.invoke('gemini-proxy', {
+    body: { action, portalToken: clientToken, payload },
+  })
+
+  if (error) {
+    let msg = error.message || 'Erro no proxy da IA.'
+    // supabase-js coloca a Response do erro em error.context para não-2xx.
+    try {
+      const ctx: any = (error as any).context
+      if (ctx && typeof ctx.json === 'function') {
+        const j = await ctx.json()
+        if (j?.error) msg = j.error
+      }
+    } catch {}
+    throw new Error(msg)
+  }
+
+  // A função pode devolver { error } com status 200 em casos raros — trata.
+  if (data && (data as any).error) throw new Error((data as any).error)
+  return data
+}
 export interface MaterialData { base64: string; mimeType: string }
 
 // ──────────────────────────────────────────────────────────────
@@ -54,6 +128,11 @@ const _keyCache: Record<string, { key: string; time: number }> = {}
 const CACHE_TTL = 5 * 60 * 1000
 
 export async function getGeminiApiKey(clientToken?: string): Promise<string> {
+  // MODO PROXY: o front nunca recebe a chave real. Retornamos um sentinel
+  // que carrega o contexto (token do cliente, se houver). As funções de
+  // chat/tradução detectam o sentinel e roteiam pela Edge Function.
+  if (USE_PROXY) return makeProxyKey(clientToken)
+
   // Cache segmentado por identidade:
   //   • Contexto cliente → usa o token do cliente
   //   • Contexto admin   → usa o user.id do admin logado
@@ -102,10 +181,11 @@ export async function getGeminiApiKey(clientToken?: string): Promise<string> {
 
   _keyCache[cacheKey] = { key, time: Date.now() }
 
-  // 🔍 DEBUG TEMPORÁRIO — remove após validar qual chave está sendo usada
+  // Log seguro: confirma SE a chave foi resolvida, sem nunca expor
+  // nenhum caractere dela. Só roda em dev (DEBUG = import.meta.env.DEV).
   if (DEBUG) console.log(
     '[GeminiKey] cacheKey:', cacheKey,
-    '| key preview:', key ? key.slice(0, 10) + '...' : '❌ não encontrada'
+    '| key:', key ? '✓ resolvida' : '❌ não encontrada'
   )
 
   return key
@@ -172,8 +252,12 @@ interface ParsedError {
   retryAfterSec?: number
   finishReason?: string
   isDailyQuota: boolean
+  isPerMinuteQuota: boolean
   isSafetyBlock: boolean
   isFreeTierBug: boolean
+  isInvalidKey: boolean
+  isBillingRequired: boolean
+  isAccessDenied: boolean
 }
 
 async function parseError(res: Response): Promise<ParsedError> {
@@ -184,20 +268,64 @@ async function parseError(res: Response): Promise<ParsedError> {
   let body: any = {}
   try { body = await res.clone().json() } catch {}
 
-  const message = body?.error?.message || `HTTP ${status}`
+  const message: string = body?.error?.message || `HTTP ${status}`
   const details: any[] = body?.error?.details || []
+  const apiStatus: string | undefined = body?.error?.status
+
+  // QuotaFailure → distingue per_day, per_minute, free_tier.
   const quotaFailure = details.find(d => d['@type']?.includes('QuotaFailure'))
   const quotaMetric = quotaFailure?.violations?.[0]?.quotaMetric as string | undefined
 
-  const isDailyQuota = !!quotaMetric?.includes('per_day') || !!quotaMetric?.includes('per_day_per_model')
-  const isFreeTierBug = !!quotaMetric?.includes('free_tier')
-  const isSafetyBlock = /safety|blocked|recitation/i.test(message)
+  // ErrorInfo.reason → códigos canônicos do Google (API_KEY_INVALID, etc).
+  const errorInfo = details.find(d => d['@type']?.includes('ErrorInfo'))
+  const reason: string | undefined = errorInfo?.reason
+
+  const isDailyQuota      = !!quotaMetric?.match(/per_day/i)
+  const isPerMinuteQuota  = !!quotaMetric?.match(/per_minute/i)
+  const isFreeTierBug     = !!quotaMetric?.match(/free_tier/i)
+  const isSafetyBlock     = /safety|blocked|recitation/i.test(message)
+  const isInvalidKey      = reason === 'API_KEY_INVALID'
+                            || /API key (not valid|invalid)|API_KEY_INVALID/i.test(message)
+  const isBillingRequired = status === 400 && (
+                              apiStatus === 'FAILED_PRECONDITION'
+                              || /billing|enable.*API/i.test(message)
+                            )
+  const isAccessDenied    = status === 403 || reason === 'PERMISSION_DENIED'
 
   if (DEBUG && status >= 400) {
-    console.error('[Gemini error]', { status, quotaMetric, retryAfterSec, message })
+    console.error('[Gemini error]', { status, apiStatus, reason, quotaMetric, retryAfterSec, message })
   }
 
-  return { status, message, quotaMetric, retryAfterSec, isDailyQuota, isSafetyBlock, isFreeTierBug }
+  return {
+    status, message, quotaMetric, retryAfterSec,
+    isDailyQuota, isPerMinuteQuota, isFreeTierBug,
+    isSafetyBlock, isInvalidKey, isBillingRequired, isAccessDenied,
+  }
+}
+
+/**
+ * Converte um ParsedError em mensagem amigável e acionável para exibir
+ * ao usuário (admin OU cliente — texto claro o suficiente pros dois).
+ * Espelha exatamente a humanizeError da Edge Function pra consistência.
+ */
+function humanizeError(err: ParsedError): string {
+  if (err.isInvalidKey)
+    return 'Chave da API Gemini inválida. Atualize em Configurações → Chave Gemini.'
+  if (err.isBillingRequired)
+    return 'Cobrança do Google não está ativada para esta chave. Ative o billing no Google Cloud Console.'
+  if (err.isAccessDenied)
+    return 'Acesso à API Gemini negado. Verifique as restrições da chave (referrer, IP) no Google Cloud.'
+  if (err.isDailyQuota)
+    return 'Cota diária da IA atingida. Tente novamente amanhã ou aumente a cota no Google Cloud.'
+  if (err.isFreeTierBug)
+    return 'Chave Gemini sem billing ativo ou cota do free tier excedida. Verifique a configuração no Google Cloud.'
+  if (err.isPerMinuteQuota)
+    return 'Muitas requisições em pouco tempo. Aguarde alguns segundos e tente de novo.'
+  if (err.status === 429 || err.status === 503)
+    return 'IA sobrecarregada. Aguarde um momento e tente novamente.'
+  if (err.status >= 500)
+    return 'Erro temporário no servidor da IA. Tente novamente em alguns segundos.'
+  return err.message || 'Erro ao contatar a IA.'
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -278,6 +406,14 @@ async function callImageModel(
 
       const err = await parseError(res)
 
+      // Erros NÃO retentáveis (chave inválida, billing, sem permissão):
+      // não adianta retry — desiste e deixa o caminho de texto puro mostrar
+      // a mensagem clara via humanizeError.
+      if (err.isInvalidKey || err.isBillingRequired || err.isAccessDenied) {
+        if (DEBUG) console.warn(`[${model}] erro não retentável: ${err.message}`)
+        return null
+      }
+
       // Cota diária estourada — não adianta retry
       if (err.isDailyQuota) {
         if (DEBUG) console.warn(`[${model}] quota diária estourada`)
@@ -327,6 +463,18 @@ export async function chatWithGemini({
   referencePhotoBase64?: string; referencePhotoMimeType?: string
   materials?: MaterialData[]; forceImage?: boolean; clientFirst?: boolean
 }): Promise<GeminiResponse> {
+  // MODO PROXY: se o apiKey é o sentinel, delega tudo pra Edge Function.
+  // A imagem e o texto são gerados no servidor; a chave nunca esteve aqui.
+  const _proxy = parseProxyKey(apiKey)
+  if (_proxy.isProxy) {
+    return await callGeminiProxy('chat', {
+      systemPrompt, history, userText,
+      userImageBase64, userImageMimeType,
+      referencePhotoBase64, referencePhotoMimeType,
+      materials, forceImage, clientFirst,
+    }, _proxy.clientToken) as GeminiResponse
+  }
+
   if (!apiKey) throw new Error('Chave da API Gemini não configurada.')
 
   const wantsImage = forceImage
@@ -490,10 +638,8 @@ NÃO escreva texto. NÃO comente. NÃO se apresente. Apenas devolva a IMAGEM ger
 
   if (!res || !res.ok) {
     const err = res ? await parseError(res) : null
-    if (err?.isDailyQuota) throw new Error('Cota diária da IA atingida. Tente amanhã.')
-    if (err?.isFreeTierBug) throw new Error('Chave da API sem billing ativo ou cota free_tier. Verifique a configuração.')
-    if (err && (err.status === 429 || err.status === 503)) throw new Error('IA sobrecarregada. Aguarde um momento.')
-    throw new Error(err?.message || 'Erro ao contatar a IA.')
+    if (!err) throw new Error('Erro ao contatar a IA.')
+    throw new Error(humanizeError(err))
   }
 
   const data = await res.json()
@@ -582,6 +728,17 @@ export async function translateText(
 ): Promise<string> {
   if (!text?.trim() || targetLanguage === 'pt-BR') return text
 
+  // MODO PROXY: delega tradução pra Edge Function.
+  const _proxy = parseProxyKey(apiKey)
+  if (_proxy.isProxy) {
+    try {
+      const r = await callGeminiProxy('translate', { text, targetLanguage }, _proxy.clientToken)
+      return (r as any)?.text ?? text
+    } catch {
+      return text
+    }
+  }
+
   try {
     const body = {
       contents: [{
@@ -646,6 +803,25 @@ export async function translateTexts(
 ): Promise<string[]> {
   if (targetLanguage === 'pt-BR' || texts.length === 0) return [...texts]
   if (texts.length === 1) return [await translateText(texts[0] ?? '', targetLanguage, apiKey)]
+
+  // MODO PROXY: delega tradução em lote pra Edge Function. Se algo falhar,
+  // o fallback individual (translateText) também roteia pelo proxy, porque
+  // recebe o mesmo sentinel em apiKey.
+  const _proxy = parseProxyKey(apiKey)
+  if (_proxy.isProxy) {
+    try {
+      const r = await callGeminiProxy('translateBatch', { texts, targetLanguage }, _proxy.clientToken)
+      const out = (r as any)?.texts
+      if (Array.isArray(out) && out.length === texts.length) return out
+    } catch {
+      // cai pro fallback individual abaixo (que também usa o proxy)
+    }
+    const out = [...texts]
+    await Promise.all(texts.map(async (t, i) => {
+      if ((t ?? '').trim()) out[i] = await translateText(t, targetLanguage, apiKey)
+    }))
+    return out
+  }
 
   // Lista de índices não-vazios. Vazios são preservados na posição.
   const live = texts

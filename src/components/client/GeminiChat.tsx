@@ -395,7 +395,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     setLoadingResults(true)
     Promise.all(resultFileUrls.map(async (file) => {
       try {
-        const res = await fetch(file.url); const blob = await res.blob()
+        // URLs do Drive (drive.google.com/uc?...&id=FILE_ID) bloqueiam fetch
+        // direto no browser por CORS. Roteia pelo proxy autenticado da Edge Function.
+        const driveIdMatch = file.url.includes('drive.google.com') && file.url.match(/[?&]id=([^&]+)/)
+        const blob = driveIdMatch
+          ? await driveStorage.fetchPhotoBlob(driveIdMatch[1])
+          : await fetch(file.url).then(r => r.blob())
         return new Promise<MaterialData>((resolve, reject) => {
           const r = new FileReader()
           r.onload = () => resolve({ base64: (r.result as string).split(',')[1], mimeType: blob.type || 'application/pdf' })
@@ -530,7 +535,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const rawAfterImageText = (prompt.tintReference || prompt.reference)?.trim() || undefined
     const rawCaption = prompt.tintReference || prompt.reference || prompt.name
     const catIsAccessory = cat.icon === 'gem' || cat.name.toLowerCase().includes('acess')
-    const apiKey = await getGeminiApiKey()
+    const apiKey = await getGeminiApiKey(portalToken)
     // Carrega imagens e traduz apenas label e section para exibição no chat.
     // caption e afterImageText ficam em PT-BR e são traduzidos somente ao gerar o PDF.
     const rawSection = getCategorySection(cat)
@@ -571,7 +576,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const lengthPart = length?.instruction ? `\n\n═══ COMPRIMENTO ═══\n${length.instruction}` : ''
     const texturePart = texture?.instruction ? `\n\n═══ TEXTURA ═══\n${texture.instruction}` : ''
     const combinedInstructions = `${selectedPrompt.instructions || selectedPrompt.name}${lengthPart}${texturePart}`
-    const apiKey = await getGeminiApiKey()
+    const apiKey = await getGeminiApiKey(portalToken)
     // Carrega imagens e traduz apenas label, nomes e section para exibição no chat.
     // caption e afterImageText ficam em PT-BR e são traduzidos somente ao gerar o PDF.
     const rawSection = getCategorySection(selectedCat)
@@ -606,7 +611,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const rawAfterImageText = selectedPrompt.tintReference?.trim() || undefined
     const rawCaption = selectedPrompt.tintReference || selectedPrompt.reference || selectedPrompt.name
     const catIsAccessory = selectedCat.icon === 'gem' || selectedCat.name.toLowerCase().includes('acess')
-    const apiKey = await getGeminiApiKey()
+    const apiKey = await getGeminiApiKey(portalToken)
     // Carrega imagens e traduz apenas label e section para exibição no chat.
     // caption e afterImageText ficam em PT-BR e são traduzidos somente ao gerar o PDF.
     const rawSection = getCategorySection(selectedCat)
@@ -635,7 +640,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     skipLoadingGuard.current = false
 
     setApiError(null)
-    const apiKey = await getGeminiApiKey()
+    const apiKey = await getGeminiApiKey(portalToken)
     if (!apiKey) { setApiError('Chave da API não configurada.'); return }
 
     if (clientId && !unlimited) {
@@ -777,7 +782,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     const selected = imageMsgs.filter(m => pdfSelected.has(m.id))
     if (!selected.length) return []
     // Obtém a chave uma única vez para todas as traduções do lote
-    const apiKey = await getGeminiApiKey()
+    const apiKey = await getGeminiApiKey(portalToken)
     // Guarda os layouts PUROS (sem sincronizar texto).
     // O texto de cada bloco é traduzido diretamente abaixo, preservando a
     // estrutura exata do layout (número e ordem de blocos inalterados).
@@ -898,7 +903,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       let collageTitle: string | undefined
       if (selectedLanguage !== 'pt-BR') {
         try {
-          const apiKey = await getGeminiApiKey()
+          const apiKey = await getGeminiApiKey(portalToken)
           if (apiKey) collageTitle = await translateText('Simulações', selectedLanguage, apiKey)
         } catch {}
       }

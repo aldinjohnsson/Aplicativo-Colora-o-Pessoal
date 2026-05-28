@@ -161,6 +161,15 @@ const settingsStorageService = {
         pdfTemplateBase64:        _omit1,
         aiCompositionCoverBase64: _omit2,
         aiCompositionFinalBase64: _omit3,
+        // ⚠️ SEGREDOS NUNCA VÃO PRO localStorage.
+        // Antes, geminiApiKey/openaiApiKey/resendApiKey entravam no
+        // 'app-settings' em texto plano — ficavam persistidos no navegador
+        // e podiam vazar pro próximo admin que usasse a mesma máquina
+        // (via o fallback de getSettings). As chaves só vivem em
+        // admin_content (filtrado por admin_id) e em memória na sessão.
+        geminiApiKey: _omitKey1,
+        openaiApiKey: _omitKey2,
+        resendApiKey: _omitKey3,
         ...rest
       } = data
       localStorage.setItem('app-settings', JSON.stringify(rest))
@@ -274,7 +283,17 @@ const settingsStorageService = {
       console.error('Erro ao carregar configurações:', error)
       try {
         const local = localStorage.getItem('app-settings')
-        if (local) return { ...defaults, ...JSON.parse(local) }
+        if (local) {
+          const parsed = JSON.parse(local)
+          // Defesa em profundidade: mesmo que uma versão antiga tenha
+          // gravado chaves no localStorage, NUNCA as restauramos aqui —
+          // poderiam ser de outro admin que usou este navegador. As chaves
+          // só vêm do Supabase (admin_content filtrado por admin_id).
+          delete parsed.geminiApiKey
+          delete parsed.openaiApiKey
+          delete parsed.resendApiKey
+          return { ...defaults, ...parsed }
+        }
       } catch {}
       return defaults
     }
