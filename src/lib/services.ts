@@ -1862,35 +1862,29 @@ export const clientService = {
       }
     }
 
-    // ── Buscar chat_enabled + custom_link_url da tabela client_results ────
-    // O RPC get_client_portal não retorna esses campos, então buscamos direto.
+    // ── Buscar chat_enabled, custom_link_url e arquivos de resultado ────────
+    // Usa RPC com SECURITY DEFINER — evita queries diretas sem auth que causavam
+    // "Invalid Refresh Token" + 406 no portal do cliente.
     if (portalData.result) {
       try {
-        const { data: resultRow } = await supabase
-          .from('client_results')
-          .select('chat_enabled, custom_link_url')
-          .eq('client_id', portalData.client.id)
-          .single()
-        portalData.result.chat_enabled = resultRow?.chat_enabled ?? true
-        portalData.result.custom_link_url = resultRow?.custom_link_url ?? null
+        const { data: resultExtras, error: reErr } = await supabase.rpc(
+          'get_client_portal_result_extras',
+          { p_token: token }
+        )
+        if (!reErr && resultExtras) {
+          portalData.result.chat_enabled    = resultExtras.chat_enabled    ?? true
+          portalData.result.custom_link_url = resultExtras.custom_link_url ?? null
+          portalData.result.files           = resultExtras.result_files    ?? []
+        } else {
+          portalData.result.chat_enabled    = true
+          portalData.result.custom_link_url = null
+          portalData.result.files           = portalData.result.files ?? []
+        }
       } catch (e) {
-        portalData.result.chat_enabled = true
+        console.warn('Erro ao carregar extras de resultado (não crítico):', e)
+        portalData.result.chat_enabled    = true
         portalData.result.custom_link_url = null
-      }
-    }
-
-    // ── Buscar arquivos de resultado (PDFs) da tabela client_result_files ──
-    // O RPC get_client_portal não inclui os arquivos — buscamos direto.
-    if (portalData.result) {
-      try {
-        const { data: filesRows } = await supabase
-          .from('client_result_files')
-          .select('id, file_name, storage_path, drive_file_id, file_size')
-          .eq('client_id', portalData.client.id)
-          .order('uploaded_at')
-        portalData.result.files = filesRows || []
-      } catch (e) {
-        portalData.result.files = portalData.result.files ?? []
+        portalData.result.files           = portalData.result.files ?? []
       }
     }
 

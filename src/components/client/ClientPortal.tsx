@@ -2004,17 +2004,20 @@ function ResultScreen({
   }
 
   useEffect(() => {
-    (async () => {
+    // Usa RPC com SECURITY DEFINER para buscar dados de IA sem necessitar
+    // de sessão autenticada. Evita o erro "Invalid Refresh Token" que ocorria
+    // ao fazer queries diretas em `clients` e `ai_folders` sem auth no portal.
+    ;(async () => {
       try {
-        const { data: row } = await supabase
-          .from('clients')
-          .select('ai_prompt, ai_reference_photo_path, ai_reference_photos, ai_folder_id')
-          .eq('id', data.client.id)
-          .single()
+        const { data: row, error } = await supabase.rpc('get_client_ai_config', { p_token: token })
+        if (error || !row) {
+          setLoadingPrompt(false)
+          return
+        }
 
-        setAiPrompt(row?.ai_prompt || null)
+        setAiPrompt(row.ai_prompt || null)
 
-        if (row?.ai_reference_photos && Array.isArray(row.ai_reference_photos) && row.ai_reference_photos.length > 0) {
+        if (row.ai_reference_photos && Array.isArray(row.ai_reference_photos) && row.ai_reference_photos.length > 0) {
           const photos: RefPhoto[] = row.ai_reference_photos.map((p: any) => {
             const driveId = p.driveFileId || p.drive_file_id
             const url = driveId
@@ -2031,7 +2034,7 @@ function ResultScreen({
           const geral = photos.find(p => p.type === 'geral')
           if (geral) setAiRefPhotoUrl(geral.url)
           else if (photos.length > 0) setAiRefPhotoUrl(photos[0].url)
-        } else if (row?.ai_reference_photo_path) {
+        } else if (row.ai_reference_photo_path) {
           // Legado: campo único string (caminho do bucket antigo)
           const { data: urlData } = supabase.storage.from('client-photos').getPublicUrl(row.ai_reference_photo_path)
           setAiRefPhotoUrl(urlData.publicUrl)
@@ -2043,16 +2046,13 @@ function ResultScreen({
           }])
         }
 
-        if (row?.ai_folder_id) {
-          const { data: folder } = await supabase.from('ai_folders').select('config').eq('id', row.ai_folder_id).single()
-          if (folder?.config) {
-            setAiFolderConfig(typeof folder.config === 'string' ? JSON.parse(folder.config) : folder.config)
-          }
+        if (row.folder_config) {
+          setAiFolderConfig(typeof row.folder_config === 'string' ? JSON.parse(row.folder_config) : row.folder_config)
         }
       } catch {}
       setLoadingPrompt(false)
     })()
-  }, [data.client.id])
+  }, [token])
 
   if (!result) return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
