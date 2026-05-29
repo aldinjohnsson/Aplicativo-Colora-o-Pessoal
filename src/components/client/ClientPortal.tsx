@@ -210,7 +210,7 @@ function PortalAudioPlayer({ audioSrc, className }: { audioSrc: string; classNam
     <audio
       src={blobUrl}
       controls
-      preload="auto"
+      preload="none"
       className={className ?? 'w-full rounded-xl'}
       style={{ colorScheme: 'light' }}
     />
