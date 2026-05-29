@@ -1755,6 +1755,51 @@ export const adminService = {
 
     return { id: data.id, name: data.name, config }
   },
+
+  // ---- Iris text templates ----
+
+  async listIrisTextTemplates() {
+    const { data, error } = await supabase
+      .from('iris_text_templates')
+      .select('*')
+      .order('name')
+    if (error) throw error
+    return data || []
+  },
+
+  async createIrisTextTemplate(payload: {
+    name: string; title: string; body: string
+    font_family: string; text_color: string; bg_color: string
+    title_size: number; body_size: number
+  }) {
+    const { data, error } = await supabase
+      .from('iris_text_templates')
+      .insert(payload)
+      .select()
+      .single()
+    if (error) throw error
+    return data
+  },
+
+  async updateIrisTextTemplate(id: string, payload: {
+    name: string; title: string; body: string
+    font_family: string; text_color: string; bg_color: string
+    title_size: number; body_size: number
+  }) {
+    const { error } = await supabase
+      .from('iris_text_templates')
+      .update(payload)
+      .eq('id', id)
+    if (error) throw error
+  },
+
+  async deleteIrisTextTemplate(id: string) {
+    const { error } = await supabase
+      .from('iris_text_templates')
+      .delete()
+      .eq('id', id)
+    if (error) throw error
+  },
 }
 
 // ============================================================

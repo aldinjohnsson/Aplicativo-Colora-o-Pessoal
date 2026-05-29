@@ -29,6 +29,9 @@ import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
 import { AiCompositionsManager } from './documents/ai-compositions/AiCompositionsManager'
 import { ContrastLayoutDialog, type ContrastLayoutData, formatContrastValue } from './documents/client/ContrastLayoutDialog'
+import { IrisAnalysisSection } from './documents/client/IrisAnalysisSection'
+import { IrisAnalysisDialog } from './documents/client/IrisAnalysisDialog'
+import type { IrisAnalysisRecord } from './documents/client/irisAnalysisTypes'
 import { cleanClientFiles } from '../../services/cleanupService'
 import { AddManualClientModal } from './AddManualClientModal'
 
@@ -3899,6 +3902,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   // que dispara o auto-save existente do clientTags.
   const [contrastLayout, setContrastLayout] = useState<ContrastLayoutData | null>(null)
   const [contrastDialogOpen, setContrastDialogOpen] = useState(false)
+  const [irisAnalysis, setIrisAnalysis] = useState<IrisAnalysisRecord | null>(null)
+  const [irisDialogOpen, setIrisDialogOpen] = useState(false)
+  const [irisTemplates, setIrisTemplates] = useState<import('./documents/client/irisAnalysisTypes').IrisTextTemplate[]>([])
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
@@ -3964,11 +3970,12 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     // o conteúdo ao final — evita pisca-pisca quando outras abas chamam load().
     const initialLoad = data === null
     if (initialLoad) setLoading(true)
-    const [detail, foldersRes, templatesRes, adminRes] = await Promise.all([
+    const [detail, foldersRes, templatesRes, adminRes, irisTemplatesRes] = await Promise.all([
       adminService.getClientDetail(clientId),
       supabase.from('ai_folders').select('id, name, config').order('name'),
       supabase.from('ai_info_templates').select('id, name, type, options').order('sort_order'),
       adminService.getCurrentAdmin(),
+      adminService.listIrisTextTemplates().catch(() => []),
     ])
     setData(detail)
     setIsSuperAdmin(adminRes?.role === 'super_admin')
@@ -3994,6 +4001,25 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     // carrega estado da ferramenta de contraste (gravado em clients.contrast_layout)
     const cl = (detail.client as any).contrast_layout
     setContrastLayout(cl && typeof cl === 'object' ? cl as ContrastLayoutData : null)
+
+    // carrega estado da análise da íris (gravado em clients.iris_analysis)
+    const ia = (detail.client as any).iris_analysis
+    setIrisAnalysis(ia && typeof ia === 'object' ? ia as IrisAnalysisRecord : null)
+    setIrisTemplates(
+      (irisTemplatesRes as any[]).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        title: r.title,
+        body: r.body,
+        fontFamily: r.font_family ?? r.fontFamily,
+        textColor: r.text_color ?? r.textColor,
+        bgColor: r.bg_color ?? r.bgColor,
+        titleSize: r.title_size ?? r.titleSize,
+        bodySize: r.body_size ?? r.bodySize,
+        createdAt: r.created_at ?? r.createdAt,
+        updatedAt: r.updated_at ?? r.updatedAt,
+      }))
+    )
     // marca a baseline pro auto-save (assim o primeiro render não dispara save)
     savedAiTagsRef.current = JSON.stringify(
       tpls.map((t: any) => { const saved = savedTags.find((s: any) => s.templateId === t.id); return { templateId: t.id, name: t.name, value: saved?.value || '' } })
@@ -4052,6 +4078,16 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       .eq('id', clientId)
     if (error) throw error
     setContrastLayout(data)
+  }
+
+  const handleSaveIrisAnalysis = async (record: IrisAnalysisRecord) => {
+    if (!clientId) return
+    const { error } = await supabase
+      .from('clients')
+      .update({ iris_analysis: record })
+      .eq('id', clientId)
+    if (error) throw error
+    setIrisAnalysis(record)
   }
 
   const handleSaveNotes = async () => {
@@ -4325,12 +4361,18 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           sampleRate: 48000,
         },
       })
-      // Codec: Chrome/Firefox → webm/opus; Safari → mp4/aac (deixa default).
+      // Codec: Chrome/Firefox → webm/opus; Safari → mp4/aac.
+      // É importante cobrir o caso Safari explicitamente: sem isso, quando
+      // mime fica '' o MediaRecorder usa o default interno do browser (mp4 no
+      // Safari), mas a extensão era derivada erroneamente como 'webm', gerando
+      // arquivos .webm com conteúdo mp4 que não tocam no cliente.
       const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : MediaRecorder.isTypeSupported('audio/webm')
           ? 'audio/webm'
-          : ''
+          : MediaRecorder.isTypeSupported('audio/mp4')
+            ? 'audio/mp4'
+            : ''
       // 128 kbps é "voice quality" — quase 4x o default (~32k). Pra voz é
       // suficiente pra som limpo sem inflar muito o tamanho (~1MB por minuto).
       const recorder = new MediaRecorder(stream, {
@@ -4368,7 +4410,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const saveRecording = async () => {
     if (recState.kind !== 'preview') return
     const { blob: rawBlob, url, durationMs } = recState
-    const ext = rawBlob.type.includes('mp4') ? 'm4a' : 'webm'
+    const ext = rawBlob.type.includes('mp4') || rawBlob.type.includes('m4a') ? 'm4a'
+               : rawBlob.type.includes('ogg') ? 'ogg'
+               : 'webm'
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
     // Corrige o metadado de duração no WEBM antes de enviar —
     // MediaRecorder não grava Duration no header, o que faz o <audio>
@@ -5282,6 +5326,51 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   initial={contrastLayout}
                   onClose={() => setContrastDialogOpen(false)}
                   onSave={handleSaveContrastLayout}
+                />
+              )}
+
+              {/* ── Análise da Íris ───────────────────────────────────────── */}
+              {isSuperAdmin && (
+                <IrisAnalysisSection
+                  irisAnalysis={irisAnalysis}
+                  onOpen={() => setIrisDialogOpen(true)}
+                />
+              )}
+
+              {isSuperAdmin && irisDialogOpen && data?.client && (
+                <IrisAnalysisDialog
+                  clientId={clientId!}
+                  clientName={data.client.full_name}
+                  initial={irisAnalysis}
+                  onClose={() => setIrisDialogOpen(false)}
+                  onSave={handleSaveIrisAnalysis}
+                  templates={irisTemplates}
+                  onSaveTemplate={async (payload) => {
+                    const created = await adminService.createIrisTextTemplate({
+                      name: payload.name,
+                      title: payload.title,
+                      body: payload.body,
+                      font_family: payload.fontFamily,
+                      text_color: payload.textColor,
+                      bg_color: payload.bgColor,
+                      title_size: payload.titleSize,
+                      body_size: payload.bodySize,
+                    })
+                    // Adiciona na lista local sem precisar recarregar tudo
+                    setIrisTemplates(prev => [...prev, {
+                      id: created.id,
+                      name: created.name,
+                      title: created.title,
+                      body: created.body,
+                      fontFamily: created.font_family,
+                      textColor: created.text_color,
+                      bgColor: created.bg_color,
+                      titleSize: created.title_size,
+                      bodySize: created.body_size,
+                      createdAt: created.created_at,
+                      updatedAt: created.updated_at,
+                    }])
+                  }}
                 />
               )}
 

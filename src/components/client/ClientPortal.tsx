@@ -153,6 +153,70 @@ function getResultFileKind(fileName: string): 'pdf' | 'audio' | 'image' | 'other
   return 'other'
 }
 
+// ── Portal Audio Player ───────────────────────────────────────────────────────
+//
+// Faz fetch do áudio via proxy (Edge Function) e cria um blob: URL local antes
+// de passar pro <audio>. Isso contorna dois problemas críticos no mobile:
+//
+//  1. iOS Safari e Chrome mobile não conseguem reproduzir áudio via URLs de
+//     proxy customizadas que não suportam range requests (HTTP 206). A Edge
+//     Function responde com 200, o que trava o player nativo no mobile.
+//
+//  2. Arquivos .webm gravados pelo admin não tocam no Safari em hipótese alguma
+//     (o Safari não suporta o codec WebM/Opus). Com blob: URL o browser ainda
+//     tenta decodificar, mas ao menos arquivos .m4a gravados no Safari admin
+//     chegam com o tipo correto.
+//
+// Ao fazer fetch aqui e expor um blob: URL, o <audio> lê bytes locais — sem
+// restrições de range request nem de CORS — e funciona em qualquer browser.
+
+function PortalAudioPlayer({ audioSrc, className }: { audioSrc: string; className?: string }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loadErr, setLoadErr] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let created: string | null = null
+    ;(async () => {
+      try {
+        const res = await fetch(audioSrc)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const blob = await res.blob()
+        if (cancelled) return
+        created = URL.createObjectURL(blob)
+        setBlobUrl(created)
+      } catch {
+        if (!cancelled) setLoadErr(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (created) URL.revokeObjectURL(created)
+    }
+  }, [audioSrc])
+
+  if (loadErr) return (
+    <p className="text-xs text-red-400 py-2 flex items-center gap-1.5">
+      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /> Erro ao carregar áudio
+    </p>
+  )
+  if (!blobUrl) return (
+    <div className="flex items-center gap-2 py-2">
+      <div className="animate-spin h-3.5 w-3.5 border-2 border-violet-300 border-t-transparent rounded-full flex-shrink-0" />
+      <span className="text-xs text-violet-400">Carregando áudio…</span>
+    </div>
+  )
+  return (
+    <audio
+      src={blobUrl}
+      controls
+      preload="auto"
+      className={className ?? 'w-full rounded-xl'}
+      style={{ colorScheme: 'light' }}
+    />
+  )
+}
+
 // ── Step Header ──────────────────────────────────────────────────────────────
 
 function StepHeader({ current, total, label }: { current: number; total: number; label: string }) {
@@ -2311,12 +2375,9 @@ function ResultScreen({
                     </button>
                   </div>
 
-                  <audio
-                    src={audioSrc}
-                    controls
-                    preload="metadata"
+                  <PortalAudioPlayer
+                    audioSrc={audioSrc}
                     className="w-full rounded-xl"
-                    style={{ colorScheme: 'light' }}
                   />
                 </div>
               )
