@@ -577,7 +577,7 @@ export function MsColorIAPage() {
 
             <p className="text-xs text-gray-500 mb-3 leading-relaxed">
               {refPhotoUrl
-                ? 'Foto carregada. O Gemini vai usá-la como base para preservar rosto e traços nas simulações.'
+                ? 'Foto carregada. A inteligência artificial vai usá-la como base para preservar rosto e traços nas simulações.'
                 : 'Envie uma foto frontal da cliente com boa iluminação. Ela será usada como base em todas as simulações de cabelo, maquiagem e look.'}
             </p>
 
