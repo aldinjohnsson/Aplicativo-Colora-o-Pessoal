@@ -99,6 +99,9 @@ interface CompositionPage {
   /** URL estática do Drive (thumbnail). Não expira, mas refrescamos no load
    *  pra páginas legadas e por consistência. */
   generatedImageUrl?:   string
+  /** Base64 PNG da imagem gerada — presente no modo standalone (sem Drive).
+   *  Usado como fallback de preview e pra montar o PDF sem precisar do Drive. */
+  generatedImageBase64?: string
   errorMsg?:            string
 }
 
@@ -332,11 +335,14 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
         ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
       })
-      // res = { driveFileId, url, downloadUrl, ... } — URL do Drive é estática.
+      // res = { driveFileId, url, ... } no modo galeria.
+      // res = { imageBase64, imageMime, ... } no modo standalone (sem Drive).
+      const previewUrl = res.url || (res.imageBase64 ? `data:${res.imageMime || 'image/png'};base64,${res.imageBase64}` : undefined)
       patchPage(pageId, {
         status:                'done',
-        generatedDriveFileId:  res.driveFileId,
-        generatedImageUrl:     res.url,
+        generatedDriveFileId:  res.driveFileId || undefined,
+        generatedImageUrl:     previewUrl,
+        generatedImageBase64:  res.imageBase64 || undefined,
         errorMsg:              undefined,
       })
     } catch (e: any) {
@@ -388,13 +394,15 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         })
         // res = { driveFileId, url, downloadUrl, ... } — URL do Drive é estática.
 
+        const previewUrlB = res.url || (res.imageBase64 ? `data:${res.imageMime || 'image/png'};base64,${res.imageBase64}` : undefined)
         commit(snap => snap.map(p =>
           p.id === page.id
             ? {
                 ...p,
                 status:               'done',
-                generatedDriveFileId: res.driveFileId,
-                generatedImageUrl:    res.url,
+                generatedDriveFileId: res.driveFileId || undefined,
+                generatedImageUrl:    previewUrlB,
+                generatedImageBase64: res.imageBase64 || undefined,
                 errorMsg:             undefined,
               }
             : p
@@ -478,12 +486,31 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         }
       }
 
-      // 2. Baixa imagens geradas + monta PDF ───────────────────────
-      const ordered = pages.filter(p => p.status === 'done' && p.generatedDriveFileId)
-      const driveFileIds = ordered.map(p => p.generatedDriveFileId as string)
-      // Baixa via /drive/photo-proxy (autenticado). Fetch direto em
-      // drive.google.com no browser dá CORS.
-      const images = await fetchAllByDriveId(driveFileIds)
+      // 2. Monta lista de imagens — dois caminhos por página:
+      //   • Drive (driveFileId presente): baixa via proxy autenticado
+      //   • Standalone (imageBase64 presente): decodifica direto, sem rede
+      const ordered = pages.filter(p => p.status === 'done' && (p.generatedDriveFileId || p.generatedImageBase64))
+
+      const drivePages      = ordered.filter(p => !!p.generatedDriveFileId)
+      const standalonePages = ordered.filter(p => !p.generatedDriveFileId && !!p.generatedImageBase64)
+
+      const driveImages = drivePages.length > 0
+        ? await fetchAllByDriveId(drivePages.map(p => p.generatedDriveFileId as string))
+        : []
+
+      // Reconstrói na ordem original intercalando Drive + standalone
+      let driveIdx = 0
+      const images = ordered.map(p => {
+        if (p.generatedDriveFileId) {
+          return driveImages[driveIdx++]
+        }
+        const b64 = p.generatedImageBase64 as string
+        const binStr = atob(b64)
+        const bytes = new Uint8Array(binStr.length)
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
+        return { bytes: bytes.buffer as ArrayBuffer, mime: 'image/png' as string }
+      })
+
       const blob   = await generateCompositionPdf(images, {
         cover: coverBytes,
         final: finalBytes,
@@ -585,7 +612,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
   const handleResetPage = (id: string) => {
     if (isBusy) return
-    patchPage(id, { status: 'pending', errorMsg: undefined, generatedDriveFileId: undefined, generatedImageUrl: undefined })
+    patchPage(id, { status: 'pending', errorMsg: undefined, generatedDriveFileId: undefined, generatedImageUrl: undefined, generatedImageBase64: undefined })
     setSavedDoc(null)
   }
 

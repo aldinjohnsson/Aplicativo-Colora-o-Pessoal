@@ -74,6 +74,57 @@ function safeFileName(name: string): string {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// PNG conversion helper (frontend — usa OffscreenCanvas / canvas)
+//
+// Converte qualquer imagem (JPEG, WebP, etc.) pra PNG puro antes de
+// enviar pra edge function. Isso elimina o custo de memória de
+// ImageScript na edge (que carregava ~100 MB só pro módulo e ainda
+// alocava 4×W×H bytes pra cada decode/encode).
+//
+// Funciona em qualquer ambiente moderno:
+//   • Browsers (Web Workers / main thread): OffscreenCanvas
+//   • Ambientes sem OffscreenCanvas: <canvas> via document
+// ══════════════════════════════════════════════════════════════════════
+
+export async function blobToPngBase64(blob: Blob): Promise<{ base64: string; mime: 'image/png' }> {
+  const bitmap = await createImageBitmap(blob)
+
+  let canvas: HTMLCanvasElement | OffscreenCanvas
+  if (typeof OffscreenCanvas !== 'undefined') {
+    canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+  } else {
+    canvas = document.createElement('canvas')
+    ;(canvas as HTMLCanvasElement).width  = bitmap.width
+    ;(canvas as HTMLCanvasElement).height = bitmap.height
+  }
+
+  const ctx = (canvas as any).getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
+  ctx.drawImage(bitmap, 0, 0)
+  bitmap.close()
+
+  let pngBlob: Blob
+  if (canvas instanceof OffscreenCanvas) {
+    pngBlob = await canvas.convertToBlob({ type: 'image/png' })
+  } else {
+    pngBlob = await new Promise<Blob>((resolve, reject) => {
+      ;(canvas as HTMLCanvasElement).toBlob(
+        b => b ? resolve(b) : reject(new Error('canvas.toBlob retornou null')),
+        'image/png',
+      )
+    })
+  }
+
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload  = () => resolve((reader.result as string).split(',')[1])
+    reader.onerror = () => reject(new Error('FileReader falhou ao ler PNG'))
+    reader.readAsDataURL(pngBlob)
+  })
+
+  return { base64, mime: 'image/png' }
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // Service
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1101,6 +1152,58 @@ export const documentsService = {
     const supabaseUrl = (supabase as any).supabaseUrl || import.meta.env.VITE_SUPABASE_URL
     if (!supabaseUrl) throw new Error('SUPABASE_URL não disponível')
 
+    // ── Conversão PNG no frontend ──────────────────────────────────────
+    //
+    // A edge function usava ImageScript pra converter JPEG → PNG, o que
+    // consumia ~250–300 MB no heap do Deno (limite padrão: ~150 MB → OOM).
+    //
+    // Estratégia: o frontend sempre envia PNG puro. A conversão via canvas
+    // é instantânea, usa a GPU do cliente e não custa nada na edge.
+    //
+    // Dois caminhos:
+    //   A) Modo upload (uploadedImageBase64 presente): decodifica o base64
+    //      atual, converte pra PNG e recodifica.
+    //   B) Modo galeria (driveFileId ou photoId presente): busca o blob via
+    //      driveStorage.fetchPhotoBlob no frontend e converte antes de enviar.
+    //      A edge não recebe mais o driveFileId — a foto já chega como PNG.
+    // ──────────────────────────────────────────────────────────────────
+
+    let finalBase64 = ''
+    let finalMime   = 'image/png'
+    let resolvedPhotoId: string | undefined = input.photoId
+
+    if (input.uploadedImageBase64) {
+      // Caminho A: upload direto — pode ser JPEG, WebP, etc.
+      const mimeIn = input.uploadedImageMime || 'image/jpeg'
+      if (mimeIn === 'image/png') {
+        // Já é PNG — passa direto, sem re-encode
+        finalBase64 = input.uploadedImageBase64
+      } else {
+        // Converte pra PNG via canvas
+        const binStr = atob(input.uploadedImageBase64)
+        const bytes  = new Uint8Array(binStr.length)
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
+        const blob = new Blob([bytes], { type: mimeIn })
+        const png  = await blobToPngBase64(blob)
+        finalBase64 = png.base64
+      }
+    } else if (input.driveFileId) {
+      // Caminho B: modo galeria — foto no Google Drive
+      // Busca o blob aqui mesmo (mesmo proxy que o PDF usa) e converte pra PNG.
+      // Passa `photoId` junto pro body para a edge saber que é modo galeria
+      // (deve subir pro Drive) — sem ele a edge cairia no caminho standalone.
+      const blob = await driveStorage.fetchPhotoBlob(input.driveFileId)
+      const png  = await blobToPngBase64(blob)
+      finalBase64    = png.base64
+      resolvedPhotoId = input.photoId  // mantém o photoId original pra edge discriminar o modo
+    } else if (input.photoId) {
+      // Caminho C: photoId sem driveFileId — foto no Supabase Storage
+      // Não temos o blob aqui facilmente (precisaríamos da signed URL), então
+      // mantemos o comportamento legado: deixa a edge buscar no storage.
+      // Esse caminho só ocorre em fotos antigas sem Drive — raramente chamado.
+      resolvedPhotoId = input.photoId
+    }
+
     const body: Record<string, any> = {
       promptId: input.promptId,
       clientId: input.clientId,
@@ -1109,25 +1212,24 @@ export const documentsService = {
         index:         input.index,
       },
     }
-    // photoId só entra no body quando presente (modo galeria).
-    // No modo standalone (upload direto), é omitido intencionalmente.
-    if (input.photoId) {
-      body.photoId = input.photoId
+
+    if (finalBase64) {
+      // Foto convertida pra PNG no frontend — envia inline.
+      body.uploadedImage = { base64: finalBase64, mime: finalMime }
     }
-    if (input.uploadedImageBase64) {
-      body.uploadedImage = {
-        base64: input.uploadedImageBase64,
-        mime:   input.uploadedImageMime || 'image/jpeg',
-      }
+    if (resolvedPhotoId) {
+      // photoId sempre vai junto quando presente:
+      //   • modo galeria (driveFileId):   edge usa pra discriminar galeria vs standalone
+      //                                   e pra montar o nome do arquivo no Drive
+      //   • fallback legado (storage):    edge busca a foto diretamente pelo photoId
+      body.photoId = resolvedPhotoId
     }
+
     if (input.modelOverride) {
       body.modelOverride = input.modelOverride
     }
     if (input.promptOverride) {
       body.promptOverride = input.promptOverride
-    }
-    if (input.driveFileId) {
-      body.driveFileId = input.driveFileId
     }
 
     const res = await fetch(`${supabaseUrl}/functions/v1/generate-tag-image`, {

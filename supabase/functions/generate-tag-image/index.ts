@@ -104,6 +104,8 @@ function safeSlug(s: string, max = 60): string {
 // Redimensiona o logo para no máximo 18% da largura da imagem base.
 // Se o compositing falhar por qualquer motivo (logo corrompido, formato
 // não suportado etc.), retorna os bytes originais sem quebrar a geração.
+// NOTA: ImageScript é importado APENAS aqui (um único import), nunca
+// dentro de outras funções, pra evitar carregar o módulo duas vezes.
 //
 async function compositeLogoBottomRight(
   baseBytes: Uint8Array,
@@ -234,58 +236,53 @@ serve(async (req) => {
     }
 
     // ── 4. Obtém a foto como Blob ───────────────────────────────────
+    //
+    // A conversão JPEG → PNG acontece AGORA no frontend (documentsService.ts),
+    // então a edge sempre recebe a foto já como PNG via uploadedImage.base64.
+    //
+    // O caminho "galeria via Drive" foi removido daqui: o frontend busca o blob
+    // (driveStorage.fetchPhotoBlob), converte pra PNG com OffscreenCanvas e envia
+    // como uploadedImage — a edge não precisa mais fazer fetch no Drive.
+    //
+    // O único fallback legado mantido é o Supabase Storage (photoId sem driveFileId),
+    // que cobre fotos antigas migradas antes da integração com o Drive.
+    //
     let photoBlob: Blob | null = null
-    let photoMime: string = photo?.photo_type || uploadedImage?.mime || 'image/jpeg'
-    const photoFileName: string = photo?.photo_name || 'client.jpg'
+    let photoMime: string = photo?.photo_type || uploadedImage?.mime || 'image/png'
+    const photoFileName: string = photo?.photo_name || 'client.png'
 
     if (uploadedImage?.base64) {
-      // Modo standalone: foto veio como base64 direto do frontend
+      // Caminho principal: foto já convertida pra PNG no frontend
       try {
         const binStr = atob(uploadedImage.base64)
         const bytes  = new Uint8Array(binStr.length)
         for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
-        photoBlob = new Blob([bytes], { type: uploadedImage.mime || 'image/jpeg' })
-        photoMime = uploadedImage.mime || 'image/jpeg'
-        console.log(`Foto standalone recebida via uploadedImage (${bytes.length} bytes, ${photoMime})`)
+        photoBlob = new Blob([bytes], { type: uploadedImage.mime || 'image/png' })
+        photoMime = uploadedImage.mime || 'image/png'
+        console.log(`Foto recebida via uploadedImage (${bytes.length} bytes, ${photoMime})`)
       } catch (decodeErr) {
         return jsonRes({ error: `Falha ao decodificar uploadedImage.base64: ${decodeErr}` }, 400)
       }
-    } else if (photo) {
-      // Modo galeria: baixa do Drive ou Supabase Storage
-      if (photo.drive_file_id) {
-        const driveUrl = `https://drive.google.com/uc?export=download&id=${photo.drive_file_id}`
-        try {
-          const driveRes = await fetch(driveUrl)
-          if (driveRes.ok) {
-            photoBlob = await driveRes.blob()
-            photoMime = driveRes.headers.get('content-type') || photoMime
-          } else {
-            console.warn(`Drive download failed (HTTP ${driveRes.status}), trying Supabase Storage…`)
-          }
-        } catch (e) {
-          console.warn('Drive download threw, trying Supabase Storage…', e)
-        }
+    } else if (photo?.storage_path) {
+      // Fallback legado: foto antiga no Supabase Storage (sem Drive).
+      // Raro — apenas fotos enviadas antes da integração com o Google Drive.
+      const { data: sb, error: dlErr } = await admin.storage
+        .from('client-photos')
+        .download(photo.storage_path)
+      if (dlErr || !sb) {
+        return jsonRes({
+          error: `Failed to download photo: ${dlErr?.message || 'Object not found'}. ` +
+                 `A foto pode não estar mais disponível no storage. ` +
+                 `Verifique se o Google Drive está conectado e a foto foi enviada corretamente.`,
+        }, 500)
       }
-
-      if (!photoBlob && photo.storage_path) {
-        const { data: sb, error: dlErr } = await admin.storage
-          .from('client-photos')
-          .download(photo.storage_path)
-        if (dlErr || !sb) {
-          return jsonRes({
-            error: `Failed to download photo: ${dlErr?.message || 'Object not found'}. ` +
-                   `A foto pode não estar mais disponível no storage. ` +
-                   `Verifique se o Google Drive está conectado e a foto foi enviada corretamente.`,
-          }, 500)
-        }
-        photoBlob = sb
-        photoMime = photo.photo_type || sb.type || 'image/jpeg'
-      }
+      photoBlob = sb
+      photoMime = photo.photo_type || sb.type || 'image/jpeg'
     }
 
     if (!photoBlob) {
       return jsonRes({
-        error: 'Não foi possível obter a foto. Verifique se o Google Drive está conectado ou envie uma foto válida.',
+        error: 'Não foi possível obter a foto. Envie a foto via uploadedImage ou verifique o storage.',
       }, 500)
     }
 
@@ -499,8 +496,13 @@ serve(async (req) => {
     //      AiCompositionsManager continua funcionando sem alteração.
     // ═══════════════════════════════════════════════════════════════════
 
-    if (uploadedImage?.base64) {
-      // ── Sub-modo A: standalone — devolve base64, sem Drive ──────────
+    if (!photoId) {
+      // ── Sub-modo A: standalone — sem photoId de galeria, devolve base64 ──
+      // Ativado quando a foto veio como uploadedImage sem photoId associado
+      // (ex: StandaloneAiGenerationPage, ou upload direto sem galeria).
+      // A foto de galeria com driveFileId também chega como uploadedImage
+      // (convertida pra PNG no frontend), mas SEMPRE envia photoId junto —
+      // por isso essa condição discrimina corretamente os dois casos.
       let b64out = ''
       const chunk = 8192
       for (let i = 0; i < outBytes.length; i += chunk) {
