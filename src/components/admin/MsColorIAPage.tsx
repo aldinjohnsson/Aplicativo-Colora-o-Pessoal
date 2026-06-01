@@ -18,10 +18,13 @@ import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, AlertCircle, Loader2, Settings as SettingsIcon,
   Camera, ImagePlus, X, RefreshCw, FolderOpen, ChevronDown, Check, User,
+  Wand2, CheckCircle, AlertTriangle,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import type { AdminUser } from '../../lib/services'
 import { GeminiChat } from '../client/GeminiChat'
+import { documentsService } from './documents/lib/documentsService'
+import { ImageLightbox } from './AIPromptConfig'
 
 // ─── Storage keys ──────────────────────────────────────────────────────
 
@@ -48,6 +51,9 @@ interface LoadedConfig {
   adminName:        string
   adminId:          string
   geminiKeyPresent: boolean
+  /** Chave OpenAI (GPT) do admin — usada client-side no aprimoramento de foto. */
+  openaiApiKey:     string
+  openaiKeyPresent: boolean
   folders:          FolderOption[]
 }
 
@@ -76,6 +82,8 @@ export function MsColorIAPage() {
   const [refPhotoPreview, setRefPhotoPreview] = useState<string | null>(null)
   const [uploadingPhoto,  setUploadingPhoto]  = useState(false)
   const [uploadError,     setUploadError]     = useState<string | null>(null)
+  // Modal "Aprimorar com IA" (usa a chave GPT/OpenAI do admin).
+  const [enhanceOpen,     setEnhanceOpen]     = useState(false)
 
   useEffect(() => { void load() }, [])
 
@@ -163,6 +171,12 @@ export function MsColorIAPage() {
       const geminiKey = (settingsRow?.content as any)?.geminiApiKey as string | undefined
       const geminiKeyPresent = !!(geminiKey && geminiKey.trim())
 
+      // Chave OpenAI (GPT) — opcional. Habilita o aprimoramento de foto.
+      // Vive só no row 'settings' do admin_content (filtrado por admin_id),
+      // então o próprio admin consegue lê-la aqui pelo client.
+      const openaiKey = ((settingsRow?.content as any)?.openaiApiKey as string | undefined)?.trim() || ''
+      const openaiKeyPresent = !!openaiKey
+
       if (folderErr) {
         console.error('[MsColorIAPage] erro ao carregar ai_folders:', folderErr)
         setState({
@@ -193,6 +207,8 @@ export function MsColorIAPage() {
           adminName:        admin.nome || 'Você',
           adminId:          admin.id,
           geminiKeyPresent,
+          openaiApiKey:     openaiKey,
+          openaiKeyPresent,
           folders,
         },
       })
@@ -300,6 +316,21 @@ export function MsColorIAPage() {
     }
   }
 
+  // ─── Aprimoramento aplicado ───────────────────────────────────────
+  //
+  // O modal já fez o upload da versão aprimorada no mesmo caminho da foto
+  // de referência. Aqui só atualizamos a URL exibida (com o ?t= novo) e
+  // persistimos o timestamp pra sobreviver a reloads, igual ao upload normal.
+  function handleEnhancedApplied(newUrl: string, ts: number) {
+    setRefPhotoPreview(newUrl)
+    setRefPhotoUrl(newUrl)
+    setUploadError(null)
+    if (state.kind === 'ready') {
+      try { localStorage.setItem(refPhotoTimestampKey(state.data.adminId), String(ts)) } catch {}
+    }
+    setEnhanceOpen(false)
+  }
+
   // ─── Render ───────────────────────────────────────────────────────
 
   if (state.kind === 'loading') {
@@ -336,7 +367,7 @@ export function MsColorIAPage() {
     )
   }
 
-  const { adminName, adminId, geminiKeyPresent, folders } = state.data
+  const { adminName, adminId, geminiKeyPresent, openaiKeyPresent, folders } = state.data
 
   if (!geminiKeyPresent) {
     return (
@@ -576,6 +607,28 @@ export function MsColorIAPage() {
                 )}
               </button>
 
+              {/* Aprimorar com IA — só faz sentido quando já existe uma foto.
+                  Requer a chave GPT (OpenAI) configurada nas Configurações. */}
+              {refPhotoUrl && !uploadingPhoto && (
+                openaiKeyPresent ? (
+                  <button
+                    onClick={() => setEnhanceOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 hover:bg-fuchsia-100 transition-colors"
+                    title="Aprimorar a foto de referência com IA (usa sua chave GPT)"
+                  >
+                    <Wand2 className="h-3.5 w-3.5" /> Aprimorar com IA
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => navigate('/admin/settings')}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 hover:bg-gray-100 transition-colors"
+                    title="Configure sua chave GPT (OpenAI) para aprimorar fotos"
+                  >
+                    <Wand2 className="h-3.5 w-3.5" /> Aprimorar (requer chave GPT)
+                  </button>
+                )
+              )}
+
               {!refPhotoUrl && (
                 <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
                   ⚠️ Simulações sem foto de referência podem não preservar os traços da cliente.
@@ -606,7 +659,364 @@ export function MsColorIAPage() {
         chatStorageKey={`ms_color_ia_${adminId}_${activeFolder.id}`}
         // onSavePdf NÃO informado → PDF só baixa, sem persistência
       />
+
+      {/* ── Modal Aprimorar foto de referência com IA (OpenAI / GPT) ── */}
+      {enhanceOpen && refPhotoUrl && (
+        <EnhancePhotoModal
+          adminId={adminId}
+          photoUrl={refPhotoUrl}
+          onClose={() => setEnhanceOpen(false)}
+          onApplied={handleEnhancedApplied}
+        />
+      )}
     </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// EnhancePhotoModal — aprimora a foto de referência com IA
+//
+// MESMO mecanismo da aba IA (StandardizeModal do AIPromptConfig):
+//   • Carrega os prompts cadastrados do tipo 'ref_standardize'.
+//   • Chama a Edge Function `generate-tag-image` passando promptOverride =
+//     texto do prompt selecionado (parts[0].prompt).
+//   • A Edge Function usa a chave do admin (Gemini/GPT configurada nas
+//     Configurações) no servidor — o resultado fica idêntico ao da aba IA.
+//
+// Standalone (sem cliente): usa o próprio adminId como clientId, igual à
+// StandaloneAiGenerationPage.
+//
+// Fluxo: carrega prompt → (seleciona, se houver mais de um) → gera →
+//        preview antes/depois → "Usar esta foto" salva no caminho da
+//        foto de referência.
+// ═══════════════════════════════════════════════════════════════════════
+
+interface EnhancePhotoModalProps {
+  adminId:   string
+  photoUrl:  string
+  onClose:   () => void
+  onApplied: (newUrl: string, ts: number) => void
+}
+
+function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePhotoModalProps) {
+  const [prompts,        setPrompts]        = useState<any[]>([])
+  const [loadingPrompts, setLoadingPrompts] = useState(true)
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
+  const [running,    setRunning]    = useState(false)
+  const [saving,     setSaving]     = useState(false)
+  const [progress,   setProgress]   = useState('')
+  const [error,      setError]      = useState<string | null>(null)
+  const [previewB64, setPreviewB64] = useState<string | null>(null)
+  // Lightbox — URL/dataURL da imagem ampliada (null = fechado). Reaproveita
+  // o mesmo ImageLightbox da aba IA (zoom, arraste, pinch e download).
+  const [lightbox,   setLightbox]   = useState<string | null>(null)
+
+  // Carrega os prompts de aprimoramento (mesma fonte da aba IA).
+  useEffect(() => {
+    let cancelled = false
+    setLoadingPrompts(true)
+    documentsService.listAiImagePrompts({ promptKind: 'ref_standardize' })
+      .then((all: any[]) => {
+        if (cancelled) return
+        setPrompts(all)
+        if (all.length === 1) setSelectedPromptId(all[0].id)
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingPrompts(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const handleRun = async () => {
+    const prompt = prompts.find(p => p.id === selectedPromptId)
+    if (!prompt) return
+    setRunning(true)
+    setError(null)
+    try {
+      // 1. Baixa a foto de referência atual como blob.
+      setProgress('Carregando foto original…')
+      const r = await fetch(photoUrl)
+      if (!r.ok) throw new Error('Não foi possível carregar a foto de referência.')
+      const photoBlob = await r.blob()
+
+      // 2. Converte para base64 para enviar à API.
+      setProgress('Preparando imagem…')
+      const base64Photo = await new Promise<string>((res, rej) => {
+        const reader = new FileReader()
+        reader.onload = () => res((reader.result as string).split(',')[1])
+        reader.onerror = () => rej(new Error('Erro ao converter imagem'))
+        reader.readAsDataURL(photoBlob)
+      })
+
+      // 3. Texto do prompt (primeira parte) — idêntico à aba IA.
+      const promptText = Array.isArray(prompt.parts) && prompt.parts.length > 0
+        ? prompt.parts[0].prompt
+        : ''
+      if (!promptText) throw new Error('O prompt não tem texto definido.')
+
+      // 4. Edge Function generate-tag-image (modo standalone, clientId = admin).
+      setProgress('Enviando para a IA… (pode levar até 30s)')
+      const { data: { session } } = await supabase.auth.getSession()
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-tag-image`
+      const resp = await fetch(fnUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          promptId: prompt.id,
+          clientId: adminId,            // standalone: usa o admin como "cliente"
+          promptOverride: promptText,
+          uploadedImage: {
+            base64: base64Photo,
+            mime: photoBlob.type || 'image/jpeg',
+          },
+          composition: { compositionId: 'ms_color_ia_ref_standardize', index: 0 },
+        }),
+      })
+      if (!resp.ok) {
+        const j = await resp.json().catch(() => ({}))
+        throw new Error(j.error || `Erro da API: HTTP ${resp.status}`)
+      }
+      const result = await resp.json() as { success?: boolean; imageBase64?: string; imageMime?: string; error?: string }
+      if (!result.success || !result.imageBase64) {
+        throw new Error(result.error || 'A IA não retornou imagem.')
+      }
+
+      setProgress('Imagem gerada!')
+      setPreviewB64(`data:${result.imageMime || 'image/png'};base64,${result.imageBase64}`)
+      setRunning(false)
+    } catch (err: any) {
+      setError(err?.message || 'Erro ao aprimorar a foto.')
+      setRunning(false)
+    }
+  }
+
+  const handleConfirm = async () => {
+    if (!previewB64) return
+    setSaving(true)
+    setError(null)
+    try {
+      // Converte o resultado para JPEG comprimido (mesmo formato do upload normal).
+      const res = await fetch(previewB64)
+      const pngBlob = await res.blob()
+      const jpegBlob = await compressImage(new File([pngBlob], 'enh.png', { type: 'image/png' }), 1280, 0.9)
+
+      const path = `ms-color-ia-ref/${adminId}/ref_photo.jpg`
+      const { error: upErr } = await supabase.storage
+        .from('client-photos')
+        .upload(path, jpegBlob, { contentType: 'image/jpeg', upsert: true })
+      if (upErr) throw upErr
+
+      const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
+      if (!data?.publicUrl) throw new Error('Não foi possível obter a URL pública da foto.')
+
+      const ts = Date.now()
+      onApplied(`${data.publicUrl}?t=${ts}`, ts)
+    } catch (err: any) {
+      setError(err?.message || 'Erro ao salvar a foto aprimorada.')
+      setSaving(false)
+    }
+  }
+
+  const busy = running || saving
+
+  return (
+    <>
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+      onClick={e => { if (e.target === e.currentTarget && !busy) onClose() }}
+    >
+      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-rose-500 rounded-xl flex items-center justify-center flex-shrink-0">
+              <Wand2 className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm text-gray-900">
+                {previewB64 ? 'Resultado gerado' : 'Aprimorar foto de referência'}
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5">Com IA · usa sua chave GPT (OpenAI)</p>
+            </div>
+          </div>
+          {!busy && (
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400">
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {previewB64 ? (
+            <>
+              {/* ── PREVIEW ── */}
+              <p className="text-xs text-gray-500 text-center">
+                Toque na imagem para ampliar. Se gostar, clique em <strong>Usar esta foto</strong> para substituir a referência.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <p className="text-[11px] font-semibold text-gray-500 text-center uppercase tracking-wide">Antes</p>
+                  <button
+                    onClick={() => setLightbox(photoUrl)}
+                    className="w-full aspect-square rounded-xl overflow-hidden border border-gray-200 hover:border-gray-400 transition-all relative group"
+                  >
+                    <img src={photoUrl} alt="Antes" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 text-white text-[11px] px-2 py-1 rounded-lg">🔍 Ampliar</span>
+                    </div>
+                  </button>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[11px] font-semibold text-fuchsia-600 text-center uppercase tracking-wide">Depois ✨</p>
+                  <button
+                    onClick={() => setLightbox(previewB64)}
+                    className="w-full aspect-square rounded-xl overflow-hidden border-2 border-fuchsia-300 hover:border-fuchsia-500 transition-all relative group"
+                  >
+                    <img src={previewB64} alt="Depois" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 text-white text-[11px] px-2 py-1 rounded-lg">🔍 Ampliar</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+              {error && (
+                <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                  <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-700">{error}</p>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {/* ── CONFIGURAÇÃO ── */}
+              <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
+                <img src={photoUrl} alt="" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200" />
+                <div>
+                  <p className="text-xs font-semibold text-gray-700">Foto de referência atual</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    A IA vai aprimorar esta foto preservando o rosto e os traços da cliente.
+                  </p>
+                </div>
+              </div>
+
+              {/* Prompt de aprimoramento — mesma fonte da aba IA */}
+              {loadingPrompts ? (
+                <div className="flex items-center justify-center py-6 gap-2 text-fuchsia-500">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span className="text-sm">Carregando prompts…</span>
+                </div>
+              ) : prompts.length === 0 ? (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-1">
+                  <AlertTriangle className="h-5 w-5 text-amber-500 mx-auto" />
+                  <p className="text-sm font-medium text-amber-800">Nenhum prompt cadastrado</p>
+                  <p className="text-xs text-amber-600">
+                    Acesse <strong>Documentos → Prompts IA</strong> e crie um prompt do tipo
+                    <strong> "Aprimorar foto de referência"</strong>.
+                  </p>
+                </div>
+              ) : prompts.length === 1 ? (
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Vamos aplicar o aprimoramento <strong>{prompts[0].name}</strong> mantendo a
+                  identidade da cliente. É só clicar em <strong>Aprimorar foto</strong>.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-gray-700">
+                    Prompt de aprimoramento
+                  </label>
+                  {prompts.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => setSelectedPromptId(p.id)}
+                      disabled={running}
+                      className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 text-left transition-all ${
+                        selectedPromptId === p.id
+                          ? 'border-fuchsia-400 bg-fuchsia-50'
+                          : 'border-gray-200 hover:border-fuchsia-200 hover:bg-fuchsia-50/40'
+                      }`}
+                    >
+                      <Sparkles className={`h-4 w-4 flex-shrink-0 ${selectedPromptId === p.id ? 'text-fuchsia-500' : 'text-gray-400'}`} />
+                      <p className="flex-1 min-w-0 text-sm font-medium text-gray-800 truncate">{p.name}</p>
+                      {selectedPromptId === p.id && (
+                        <CheckCircle className="h-4 w-4 text-fuchsia-500 flex-shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {running && (
+                <div className="flex items-center gap-3 p-3 bg-fuchsia-50 border border-fuchsia-200 rounded-xl">
+                  <Loader2 className="h-5 w-5 text-fuchsia-500 animate-spin flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-fuchsia-800">Processando…</p>
+                    <p className="text-xs text-fuchsia-600 mt-0.5">{progress}</p>
+                  </div>
+                </div>
+              )}
+              {error && (
+                <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                  <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-700">{error}</p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-2 px-5 py-3 border-t border-gray-100 bg-gray-50">
+          {previewB64 ? (
+            <>
+              <button
+                onClick={() => { setPreviewB64(null); setError(null) }}
+                disabled={saving}
+                className="flex-1 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Tentar novamente
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={saving}
+                className="flex-1 py-2 text-sm font-semibold text-white bg-gradient-to-r from-fuchsia-500 to-rose-500 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {saving
+                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Salvando…</>
+                  : <><CheckCircle className="h-4 w-4" /> Usar esta foto</>}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={onClose}
+                disabled={running}
+                className="flex-1 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleRun}
+                disabled={running || !selectedPromptId || prompts.length === 0}
+                className="flex-1 py-2 text-sm font-semibold text-white bg-gradient-to-r from-fuchsia-500 to-rose-500 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {running
+                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Processando…</>
+                  : <><Wand2 className="h-4 w-4" /> Aprimorar foto</>}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+
+      {/* Lightbox de zoom — mesmo componente da aba IA */}
+      {lightbox && (
+        <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
+      )}
+    </>
   )
 }
 

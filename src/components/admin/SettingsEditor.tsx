@@ -379,6 +379,78 @@ function GeminiKeyCard({
   )
 }
 
+// ── Card de chave OpenAI (reusado por full e chat_admin) ────────────────
+
+function OpenAiKeyCard({
+  value, onChange, onHelp, title, subtitle, contextLabel,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onHelp: () => void
+  title?: string
+  subtitle?: string
+  contextLabel?: string
+}) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-rose-500 rounded-xl flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+              <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">{title || 'Geração de Imagem OpenAI'}</h2>
+            <p className="text-sm text-gray-500">{subtitle || 'Necessária para gerar composições visuais de coloração'}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-3">
+        <div>
+          <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
+            <label className="text-sm font-medium text-gray-700">Chave da API OpenAI</label>
+            <button
+              type="button"
+              onClick={onHelp}
+              className="inline-flex items-center gap-1 text-xs text-fuchsia-600 hover:text-fuchsia-800 font-medium"
+            >
+              <HelpCircle className="h-3.5 w-3.5" />
+              Como obter?
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              type="password"
+              value={value}
+              onChange={e => onChange(e.target.value)}
+              placeholder="sk-proj-... ou sk-..."
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-24"
+            />
+            {value && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                ✓<span className="hidden sm:inline"> Configurada</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {value && (
+          <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-xl p-3">
+            <p className="text-sm text-fuchsia-700">
+              {contextLabel || '✓ Geração de imagem ativada. Cada imagem gerada usa créditos da sua conta OpenAI.'}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── PDF Modelo (reusado) ────────────────────────────────────────────────────
 
 function PdfTemplateSection({
@@ -939,6 +1011,16 @@ export default function SettingsEditor() {
           contextLabel="✓ Chave configurada. O uso é cobrado direto no seu Google Cloud — você tem controle total da sua conta."
         />
 
+        {/* OpenAI (GPT) — opcional: ativa o "Aprimorar foto" na MS Color IA */}
+        <OpenAiKeyCard
+          value={settings.openaiApiKey}
+          onChange={v => setSettings({ ...settings, openaiApiKey: v })}
+          onHelp={() => setShowOpenAIHelp(true)}
+          title="Chave GPT (OpenAI) — opcional"
+          subtitle="Ativa o aprimoramento de fotos de referência na MS Color IA"
+          contextLabel="✓ Aprimoramento de fotos ativado. Cada foto aprimorada usa créditos da sua conta OpenAI — você controla o gasto."
+        />
+
         <PdfTemplateSection
           currentFileName={settings.pdfTemplateFileName || ''}
           onSave={async (base64, fileName) => {
@@ -973,6 +1055,25 @@ export default function SettingsEditor() {
               { text: 'Clique em "Create API key" no menu lateral esquerdo' },
               { text: 'Selecione um projeto existente ou crie um novo' },
               { text: 'Copie a chave gerada e cole no campo acima', highlight: true },
+            ]}
+          />
+        )}
+
+        {showOpenAIHelp && (
+          <ApiKeyHelpModal
+            title="Como obter a chave GPT (OpenAI)"
+            subtitle="Requer conta com créditos · platform.openai.com"
+            accentColor="#c026d3"
+            url="https://platform.openai.com/api-keys"
+            urlLabel="Abrir OpenAI Platform"
+            onClose={() => setShowOpenAIHelp(false)}
+            steps={[
+              { text: 'Acesse a OpenAI Platform pelo botão abaixo' },
+              { text: 'Faça login ou crie sua conta' },
+              { text: 'No menu lateral, clique em "API keys"' },
+              { text: 'Clique em "Create new secret key" e dê um nome' },
+              { text: 'Copie a chave imediatamente, ela não será exibida novamente', highlight: true },
+              { text: 'Garanta que há créditos em Billing → Overview para as chamadas funcionarem' },
             ]}
           />
         )}

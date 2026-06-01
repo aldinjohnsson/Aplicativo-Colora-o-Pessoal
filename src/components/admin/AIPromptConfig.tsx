@@ -1368,7 +1368,7 @@ function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageEleme
 // ImageLightbox — foto em tela cheia com zoom, arraste, pinch e download
 // ══════════════════════════════════════════════════════════════════════════
 
-function ImageLightbox({ src, mimeType, onClose }: { src: string; mimeType?: string; onClose: () => void }) {
+export function ImageLightbox({ src, mimeType, onClose }: { src: string; mimeType?: string; onClose: () => void }) {
   const [scale, setScale]   = useState(1)
   const [pos,   setPos]     = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)

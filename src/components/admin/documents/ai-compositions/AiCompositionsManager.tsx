@@ -412,7 +412,8 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     if (nowErrored > 0) {
       setGlobalError(
         `${nowErrored} página${nowErrored !== 1 ? 's' : ''} falharam. ` +
-        `Clique em ↺ na linha pra tentar de novo, depois em "Gerar pendentes".`
+        `Veja o motivo em cada card, clique em ↺ pra tentar de novo individualmente ` +
+        `ou em "Gerar pendentes" pra reprocessar todos os erros.`
       )
     }
   }
@@ -850,6 +851,93 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//   parseGenerationError — transforma erros técnicos em mensagens legíveis
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Converte mensagens de erro crus da OpenAI / Edge Function em texto
+ * amigável pra exibir no card. O erro bruto fica no console.
+ */
+function parseGenerationError(raw: string): { title: string; detail: string } {
+  if (!raw) return { title: 'Erro desconhecido', detail: 'Tente novamente.' }
+
+  // ── Erros de arquivo de imagem inválido ──────────────────────────────
+  if (/invalid image file/i.test(raw) || /invalid.*mode.*image/i.test(raw)) {
+    return {
+      title: 'Foto incompatível com a API',
+      detail:
+        'O formato da foto não foi aceito pela OpenAI. ' +
+        'Tente trocar a foto da cliente por uma imagem JPEG ou PNG diferente e gere novamente.',
+    }
+  }
+
+  // ── Cota / billing ───────────────────────────────────────────────────
+  if (/rate.?limit|quota|billing|insufficient_quota/i.test(raw)) {
+    return {
+      title: 'Limite de API atingido',
+      detail:
+        'Sua cota da OpenAI foi excedida ou a cobrança está pendente. ' +
+        'Verifique seu painel em platform.openai.com e aguarde antes de tentar novamente.',
+    }
+  }
+
+  // ── Chave inválida ───────────────────────────────────────────────────
+  if (/invalid.*api.*key|incorrect.*api.*key|api.?key/i.test(raw)) {
+    return {
+      title: 'Chave da OpenAI inválida',
+      detail: 'A chave configurada em Configurações → OpenAI está incorreta ou foi revogada.',
+    }
+  }
+
+  // ── Chave não configurada ────────────────────────────────────────────
+  if (/chave.*openai.*não configurada|openai.*not configured/i.test(raw)) {
+    return {
+      title: 'Chave da OpenAI não configurada',
+      detail: 'Vá em Configurações e cole sua chave da OpenAI em "Geração de Imagem OpenAI".',
+    }
+  }
+
+  // ── Prompt vazio ─────────────────────────────────────────────────────
+  if (/texto da parte está vazio|empty prompt/i.test(raw)) {
+    return {
+      title: 'Prompt sem texto',
+      detail: 'Vá em Prompts IA, edite este prompt e preencha o texto de cada parte.',
+    }
+  }
+
+  // ── Foto não encontrada ──────────────────────────────────────────────
+  if (/photo not found|foto.*não.*disponível|failed to download photo/i.test(raw)) {
+    return {
+      title: 'Foto não encontrada',
+      detail:
+        'Não foi possível recuperar a foto desta página. ' +
+        'Verifique se o Google Drive está conectado ou remova e adicione esta página novamente.',
+    }
+  }
+
+  // ── Timeout / conexão ────────────────────────────────────────────────
+  if (/timeout|ETIMEDOUT|network|fetch failed/i.test(raw)) {
+    return {
+      title: 'Tempo de resposta excedido',
+      detail: 'A geração demorou mais do que o esperado. Tente novamente, costuma funcionar na segunda tentativa.',
+    }
+  }
+
+  // ── Erro genérico da OpenAI (HTTP 4xx/5xx sem detalhe acima) ─────────
+  if (/openai api error|openai.*error/i.test(raw)) {
+    return {
+      title: 'Erro na API da OpenAI',
+      detail: 'A geração foi recusada pela OpenAI. Tente novamente ou verifique o prompt desta parte.',
+    }
+  }
+
+  // ── Fallback ─────────────────────────────────────────────────────────
+  // Trunca mensagens muito longas antes de exibir
+  const truncated = raw.length > 160 ? raw.slice(0, 157) + '…' : raw
+  return { title: 'Erro na geração', detail: truncated }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //   PageRow
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1044,9 +1132,15 @@ function PageRow({
               </p>
               {statusBadge[page.status]}
             </div>
-            {page.status === 'error' && page.errorMsg && (
-              <p className="text-xs text-red-600 mt-0.5 break-words line-clamp-2">{page.errorMsg}</p>
-            )}
+            {page.status === 'error' && page.errorMsg && (() => {
+              const { title, detail } = parseGenerationError(page.errorMsg)
+              return (
+                <div className="mt-1 space-y-0.5">
+                  <p className="text-xs font-semibold text-red-700">{title}</p>
+                  <p className="text-xs text-red-600 break-words">{detail}</p>
+                </div>
+              )
+            })()}
           </div>
 
           {/* Ações */}
@@ -1142,7 +1236,7 @@ function PageRow({
             >
               <img
                 src={page.generatedImageUrl}
-                alt={`Imagem gerada — ${page.promptName} · ${page.partLabel}`}
+                alt={`Imagem gerada ${page.promptName} · ${page.partLabel}`}
                 draggable={false}
                 style={{
                   transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
