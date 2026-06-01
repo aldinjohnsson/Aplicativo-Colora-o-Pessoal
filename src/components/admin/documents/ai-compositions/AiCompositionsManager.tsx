@@ -332,7 +332,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         photoId:       page.photoId,
         compositionId,
         index,
-        ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
+        ...(page.uploadedPhotoBase64 ? { uploadedImageBase64: page.uploadedPhotoBase64, uploadedImageMime: page.uploadedPhotoMime } : {}),
         ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
       })
       // res = { driveFileId, url, ... } no modo galeria.
@@ -389,7 +389,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
           photoId:        page.photoId,
           compositionId,
           index:          idx,
-          ...(page.uploadedPhotoBase64 ? { uploadedPhotoBase64: page.uploadedPhotoBase64, uploadedPhotoMime: page.uploadedPhotoMime } : {}),
+          ...(page.uploadedPhotoBase64 ? { uploadedImageBase64: page.uploadedPhotoBase64, uploadedImageMime: page.uploadedPhotoMime } : {}),
           ...(page.driveFileId ? { driveFileId: page.driveFileId } : {}),
         })
         // res = { driveFileId, url, downloadUrl, ... } — URL do Drive é estática.
