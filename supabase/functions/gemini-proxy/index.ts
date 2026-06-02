@@ -41,6 +41,68 @@
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
+// ─── Billing helper (embutido — antes em _shared/billing.ts) ────────────
+type Provider = 'openai' | 'gemini'
+class QuotaError extends Error { constructor() { super('QUOTA_EXCEEDED'); this.name = 'QuotaError' } }
+interface BillingDecision { mode: 'prepaid' | 'postpaid'; remaining?: number; apiKey: string; keySource: 'general' | 'admin' | 'env' }
+
+async function reserveAndResolveKey(opts: {
+  admin: SupabaseClient; adminId: string; provider: Provider; count?: number
+}): Promise<BillingDecision> {
+  const { admin, adminId, provider } = opts
+  const count = opts.count ?? 1
+  const modeCol = provider === 'openai' ? 'openai_mode' : 'gemini_mode'
+
+  let mode: 'prepaid' | 'postpaid'
+  let remaining: number | undefined
+
+  if (count <= 0) {
+    // Sem cobrança (texto/tradução) — só descobre o modo pra escolher a chave.
+    const { data } = await admin.from('admin_billing').select(modeCol).eq('admin_id', adminId).maybeSingle()
+    mode = ((data as any)?.[modeCol]) ?? 'postpaid'
+  } else {
+    const { data, error } = await admin.rpc('consume_generation_quota', {
+      p_admin_id: adminId, p_provider: provider, p_count: count,
+    })
+    if (error) { if ((error.message || '').includes('QUOTA_EXCEEDED')) throw new QuotaError(); throw error }
+    mode = (data as any).mode
+    remaining = (data as any).remaining
+  }
+
+  if (mode === 'prepaid') {
+    const general = generalKey(provider)
+    if (!general) throw new Error('GENERAL_KEY_NOT_CONFIGURED')
+    return { mode, remaining, apiKey: general, keySource: 'general' }
+  }
+  const { data: row } = await admin.from('admin_content').select('content')
+    .eq('admin_id', adminId).eq('type', 'settings').maybeSingle()
+  const field = provider === 'openai' ? 'openaiApiKey' : 'geminiApiKey'
+  const own = (row?.content as any)?.[field]
+  if (typeof own === 'string' && own.trim()) return { mode, apiKey: own.trim(), keySource: 'admin' }
+  const env = ownEnvFallback(provider)
+  if (env) return { mode, apiKey: env, keySource: 'env' }
+  throw new Error('ADMIN_KEY_NOT_CONFIGURED')
+}
+
+async function refund(opts: { admin: SupabaseClient; adminId: string; provider: Provider; count?: number }): Promise<void> {
+  try {
+    await opts.admin.rpc('refund_generation_quota', {
+      p_admin_id: opts.adminId, p_provider: opts.provider, p_count: opts.count ?? 1,
+    })
+  } catch { /* best-effort */ }
+}
+
+function generalKey(p: Provider): string | undefined {
+  if (p === 'openai')
+    return Deno.env.get('GENERAL_OPENAI_API_KEY')?.trim() || Deno.env.get('OPENAI_API_KEY')?.trim()
+  return Deno.env.get('GENERAL_GEMINI_API_KEY')?.trim() || Deno.env.get('GEMINI_API_KEY')?.trim()
+}
+function ownEnvFallback(p: Provider): string | undefined {
+  if (p === 'openai') return Deno.env.get('OPENAI_API_KEY')?.trim()
+  return undefined
+}
+// ────────────────────────────────────────────────────────────────────────
+
 // ──────────────────────────────────────────────────────────────
 // Config (espelha geminiService.ts)
 // ──────────────────────────────────────────────────────────────
@@ -180,6 +242,19 @@ async function resolveGeminiKey(req: Request, portalToken: string | undefined): 
   const key = (row?.content as any)?.geminiApiKey || ''
   if (!key) throw new Error('Chave da API Gemini não configurada para este admin.')
   return key
+}
+
+// Resolve só o admin_id dono (a chave quem resolve agora é o billing guard).
+async function resolveAdminId(req: Request, portalToken: string | undefined): Promise<string> {
+  const sb = adminSb()
+  if (portalToken) {
+    const { data: client } = await sb.from('clients').select('admin_id').eq('token', portalToken).maybeSingle()
+    if (!client?.admin_id) throw new Error('Token de portal inválido.')
+    return client.admin_id as string
+  }
+  const adminId = await getAuthUserId(req, sb)
+  if (!adminId) throw new Error('Não autenticado.')
+  return adminId
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -631,20 +706,42 @@ Deno.serve(async (req: Request) => {
 
   if (!action) return json({ error: 'action obrigatório' }, 400, origin)
 
-  // Resolve a chave do admin dono (JWT ou portalToken).
-  let apiKey: string
+  // ── Billing: resolve o admin dono (JWT ou portalToken) ──────────────
+  let adminId: string
   try {
-    apiKey = await resolveGeminiKey(req, portalToken)
+    adminId = await resolveAdminId(req, portalToken)
   } catch (e: any) {
-    // 401 pra auth/token, mantém a mensagem clara pro front exibir.
     const msg = e?.message || 'Falha ao resolver credenciais.'
     const status = /não autenticado|inválido/i.test(msg) ? 401 : 412
     return json({ error: msg }, status, origin)
   }
 
+  // Conta crédito de Gemini SÓ quando a ação vai gerar IMAGEM.
+  const isImageChat = action === 'chat' && !!payload?.forceImage
+  const count = isImageChat ? 1 : 0
+
+  let decision: BillingDecision
+  try {
+    decision = await reserveAndResolveKey({ admin: adminSb(), adminId, provider: 'gemini', count })
+  } catch (e: any) {
+    if (e instanceof QuotaError)
+      return json({ error: 'QUOTA_EXCEEDED', message: 'Seu limite de simulações deste período acabou.' }, 402, origin)
+    if (e?.message === 'ADMIN_KEY_NOT_CONFIGURED')
+      return json({ error: 'Chave da API Gemini não configurada para este admin.' }, 412, origin)
+    if (e?.message === 'GENERAL_KEY_NOT_CONFIGURED')
+      return json({ error: 'Chave geral do Gemini não configurada no servidor.' }, 500, origin)
+    return json({ error: e?.message || 'Falha ao resolver credenciais.' }, 412, origin)
+  }
+  const apiKey = decision.apiKey
+  const billedImage = isImageChat && decision.mode === 'prepaid'
+
   try {
     if (action === 'chat') {
       const result = await doChat(apiKey, payload as ChatParams)
+      // Conta exata: pediu imagem e não veio → estorna o crédito.
+      if (billedImage && (result as any)?.imageGenerationFailed) {
+        await refund({ admin: adminSb(), adminId, provider: 'gemini', count: 1 })
+      }
       return json(result, 200, origin)
     }
     if (action === 'translate') {
@@ -657,6 +754,7 @@ Deno.serve(async (req: Request) => {
     }
     return json({ error: `action desconhecida: ${action}` }, 400, origin)
   } catch (e: any) {
+    if (billedImage) { try { await refund({ admin: adminSb(), adminId, provider: 'gemini', count: 1 }) } catch { /* ignore */ } }
     return json({ error: e?.message || 'Erro interno no proxy Gemini.' }, 500, origin)
   }
 })

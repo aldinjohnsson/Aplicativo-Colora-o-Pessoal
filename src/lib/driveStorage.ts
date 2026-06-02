@@ -189,7 +189,45 @@ export const driveStorage = {
   },
 
   /**
-   * Upload de imagem gerada pela IA na tela MS Color IA (sem cliente vinculado).
+   * Upload da foto de REFERÊNCIA do admin nos planos avulsos (chat_admin / full_admin).
+   * Salva em Drive > "MS Color IA" > "Fotos de referência".
+   * Passa replace_file_id para apagar a versão anterior e evitar acúmulo.
+   * Retorna driveFileId que deve ser persistido no admin_content (settings).
+   */
+  async uploadMsColorIaRefPhoto(opts: {
+    file: File
+    replaceFileId?: string | null
+  }): Promise<DriveUploadResult> {
+    const fd = new FormData()
+    fd.append('kind', 'ms_color_ia_ref')
+    fd.append('file', opts.file)
+    if (opts.replaceFileId) fd.append('replace_file_id', opts.replaceFileId)
+
+    const r = await authedFetch('/upload', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Upload falhou: HTTP ${r.status}`)
+    }
+    return r.json()
+  },
+
+  /**
+   * Baixa uma foto do Drive via /photo-proxy e retorna como base64 data-URL.
+   * Usado pelos consumidores que precisam mandar a foto pra IA (EnhancePhotoModal,
+   * GeminiChat) sem fazer fetch() direto (CORS).
+   */
+  async fetchRefPhotoAsBase64(driveFileId: string): Promise<string> {
+    const blob = await this.fetchPhotoBlob(driveFileId)
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload  = () => resolve(reader.result as string)
+      reader.onerror = () => reject(new Error('Erro ao converter foto para base64'))
+      reader.readAsDataURL(blob)
+    })
+  },
+
+
+  /**
    * Autenticado com JWT do admin; a Edge Function cria/reutiliza uma pasta
    * fixa "MS Color IA" dentro da pasta raiz do admin no Drive.
    * kind='ms_color_ia' — não usa client_id nem portal_token.

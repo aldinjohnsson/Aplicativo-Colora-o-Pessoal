@@ -378,7 +378,7 @@ Deno.serve(async (req: Request) => {
     // ─── POST /upload ──────────────────────────────────────────────────────
     if (req.method === 'POST' && path === '/upload') {
       const form       = await req.formData()
-      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo' | 'composition'
+      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo' | 'composition' | 'ms_color_ia' | 'ms_color_ia_ref'
       const categoryId = form.get('category_id') ? String(form.get('category_id')) : null
       const file       = form.get('file') as File | null
 
@@ -557,6 +557,95 @@ Deno.serve(async (req: Request) => {
           photoName:     safeName,
           url:           publicUrl,
           downloadUrl:   publicUrl,
+        })
+      }
+
+      // ── Caminho MS Color IA (kind='ms_color_ia') ───────────────────────
+      // Autenticado via JWT do admin; sem cliente vinculado.
+      // Cria/reutiliza uma pasta fixa "MS Color IA" dentro da pasta raiz
+      // do admin no Drive. Não insere em client_photos.
+      if (kind === 'ms_color_ia') {
+        const authUser = await getAuthUser(req)
+        if (!authUser) return json({ error: 'Não autenticado' }, 401)
+
+        let accessToken: string, rootFolderId: string | null
+        try {
+          const t = await getAdminToken(sb, authUser.id)
+          accessToken  = t.accessToken
+          rootFolderId = t.rootFolderId
+        } catch (e: any) {
+          return json({ error: e.message }, 412)
+        }
+
+        const iaFolderId = await findOrCreateFolder(accessToken, 'MS Color IA', rootFolderId, false)
+
+        const safeName = `${Date.now()}_ia_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const bytes    = new Uint8Array(await file.arrayBuffer())
+        const uploaded = await uploadToDrive(accessToken, {
+          name:     safeName,
+          mimeType: file.type || 'image/png',
+          parents:  [iaFolderId],
+          body:     bytes,
+        })
+        // Sem makeAnyoneReader: imagens são exibidas via /photo-proxy autenticado
+        // (mesmo padrão das fotos de referência do admin).
+
+        return json({
+          ok:            true,
+          driveFileId:   uploaded.id,
+          driveFolderId: iaFolderId,
+          photoName:     safeName,
+          url:           `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
+          downloadUrl:   `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+        })
+      }
+
+      // ── Caminho MS Color IA Ref (kind='ms_color_ia_ref') ──────────────────
+      // Foto de referência do admin nos planos avulsos (chat_admin / full_admin).
+      // Salva numa subpasta fixa "Fotos de referência" dentro de "MS Color IA".
+      // Suporta replace_file_id para sobrescrever a foto anterior no Drive sem
+      // acumular arquivos. Não toca no Supabase Storage. Retorna o driveFileId
+      // que o front persiste em admin_content (settings) para recarregar depois.
+      if (kind === 'ms_color_ia_ref') {
+        const authUser = await getAuthUser(req)
+        if (!authUser) return json({ error: 'Não autenticado' }, 401)
+
+        let accessToken: string, rootFolderId: string | null
+        try {
+          const t = await getAdminToken(sb, authUser.id)
+          accessToken  = t.accessToken
+          rootFolderId = t.rootFolderId
+        } catch (e: any) {
+          return json({ error: e.message }, 412)
+        }
+
+        // Cria/reutiliza: Drive raiz → "MS Color IA" → "Fotos de referência"
+        const iaFolderId  = await findOrCreateFolder(accessToken, 'MS Color IA', rootFolderId, false)
+        const refFolderId = await findOrCreateFolder(accessToken, 'Fotos de referência', iaFolderId, false)
+
+        // Apaga o arquivo anterior se fornecido (replace_file_id)
+        const replaceFileId = form.get('replace_file_id') ? String(form.get('replace_file_id')) : null
+        if (replaceFileId) {
+          try { await deleteFromDrive(accessToken, replaceFileId) } catch {}
+        }
+
+        const safeName = `ref_photo_${Date.now()}.jpg`
+        const bytes    = new Uint8Array(await file.arrayBuffer())
+        const uploaded = await uploadToDrive(accessToken, {
+          name:     safeName,
+          mimeType: 'image/jpeg',
+          parents:  [refFolderId],
+          body:     bytes,
+        })
+        // Sem makeAnyoneReader — acesso via /photo-proxy autenticado (JWT do admin)
+
+        return json({
+          ok:            true,
+          driveFileId:   uploaded.id,
+          driveFolderId: refFolderId,
+          photoName:     safeName,
+          url:           `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
+          downloadUrl:   `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
         })
       }
 

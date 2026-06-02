@@ -1558,7 +1558,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         <div className="sm:hidden flex items-center gap-3 px-3 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
           {/* Avatar / ícone */}
           {refBase64 && referencePhotoUrl
-            ? <div className="w-9 h-9 rounded-full overflow-hidden border-2 border-white/50 flex-shrink-0 shadow-md"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>
+            ? <div className="w-9 h-9 rounded-full overflow-hidden border-2 border-white/50 flex-shrink-0 shadow-md"><DriveProxyImg src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>
             : <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0"><Wand2 className="h-5 w-5" /></div>
           }
           {/* Nome + status */}
@@ -1602,7 +1602,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               {!loadingRef && !loadingResults && resultMaterials.length > 0 ? ` · ${resultMaterials.length} doc${resultMaterials.length > 1 ? 's' : ''} ✓` : ''}
             </p>
           </div>
-          {refBase64 && referencePhotoUrl && <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-white/40 flex-shrink-0"><img src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>}
+          {refBase64 && referencePhotoUrl && <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-white/40 flex-shrink-0"><DriveProxyImg src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>}
           <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0"><span className="w-1.5 h-1.5 bg-green-300 rounded-full animate-pulse" /><span>Online</span></span>
           {/* Seletor de idioma desktop */}
           <div ref={langMenuRef} className="relative flex-shrink-0">
@@ -1658,7 +1658,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 />
               </div>
               {adminGeminiLeft === 0 && (
-                <p className="text-[11px] text-rose-500 mt-1.5">Suas simulações acabaram. Renovam no início de cada mês.</p>
+                <p className="text-[11px] text-rose-500 mt-1.5">Suas simulações acabaram. Faça uma nova recarga.</p>
               )}
             </div>
           </div>

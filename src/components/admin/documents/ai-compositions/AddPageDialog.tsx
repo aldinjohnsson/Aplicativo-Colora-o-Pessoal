@@ -400,7 +400,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
             <div className="bg-fuchsia-50 border border-fuchsia-200 rounded-xl px-4 py-3 flex items-center gap-3">
               <Sparkles className="h-5 w-5 text-fuchsia-500 flex-shrink-0" />
               <p className="text-sm text-fuchsia-800">
-                <strong>{selectedPrompt.parts.length} página{selectedPrompt.parts.length !== 1 ? 's' : ''}</strong> vão ser adicionadas à fila de geração — uma por parte do prompt.
+                <strong>{selectedPrompt.parts.length} página{selectedPrompt.parts.length !== 1 ? 's' : ''}</strong> vão ser adicionadas à fila de geração.
               </p>
             </div>
           )}

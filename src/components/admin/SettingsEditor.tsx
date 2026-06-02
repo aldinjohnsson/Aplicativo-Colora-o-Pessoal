@@ -1013,6 +1013,8 @@ export default function SettingsEditor() {
 
         {billing && <BillingMeter billing={billing} />}
 
+        <DriveConnectionSection />
+
         {billing?.gemini_mode !== 'prepaid' && (
         <GeminiKeyCard
           value={settings.geminiApiKey}
@@ -1148,6 +1150,8 @@ export default function SettingsEditor() {
         )}
 
         {billing && <BillingMeter billing={billing} />}
+
+        <DriveConnectionSection />
 
         {/* Gemini — chat IA */}
         {billing?.gemini_mode !== 'prepaid' && (

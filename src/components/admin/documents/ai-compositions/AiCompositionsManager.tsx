@@ -113,6 +113,48 @@ interface ClientLite {
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
 
+// ── LocalStorage helpers — chaves individuais por imagem ─────────────
+//
+// O workspace (lista de páginas) é salvo sem os base64 das imagens geradas.
+// Cada imagem fica em sua própria chave: ai_composition_img_{clientId}_{pageId}
+// Isso evita estouro de quota (~5 MB) ao serializar todas as imagens juntas.
+//
+// Imagens do Drive (generatedDriveFileId) não precisam de chave individual —
+// a URL é reconstruída do driveFileId sem custo de armazenamento.
+// Imagens base64 (modo standalone / sem Drive) precisam — ficam separadas.
+
+const aiCompImgKey = (clientId: string, pageId: string) =>
+  `ai_composition_img_${clientId}_${pageId}`
+
+function savePageImage(clientId: string, pageId: string, base64: string, mime: string) {
+  try {
+    localStorage.setItem(aiCompImgKey(clientId, pageId), JSON.stringify({ base64, mime }))
+  } catch {}
+}
+
+function loadPageImage(clientId: string, pageId: string): { base64: string; mime: string } | null {
+  try {
+    const raw = localStorage.getItem(aiCompImgKey(clientId, pageId))
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function removePageImage(clientId: string, pageId: string) {
+  try { localStorage.removeItem(aiCompImgKey(clientId, pageId)) } catch {}
+}
+
+function clearClientImages(clientId: string) {
+  try {
+    const prefix = `ai_composition_img_${clientId}_`
+    const toRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(prefix)) toRemove.push(k)
+    }
+    toRemove.forEach(k => localStorage.removeItem(k))
+  } catch {}
+}
+
 function buildFileName(clientName: string): string {
   const clean = clientName
     .replace(/[\\/:*?"<>|]/g, '')
@@ -185,12 +227,25 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
       if (raw) {
         const { pages: saved, compositionId } = JSON.parse(raw)
         if (Array.isArray(saved) && saved.length > 0) {
-          setPages(saved)
+          // Restaura imagens base64 das chaves individuais
+          const pagesWithImages = saved.map((p: CompositionPage) => {
+            if (p.status === 'done' && !p.generatedDriveFileId) {
+              const img = loadPageImage(propClientId, p.id)
+              if (img) {
+                return {
+                  ...p,
+                  generatedImageBase64: img.base64,
+                  generatedImageUrl:    `data:${img.mime};base64,${img.base64}`,
+                }
+              }
+              // Não tem driveFileId nem imagem salva — regera
+              return { ...p, status: 'pending' as PageStatus, generatedImageUrl: undefined }
+            }
+            return p
+          })
+          setPages(pagesWithImages)
           compositionIdRef.current = compositionId || ''
-          // URLs do Drive são estáticas (sem TTL). Esse refresh trata
-          // páginas legacy (vindas do Supabase Storage) e preenche a
-          // URL pra páginas novas que ainda não tinham.
-          refreshDriveUrls(saved).then(refreshed => {
+          refreshDriveUrls(pagesWithImages).then(refreshed => {
             if (!cancelled) setPages(refreshed)
           })
         }
@@ -220,11 +275,25 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
       if (raw) {
         const { pages: saved, compositionId } = JSON.parse(raw)
         if (Array.isArray(saved) && saved.length > 0) {
-          setPages(saved)
+          // Restaura imagens base64 das chaves individuais
+          const pagesWithImages = saved.map((p: CompositionPage) => {
+            if (p.status === 'done' && !p.generatedDriveFileId) {
+              const img = loadPageImage(selectedClientId, p.id)
+              if (img) {
+                return {
+                  ...p,
+                  generatedImageBase64: img.base64,
+                  generatedImageUrl:    `data:${img.mime};base64,${img.base64}`,
+                }
+              }
+              return { ...p, status: 'pending' as PageStatus, generatedImageUrl: undefined }
+            }
+            return p
+          })
+          setPages(pagesWithImages)
           compositionIdRef.current = compositionId || ''
           loaded = true
-          // URLs do Drive são estáticas — preenche o que falta + migra legacy.
-          refreshDriveUrls(saved).then(refreshed => {
+          refreshDriveUrls(pagesWithImages).then(refreshed => {
             if (!cancelled) setPages(refreshed)
           })
         }
@@ -238,14 +307,23 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
   }, [selectedClientId, isEmbedded])
 
   // ── Persist pages to localStorage sempre que mudarem ──
+  // Workspace salva só metadados (sem base64 de imagens). Imagens base64
+  // (modo sem Drive) ficam em chaves individuais — evita estouro de quota.
   useEffect(() => {
     const clientId = isEmbedded ? propClientId : selectedClientId
-    if (!clientId || pages.length === 0) return
+    if (!clientId) return
+    if (pages.length === 0) {
+      // Limpa workspace e imagens órfãs quando todas as páginas são removidas
+      try { localStorage.removeItem(`ai_composition_${clientId}`) } catch {}
+      clearClientImages(clientId)
+      return
+    }
     try {
       const toSave = pages.map(p => ({
         ...p,
-        uploadedPhotoBase64: undefined,
-        uploadedPhotoMime:   undefined,
+        uploadedPhotoBase64:  undefined,
+        uploadedPhotoMime:    undefined,
+        generatedImageBase64: undefined,  // ← imagem fica na chave individual
       }))
       localStorage.setItem(
         `ai_composition_${clientId}`,
@@ -261,8 +339,19 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     return compositionIdRef.current
   }
 
-  const patchPage = (id: string, patch: Partial<CompositionPage>) =>
+  const patchPage = (id: string, patch: Partial<CompositionPage>) => {
+    const clientId = isEmbedded ? propClientId : selectedClientId
+    // Salva imagem base64 imediatamente na chave individual (antes do useEffect)
+    // Garante que mudar de aba DURANTE a geração não perca a imagem.
+    if (clientId && patch.generatedImageBase64) {
+      savePageImage(clientId, id, patch.generatedImageBase64, patch.generatedImageMime || 'image/png')
+    }
+    // Reset (↺) — remove imagem salva
+    if (clientId && patch.status === 'pending' && patch.generatedImageBase64 === undefined) {
+      removePageImage(clientId, id)
+    }
     setPages(prev => prev.map(p => p.id === id ? { ...p, ...patch } : p))
+  }
 
   // ── Refresh / migração de URLs ────────────────────────────────────────
   //
@@ -579,6 +668,8 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
   const handleRemove = (id: string) => {
     if (isBusy) return
+    const clientId = isEmbedded ? propClientId : selectedClientId
+    if (clientId) removePageImage(clientId, id)
     setPages(prev => prev.filter(p => p.id !== id))
     setSavedDoc(null)
   }
@@ -602,6 +693,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     const clientId = isEmbedded ? propClientId : selectedClientId
     if (clientId) {
       try { localStorage.removeItem(`ai_composition_${clientId}`) } catch {}
+      clearClientImages(clientId)
     }
     setPages([])
     setSavedDoc(null)
@@ -888,6 +980,34 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 function parseGenerationError(raw: string): { title: string; detail: string } {
   if (!raw) return { title: 'Erro desconhecido', detail: 'Tente novamente.' }
 
+  // Tenta extrair mensagem do JSON bruto da OpenAI antes de fazer regex
+  // Ex: 'OpenAI API error (400): { "error": { "message": "Billing hard limit...", ... } }'
+  let inner = raw
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]+\}/)
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0])
+      const msg = parsed?.error?.message || parsed?.message
+      if (typeof msg === 'string' && msg.trim()) inner = msg.trim()
+    }
+  } catch {}
+
+  // ── Billing / hard limit ─────────────────────────────────────────────
+  if (/billing.?hard.?limit|hard.?limit.?reached/i.test(inner) || /billing.?hard.?limit|hard.?limit.?reached/i.test(raw)) {
+    return {
+      title: 'Limite de faturamento atingido',
+      detail: 'O limite de gastos da conta OpenAI foi atingido. Acesse platform.openai.com → Billing e adicione crédito ou aumente o limite.',
+    }
+  }
+
+  // ── Cota / rate limit ────────────────────────────────────────────────
+  if (/rate.?limit|quota|billing|insufficient_quota/i.test(inner) || /rate.?limit|quota|billing|insufficient_quota/i.test(raw)) {
+    return {
+      title: 'Limite de API atingido',
+      detail: 'A cota da OpenAI foi excedida ou há cobrança pendente. Verifique em platform.openai.com → Billing.',
+    }
+  }
+
   // ── Erros de arquivo de imagem inválido ──────────────────────────────
   if (/invalid image file/i.test(raw) || /invalid.*mode.*image/i.test(raw)) {
     return {
@@ -898,18 +1018,8 @@ function parseGenerationError(raw: string): { title: string; detail: string } {
     }
   }
 
-  // ── Cota / billing ───────────────────────────────────────────────────
-  if (/rate.?limit|quota|billing|insufficient_quota/i.test(raw)) {
-    return {
-      title: 'Limite de API atingido',
-      detail:
-        'Sua cota da OpenAI foi excedida ou a cobrança está pendente. ' +
-        'Verifique seu painel em platform.openai.com e aguarde antes de tentar novamente.',
-    }
-  }
-
   // ── Chave inválida ───────────────────────────────────────────────────
-  if (/invalid.*api.*key|incorrect.*api.*key|api.?key/i.test(raw)) {
+  if (/invalid.*api.*key|incorrect.*api.*key|api.?key/i.test(inner) || /invalid.*api.*key|incorrect.*api.*key|api.?key/i.test(raw)) {
     return {
       title: 'Chave da OpenAI inválida',
       detail: 'A chave configurada em Configurações → OpenAI está incorreta ou foi revogada.',
@@ -942,6 +1052,14 @@ function parseGenerationError(raw: string): { title: string; detail: string } {
     }
   }
 
+  // ── Conteúdo recusado pela OpenAI ────────────────────────────────────
+  if (/content.?policy|safety.?system|violat|responsável|refused/i.test(inner)) {
+    return {
+      title: 'Conteúdo recusado pela OpenAI',
+      detail: 'A geração foi bloqueada pela política de conteúdo. Ajuste o prompt desta parte e tente novamente.',
+    }
+  }
+
   // ── Timeout / conexão ────────────────────────────────────────────────
   if (/timeout|ETIMEDOUT|network|fetch failed/i.test(raw)) {
     return {
@@ -950,16 +1068,24 @@ function parseGenerationError(raw: string): { title: string; detail: string } {
     }
   }
 
-  // ── Erro genérico da OpenAI (HTTP 4xx/5xx sem detalhe acima) ─────────
+  // ── Erro genérico da OpenAI — usa a mensagem extraída do JSON se disponível
   if (/openai api error|openai.*error/i.test(raw)) {
+    // Se conseguimos extrair uma mensagem limpa do JSON, mostra ela (sem o JSON bruto)
+    const cleanDetail = inner !== raw && inner.length < 200
+      ? inner
+      : 'A geração foi recusada pela OpenAI. Tente novamente ou verifique o prompt desta parte.'
     return {
       title: 'Erro na API da OpenAI',
-      detail: 'A geração foi recusada pela OpenAI. Tente novamente ou verifique o prompt desta parte.',
+      detail: cleanDetail,
     }
   }
 
-  // ── Fallback ─────────────────────────────────────────────────────────
-  // Trunca mensagens muito longas antes de exibir
+  // ── Fallback — nunca mostra JSON bruto ───────────────────────────────
+  // Se o texto contém chaves/colchetes (parece JSON), usa mensagem genérica
+  const looksLikeJson = /[{}\[\]":]/.test(raw) && raw.length > 60
+  if (looksLikeJson) {
+    return { title: 'Erro na geração', detail: 'Ocorreu um erro inesperado. Tente novamente.' }
+  }
   const truncated = raw.length > 160 ? raw.slice(0, 157) + '…' : raw
   return { title: 'Erro na geração', detail: truncated }
 }

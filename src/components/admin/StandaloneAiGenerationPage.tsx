@@ -117,17 +117,28 @@ interface ContrastData {
 
 // ── LocalStorage: persistência da geração IA ──────────────────────────
 //
-// Salva qualquer alteração feita pelo admin (prompt, foto, subtom, contraste,
-// páginas geradas, compositionId) pra que reload/navegação não perca o
-// trabalho. Duas chaves separadas: "config" (sempre cabe) e "workspace"
-// (pode ficar grande com imagens base64; se estourar quota, só ele falha
-// — a config sobrevive).
+// Estratégia v3 — imagens em chaves individuais:
+//
+//   config    → prompt, foto original (base64), subtom, contraste
+//   workspace → lista de páginas SEM os base64 das imagens geradas
+//               (só metadados: id, status, promptId, labels…)
+//   img:{pageId} → base64 da imagem gerada daquela página (chave separada)
+//
+// Isso evita o estouro de quota do localStorage (~5 MB) que ocorria quando
+// todas as imagens eram serializadas juntas no workspace. Cada imagem ocupa
+// sua própria chave; se uma falhar, as outras continuam salvas.
+//
+// A foto de upload (photoBase64) continua na config pois só há uma e é
+// comprimida (≤ ~400 KB após compressão 1280px/0.88).
 
-const STANDALONE_AI_STORAGE_V = 2
+const STANDALONE_AI_STORAGE_V = 3
 
 const standaloneAiStorageKeys = (adminId: string) => ({
   config:    `standalone_ai_generation_${adminId}_config_v${STANDALONE_AI_STORAGE_V}`,
   workspace: `standalone_ai_generation_${adminId}_workspace_v${STANDALONE_AI_STORAGE_V}`,
+  img:       (pageId: string) => `standalone_ai_generation_${adminId}_img_${pageId}_v${STANDALONE_AI_STORAGE_V}`,
+  // prefixo para listar/limpar chaves de imagem
+  imgPrefix: `standalone_ai_generation_${adminId}_img_`,
 })
 
 interface PersistedConfig {
@@ -139,8 +150,9 @@ interface PersistedConfig {
   contrastFormatted: string
 }
 
+// Workspace NÃO contém base64 de imagens geradas — ficam em chaves separadas
 interface PersistedWorkspace {
-  pages:         CompositionPage[]
+  pages:         Omit<CompositionPage, 'generatedImageBase64' | 'generatedImageMime' | 'generatedImageUrl' | 'photoPreviewUrl'>[]
   compositionId: string
 }
 
@@ -149,11 +161,127 @@ function safeGetItem(key: string): string | null {
 }
 
 function safeSetItem(key: string, value: string): boolean {
-  try { localStorage.setItem(key, value); return true } catch { return false }
+  try { localStorage.setItem(key, value); return true } catch (e) {
+    console.warn('[standalone storage] falha ao salvar — quota excedida ou storage indisponível:', key, e)
+    return false
+  }
 }
 
 function safeRemoveItem(key: string) {
   try { localStorage.removeItem(key) } catch {}
+}
+
+// Remove todas as chaves de imagens geradas de um adminId
+function clearStoredImages(adminId: string) {
+  try {
+    const prefix = standaloneAiStorageKeys(adminId).imgPrefix
+    const toRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(prefix)) toRemove.push(k)
+    }
+    toRemove.forEach(k => localStorage.removeItem(k))
+  } catch {}
+}
+
+// Remove chaves de versões ANTERIORES do mesmo adminId para liberar quota.
+// Chamado uma vez na inicialização (quando adminId fica disponível).
+// Padrão das chaves: standalone_ai_generation_{adminId}_*_v{N} onde N < versão atual.
+function evictStaleStorage(adminId: string) {
+  try {
+    const prefix = `standalone_ai_generation_${adminId}_`
+    const currentSuffix = `_v${STANDALONE_AI_STORAGE_V}`
+    const toRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(prefix) && !k.endsWith(currentSuffix)) {
+        toRemove.push(k)
+      }
+    }
+    if (toRemove.length > 0) {
+      console.info(`[standalone storage] removendo ${toRemove.length} chave(s) de versões antigas`)
+      toRemove.forEach(k => localStorage.removeItem(k))
+    }
+  } catch {}
+}
+
+/**
+ * Tenta salvar `value` em `key`.
+ *
+ * Estratégia de evict em 3 camadas — para assim que a tentativa de salvar
+ * tiver sucesso:
+ *
+ * 1. Imagens de páginas standalone mais antigas do mesmo adminId
+ *    (chaves img_* de outras páginas, mais antiga → mais nova).
+ * 2. Todas as imagens standalone do adminId (clearStoredImages).
+ * 3. Qualquer chave do localStorage ordenada por tamanho (maior → menor),
+ *    excluindo a própria chave destino e as chaves críticas de config/workspace
+ *    do standalone atual. Isso libera espaço ocupado por outros módulos do app.
+ *
+ * Só retorna false se mesmo após esvaziar tudo o valor não couber.
+ *
+ * @param pageIds  Ordem atual das páginas (mais antigas primeiro). A página
+ *                 da própria chave sendo salva é excluída do evict para não
+ *                 apagar a imagem que acabou de chegar.
+ */
+function safeSetItemWithEvict(
+  key: string,
+  value: string,
+  adminId: string,
+  pageIds: string[],
+): boolean {
+  // Tentativa direta
+  try { localStorage.setItem(key, value); return true } catch { /* quota */ }
+
+  const stKeys = standaloneAiStorageKeys(adminId)
+  const suffix  = `_v${STANDALONE_AI_STORAGE_V}`
+
+  // Chaves críticas que nunca devem ser apagadas
+  const critical = new Set([key, stKeys.config, stKeys.workspace])
+
+  // ── Camada 1: imagens standalone de outras páginas (mais antiga → mais nova) ──
+  const currentPageId = (() => {
+    const prefix = stKeys.imgPrefix
+    if (!key.startsWith(prefix)) return null
+    const mid = key.slice(prefix.length)
+    return mid.endsWith(suffix) ? mid.slice(0, -suffix.length) : null
+  })()
+
+  for (const pid of pageIds) {
+    if (pid === currentPageId) continue
+    const imgKey = stKeys.img(pid)
+    if (safeGetItem(imgKey) === null) continue
+    try { localStorage.removeItem(imgKey) } catch { continue }
+    console.info(`[standalone storage] evict L1: removeu img página ${pid}`)
+    try { localStorage.setItem(key, value); return true } catch { /* próximo */ }
+  }
+
+  // ── Camada 2: todas as imagens standalone restantes ──
+  clearStoredImages(adminId)
+  try { localStorage.setItem(key, value); return true } catch { /* próximo */ }
+
+  // ── Camada 3: qualquer chave do localStorage, ordenada por tamanho (maior → menor) ──
+  // O localStorage do app pode ter dados de outros módulos (ClientsManager, etc.)
+  // que estão consumindo a quota. Sacrificamos os maiores primeiro.
+  try {
+    const allKeys: { k: string; size: number }[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (!k || critical.has(k)) continue
+      const v = localStorage.getItem(k)
+      allKeys.push({ k, size: (v?.length ?? 0) })
+    }
+    allKeys.sort((a, b) => b.size - a.size)   // maior primeiro
+
+    for (const { k } of allKeys) {
+      try { localStorage.removeItem(k) } catch { continue }
+      console.info(`[standalone storage] evict L3: removeu chave externa ${k}`)
+      try { localStorage.setItem(key, value); return true } catch { /* próximo */ }
+    }
+  } catch { /* em ambientes restritos getItem pode lançar */ }
+
+  console.warn('[standalone storage] não foi possível salvar mesmo após evict total:', key)
+  return false
 }
 
 // ── Canvas helpers (espelho do ContrastLayoutDialog) ──────────────────
@@ -478,6 +606,7 @@ export function StandaloneAiGenerationPage() {
       if (admin) {
         setAdminId(admin.id)
         setAdminName(admin.nome || 'Geração IA')
+        evictStaleStorage(admin.id)   // libera quota de versões antigas antes de qualquer leitura
       }
     } catch {}
 
@@ -517,13 +646,11 @@ export function StandaloneAiGenerationPage() {
   // ── LocalStorage: restauração ─────────────────────────────────────
   //
   // Dispara quando adminId fica disponível. Lê config + workspace
-  // do localStorage e repopula o estado. Blob URLs (photoPreview,
-  // photoPreviewUrl, generatedImageUrl que veio de blob) são
-  // regeneradas como data URLs a partir dos respectivos base64.
+  // do localStorage e repopula o estado.
   //
-  // Páginas que estavam em 'generating' no momento do reload são
-  // resetadas pra 'pending' — não dá pra retomar uma chamada HTTP
-  // que estava em vôo.
+  // v3: imagens geradas ficam em chaves individuais (img:{pageId}),
+  // separadas do workspace. Isso evita estouro de quota (~5 MB) que
+  // ocorria ao serializar todas as imagens base64 juntas.
   //
   // `restored` é state (não ref) de propósito: ao virar true ele
   // dispara mais um render, e só DEPOIS desse render os effects
@@ -554,12 +681,13 @@ export function StandaloneAiGenerationPage() {
         if (cfg.contrastData)      setContrastData(cfg.contrastData)
         if (cfg.contrastFormatted) setContrastFormatted(cfg.contrastFormatted)
       } catch {
-        safeRemoveItem(keys.config)   // payload corrompido — descarta
+        safeRemoveItem(keys.config)
       }
     }
 
-    // ─ Workspace (pages + compositionId) ─
+    // ─ Workspace (metadados das páginas, sem imagens geradas) ─
     const rawWs = safeGetItem(keys.workspace)
+    console.log('[restore] workspace existe:', !!rawWs, '| chave:', keys.workspace)
     if (rawWs) {
       try {
         const ws = JSON.parse(rawWs) as PersistedWorkspace
@@ -567,22 +695,51 @@ export function StandaloneAiGenerationPage() {
           compositionIdRef.current = ws.compositionId
         }
         if (Array.isArray(ws.pages) && ws.pages.length > 0) {
-          const restoredPages: CompositionPage[] = ws.pages.map(p => ({
-            ...p,
-            // Blob URL morre no reload — regenera do base64
-            photoPreviewUrl: p.uploadedPhotoBase64
-              ? `data:${p.uploadedPhotoMime || 'image/jpeg'};base64,${p.uploadedPhotoBase64}`
-              : (p.photoPreviewUrl || ''),
-            // Mesmo tratamento pra imagem gerada (se ainda temos o base64)
-            generatedImageUrl: p.generatedImageBase64
-              ? `data:${p.generatedImageMime || 'image/png'};base64,${p.generatedImageBase64}`
-              : p.generatedImageUrl,
-            // Geração que ficou no ar volta a pendente
-            status: p.status === 'generating' ? 'pending' : p.status,
-          }))
+          console.log('[restore] páginas:', ws.pages.length, '| ids:', ws.pages.map((p: any) => p.id))
+          const cfgBase64 = (() => { try { return JSON.parse(safeGetItem(keys.config) || '{}') as PersistedConfig } catch { return null } })()
+          const restoredPages: CompositionPage[] = ws.pages.map(p => {
+            const photoBase64Restored = cfgBase64?.photoBase64 || (p as any).uploadedPhotoBase64 || ''
+            const photoMimeRestored   = cfgBase64?.photoMime   || (p as any).uploadedPhotoMime   || 'image/jpeg'
+            const photoPreviewUrl = photoBase64Restored
+              ? `data:${photoMimeRestored};base64,${photoBase64Restored}`
+              : ''
+
+            let generatedImageBase64: string | undefined
+            let generatedImageMime:   string | undefined
+            let generatedImageUrl:    string | undefined
+            const imgKey = keys.img(p.id)
+            const rawImg = safeGetItem(imgKey)
+            console.log(`[restore] página ${p.id} status=${p.status} imgKey=${imgKey} found=${!!rawImg}`)
+            if (rawImg) {
+              try {
+                const stored = JSON.parse(rawImg) as { base64: string; mime: string }
+                generatedImageBase64 = stored.base64
+                generatedImageMime   = stored.mime
+                generatedImageUrl    = `data:${stored.mime};base64,${stored.base64}`
+                console.log(`[restore] página ${p.id} → imagem OK (${stored.base64.length} chars b64)`)
+              } catch {
+                console.warn(`[restore] página ${p.id} → img JSON inválido, removendo`)
+                safeRemoveItem(imgKey)
+              }
+            }
+
+            return {
+              ...p,
+              photoPreviewUrl,
+              uploadedPhotoBase64: photoBase64Restored,
+              uploadedPhotoMime:   photoMimeRestored,
+              generatedImageBase64,
+              generatedImageMime,
+              generatedImageUrl,
+              status: p.status === 'generating'
+                ? (generatedImageBase64 ? 'done' : 'pending')
+                : p.status,
+            } as CompositionPage
+          })
           setPages(restoredPages)
         }
       } catch {
+        console.warn('[restore] workspace corrompido, removendo')
         safeRemoveItem(keys.workspace)
       }
     }
@@ -619,22 +776,35 @@ export function StandaloneAiGenerationPage() {
   ])
 
   // ── LocalStorage: persistência do WORKSPACE ───────────────────────
-  // Salva páginas + compositionId. Pode estourar quota se houver
-  // muitas imagens em base64 — nesse caso o set silenciosamente falha
-  // e o estado em memória continua válido pela sessão atual.
+  // Salva apenas metadados das páginas (sem base64 de imagens geradas).
+  // As imagens ficam em chaves individuais (persistidas em patchPage/handleReset).
 
   useEffect(() => {
     if (!adminId || !restored) return
-    const key = standaloneAiStorageKeys(adminId).workspace
+    const keys = standaloneAiStorageKeys(adminId)
     if (pages.length === 0) {
-      safeRemoveItem(key)
+      console.log('[workspace effect] pages vazio — limpando workspace e imagens')
+      safeRemoveItem(keys.workspace)
+      clearStoredImages(adminId)
       return
     }
+    console.log('[workspace effect] salvando', pages.length, 'páginas | restored=', restored)
+    // Serializa páginas sem os campos base64:
+    //   - generatedImageBase64/Mime/Url → ficam em chaves individuais (img:{pageId})
+    //   - uploadedPhotoBase64/Mime      → já estão na config; duplicar aqui estoura a quota
+    //                                     com 3-4 páginas (~400 KB × N páginas)
+    //   - photoPreviewUrl               → é um blob:// URL efêmero, inválido após reload;
+    //                                     é reconstruído na restauração a partir da config
+    const pagesLite = pages.map(({
+      generatedImageBase64, generatedImageMime, generatedImageUrl,
+      uploadedPhotoBase64, uploadedPhotoMime, photoPreviewUrl,
+      ...rest
+    }) => rest)
     const payload: PersistedWorkspace = {
-      pages,
+      pages: pagesLite as any,
       compositionId: compositionIdRef.current,
     }
-    safeSetItem(key, JSON.stringify(payload))
+    safeSetItem(keys.workspace, JSON.stringify(payload))
   }, [adminId, restored, pages])
 
   // ── Upload de foto ────────────────────────────────────────────────
@@ -710,8 +880,33 @@ export function StandaloneAiGenerationPage() {
 
   // ── Helpers de state ──────────────────────────────────────────────
 
-  const patchPage = (id: string, patch: Partial<CompositionPage>) =>
+  const patchPage = (id: string, patch: Partial<CompositionPage>) => {
+    // Se a atualização inclui uma imagem gerada, persiste imediatamente
+    // na chave individual — antes do useEffect de workspace rodar.
+    // Garante que mudar de aba DURANTE a geração não perca a imagem.
+    if (adminId && patch.generatedImageBase64) {
+      const pageIds = pages.map(p => p.id)
+      const saved = safeSetItemWithEvict(
+        standaloneAiStorageKeys(adminId).img(id),
+        JSON.stringify({ base64: patch.generatedImageBase64, mime: patch.generatedImageMime || 'image/png' }),
+        adminId,
+        pageIds,
+      )
+      if (!saved) {
+        // Quota esgotada mesmo após evict — imagem existe em memória mas não será
+        // restaurada após reload. Avisa o usuário para gerar o PDF antes de sair.
+        patch = {
+          ...patch,
+          errorMsg: '⚠️ Imagem gerada mas não salva localmente (armazenamento cheio). Gere o PDF antes de sair desta página.',
+        }
+      }
+    }
+    // Se está resetando (↺), remove a imagem salva
+    if (adminId && patch.status === 'pending' && patch.generatedImageBase64 === undefined) {
+      safeRemoveItem(standaloneAiStorageKeys(adminId).img(id))
+    }
     setPages(prev => prev.map(p => p.id === id ? { ...p, ...patch } : p))
+  }
 
   const getCompositionId = () => {
     if (!compositionIdRef.current) {
@@ -805,9 +1000,30 @@ export function StandaloneAiGenerationPage() {
         const imageUrl = res.imageBase64
           ? `data:${res.imageMime || 'image/png'};base64,${res.imageBase64}`
           : res.url
+        // Persiste imagem imediatamente na chave individual (batch bypassa patchPage)
+        if (adminId && res.imageBase64) {
+          const pageIds = snapshot.map(p => p.id)
+          const saved = safeSetItemWithEvict(
+            standaloneAiStorageKeys(adminId).img(page.id),
+            JSON.stringify({ base64: res.imageBase64, mime: res.imageMime || 'image/png' }),
+            adminId,
+            pageIds,
+          )
+          if (!saved) {
+            console.warn('[standalone storage] batch: falha ao persistir imagem mesmo após evict — página', page.id)
+          }
+        }
         commit(s => s.map(p =>
           p.id === page.id
-            ? { ...p, status: 'done', generatedDriveFileId: res.driveFileId, generatedImageBase64: res.imageBase64, generatedImageMime: res.imageMime, generatedImageUrl: imageUrl, errorMsg: undefined }
+            ? {
+                ...p,
+                status: 'done',
+                generatedDriveFileId: res.driveFileId,
+                generatedImageBase64: res.imageBase64,
+                generatedImageMime: res.imageMime,
+                generatedImageUrl: imageUrl,
+                errorMsg: undefined,
+              }
             : p
         ))
       } catch (e: any) {
@@ -886,6 +1102,8 @@ export function StandaloneAiGenerationPage() {
 
   const handleRemove = (id: string) => {
     if (isBusy) return
+    // Remove imagem salva individualmente
+    if (adminId) safeRemoveItem(standaloneAiStorageKeys(adminId).img(id))
     setPages(prev => prev.filter(p => p.id !== id))
     setPdfBlob(null)
   }

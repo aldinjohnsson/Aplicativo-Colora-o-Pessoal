@@ -21,6 +21,7 @@ import {
   Wand2, CheckCircle, AlertTriangle, Info,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 import type { AdminUser } from '../../lib/services'
 import { billingService } from '../../lib/billingService'
 import { GeminiChat } from '../client/GeminiChat'
@@ -34,12 +35,6 @@ import { ImageLightbox } from './AIPromptConfig'
 const selectedFolderStorageKey = (adminId: string) =>
   `ms_color_ia_selected_folder_${adminId}`
 
-// Timestamp do último upload da foto de referência — persiste o cache-buster
-// para que o reload use a mesma URL ?t=... gerada no upload e não sirva
-// a versão antiga do CDN.
-const refPhotoTimestampKey = (adminId: string) =>
-  `ms_color_ia_ref_photo_ts_${adminId}`
-
 // ─── Types ─────────────────────────────────────────────────────────────
 
 interface FolderOption {
@@ -52,11 +47,14 @@ interface LoadedConfig {
   adminName:        string
   adminId:          string
   geminiKeyPresent: boolean
+  geminiPrepaid:    boolean
   /** Chave OpenAI (GPT) do admin — usada client-side no aprimoramento de foto. */
   openaiApiKey:     string
   openaiKeyPresent: boolean
   openaiPrepaid:    boolean
   folders:          FolderOption[]
+  /** Drive conectado? Planos avulsos exigem Drive para a foto de referência. */
+  driveConnected:   boolean
 }
 
 // ─── Component ─────────────────────────────────────────────────────────
@@ -78,10 +76,13 @@ export function MsColorIAPage() {
   // Nome da cliente — usado no PDF e na saudação do chat
   const [clientName, setClientName] = useState<string>('')
 
-  // Foto de referência: guardamos a URL pública do Supabase Storage
-  // (blob URL não funciona com o fetch interno do GeminiChat).
+  // Foto de referência: nos planos avulsos (chat_admin / full_admin) guardamos
+  // o driveFileId no admin_content (settings) e exibimos via /photo-proxy.
+  // A URL passada pro GeminiChat é a thumbnail pública do Drive; o chat já sabe
+  // como baixá-la via proxy quando precisar mandar pra IA.
   const [refPhotoUrl,     setRefPhotoUrl]     = useState<string | null>(null)
   const [refPhotoPreview, setRefPhotoPreview] = useState<string | null>(null)
+  const [refPhotoDriveFileId, setRefPhotoDriveFileId] = useState<string | null>(null)
   const [uploadingPhoto,  setUploadingPhoto]  = useState(false)
   const [uploadError,     setUploadError]     = useState<string | null>(null)
   // Modal "Aprimorar com IA" (usa a chave GPT/OpenAI do admin).
@@ -140,6 +141,7 @@ export function MsColorIAPage() {
         { data: adminData },
         { data: settingsRow },
         { data: folderRows, error: folderErr },
+        driveStatus,
       ] = await Promise.all([
         supabase
           .from('admin_users')
@@ -156,7 +158,7 @@ export function MsColorIAPage() {
           .from('ai_folders')
           .select('id, name, config')
           .order('created_at', { ascending: true }),
-        loadPersistedRefPhoto(userId),   // HEAD request — corre junto
+        driveStorage.getStatus().catch(() => null),
       ])
 
       // ── 3. Valida admin ────────────────────────────────────────────
@@ -185,7 +187,8 @@ export function MsColorIAPage() {
       // Plano pré-pago de imagem? Então o aprimoramento usa a chave geral
       // (na edge) e não exige chave própria.
       const billingProfile = await billingService.getMine().catch(() => null)
-      const openaiPrepaid = billingProfile?.openai_mode === 'prepaid'
+      const openaiPrepaid  = billingProfile?.openai_mode  === 'prepaid'
+      const geminiPrepaid  = billingProfile?.gemini_mode  === 'prepaid'
 
       if (folderErr) {
         console.error('[MsColorIAPage] erro ao carregar ai_folders:', folderErr)
@@ -217,14 +220,20 @@ export function MsColorIAPage() {
           adminName:        admin.nome || 'Você',
           adminId:          admin.id,
           geminiKeyPresent,
+          geminiPrepaid,
           openaiApiKey:     openaiKey,
           openaiKeyPresent,
           openaiPrepaid,
           folders,
+          driveConnected:   driveStatus?.connected ?? false,
         },
       })
 
-      // Restaura a pasta da última sessão (se ainda existir),
+      // Recarrega foto de referência do Drive (se o drive estiver conectado)
+      const savedRefFileId = (settingsRow?.content as any)?.refPhotoDriveFileId as string | undefined
+      if (driveStatus?.connected && savedRefFileId) {
+        void loadPersistedRefPhoto(savedRefFileId)
+      }
       // senão pré-seleciona a primeira.
       let initialFolderId = folders[0].id
       try {
@@ -244,25 +253,22 @@ export function MsColorIAPage() {
   }
 
   // ─── Foto persistida ──────────────────────────────────────────────
+  //
+  // Planos avulsos: a foto vive no Drive. Baixamos via /photo-proxy para
+  // pré-visualização (blob URL) e guardamos o driveFileId para os consumidores
+  // que precisam do base64 (EnhancePhotoModal, GeminiChat).
+  // O GeminiChat recebe referencePhotoDriveFileId e já sabe usar o proxy.
 
-  async function loadPersistedRefPhoto(adminId: string) {
-    const path = `ms-color-ia-ref/${adminId}/ref_photo.jpg`
-    const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
-    if (!data?.publicUrl) return
-
+  async function loadPersistedRefPhoto(driveFileId: string) {
     try {
-      const res = await fetch(data.publicUrl, { method: 'HEAD' })
-      if (res.ok) {
-        // Restaura o mesmo ?t= que foi usado no último upload para que o browser
-        // e o CDN não sirvam a versão anterior em cache.
-        let ts: string | null = null
-        try { ts = localStorage.getItem(refPhotoTimestampKey(adminId)) } catch {}
-        const url = ts ? `${data.publicUrl}?t=${ts}` : data.publicUrl
-        setRefPhotoUrl(url)
-        setRefPhotoPreview(url)
-      }
+      const blob    = await driveStorage.fetchPhotoBlob(driveFileId)
+      const preview = URL.createObjectURL(blob)
+      setRefPhotoDriveFileId(driveFileId)
+      setRefPhotoPreview(preview)
+      // URL thumbnail pública do Drive — usada como referencePhotoUrl no GeminiChat
+      setRefPhotoUrl(driveStorage.viewUrl(driveFileId))
     } catch {
-      // arquivo não existe ainda — sem problema
+      // arquivo pode ter sido apagado manualmente — silencia
     }
   }
 
@@ -281,34 +287,74 @@ export function MsColorIAPage() {
     }
 
     if (state.kind !== 'ready') return
-    const adminId = state.data.adminId
 
-    const previewUrl = URL.createObjectURL(file)
-    setRefPhotoPreview(previewUrl)
+    // Planos avulsos exigem Drive conectado — nunca usa Supabase
+    if (!state.data.driveConnected) {
+      setUploadError('Conecte o Google Drive em Configurações para salvar a foto de referência.')
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+
+    const adminId = state.data.adminId
+    const prevPreview = refPhotoPreview
+
+    const localPreview = URL.createObjectURL(file)
+    setRefPhotoPreview(localPreview)
     setRefPhotoUrl(null)
     setUploadError(null)
     setUploadingPhoto(true)
 
     try {
       const compressedBlob = await compressImage(file, 1280, 0.88)
+      const compressedFile = new File([compressedBlob], 'ref_photo.jpg', { type: 'image/jpeg' })
 
-      const path = `ms-color-ia-ref/${adminId}/ref_photo.jpg`
-      const { error } = await supabase.storage
-        .from('client-photos')
-        .upload(path, compressedBlob, { contentType: 'image/jpeg', upsert: true })
+      const result = await driveStorage.uploadMsColorIaRefPhoto({
+        file: compressedFile,
+        replaceFileId: refPhotoDriveFileId ?? null,
+      })
 
-      if (error) throw error
+      // Persiste o driveFileId em admin_content (settings) para sobreviver a reloads
+      await supabase
+        .from('admin_content')
+        .upsert(
+          {
+            admin_id: adminId,
+            type:     'settings',
+            content:  { refPhotoDriveFileId: result.driveFileId },
+          },
+          { onConflict: 'admin_id,type', ignoreDuplicates: false }
+        )
+        .then(async ({ data: existing }) => {
+          // merge com o content existente (não sobrescrever as outras chaves)
+          const { data: row } = await supabase
+            .from('admin_content')
+            .select('content')
+            .eq('admin_id', adminId)
+            .eq('type', 'settings')
+            .maybeSingle()
+          if (row) {
+            const merged = { ...(row.content as object ?? {}), refPhotoDriveFileId: result.driveFileId }
+            await supabase
+              .from('admin_content')
+              .update({ content: merged })
+              .eq('admin_id', adminId)
+              .eq('type', 'settings')
+          }
+        })
 
-      const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
-      if (!data?.publicUrl) throw new Error('Não foi possível obter a URL pública da foto.')
-
-      const ts = Date.now()
-      try { localStorage.setItem(refPhotoTimestampKey(adminId), String(ts)) } catch {}
-      setRefPhotoUrl(`${data.publicUrl}?t=${ts}`)
+      setRefPhotoDriveFileId(result.driveFileId)
+      setRefPhotoUrl(driveStorage.viewUrl(result.driveFileId))
+      // revoga o objeto local (já temos a URL do Drive)
+      URL.revokeObjectURL(localPreview)
+      // nova pré-visualização via proxy (evita CORS)
+      void driveStorage.fetchPhotoBlob(result.driveFileId)
+        .then(blob => setRefPhotoPreview(URL.createObjectURL(blob)))
+        .catch(() => {})
     } catch (e: any) {
       console.error('[MsColorIAPage] upload ref photo failed:', e)
       setUploadError(e?.message || 'Erro ao enviar a foto. Tente novamente.')
-      setRefPhotoPreview(null)
+      URL.revokeObjectURL(localPreview)
+      setRefPhotoPreview(prevPreview)
     } finally {
       setUploadingPhoto(false)
       if (fileRef.current) fileRef.current.value = ''
@@ -316,22 +362,51 @@ export function MsColorIAPage() {
   }
 
   function handleRemovePhoto() {
+    const prevFileId = refPhotoDriveFileId
     setRefPhotoUrl(null)
     setRefPhotoPreview(null)
+    setRefPhotoDriveFileId(null)
     setUploadError(null)
     if (fileRef.current) fileRef.current.value = ''
-    if (state.kind === 'ready') {
-      const path = `ms-color-ia-ref/${state.data.adminId}/ref_photo.jpg`
-      supabase.storage.from('client-photos').remove([path]).catch(() => {})
-      try { localStorage.removeItem(refPhotoTimestampKey(state.data.adminId)) } catch {}
+
+    if (state.kind !== 'ready') return
+    const adminId = state.data.adminId
+
+    // Remove a foto do Drive (best-effort — não trava a UI se falhar)
+    if (prevFileId) {
+      driveStorage.fetchPhotoBlob(prevFileId)
+        .then(() => {
+          // arquivo ainda existe — tenta apagar via upload com replace
+          // (não há rota DELETE direta no drive edge; usaremos upload com arquivo vazio
+          //  não, melhor: edge não expõe delete avulso. Simplesmente limpamos o fileId.)
+        })
+        .catch(() => {})
     }
+
+    // Limpa o driveFileId persistido no admin_content
+    supabase
+      .from('admin_content')
+      .select('content')
+      .eq('admin_id', adminId)
+      .eq('type', 'settings')
+      .maybeSingle()
+      .then(({ data: row }) => {
+        if (!row) return
+        const merged = { ...(row.content as object ?? {}) }
+        delete (merged as any).refPhotoDriveFileId
+        return supabase
+          .from('admin_content')
+          .update({ content: merged })
+          .eq('admin_id', adminId)
+          .eq('type', 'settings')
+      })
+      .catch(() => {})
   }
 
   // ─── Aprimoramento aplicado ───────────────────────────────────────
   //
-  // O modal já fez o upload da versão aprimorada no mesmo caminho da foto
-  // de referência. Aqui só atualizamos a URL exibida (com o ?t= novo) e
-  // persistimos o timestamp pra sobreviver a reloads, igual ao upload normal.
+  // O modal já salvou a foto aprimorada no Drive e retorna o novo driveFileId.
+  // Aqui atualizamos preview, URL e fileId no estado local.
   // Conta de imagens do plano pré-pago (OpenAI) — cobre aprimoramento e páginas.
   function refreshImgQuota() {
     billingService.getMine().then(b => {
@@ -340,13 +415,11 @@ export function MsColorIAPage() {
     }).catch(() => {})
   }
 
-  function handleEnhancedApplied(newUrl: string, ts: number) {
+  function handleEnhancedApplied(newUrl: string, newDriveFileId: string) {
     setRefPhotoPreview(newUrl)
-    setRefPhotoUrl(newUrl)
+    setRefPhotoUrl(driveStorage.viewUrl(newDriveFileId))
+    setRefPhotoDriveFileId(newDriveFileId)
     setUploadError(null)
-    if (state.kind === 'ready') {
-      try { localStorage.setItem(refPhotoTimestampKey(state.data.adminId), String(ts)) } catch {}
-    }
     refreshImgQuota()
     setEnhanceOpen(false)
   }
@@ -387,9 +460,9 @@ export function MsColorIAPage() {
     )
   }
 
-  const { adminName, adminId, geminiKeyPresent, openaiKeyPresent, openaiPrepaid, folders } = state.data
+  const { adminName, adminId, geminiKeyPresent, geminiPrepaid, openaiKeyPresent, openaiPrepaid, folders, driveConnected } = state.data
 
-  if (!geminiKeyPresent) {
+  if (!geminiKeyPresent && !geminiPrepaid) {
     return (
       <div className="max-w-2xl mx-auto p-4 sm:p-6">
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">
@@ -585,6 +658,25 @@ export function MsColorIAPage() {
                 : 'Envie uma foto frontal da cliente com boa iluminação. Ela será usada como base em todas as simulações de cabelo, maquiagem e look.'}
             </p>
 
+            {!driveConnected && (
+              <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl mb-3">
+                <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-amber-800">Google Drive não conectado</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    A foto de referência é salva no seu Drive.{' '}
+                    <button
+                      onClick={() => navigate('/admin/settings')}
+                      className="underline font-medium hover:text-amber-900"
+                    >
+                      Conecte em Configurações
+                    </button>{' '}
+                    para habilitar o upload.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {uploadError && (
               <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
                 {uploadError}
@@ -613,7 +705,7 @@ export function MsColorIAPage() {
 
               {/* Aprimorar com IA — só faz sentido quando já existe uma foto.
                   Requer a chave GPT (OpenAI) configurada nas Configurações. */}
-              {refPhotoUrl && !uploadingPhoto && (
+              {refPhotoDriveFileId && !uploadingPhoto && (
                 (openaiKeyPresent || openaiPrepaid) ? (
                   <button
                     onClick={() => setEnhanceOpen(true)}
@@ -633,7 +725,7 @@ export function MsColorIAPage() {
                 )
               )}
 
-              {refPhotoUrl && !uploadingPhoto && imgLeft !== null && (
+              {refPhotoDriveFileId && !uploadingPhoto && imgLeft !== null && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200">
                   ✨ {imgLeft}/{imgQuota} imagens
                 </span>
@@ -646,7 +738,7 @@ export function MsColorIAPage() {
               )}
             </div>
 
-            {refPhotoUrl && !uploadingPhoto && (openaiKeyPresent || openaiPrepaid) && (
+            {refPhotoDriveFileId && !uploadingPhoto && (openaiKeyPresent || openaiPrepaid) && (
               <p className="text-[11px] text-gray-500 flex items-start gap-1 mt-2.5">
                 <Info className="h-3 w-3 mt-0.5 flex-shrink-0 text-fuchsia-400" />
                 <span>O aprimoramento consome 1 crédito de imagem. Use para ajustar a iluminação de fotos que precisam de correção.</span>
@@ -669,6 +761,7 @@ export function MsColorIAPage() {
         folderConfig={folderConfig}
         msColorIaMode
         referencePhotoUrl={refPhotoUrl ?? undefined}
+        referencePhotoDriveFileId={refPhotoDriveFileId ?? undefined}
         referencePhotos={[]}
         resultFileUrls={[]}
         resultObservations=""
@@ -678,10 +771,10 @@ export function MsColorIAPage() {
       />
 
       {/* ── Modal Aprimorar foto de referência com IA (OpenAI / GPT) ── */}
-      {enhanceOpen && refPhotoUrl && (
+      {enhanceOpen && refPhotoDriveFileId && (
         <EnhancePhotoModal
           adminId={adminId}
-          photoUrl={refPhotoUrl}
+          driveFileId={refPhotoDriveFileId}
           onClose={() => setEnhanceOpen(false)}
           onApplied={handleEnhancedApplied}
         />
@@ -709,13 +802,14 @@ export function MsColorIAPage() {
 // ═══════════════════════════════════════════════════════════════════════
 
 interface EnhancePhotoModalProps {
-  adminId:   string
-  photoUrl:  string
-  onClose:   () => void
-  onApplied: (newUrl: string, ts: number) => void
+  adminId:      string
+  driveFileId:  string
+  onClose:      () => void
+  /** newPreviewUrl = blob URL para pré-visualização; newDriveFileId = ID persistido */
+  onApplied:    (newPreviewUrl: string, newDriveFileId: string) => void
 }
 
-function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePhotoModalProps) {
+function EnhancePhotoModal({ adminId, driveFileId, onClose, onApplied }: EnhancePhotoModalProps) {
   const [prompts,        setPrompts]        = useState<any[]>([])
   const [loadingPrompts, setLoadingPrompts] = useState(true)
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
@@ -724,9 +818,23 @@ function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePho
   const [progress,   setProgress]   = useState('')
   const [error,      setError]      = useState<string | null>(null)
   const [previewB64, setPreviewB64] = useState<string | null>(null)
-  // Lightbox — URL/dataURL da imagem ampliada (null = fechado). Reaproveita
-  // o mesmo ImageLightbox da aba IA (zoom, arraste, pinch e download).
+  // URL local para exibir o "antes" no modal (blob via proxy — evita CORS)
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string>(() =>
+    driveStorage.viewUrl(driveFileId)
+  )
   const [lightbox,   setLightbox]   = useState<string | null>(null)
+
+  // Carrega a pré-visualização da foto atual via proxy
+  useEffect(() => {
+    let revoke = ''
+    driveStorage.fetchPhotoBlob(driveFileId)
+      .then(blob => {
+        revoke = URL.createObjectURL(blob)
+        setPhotoPreviewUrl(revoke)
+      })
+      .catch(() => {})
+    return () => { if (revoke) URL.revokeObjectURL(revoke) }
+  }, [driveFileId])
 
   // Carrega os prompts de aprimoramento (mesma fonte da aba IA).
   useEffect(() => {
@@ -749,11 +857,9 @@ function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePho
     setRunning(true)
     setError(null)
     try {
-      // 1. Baixa a foto de referência atual como blob.
+      // 1. Baixa a foto de referência atual via proxy (evita CORS com Drive).
       setProgress('Carregando foto original…')
-      const r = await fetch(photoUrl)
-      if (!r.ok) throw new Error('Não foi possível carregar a foto de referência.')
-      const photoBlob = await r.blob()
+      const photoBlob = await driveStorage.fetchPhotoBlob(driveFileId)
 
       // 2. Converte para base64 para enviar à API.
       setProgress('Preparando imagem…')
@@ -818,18 +924,33 @@ function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePho
       const res = await fetch(previewB64)
       const pngBlob = await res.blob()
       const jpegBlob = await compressImage(new File([pngBlob], 'enh.png', { type: 'image/png' }), 1280, 0.9)
+      const jpegFile = new File([jpegBlob], 'ref_photo.jpg', { type: 'image/jpeg' })
 
-      const path = `ms-color-ia-ref/${adminId}/ref_photo.jpg`
-      const { error: upErr } = await supabase.storage
-        .from('client-photos')
-        .upload(path, jpegBlob, { contentType: 'image/jpeg', upsert: true })
-      if (upErr) throw upErr
+      // Salva no Drive, substituindo a foto anterior
+      const result = await driveStorage.uploadMsColorIaRefPhoto({
+        file:          jpegFile,
+        replaceFileId: driveFileId,
+      })
 
-      const { data } = supabase.storage.from('client-photos').getPublicUrl(path)
-      if (!data?.publicUrl) throw new Error('Não foi possível obter a URL pública da foto.')
+      // Persiste o novo driveFileId no admin_content (merge com o content existente)
+      const { data: row } = await supabase
+        .from('admin_content')
+        .select('content')
+        .eq('admin_id', adminId)
+        .eq('type', 'settings')
+        .maybeSingle()
+      if (row) {
+        const merged = { ...(row.content as object ?? {}), refPhotoDriveFileId: result.driveFileId }
+        await supabase
+          .from('admin_content')
+          .update({ content: merged })
+          .eq('admin_id', adminId)
+          .eq('type', 'settings')
+      }
 
-      const ts = Date.now()
-      onApplied(`${data.publicUrl}?t=${ts}`, ts)
+      // Pré-visualização via blob local (já temos o base64)
+      const previewBlob = URL.createObjectURL(jpegBlob)
+      onApplied(previewBlob, result.driveFileId)
     } catch (err: any) {
       setError(err?.message || 'Erro ao salvar a foto aprimorada.')
       setSaving(false)
@@ -877,10 +998,10 @@ function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePho
                 <div className="space-y-1">
                   <p className="text-[11px] font-semibold text-gray-500 text-center uppercase tracking-wide">Antes</p>
                   <button
-                    onClick={() => setLightbox(photoUrl)}
+                    onClick={() => setLightbox(photoPreviewUrl)}
                     className="w-full aspect-square rounded-xl overflow-hidden border border-gray-200 hover:border-gray-400 transition-all relative group"
                   >
-                    <img src={photoUrl} alt="Antes" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                    <img src={photoPreviewUrl} alt="Antes" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
                     <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
                       <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 text-white text-[11px] px-2 py-1 rounded-lg">🔍 Ampliar</span>
                     </div>
@@ -910,7 +1031,7 @@ function EnhancePhotoModal({ adminId, photoUrl, onClose, onApplied }: EnhancePho
             <>
               {/* ── CONFIGURAÇÃO ── */}
               <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
-                <img src={photoUrl} alt="" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200" />
+                <img src={photoPreviewUrl} alt="" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200" />
                 <div>
                   <p className="text-xs font-semibold text-gray-700">Foto de referência atual</p>
                   <p className="text-[11px] text-gray-400 mt-0.5">
