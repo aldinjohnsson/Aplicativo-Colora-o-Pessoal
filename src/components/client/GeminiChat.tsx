@@ -435,9 +435,9 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     })
   }, [clientId, unlimited])
 
-  // Medidor do plano pré-pago do admin (Gemini) — só na MS Color IA do admin.
+  // Medidor do plano pré-pago do admin (Gemini) — MS Color IA e modo admin (unlimited).
   const refreshAdminGeminiQuota = () => {
-    if (!msColorIaMode) return
+    if (!msColorIaMode && !unlimited) return
     billingService.getMine().then(b => {
       if (b && b.gemini_mode === 'prepaid') {
         setAdminGeminiLeft(Math.max(0, b.gemini_quota - b.gemini_used))
@@ -447,7 +447,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       }
     }).catch(() => {})
   }
-  useEffect(() => { refreshAdminGeminiQuota() }, [msColorIaMode])
+  useEffect(() => { refreshAdminGeminiQuota() }, [msColorIaMode, unlimited])
 
   // Chave usada para persistir o histórico no localStorage. O admin passa
   // `chatStorageKey` para manter um histórico próprio sem misturar com o
@@ -1642,7 +1642,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         </div>
 
         {/* Medidor do plano (admin pré-pago) — barra bonita */}
-        {msColorIaMode && adminGeminiLeft !== null && (
+        {(msColorIaMode || unlimited) && adminGeminiLeft !== null && (
           <div className="px-3 sm:px-4 pt-3">
             <div className="rounded-xl border border-violet-100 bg-gradient-to-r from-violet-50 to-fuchsia-50 px-4 py-3">
               <div className="flex items-center justify-between mb-1.5">

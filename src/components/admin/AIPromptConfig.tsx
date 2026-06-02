@@ -11,6 +11,7 @@ import { driveStorage } from '../../lib/driveStorage'
 import { photoTypesService, PhotoType } from './PhotoTypesManager'
 import { documentsService } from './documents/lib/documentsService'
 import { REF_CATEGORIES } from './documents/prompts/refCategories'
+import { billingService } from '../../lib/billingService'
 
 interface AIPromptConfigProps {
   clientId: string
@@ -64,6 +65,21 @@ export function AIPromptConfig({
 
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  // Cota de aprimoramentos do plano pré-pago (OpenAI)
+  const [imgLeft,  setImgLeft]  = useState<number | null>(null)
+  const [imgQuota, setImgQuota] = useState(0)
+
+  useEffect(() => {
+    billingService.getMine().then(b => {
+      if (b && b.openai_mode === 'prepaid') {
+        setImgLeft(Math.max(0, b.openai_quota - b.openai_used))
+        setImgQuota(b.openai_quota)
+      } else {
+        setImgLeft(null)
+      }
+    }).catch(() => {})
+  }, [])
 
   useEffect(() => { loadData() }, [clientId])
 
@@ -223,12 +239,19 @@ export function AIPromptConfig({
               <Camera className="h-4 w-4" /> Fotos de referência
             </p>
             <p className="text-xs text-violet-700 mt-0.5">
-              Uma foto por tipo — usada pela IA e no PDF de cada categoria
+              Uma foto por tipo - usada pela IA e no PDF de cada categoria
             </p>
           </div>
-          <button onClick={loadData} className="p-1.5 text-violet-400 hover:text-violet-700 hover:bg-violet-100 rounded-lg" title="Recarregar tipos">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {imgLeft !== null && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200">
+                ✨ {imgLeft}/{imgQuota} imagens
+              </span>
+            )}
+            <button onClick={loadData} className="p-1.5 text-violet-400 hover:text-violet-700 hover:bg-violet-100 rounded-lg" title="Recarregar tipos">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
         {photoTypes.length === 0 && (
@@ -664,7 +687,8 @@ function StandardizeModal({ clientId, type, photo, onClose, onDone }: Standardiz
       setRunning(false)
 
     } catch (err: any) {
-      setError(err.message || 'Erro ao aprimorar foto')
+      const msg = err.message || 'Erro ao aprimorar foto'
+      setError(msg.includes('QUOTA_EXCEEDED') ? 'QUOTA_EXCEEDED' : msg)
       setRunning(false)
     }
   }
@@ -858,10 +882,22 @@ function StandardizeModal({ clientId, type, photo, onClose, onDone }: Standardiz
                   </div>
                 )}
                 {error && (
-                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
-                    <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-red-700">{error}</p>
-                  </div>
+                  error === 'QUOTA_EXCEEDED' ? (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0" />
+                        <p className="text-sm font-semibold text-amber-800">Créditos de imagem esgotados</p>
+                      </div>
+                      <p className="text-xs text-amber-700">
+                        Seus aprimoramentos acabaram. Faça uma recarga para continuar usando esta funcionalidade.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                      <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-red-700">{error}</p>
+                    </div>
+                  )
                 )}
               </>
             )}

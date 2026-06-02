@@ -921,7 +921,8 @@ function EnhancePhotoModal({ adminId, driveFileId, onClose, onApplied }: Enhance
       setPreviewB64(`data:${result.imageMime || 'image/png'};base64,${result.imageBase64}`)
       setRunning(false)
     } catch (err: any) {
-      setError(err?.message || 'Erro ao aprimorar a foto.')
+      const msg = err?.message || 'Erro ao aprimorar a foto.'
+      setError(msg.includes('QUOTA_EXCEEDED') ? 'QUOTA_EXCEEDED' : msg)
       setRunning(false)
     }
   }
@@ -1107,10 +1108,22 @@ function EnhancePhotoModal({ adminId, driveFileId, onClose, onApplied }: Enhance
                 </div>
               )}
               {error && (
-                <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
-                  <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-red-700">{error}</p>
-                </div>
+                error === 'QUOTA_EXCEEDED' ? (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0" />
+                      <p className="text-sm font-semibold text-amber-800">Créditos de imagem esgotados</p>
+                    </div>
+                    <p className="text-xs text-amber-700">
+                      Seus aprimoramentos acabaram. Faça uma recarga para continuar usando esta funcionalidade.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                    <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-red-700">{error}</p>
+                  </div>
+                )
               )}
             </>
           )}
