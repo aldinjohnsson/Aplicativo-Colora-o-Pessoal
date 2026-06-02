@@ -12,6 +12,7 @@
 
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { AdminBillingControls, type AdminBillingHandle } from './billing/AdminBillingControls'
+import { supabase } from '../../lib/supabase'
 import {
   Shield, Plus, Search, Mail, Calendar,
   CheckCircle2, XCircle, AlertTriangle,
@@ -57,6 +58,7 @@ function expiryLabel(dateStr: string | null | undefined): { text: string; color:
 export function SuperAdminPanel() {
   const { theme: t } = useTheme()
   const [admins, setAdmins] = useState<AdminUser[]>([])
+  const [billingMap, setBillingMap] = useState<Record<string, { openai_mode: string; gemini_mode: string }>>({})
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [showForm, setShowForm] = useState(false)
@@ -73,6 +75,11 @@ export function SuperAdminPanel() {
     try {
       const data = await adminService.listAdmins()
       setAdmins(data)
+      supabase.from('admin_billing').select('admin_id, openai_mode, gemini_mode').then(({ data: rows }) => {
+        const map: Record<string, { openai_mode: string; gemini_mode: string }> = {}
+        for (const r of (rows || []) as any[]) map[r.admin_id] = { openai_mode: r.openai_mode, gemini_mode: r.gemini_mode }
+        setBillingMap(map)
+      })
     } catch (err) {
       console.error('Erro ao listar admins:', err)
     } finally {
@@ -300,6 +307,7 @@ export function SuperAdminPanel() {
               <AdminRow
                 key={a.id}
                 admin={a}
+                billing={billingMap[a.id]}
                 isCurrent={a.id === currentAdminId}
                 isLast={idx === filtered.length - 1}
                 onToggle={() => handleToggle(a)}
@@ -373,9 +381,10 @@ function StatCard({
 // ─── AdminRow ─────────────────────────────────────────────────────────────
 
 function AdminRow({
-  admin, isCurrent, isLast, onToggle, onRenew, onEdit, onDelete, t, cardBg, border, textDim,
+  admin, isCurrent, isLast, onToggle, onRenew, onEdit, onDelete, t, cardBg, border, textDim, billing,
 }: {
   admin: AdminUser
+  billing?: { openai_mode: string; gemini_mode: string }
   isCurrent: boolean
   isLast: boolean
   onToggle: () => void
@@ -469,6 +478,11 @@ function AdminRow({
             {isChatAdmin && <RoleBadge label="MS Color IA"        color={CHAT_ADMIN_ACCENT} bg={`${CHAT_ADMIN_ACCENT}1f`} />}
             {isFullAdmin && <RoleBadge label="Ms Color Full IA"   color={FULL_ADMIN_ACCENT} bg={`${FULL_ADMIN_ACCENT}1f`} />}
             {isCurrent   && <RoleBadge label="Você"               color="#3b82f6"           bg="rgba(59,130,246,0.15)" />}
+            {!isSuper && (
+              (billing && (billing.openai_mode === 'prepaid' || billing.gemini_mode === 'prepaid'))
+                ? <RoleBadge label="Pré-pago" color="#b45309" bg="rgba(245,158,11,0.16)" />
+                : <RoleBadge label="Pós-pago" color="#6b7280" bg="rgba(107,114,128,0.14)" />
+            )}
           </div>
           <span style={{ fontSize: 12, color: textDim, display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
             <Mail size={11} /> {admin.email}
@@ -652,7 +666,7 @@ function AdminFormModal({
         await billingRef.current?.save()   // salva a cobrança de IA junto
       } else {
         if (form.password.length < 6) throw new Error('Senha deve ter pelo menos 6 caracteres.')
-        await adminService.createAdmin({
+        const created = await adminService.createAdmin({
           email:   form.email,
           password: form.password,
           nome:    form.nome,
@@ -663,6 +677,13 @@ function AdminFormModal({
             : null,
           observacoes: form.observacoes || undefined,
         })
+        // Descobre o id do admin recém-criado pra salvar a cobrança.
+        let newId: string | undefined = (created as any)?.id
+        if (!newId) {
+          const { data: row } = await supabase.from('admin_users').select('id').eq('email', form.email).maybeSingle()
+          newId = (row as any)?.id
+        }
+        if (newId) await billingRef.current?.save(newId)
       }
       onSaved()
     } catch (err: any) {
@@ -922,11 +943,9 @@ function AdminFormModal({
           </div>
 
           {/* Cobrança de IA — só na edição (admin já existe) */}
-          {isEdit && admin?.id && (
-            <div style={{ marginBottom: 14, paddingTop: 14, borderTop: `1px solid ${border}` }}>
-              <AdminBillingControls ref={billingRef} adminId={admin.id} />
-            </div>
-          )}
+          <div style={{ marginBottom: 14, paddingTop: 14, borderTop: `1px solid ${border}` }}>
+            <AdminBillingControls ref={billingRef} adminId={admin?.id} />
+          </div>
 
           {/* Erro */}
           {error && (

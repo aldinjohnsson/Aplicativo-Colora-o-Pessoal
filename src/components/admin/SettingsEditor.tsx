@@ -1028,7 +1028,7 @@ export default function SettingsEditor() {
           value={settings.openaiApiKey}
           onChange={v => setSettings({ ...settings, openaiApiKey: v })}
           onHelp={() => setShowOpenAIHelp(true)}
-          title="Chave GPT (OpenAI) — opcional"
+          title="Chave GPT (OpenAI)"
           subtitle="Ativa o aprimoramento de fotos de referência na MS Color IA"
           contextLabel="✓ Aprimoramento de fotos ativado. Cada foto aprimorada usa créditos da sua conta OpenAI — você controla o gasto."
         />

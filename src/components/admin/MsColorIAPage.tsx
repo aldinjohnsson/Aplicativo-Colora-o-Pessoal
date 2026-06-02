@@ -18,10 +18,11 @@ import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, AlertCircle, Loader2, Settings as SettingsIcon,
   Camera, ImagePlus, X, RefreshCw, FolderOpen, ChevronDown, Check, User,
-  Wand2, CheckCircle, AlertTriangle,
+  Wand2, CheckCircle, AlertTriangle, Info,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import type { AdminUser } from '../../lib/services'
+import { billingService } from '../../lib/billingService'
 import { GeminiChat } from '../client/GeminiChat'
 import { documentsService } from './documents/lib/documentsService'
 import { ImageLightbox } from './AIPromptConfig'
@@ -54,6 +55,7 @@ interface LoadedConfig {
   /** Chave OpenAI (GPT) do admin — usada client-side no aprimoramento de foto. */
   openaiApiKey:     string
   openaiKeyPresent: boolean
+  openaiPrepaid:    boolean
   folders:          FolderOption[]
 }
 
@@ -84,8 +86,11 @@ export function MsColorIAPage() {
   const [uploadError,     setUploadError]     = useState<string | null>(null)
   // Modal "Aprimorar com IA" (usa a chave GPT/OpenAI do admin).
   const [enhanceOpen,     setEnhanceOpen]     = useState(false)
+  const [imgLeft,  setImgLeft]  = useState<number | null>(null)
+  const [imgQuota, setImgQuota] = useState(0)
 
   useEffect(() => { void load() }, [])
+  useEffect(() => { refreshImgQuota() }, [])
 
   // Fecha dropdown ao clicar fora
   useEffect(() => {
@@ -177,6 +182,11 @@ export function MsColorIAPage() {
       const openaiKey = ((settingsRow?.content as any)?.openaiApiKey as string | undefined)?.trim() || ''
       const openaiKeyPresent = !!openaiKey
 
+      // Plano pré-pago de imagem? Então o aprimoramento usa a chave geral
+      // (na edge) e não exige chave própria.
+      const billingProfile = await billingService.getMine().catch(() => null)
+      const openaiPrepaid = billingProfile?.openai_mode === 'prepaid'
+
       if (folderErr) {
         console.error('[MsColorIAPage] erro ao carregar ai_folders:', folderErr)
         setState({
@@ -209,6 +219,7 @@ export function MsColorIAPage() {
           geminiKeyPresent,
           openaiApiKey:     openaiKey,
           openaiKeyPresent,
+          openaiPrepaid,
           folders,
         },
       })
@@ -321,6 +332,14 @@ export function MsColorIAPage() {
   // O modal já fez o upload da versão aprimorada no mesmo caminho da foto
   // de referência. Aqui só atualizamos a URL exibida (com o ?t= novo) e
   // persistimos o timestamp pra sobreviver a reloads, igual ao upload normal.
+  // Conta de imagens do plano pré-pago (OpenAI) — cobre aprimoramento e páginas.
+  function refreshImgQuota() {
+    billingService.getMine().then(b => {
+      if (b && b.openai_mode === 'prepaid') { setImgLeft(Math.max(0, b.openai_quota - b.openai_used)); setImgQuota(b.openai_quota) }
+      else setImgLeft(null)
+    }).catch(() => {})
+  }
+
   function handleEnhancedApplied(newUrl: string, ts: number) {
     setRefPhotoPreview(newUrl)
     setRefPhotoUrl(newUrl)
@@ -328,6 +347,7 @@ export function MsColorIAPage() {
     if (state.kind === 'ready') {
       try { localStorage.setItem(refPhotoTimestampKey(state.data.adminId), String(ts)) } catch {}
     }
+    refreshImgQuota()
     setEnhanceOpen(false)
   }
 
@@ -367,12 +387,9 @@ export function MsColorIAPage() {
     )
   }
 
-  const { adminName, adminId, geminiKeyPresent, openaiKeyPresent, folders } = state.data
+  const { adminName, adminId, geminiKeyPresent, openaiKeyPresent, openaiPrepaid, folders } = state.data
 
-  // Com o proxy ligado, a chave vive no servidor (gemini-proxy) — admins
-  // pré-pagos não têm chave própria e mesmo assim o chat funciona.
-  const __useGeminiProxy = (import.meta as any).env?.VITE_USE_GEMINI_PROXY === 'true'
-  if (!__useGeminiProxy && !geminiKeyPresent) {
+  if (!geminiKeyPresent) {
     return (
       <div className="max-w-2xl mx-auto p-4 sm:p-6">
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">
@@ -502,22 +519,6 @@ export function MsColorIAPage() {
             )}
           </div>
 
-          {/* Resumo das categorias da pasta selecionada */}
-          {folderConfig?.categories?.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {folderConfig.categories.map((cat: any) => (
-                <span
-                  key={cat.id}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-100 rounded-full px-2.5 py-0.5"
-                >
-                  {cat.name}
-                  {cat.prompts?.length > 0 && (
-                    <span className="text-fuchsia-400">({cat.prompts.length})</span>
-                  )}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
@@ -580,7 +581,7 @@ export function MsColorIAPage() {
 
             <p className="text-xs text-gray-500 mb-3 leading-relaxed">
               {refPhotoUrl
-                ? 'Foto carregada. A inteligência artificial vai usá-la como base para preservar rosto e traços nas simulações.'
+                ? 'Foto carregada.'
                 : 'Envie uma foto frontal da cliente com boa iluminação. Ela será usada como base em todas as simulações de cabelo, maquiagem e look.'}
             </p>
 
@@ -613,11 +614,11 @@ export function MsColorIAPage() {
               {/* Aprimorar com IA — só faz sentido quando já existe uma foto.
                   Requer a chave GPT (OpenAI) configurada nas Configurações. */}
               {refPhotoUrl && !uploadingPhoto && (
-                openaiKeyPresent ? (
+                (openaiKeyPresent || openaiPrepaid) ? (
                   <button
                     onClick={() => setEnhanceOpen(true)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 hover:bg-fuchsia-100 transition-colors"
-                    title="Aprimorar a foto de referência com IA (usa sua chave GPT)"
+                    title="Aprimorar a foto de referência com IA"
                   >
                     <Wand2 className="h-3.5 w-3.5" /> Aprimorar com IA
                   </button>
@@ -632,12 +633,25 @@ export function MsColorIAPage() {
                 )
               )}
 
+              {refPhotoUrl && !uploadingPhoto && imgLeft !== null && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200">
+                  ✨ {imgLeft}/{imgQuota} imagens
+                </span>
+              )}
+
               {!refPhotoUrl && (
                 <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
                   ⚠️ Simulações sem foto de referência podem não preservar os traços da cliente.
                 </p>
               )}
             </div>
+
+            {refPhotoUrl && !uploadingPhoto && (openaiKeyPresent || openaiPrepaid) && (
+              <p className="text-[11px] text-gray-500 flex items-start gap-1 mt-2.5">
+                <Info className="h-3 w-3 mt-0.5 flex-shrink-0 text-fuchsia-400" />
+                <span>O aprimoramento consome 1 crédito de imagem. Use para ajustar a iluminação de fotos que precisam de correção.</span>
+              </p>
+            )}
           </div>
         </div>
       </div>

@@ -42,7 +42,7 @@ export function BillingMeter({ billing }: { billing: BillingProfile }) {
         <h2 className="text-base font-semibold text-gray-900">Geração inclusa no seu plano</h2>
       </div>
       <p className="text-sm text-gray-500 mb-4">
-        Já está tudo configurado — é só usar. Sem chave pra colar.
+        Já está tudo configurado, é só usar. Sem chave pra colar.
       </p>
       {showOpenAi && (
         <Bar label="Imagens (IA de imagem)" used={billing.openai_used} quota={billing.openai_quota} />

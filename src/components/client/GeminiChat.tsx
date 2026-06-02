@@ -53,6 +53,7 @@ interface ChatMsg {
   responseParts?: GeminiResponsePart[]; timestamp: Date
   loading?: boolean; translating?: boolean; error?: string; imageGenerationFailed?: boolean
   savedImageUrls?: string[]
+  quotaExceeded?: boolean
   pdfMeta?: PdfMeta
 }
 
@@ -262,22 +263,36 @@ const WELCOME = (name: string, lang: LanguageCode = 'pt-BR') =>
  * Para outras URLs, funciona como um <img> normal.
  */
 function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
-  const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(src)
+  const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(undefined)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
     setFailed(false)
+    setResolvedSrc(undefined)
     if (!src) return
     const m = src.match(/[?&]id=([^&]+)/)
     if (!src.includes('drive.google.com') || !m) { setResolvedSrc(src); return }
-    let objectUrl: string | null = null
-    driveStorage.fetchPhotoBlob(m[1])
-      .then(blob => { objectUrl = URL.createObjectURL(blob); setResolvedSrc(objectUrl) })
-      .catch(() => setResolvedSrc(src)) // fallback: tenta a URL direta
-    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
+    const driveId = m[1]
+    // Busca o blob pelo proxy autenticado, com algumas tentativas: ao recarregar
+    // a página o token pode ainda não estar pronto e a 1ª chamada falha — antes
+    // isso deixava a imagem invisível até um novo reload. Agora ele tenta de novo.
+    let attempt = 0
+    const tryLoad = () => {
+      driveStorage.fetchPhotoBlob(driveId)
+        .then(blob => { if (!cancelled) { objectUrl = URL.createObjectURL(blob); setResolvedSrc(objectUrl) } })
+        .catch(() => {
+          if (cancelled) return
+          attempt++
+          if (attempt < 4) setTimeout(tryLoad, 400 * attempt)
+          else setFailed(true)
+        })
+    }
+    tryLoad()
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [src])
-  // iOS Safari mostra um quadrado azul com '?' pra <img> sem src ou que falhou.
-  // Evita renderizar a tag até ter src válido e antes de qualquer erro.
-  if (!resolvedSrc || failed) return null
+  // Enquanto resolve, não renderiza a tag (evita o quadrado quebrado do iOS).
+  if (failed || !resolvedSrc) return null
   return <img src={resolvedSrc} {...props} onError={() => setFailed(true)} />
 }
 
@@ -733,7 +748,13 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         }
       }
     } catch (err: any) {
-      setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: '', error: err.message || 'Erro' } : m))
+      const raw = err?.message || 'Erro'
+      const isQuota = /QUOTA_EXCEEDED|limite de (imagens|simula)/i.test(raw)
+      const text = isQuota
+        ? 'Suas simulações acabaram. Faça uma nova recarga.'
+        : raw
+      setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: '', error: text, quotaExceeded: isQuota } : m))
+      if (isQuota) refreshAdminGeminiQuota()
     } finally { setLoading(false) }
   }
 
@@ -1074,10 +1095,14 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 {msg.loading ? (
                   <div className="flex items-center gap-2 text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /><span className="text-xs">{msg.translating ? 'Traduzindo...' : loadingResults ? 'Carregando materiais...' : 'Gerando...'}</span></div>
                 ) : msg.error ? (
+                  msg.quotaExceeded ? (
+                    <div className="flex items-start gap-2 text-amber-700"><AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" /><span className="text-xs">{msg.error}</span></div>
+                  ) : (
                   <div className="flex flex-col gap-2">
                     <div className="flex items-start gap-2 text-red-600"><AlertCircle className="h-4 w-4 mt-0.5" /><span className="text-xs">{msg.error}</span></div>
                     <button onClick={handleRetry} disabled={loading} className="self-start text-xs flex items-center gap-1 px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg"><RefreshCw className="h-3 w-3" /> Tentar novamente</button>
                   </div>
+                  )
                 ) : isLong ? (
                   <>
                     <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? '' : 'max-h-[4.5rem]'}`} style={isExpanded ? {} : { WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent 100%)' }}>
@@ -1603,7 +1628,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
           {creditsImage !== null && <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
-          {adminGeminiLeft !== null && <span title="Simulações restantes no seu plano" className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">✨ {adminGeminiLeft}/{adminGeminiQuota}</span>}
           {messages.length > 1 && (
             <button onClick={() => { setSelectMode(p => { if (p) { setSelectedMsgs(new Set()); return false } return true }) }} title={selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}
               className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0 ${selectMode ? 'bg-white text-violet-700 font-semibold' : 'bg-white/20 hover:bg-white/30'}`}>
@@ -1616,6 +1640,29 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
         </div>
+
+        {/* Medidor do plano (admin pré-pago) — barra bonita */}
+        {msColorIaMode && adminGeminiLeft !== null && (
+          <div className="px-3 sm:px-4 pt-3">
+            <div className="rounded-xl border border-violet-100 bg-gradient-to-r from-violet-50 to-fuchsia-50 px-4 py-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-semibold text-violet-700">✨ Simulações do seu plano</span>
+                <span className="text-xs font-medium text-violet-700">
+                  {adminGeminiLeft === 0 ? 'esgotado' : <><strong>{adminGeminiLeft}</strong> de {adminGeminiQuota} restantes</>}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-violet-100 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${adminGeminiLeft === 0 ? 'bg-rose-400' : 'bg-gradient-to-r from-violet-500 to-fuchsia-500'}`}
+                  style={{ width: `${adminGeminiQuota > 0 ? Math.round((adminGeminiLeft / adminGeminiQuota) * 100) : 0}%` }}
+                />
+              </div>
+              {adminGeminiLeft === 0 && (
+                <p className="text-[11px] text-rose-500 mt-1.5">Suas simulações acabaram. Renovam no início de cada mês.</p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 sm:py-5 space-y-4 sm:space-y-5 bg-gray-50/50">

@@ -1,19 +1,16 @@
 // src/components/admin/billing/AdminBillingControls.tsx
 //
-// Bloco dentro do AdminFormModal (SuperAdminPanel). Define, POR IA:
-//   modo (pré/pós-pago) + cota + ciclo, e "zerar uso".
-//
-// A gravação acontece junto com o botão "Salvar alterações" do modal:
-// o modal chama billingRef.current.save() no submit. Assim não existe mais
-// o botão separado que causava confusão (mudava e "não salvava").
+// Bloco dentro do AdminFormModal (SuperAdminPanel). Funciona na EDIÇÃO e na
+// CRIAÇÃO. A gravação acontece junto com "Salvar alterações"/"Criar":
+//   • edição:  modal chama billingRef.current.save()         (usa o adminId da prop)
+//   • criação: modal chama billingRef.current.save(novoId)   (passa o id recém-criado)
 
 import React, { useEffect, useState, forwardRef, useImperativeHandle } from 'react'
-import { billingService, type BillingProfile, type GenMode } from '../../../lib/billingService'
+import { billingService, DEFAULT_BILLING, type BillingProfile, type GenMode } from '../../../lib/billingService'
 
-export interface AdminBillingHandle { save: () => Promise<void> }
-interface Props { adminId: string }
+export interface AdminBillingHandle { save: (targetId?: string) => Promise<void> }
+interface Props { adminId?: string }   // ausente = modo criação
 
-// Componente em escopo de módulo (NÃO dentro do render) — evita remontagem.
 function AiBlock({ title, mode, quota, used, onMode, onQuota }: {
   title: string; mode: GenMode; quota: number; used: number
   onMode: (m: GenMode) => void; onQuota: (n: number) => void
@@ -49,13 +46,15 @@ function AiBlock({ title, mode, quota, used, onMode, onQuota }: {
 
 export const AdminBillingControls = forwardRef<AdminBillingHandle, Props>(
   function AdminBillingControls({ adminId }, ref) {
-    const [b, setB] = useState<BillingProfile | null>(null)
-    const [loading, setLoading] = useState(true)
+    const isCreate = !adminId
+    const [b, setB] = useState<BillingProfile>({ admin_id: adminId || '', ...DEFAULT_BILLING })
+    const [loading, setLoading] = useState(!isCreate)
     const [busy, setBusy] = useState(false)
     const [msg, setMsg] = useState<string | null>(null)
     const [err, setErr] = useState<string | null>(null)
 
     useEffect(() => {
+      if (!adminId) { setLoading(false); return }
       let alive = true
       setLoading(true)
       billingService.getFor(adminId)
@@ -65,11 +64,12 @@ export const AdminBillingControls = forwardRef<AdminBillingHandle, Props>(
       return () => { alive = false }
     }, [adminId])
 
-    const patch = (p: Partial<BillingProfile>) => setB(prev => prev ? { ...prev, ...p } : prev)
+    const patch = (p: Partial<BillingProfile>) => setB(prev => ({ ...prev, ...p }))
 
-    const persist = async (reset = false): Promise<void> => {
-      if (!b) return
-      const updated = await billingService.set(adminId, {
+    const persist = async (targetId?: string, reset = false): Promise<void> => {
+      const id = targetId || adminId
+      if (!id) return
+      const updated = await billingService.set(id, {
         openai_mode:  b.openai_mode,
         openai_quota: b.openai_quota,
         gemini_mode:  b.gemini_mode,
@@ -80,18 +80,17 @@ export const AdminBillingControls = forwardRef<AdminBillingHandle, Props>(
       setB(updated)
     }
 
-    // Exposto ao modal: salvar a cobrança junto com "Salvar alterações".
-    useImperativeHandle(ref, () => ({ save: () => persist(false) }), [b, adminId])
+    // Exposto ao modal: salva junto com o botão principal.
+    useImperativeHandle(ref, () => ({ save: (targetId?: string) => persist(targetId, false) }), [b, adminId])
 
     const onReset = async () => {
       setBusy(true); setErr(null); setMsg(null)
-      try { await persist(true); setMsg('Uso zerado.') }
+      try { await persist(undefined, true); setMsg('Uso zerado.') }
       catch (e: any) { console.error('billing reset error', e); setErr(e?.message || 'Erro ao zerar uso') }
       finally { setBusy(false) }
     }
 
     if (loading) return <div className="text-sm text-gray-400 py-3">Carregando cobrança…</div>
-    if (!b) return null
 
     return (
       <div className="space-y-3">
@@ -118,16 +117,18 @@ export const AdminBillingControls = forwardRef<AdminBillingHandle, Props>(
             <option value="monthly">Mensal (renova todo mês)</option>
             <option value="once">Balde único (recarga manual)</option>
           </select>
-          <button
-            type="button" onClick={onReset} disabled={busy}
-            className="ml-auto px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-          >
-            Zerar uso
-          </button>
+          {!isCreate && (
+            <button
+              type="button" onClick={onReset} disabled={busy}
+              className="ml-auto px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Zerar uso
+            </button>
+          )}
         </div>
 
         <p className="text-xs text-gray-400">
-          As alterações de cobrança são salvas ao clicar em <strong>Salvar alterações</strong>.
+          A cobrança é salva ao clicar em <strong>{isCreate ? 'Criar conta' : 'Salvar alterações'}</strong>.
         </p>
         {(msg || err) && <p className={`text-xs ${err ? 'text-rose-600' : 'text-emerald-600'}`}>{err || msg}</p>}
       </div>

@@ -398,7 +398,7 @@ export function AddManualClientModal({ plans, onClose, onCreated }: Props) {
                 style={{ ...inputStyle, resize: 'vertical', minHeight: 72 }}
                 value={notes}
                 onChange={e => setNotes(e.target.value)}
-                placeholder="Opcional — anotações visíveis só para a equipe…"
+                placeholder="Opcional -  anotações visíveis só para a equipe…"
                 onFocus={e => { (e.currentTarget as HTMLTextAreaElement).style.borderColor = t.accent; (e.currentTarget as HTMLTextAreaElement).style.boxShadow = `0 0 0 3px ${t.accent}22` }}
                 onBlur={e => { (e.currentTarget as HTMLTextAreaElement).style.borderColor = t.border; (e.currentTarget as HTMLTextAreaElement).style.boxShadow = 'none' }}
               />
