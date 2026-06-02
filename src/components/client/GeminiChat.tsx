@@ -16,6 +16,7 @@ import {
   GeminiMessage, GeminiResponsePart, MaterialData,
 } from '../../lib/geminiService'
 import { supabase } from '../../lib/supabase'
+import { billingService } from '../../lib/billingService'
 import { driveStorage } from '../../lib/driveStorage'
 import { buildStylePdfBlob, ItemLayout } from '../../lib/templatePDFGenerator'
 
@@ -301,6 +302,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [loadingResults, setLoadingResults] = useState(false)
   const resultMaterialsSent = useRef(false)
   const [creditsImage, setCreditsImage] = useState<number | null>(null)
+  const [adminGeminiLeft, setAdminGeminiLeft] = useState<number | null>(null)
+  const [adminGeminiQuota, setAdminGeminiQuota] = useState<number>(0)
   const [creditsText, setCreditsText] = useState<number | null>(null)
   const [showPdfModal, setShowPdfModal] = useState(false)
   const [pdfSelected, setPdfSelected] = useState<Set<string>>(new Set())
@@ -416,6 +419,20 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       if (data) { setCreditsImage(data.image ?? null); setCreditsText(data.text ?? null) }
     })
   }, [clientId, unlimited])
+
+  // Medidor do plano pré-pago do admin (Gemini) — só na MS Color IA do admin.
+  const refreshAdminGeminiQuota = () => {
+    if (!msColorIaMode) return
+    billingService.getMine().then(b => {
+      if (b && b.gemini_mode === 'prepaid') {
+        setAdminGeminiLeft(Math.max(0, b.gemini_quota - b.gemini_used))
+        setAdminGeminiQuota(b.gemini_quota)
+      } else {
+        setAdminGeminiLeft(null)
+      }
+    }).catch(() => {})
+  }
+  useEffect(() => { refreshAdminGeminiQuota() }, [msColorIaMode])
 
   // Chave usada para persistir o histórico no localStorage. O admin passa
   // `chatStorageKey` para manter um histórico próprio sem misturar com o
@@ -707,6 +724,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             if (saved.length > 0) setMessages(prev => prev.map(m => m.id === lid ? { ...m, savedImageUrls: saved } : m))
           })
         }
+        if (msColorIaMode && hasImage && !response.imageGenerationFailed) refreshAdminGeminiQuota()
         if (!unlimited) {
           const creditType = hasImage ? 'image' : 'text'
           supabase.rpc('use_ai_credit', { p_client_id: clientId, p_type: creditType }).then(({ data }) => {
@@ -1585,6 +1603,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
           {creditsImage !== null && <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
+          {adminGeminiLeft !== null && <span title="Simulações restantes no seu plano" className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">✨ {adminGeminiLeft}/{adminGeminiQuota}</span>}
           {messages.length > 1 && (
             <button onClick={() => { setSelectMode(p => { if (p) { setSelectedMsgs(new Set()); return false } return true }) }} title={selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}
               className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0 ${selectMode ? 'bg-white text-violet-700 font-semibold' : 'bg-white/20 hover:bg-white/30'}`}>

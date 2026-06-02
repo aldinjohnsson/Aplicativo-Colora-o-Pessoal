@@ -6,6 +6,8 @@ import { DriveConnectionSection } from './DriveConnectionSection'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
 import { adminService, AdminUser } from '../../lib/services'
+import { billingService, type BillingProfile } from '../../lib/billingService'
+import { BillingMeter } from './billing/BillingMeter'
 
 // ── Modal de instrução de API Key ────────────────────────────────────────────
 
@@ -822,6 +824,7 @@ export default function SettingsEditor() {
   const [userRole, setUserRole] = useState<AdminUser['role'] | null>(null)
   const [showGeminiHelp, setShowGeminiHelp] = useState(false)
   const [showOpenAIHelp, setShowOpenAIHelp] = useState(false)
+  const [billing, setBilling] = useState<BillingProfile | null>(null)
 
   // Configuração global de e-mail — apenas super_admin edita.
   // Armazenada em admin_content (type='global_email_settings') do super_admin.
@@ -833,6 +836,10 @@ export default function SettingsEditor() {
 
   useEffect(() => {
     loadSettings()
+  }, [])
+
+  useEffect(() => {
+    billingService.getMine().then(setBilling).catch(() => {})
   }, [])
 
   const loadSettings = async () => {
@@ -995,7 +1002,7 @@ export default function SettingsEditor() {
         )}
 
         {/* Aviso de primeiro uso, se ainda não configurou */}
-        {!settings.geminiApiKey && (
+        {billing?.gemini_mode !== 'prepaid' && !settings.geminiApiKey && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
             <p className="text-sm text-amber-800 font-medium">⚠️ Configure sua chave Gemini para usar o chat</p>
             <p className="text-xs text-amber-700 mt-1">
@@ -1004,14 +1011,19 @@ export default function SettingsEditor() {
           </div>
         )}
 
+        {billing && <BillingMeter billing={billing} />}
+
+        {billing?.gemini_mode !== 'prepaid' && (
         <GeminiKeyCard
           value={settings.geminiApiKey}
           onChange={v => setSettings({ ...settings, geminiApiKey: v })}
           onHelp={() => setShowGeminiHelp(true)}
           contextLabel="✓ Chave configurada. O uso é cobrado direto no seu Google Cloud — você tem controle total da sua conta."
         />
+        )}
 
         {/* OpenAI (GPT) — opcional: ativa o "Aprimorar foto" na MS Color IA */}
+        {billing?.openai_mode !== 'prepaid' && (
         <OpenAiKeyCard
           value={settings.openaiApiKey}
           onChange={v => setSettings({ ...settings, openaiApiKey: v })}
@@ -1020,6 +1032,7 @@ export default function SettingsEditor() {
           subtitle="Ativa o aprimoramento de fotos de referência na MS Color IA"
           contextLabel="✓ Aprimoramento de fotos ativado. Cada foto aprimorada usa créditos da sua conta OpenAI — você controla o gasto."
         />
+        )}
 
         <PdfTemplateSection
           currentFileName={settings.pdfTemplateFileName || ''}
@@ -1122,27 +1135,32 @@ export default function SettingsEditor() {
           </div>
         )}
 
-        {(!settings.geminiApiKey || !settings.openaiApiKey) && (
+        {((billing?.gemini_mode !== 'prepaid' && !settings.geminiApiKey) || (billing?.openai_mode !== 'prepaid' && !settings.openaiApiKey)) && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-1">
             <p className="text-sm text-amber-800 font-medium">⚠️ Configure suas chaves para usar o plano completo</p>
-            {!settings.geminiApiKey && (
+            {billing?.gemini_mode !== 'prepaid' && !settings.geminiApiKey && (
               <p className="text-xs text-amber-700">• Chave Gemini necessária para o chat MS Color IA.</p>
             )}
-            {!settings.openaiApiKey && (
+            {billing?.openai_mode !== 'prepaid' && !settings.openaiApiKey && (
               <p className="text-xs text-amber-700">• Chave OpenAI necessária para a geração de imagens.</p>
             )}
           </div>
         )}
 
+        {billing && <BillingMeter billing={billing} />}
+
         {/* Gemini — chat IA */}
+        {billing?.gemini_mode !== 'prepaid' && (
         <GeminiKeyCard
           value={settings.geminiApiKey}
           onChange={v => setSettings({ ...settings, geminiApiKey: v })}
           onHelp={() => setShowGeminiHelp(true)}
           contextLabel="✓ Chat MS Color IA ativado. O uso é cobrado direto na sua conta Google Cloud."
         />
+        )}
 
         {/* OpenAI — geração de imagem */}
+        {billing?.openai_mode !== 'prepaid' && (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
             <div className="flex items-center gap-3">
@@ -1199,6 +1217,7 @@ export default function SettingsEditor() {
             )}
           </div>
         </div>
+        )}
 
         {/* PDF Modelo */}
         <PdfTemplateSection
@@ -1322,13 +1341,18 @@ export default function SettingsEditor() {
 
       <DriveConnectionSection />
 
+      {billing && <BillingMeter billing={billing} />}
+
+      {billing?.gemini_mode !== 'prepaid' && (
       <GeminiKeyCard
         value={settings.geminiApiKey}
         onChange={v => setSettings({ ...settings, geminiApiKey: v })}
         onHelp={() => setShowGeminiHelp(true)}
       />
+      )}
 
       {/* ── OpenAI ─────────────────────────────────────────────────────── */}
+      {billing?.openai_mode !== 'prepaid' && (
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-rose-50">
           <div className="flex items-center gap-3">
@@ -1385,6 +1409,7 @@ export default function SettingsEditor() {
           )}
         </div>
       </div>
+      )}
 
       {/* ── E-mail: notificações pro admin ────────────────────────────────
         *

@@ -369,7 +369,10 @@ export function MsColorIAPage() {
 
   const { adminName, adminId, geminiKeyPresent, openaiKeyPresent, folders } = state.data
 
-  if (!geminiKeyPresent) {
+  // Com o proxy ligado, a chave vive no servidor (gemini-proxy) — admins
+  // pré-pagos não têm chave própria e mesmo assim o chat funciona.
+  const __useGeminiProxy = (import.meta as any).env?.VITE_USE_GEMINI_PROXY === 'true'
+  if (!__useGeminiProxy && !geminiKeyPresent) {
     return (
       <div className="max-w-2xl mx-auto p-4 sm:p-6">
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">

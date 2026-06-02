@@ -10,7 +10,8 @@
 //   • StatCards com ícones e visual mais profissional
 //   • Layout de linha expandido: plano + expiração bem destacados
 
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
+import { AdminBillingControls, type AdminBillingHandle } from './billing/AdminBillingControls'
 import {
   Shield, Plus, Search, Mail, Calendar,
   CheckCircle2, XCircle, AlertTriangle,
@@ -615,6 +616,7 @@ function AdminFormModal({
   })
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState<string | null>(null)
+  const billingRef = useRef<AdminBillingHandle>(null)
 
   // ★ NOVO: permitir trocar plano no modo edição
   const handleRoleChange = (newRole: 'admin' | 'chat_admin' | 'full_admin') => {
@@ -647,6 +649,7 @@ function AdminFormModal({
             ? new Date(form.license_expires_at + 'T00:00:00').toISOString()
             : null
         )
+        await billingRef.current?.save()   // salva a cobrança de IA junto
       } else {
         if (form.password.length < 6) throw new Error('Senha deve ter pelo menos 6 caracteres.')
         await adminService.createAdmin({
@@ -917,6 +920,13 @@ function AdminFormModal({
               placeholder="Notas internas..."
             />
           </div>
+
+          {/* Cobrança de IA — só na edição (admin já existe) */}
+          {isEdit && admin?.id && (
+            <div style={{ marginBottom: 14, paddingTop: 14, borderTop: `1px solid ${border}` }}>
+              <AdminBillingControls ref={billingRef} adminId={admin.id} />
+            </div>
+          )}
 
           {/* Erro */}
           {error && (

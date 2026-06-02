@@ -1243,6 +1243,9 @@ export const documentsService = {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
+      if (res.status === 402 || err?.error === 'QUOTA_EXCEEDED') {
+        throw new Error(err?.message || 'Seu limite de imagens acabou. Fale com o suporte para liberar mais.')
+      }
       throw new Error(err?.error || `Falha ao gerar imagem (HTTP ${res.status})`)
     }
     const data = await res.json()
@@ -1295,7 +1298,22 @@ export const documentsService = {
     photoId:  string
   }): Promise<{ storagePath: string; size: number; promptName: string }> {
     const { data, error } = await supabase.functions.invoke('generate-tag-image', { body: input })
+    if ((data as any)?.error === 'QUOTA_EXCEEDED') {
+      throw new Error((data as any)?.message || 'Seu limite de imagens acabou. Fale com o suporte para liberar mais.')
+    }
     if (error) {
+      // 402 da edge (cota): supabase-js coloca a Response em error.context.
+      try {
+        const ctx: any = (error as any)?.context
+        if (ctx && typeof ctx.json === 'function') {
+          const j = await ctx.json()
+          if (j?.error === 'QUOTA_EXCEEDED') {
+            throw new Error(j?.message || 'Seu limite de imagens acabou. Fale com o suporte para liberar mais.')
+          }
+        }
+      } catch (quotaErr: any) {
+        if (/limite de imagens/i.test(quotaErr?.message || '')) throw quotaErr
+      }
       // Tenta extrair detalhe do response body se houver
       const ctx = (error as any)?.context
       let detail = ''
