@@ -181,17 +181,35 @@ const settingsStorageService = {
     const userId = adminId ?? (await supabase.auth.getUser()).data.user?.id
     if (!userId) throw new Error('Sessão expirada. Faça login novamente.')
 
+    // ⚠️ ISOLAMENTO DE CHAVES: blobs E api keys são omitidos do row 'settings'.
+    // As chaves (gemini/openai/resend) vivem exclusivamente no row 'api_keys'.
+    // Isso evita o bug onde deletar a chave pelo super_admin e depois o cliente
+    // salvar qualquer outra config regravaria a chave antiga (que ainda estava
+    // no estado React em memória) de volta no banco.
     const {
       pdfTemplateBase64,
       aiCompositionCoverBase64,
       aiCompositionFinalBase64,
-      ...settingsWithoutBlobs
+      geminiApiKey,
+      openaiApiKey,
+      resendApiKey,
+      ...settingsWithoutBlobsOrKeys
     } = data
 
-    // Todos os upserts em paralelo — sem esperar um terminar pra começar o próximo.
-    // Blobs (PDF template, capas) já são salvos pelas suas próprias seções de upload.
-    // Re-enviá-los aqui a cada save seria enviar MBs de base64 desnecessariamente.
-    await saveOrUpdate('settings', settingsWithoutBlobs as any, userId)
+    // Salva configs gerais (sem blobs e sem chaves).
+    const saves: Promise<unknown>[] = [
+      saveOrUpdate('settings', settingsWithoutBlobsOrKeys as any, userId),
+    ]
+
+    // Salva as API keys em row próprio — sempre, mesmo quando vazias.
+    // String vazia = usuário limpou o campo → persiste o vazio no banco.
+    // Row separado garante que excluir/zerar as chaves pelo super_admin
+    // não seja sobrescrito por um saveSettings geral subsequente.
+    saves.push(
+      saveOrUpdate('api_keys', { geminiApiKey, openaiApiKey, resendApiKey }, userId)
+    )
+
+    await Promise.all(saves)
   },
 
   async saveAiCompositionBranding(slot: 'cover' | 'final', base64: string, fileName: string) {
@@ -261,19 +279,30 @@ const settingsStorageService = {
       const { data: { session } } = await supabase.auth.getSession()
       const adminId = session?.user?.id
 
-      // Apenas o row de settings — blobs não são necessários aqui.
-      // Os nomes de arquivo ficam dentro do próprio settingsRow.content.
-      const { data: settingsRow } = await supabase
-        .from('admin_content')
-        .select('content')
-        .eq('admin_id', adminId ?? '')
-        .eq('type', 'settings')
-        .maybeSingle()
+      // Busca settings e api_keys em paralelo.
+      // api_keys é o row exclusivo das chaves — separado pra que deletá-las
+      // pelo super_admin não seja sobrescrito por um saveSettings geral.
+      const [{ data: settingsRow }, { data: apiKeysRow }] = await Promise.all([
+        supabase.from('admin_content').select('content')
+          .eq('admin_id', adminId ?? '').eq('type', 'settings').maybeSingle(),
+        supabase.from('admin_content').select('content')
+          .eq('admin_id', adminId ?? '').eq('type', 'api_keys').maybeSingle(),
+      ])
 
-      const s = settingsRow?.content as AppSettings | null
+      const s  = settingsRow?.content  as AppSettings | null
+      const ak = apiKeysRow?.content   as { geminiApiKey?: string; openaiApiKey?: string; resendApiKey?: string } | null
+
+      // Remove explicitamente as chaves do spread do row settings (dados antigos)
+      // para que nunca sejam restauradas via spread — mesmo que api_keys não exista.
+      const { geminiApiKey: _sk1, openaiApiKey: _sk2, resendApiKey: _sk3, ...sWithoutKeys } = (s ?? {}) as any
+
       return {
         ...defaults,
-        ...(s ?? {}),
+        ...sWithoutKeys,
+        // Chaves vêm exclusivamente do row api_keys — nunca do row settings.
+        geminiApiKey: ak?.geminiApiKey ?? '',
+        openaiApiKey: ak?.openaiApiKey ?? '',
+        resendApiKey: ak?.resendApiKey ?? '',
         pdfTemplateBase64:          '',
         aiCompositionCoverBase64:   '',
         aiCompositionFinalBase64:   '',
@@ -876,28 +905,43 @@ export default function SettingsEditor() {
         aiCompositionFinalFileName: '',
       }
 
-      // 3 queries em paralelo — blobs (pdf_template, ai_composition_cover/final)
+      // 4 queries em paralelo — blobs (pdf_template, ai_composition_cover/final)
       // NÃO são buscados aqui. Cada um pode ter vários MBs de base64 e só são
       // necessários na hora de gerar PDF, não para renderizar a página de config.
       // Os nomes de arquivo já vêm dentro de settingsRow.content (salvos pelo saveSettings).
+      // api_keys é o row isolado das chaves — separado pra que deletá-las pelo
+      // super_admin não seja sobrescrito por um saveSettings geral subsequente.
       // global_email_settings vai otimisticamente — RLS retorna vazio para não-super_admin.
       const [
         { data: meRow },
         { data: settingsRow },
+        { data: apiKeysRow },
         { data: globalRow },
       ] = await Promise.all([
         supabase.from('admin_users').select('role').eq('id', adminId).maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'settings').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'api_keys').maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'global_email_settings').maybeSingle(),
       ])
 
       const role = meRow?.role as AdminUser['role'] | undefined
       setUserRole(role ?? null)
 
-      const s = settingsRow?.content as AppSettings | null
+      const s  = settingsRow?.content as AppSettings | null
+      const ak = apiKeysRow?.content  as { geminiApiKey?: string; openaiApiKey?: string; resendApiKey?: string } | null
+
+      // Remove explicitamente as chaves do spread do row 'settings' para garantir
+      // que dados antigos (gravados antes da migração para o row 'api_keys') nunca
+      // sejam restaurados via spread — mesmo que o row api_keys ainda não exista.
+      const { geminiApiKey: _sk1, openaiApiKey: _sk2, resendApiKey: _sk3, ...sWithoutKeys } = (s ?? {}) as any
+
       setSettings({
         ...defaults,
-        ...(s ?? {}),
+        ...sWithoutKeys,
+        // Chaves vêm exclusivamente do row api_keys — nunca do row settings.
+        geminiApiKey: ak?.geminiApiKey ?? '',
+        openaiApiKey: ak?.openaiApiKey ?? '',
+        resendApiKey: ak?.resendApiKey ?? '',
         // base64 permanece vazio — carregado sob demanda ao gerar PDF
         pdfTemplateBase64:          '',
         aiCompositionCoverBase64:   '',

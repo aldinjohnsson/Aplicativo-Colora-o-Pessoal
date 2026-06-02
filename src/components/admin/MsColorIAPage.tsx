@@ -140,6 +140,7 @@ export function MsColorIAPage() {
       const [
         { data: adminData },
         { data: settingsRow },
+        { data: apiKeysRow },
         { data: folderRows, error: folderErr },
         driveStatus,
       ] = await Promise.all([
@@ -153,6 +154,12 @@ export function MsColorIAPage() {
           .select('content')
           .eq('admin_id', userId)
           .eq('type', 'settings')
+          .maybeSingle(),
+        supabase
+          .from('admin_content')
+          .select('content')
+          .eq('admin_id', userId)
+          .eq('type', 'api_keys')
           .maybeSingle(),
         supabase
           .from('ai_folders')
@@ -175,13 +182,17 @@ export function MsColorIAPage() {
       }
 
       // ── 4. Processa resultados ─────────────────────────────────────
-      const geminiKey = (settingsRow?.content as any)?.geminiApiKey as string | undefined
+      // Chaves lidas do row 'api_keys' (isolado desde a migração do SettingsEditor).
+      // Fallback pro row 'settings' para compatibilidade com dados gravados antes
+      // da migração — quando o admin salvar novamente as configurações, as chaves
+      // migram automaticamente para o row 'api_keys' e o fallback deixa de ser usado.
+      const apiKeys = (apiKeysRow?.content as any) ?? {}
+      const settingsLegacy = (settingsRow?.content as any) ?? {}
+      const geminiKey = (apiKeys.geminiApiKey || settingsLegacy.geminiApiKey || '') as string
       const geminiKeyPresent = !!(geminiKey && geminiKey.trim())
 
       // Chave OpenAI (GPT) — opcional. Habilita o aprimoramento de foto.
-      // Vive só no row 'settings' do admin_content (filtrado por admin_id),
-      // então o próprio admin consegue lê-la aqui pelo client.
-      const openaiKey = ((settingsRow?.content as any)?.openaiApiKey as string | undefined)?.trim() || ''
+      const openaiKey = ((apiKeys.openaiApiKey || settingsLegacy.openaiApiKey || '') as string).trim()
       const openaiKeyPresent = !!openaiKey
 
       // Plano pré-pago de imagem? Então o aprimoramento usa a chave geral

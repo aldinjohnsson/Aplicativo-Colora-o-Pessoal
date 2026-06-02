@@ -240,7 +240,7 @@ async function resolveGeminiKey(req: Request, portalToken: string | undefined): 
     .maybeSingle()
 
   const key = (row?.content as any)?.geminiApiKey || ''
-  if (!key) throw new Error('Chave da API Gemini não configurada para este admin.')
+  if (!key) throw new Error('Chave da API Gemini não configurada para este usuário.')
   return key
 }
 
@@ -727,7 +727,7 @@ Deno.serve(async (req: Request) => {
     if (e instanceof QuotaError)
       return json({ error: 'QUOTA_EXCEEDED', message: 'Seu limite de simulações deste período acabou.' }, 402, origin)
     if (e?.message === 'ADMIN_KEY_NOT_CONFIGURED')
-      return json({ error: 'Chave da API Gemini não configurada para este admin.' }, 412, origin)
+      return json({ error: 'Chave da API Gemini não configurada para este usuário.' }, 412, origin)
     if (e?.message === 'GENERAL_KEY_NOT_CONFIGURED')
       return json({ error: 'Chave geral do Gemini não configurada no servidor.' }, 500, origin)
     return json({ error: e?.message || 'Falha ao resolver credenciais.' }, 412, origin)

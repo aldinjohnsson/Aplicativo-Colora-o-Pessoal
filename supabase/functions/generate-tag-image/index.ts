@@ -101,10 +101,10 @@ function generalKey(p: Provider): string | undefined {
   return Deno.env.get('GENERAL_GEMINI_API_KEY')?.trim() || Deno.env.get('GEMINI_API_KEY')?.trim()
 }
 
-function ownEnvFallback(p: Provider): string | undefined {
-  // Fallback de env só pro postpaid. Mantém o comportamento legado do OpenAI.
-  if (p === 'openai') return Deno.env.get('OPENAI_API_KEY')?.trim()
-  return undefined  // Gemini não tinha fallback env; mantém estrito.
+function ownEnvFallback(_p: Provider): string | undefined {
+  // Postpaid sem chave própria → erro explícito (ADMIN_KEY_NOT_CONFIGURED).
+  // Sem fallback silencioso pra chave geral — o admin precisa configurar a dele.
+  return undefined
 }
 // ───────────────────────────────────────────────────────────────────────
 
