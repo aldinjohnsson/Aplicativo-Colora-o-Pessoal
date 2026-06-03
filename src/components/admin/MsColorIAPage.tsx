@@ -21,7 +21,7 @@ import {
   Wand2, CheckCircle, AlertTriangle, Info,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
-import { driveStorage } from '../../lib/driveStorage'
+import { driveStorage, isDriveScopeError } from '../../lib/driveStorage'
 import type { AdminUser } from '../../lib/services'
 import { billingService } from '../../lib/billingService'
 import { GeminiChat } from '../client/GeminiChat'
@@ -363,7 +363,11 @@ export function MsColorIAPage() {
         .catch(() => {})
     } catch (e: any) {
       console.error('[MsColorIAPage] upload ref photo failed:', e)
-      setUploadError(e?.message || 'Erro ao enviar a foto. Tente novamente.')
+      setUploadError(
+        isDriveScopeError(e)
+          ? '__SCOPE_ERROR__'
+          : (e?.message || 'Erro ao enviar a foto. Tente novamente.')
+      )
       URL.revokeObjectURL(localPreview)
       setRefPhotoPreview(prevPreview)
     } finally {
@@ -689,9 +693,31 @@ export function MsColorIAPage() {
             )}
 
             {uploadError && (
-              <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
-                {uploadError}
-              </p>
+              uploadError === '__SCOPE_ERROR__' ? (
+                <div className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-xl mb-3">
+                  <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-amber-800">
+                      O Drive precisa ser reconectado
+                    </p>
+                    <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                      A conexão atual não tem permissão de escrita.{' '}
+                      <button
+                        onClick={() => navigate('/admin/settings')}
+                        className="underline font-semibold hover:text-amber-900"
+                      >
+                        Vá em Configurações
+                      </button>
+                      , desconecte o Drive e conecte novamente marcando a opção de ver, editar, criar e excluir arquivos, leva menos de um minuto.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl mb-3">
+                  <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-700">{uploadError}</p>
+                </div>
+              )
             )}
 
             <div className="flex items-center gap-2 flex-wrap">

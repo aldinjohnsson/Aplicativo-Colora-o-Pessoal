@@ -22,6 +22,20 @@ export interface DriveUploadResult {
   downloadUrl:   string
 }
 
+/**
+ * Retorna true se o erro indica que o token do Drive foi gerado sem os
+ * escopos necessários (usuário precisa desconectar e reconectar).
+ */
+export function isDriveScopeError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
+  return (
+    msg.includes('access_token_scope_insufficient') ||
+    msg.includes('insufficientpermissions') ||
+    msg.includes('insufficient authentication scopes') ||
+    msg.includes('permission_denied')
+  )
+}
+
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const { data: { session } } = await supabase.auth.getSession()
   const headers = new Headers(init.headers || {})
