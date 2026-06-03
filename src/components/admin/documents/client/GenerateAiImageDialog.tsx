@@ -94,7 +94,7 @@ export function GenerateAiImageDialog({
     let cancelled = false
     setLoadingPrompts(true)
     setPromptsError(null)
-    documentsService.listAiImagePrompts()   // só ativos por padrão
+    documentsService.listAiImagePrompts({ promptKind: 'composition' })   // só ativos + só composition por padrão
       .then(list => { if (!cancelled) setPrompts(list as AiPromptLite[]) })
       .catch(e => { if (!cancelled) setPromptsError(e?.message || 'Erro ao carregar prompts') })
       .finally(() => { if (!cancelled) setLoadingPrompts(false) })

@@ -144,7 +144,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   useEffect(() => {
     let cancelled = false
     setLoadingPrompts(true); setPromptsError(null)
-    documentsService.listAiImagePrompts()
+    documentsService.listAiImagePrompts({ promptKind: 'composition' })
       .then((list: any) => { if (!cancelled) setPrompts(list as AiPromptLite[]) })
       .catch((e: any) => { if (!cancelled) setPromptsError(e?.message || 'Erro ao carregar prompts') })
       .finally(() => { if (!cancelled) setLoadingPrompts(false) })

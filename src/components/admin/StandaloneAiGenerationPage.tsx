@@ -613,7 +613,7 @@ export function StandaloneAiGenerationPage() {
     setLoadingPrompts(true)
     setPromptsError(null)
     try {
-      const list = await documentsService.listAiImagePrompts()
+      const list = await documentsService.listAiImagePrompts({ promptKind: 'composition' })
       setPrompts(list as AiPromptLite[])
     } catch (e: any) {
       setPromptsError(e?.message || 'Erro ao carregar prompts')
