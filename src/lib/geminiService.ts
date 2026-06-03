@@ -169,13 +169,25 @@ export async function getGeminiApiKey(clientToken?: string): Promise<string> {
       // linhas e .maybeSingle() pode retornar a chave de outro admin.
       const { data: { user } } = await supabase.auth.getUser()
       if (user?.id) {
-        const { data } = await supabase
+        // Chaves vivem no row 'api_keys' (separado do 'settings' por segurança).
+        const { data: keysRow } = await supabase
           .from('admin_content')
           .select('content')
-          .eq('type', 'settings')
+          .eq('type', 'api_keys')
           .eq('admin_id', user.id)
           .maybeSingle()
-        key = (data?.content as any)?.geminiApiKey || ''
+        key = (keysRow?.content as any)?.geminiApiKey || ''
+
+        // Fallback de transição: admin ainda não migrado pode ter a chave no 'settings'.
+        if (!key) {
+          const { data: setRow } = await supabase
+            .from('admin_content')
+            .select('content')
+            .eq('type', 'settings')
+            .eq('admin_id', user.id)
+            .maybeSingle()
+          key = (setRow?.content as any)?.geminiApiKey || ''
+        }
       }
     }
   } catch {}

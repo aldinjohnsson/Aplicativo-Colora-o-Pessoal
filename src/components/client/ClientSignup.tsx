@@ -77,6 +77,7 @@ export function ClientSignup() {
   const [phone, setPhone] = useState('')
   const [birthDate, setBirthDate] = useState('')
   const [country, setCountry] = useState('Brasil')
+  const [whatsappOptIn, setWhatsappOptIn] = useState(true)
   const [clientIp, setClientIp] = useState('Obtendo...')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
@@ -156,6 +157,8 @@ export function ClientSignup() {
         clientInfo: { fullName, email, phone, birthDate, country, ip: clientIp },
         registeredAt: new Date().toISOString(),
         planName: plan?.name,
+        whatsappOptIn,
+        whatsappOptInAt: whatsappOptIn ? new Date().toISOString() : null,
       }
 
       const { data, error } = await supabase.rpc('register_client_from_plan', {
@@ -444,6 +447,18 @@ export function ClientSignup() {
                     placeholder="(00) 00000-0000"
                     className={inp}
                   />
+                  <label className="flex items-start gap-2 mt-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={whatsappOptIn}
+                      onChange={e => setWhatsappOptIn(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 accent-rose-500 flex-shrink-0"
+                    />
+                    <span className="text-xs text-gray-500 leading-relaxed">
+                      Autorizo receber neste número avisos sobre a minha análise pelo WhatsApp
+                      (ex.: quando o resultado ficar pronto). Você pode cancelar quando quiser.
+                    </span>
+                  </label>
                 </div>
 
                 <div>

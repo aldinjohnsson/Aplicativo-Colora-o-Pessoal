@@ -942,10 +942,13 @@ function AdminFormModal({
             />
           </div>
 
-          {/* Cobrança de IA — só na edição (admin já existe) */}
-          <div style={{ marginBottom: 14, paddingTop: 14, borderTop: `1px solid ${border}` }}>
-            <AdminBillingControls ref={billingRef} adminId={admin?.id} />
-          </div>
+          {/* Cobrança de IA — o super_admin é sempre pós-pago (usa as chaves
+             próprias), sem opção de mudar; por isso não mostramos o controle. */}
+          {admin?.role !== 'super_admin' && (
+            <div style={{ marginBottom: 14, paddingTop: 14, borderTop: `1px solid ${border}` }}>
+              <AdminBillingControls ref={billingRef} adminId={admin?.id} />
+            </div>
+          )}
 
           {/* Erro */}
           {error && (

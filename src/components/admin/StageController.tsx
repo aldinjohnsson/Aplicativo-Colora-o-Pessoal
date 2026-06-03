@@ -6,6 +6,7 @@ import {
   Shuffle,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
+import { notifyClientCompleted } from '../../lib/whatsappService'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
 
@@ -667,6 +668,7 @@ export function StageController({
   // adminService.jumpToStep.
   const handleJumpToStep = async (targetStatus: string) => {
     await adminService.jumpToStep(client.id, targetStatus)
+    if (targetStatus === 'completed') notifyClientCompleted(client.id)
     setJumpModalOpen(false)
     await onChange()
   }
@@ -726,6 +728,7 @@ export function StageController({
       const currentStep = STEPS[currentIdx]
       await recordTimestamp(currentStep.key)
       await adminService.advanceStep(client.id)
+      if (nextStep?.activeStatus === 'completed') notifyClientCompleted(client.id)
       await onChange()
     } catch (e: any) {
       alert(e?.message || 'Erro ao avançar etapa')

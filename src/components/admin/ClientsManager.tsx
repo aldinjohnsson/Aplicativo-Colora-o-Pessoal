@@ -18,6 +18,7 @@ import {
   Loader2, AlertCircle, Bell, Wand2, Mic, Square, Music,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
+import { notifyClientCompleted } from '../../lib/whatsappService'
 import { supabase } from '../../lib/supabase'
 import { driveStorage } from '../../lib/driveStorage'
 import { formatDeadlineDate, calendarDaysUntil, parseLocalDate } from '../../lib/deadlineCalculator'
@@ -2035,6 +2036,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         applyOptimistic()
         try {
           await adminService.jumpToStep(clientIdSnap, targetStatus)
+          if (targetStatus === 'completed') notifyClientCompleted(clientIdSnap)
           silentLoad()  // sincroniza em segundo plano sem spinner
         } catch (e: any) {
           rollback()
@@ -2100,6 +2102,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         applyOptimistic()
         try {
           await adminService.jumpToStep(clientId, targetStatus)
+          if (targetStatus === 'completed') notifyClientCompleted(clientId)
           silentLoad()
         } catch (e: any) { rollback(); alert(e?.message || 'Erro ao mover cliente') }
       },
