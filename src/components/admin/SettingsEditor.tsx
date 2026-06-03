@@ -388,6 +388,11 @@ function GeminiKeyCard({
               value={value}
               onChange={e => onChange(e.target.value)}
               placeholder="AIza..."
+              autoComplete="off"
+              spellCheck={false}
+              name="ms-gemini-key-no-autofill"
+              data-lpignore="true"
+              data-1p-ignore
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent font-mono pr-24"
             />
             {value && (
@@ -460,6 +465,9 @@ function OpenAiKeyCard({
               placeholder="sk-proj-... ou sk-..."
               autoComplete="off"
               spellCheck={false}
+              name="ms-openai-key-no-autofill"
+              data-lpignore="true"
+              data-1p-ignore
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-transparent font-mono pr-24"
             />
             {value && (
