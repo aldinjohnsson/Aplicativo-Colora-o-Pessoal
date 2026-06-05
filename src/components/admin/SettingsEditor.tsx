@@ -279,18 +279,32 @@ const settingsStorageService = {
       const { data: { session } } = await supabase.auth.getSession()
       const adminId = session?.user?.id
 
-      // Busca settings e api_keys em paralelo.
-      // api_keys é o row exclusivo das chaves — separado pra que deletá-las
-      // pelo super_admin não seja sobrescrito por um saveSettings geral.
-      const [{ data: settingsRow }, { data: apiKeysRow }] = await Promise.all([
+      // Busca todos os rows necessários em paralelo.
+      const [
+        { data: settingsRow },
+        { data: apiKeysRow },
+        { data: pdfTemplateRow },
+        { data: coverRow },
+        { data: finalRow },
+        { data: globalEmailRow },
+      ] = await Promise.all([
         supabase.from('admin_content').select('content')
           .eq('admin_id', adminId ?? '').eq('type', 'settings').maybeSingle(),
         supabase.from('admin_content').select('content')
           .eq('admin_id', adminId ?? '').eq('type', 'api_keys').maybeSingle(),
+        supabase.from('admin_content').select('content')
+          .eq('admin_id', adminId ?? '').eq('type', 'pdf_template').maybeSingle(),
+        supabase.from('admin_content').select('content')
+          .eq('admin_id', adminId ?? '').eq('type', 'ai_composition_cover').maybeSingle(),
+        supabase.from('admin_content').select('content')
+          .eq('admin_id', adminId ?? '').eq('type', 'ai_composition_final').maybeSingle(),
+        supabase.from('admin_content').select('content')
+          .eq('admin_id', adminId ?? '').eq('type', 'global_email_settings').maybeSingle(),
       ])
 
       const s  = settingsRow?.content  as AppSettings | null
       const ak = apiKeysRow?.content   as { geminiApiKey?: string; openaiApiKey?: string; resendApiKey?: string } | null
+      const ge = globalEmailRow?.content as { resendApiKey?: string; fromEmail?: string } | null
 
       // Remove explicitamente as chaves do spread do row settings (dados antigos)
       // para que nunca sejam restauradas via spread — mesmo que api_keys não exista.
@@ -302,13 +316,17 @@ const settingsStorageService = {
         // Chaves vêm exclusivamente do row api_keys — nunca do row settings.
         geminiApiKey: ak?.geminiApiKey ?? '',
         openaiApiKey: ak?.openaiApiKey ?? '',
-        resendApiKey: ak?.resendApiKey ?? '',
+        // resendApiKey: super_admin lê de global_email_settings; demais de api_keys
+        resendApiKey: ge?.resendApiKey ?? ak?.resendApiKey ?? '',
+        // fromEmail vem do row global_email_settings (onde foi salvo pelo handleSave)
+        fromEmail: ge?.fromEmail ?? (s as any)?.fromEmail ?? '',
         pdfTemplateBase64:          '',
         aiCompositionCoverBase64:   '',
         aiCompositionFinalBase64:   '',
-        pdfTemplateFileName:        (s as any)?.pdfTemplateFileName        ?? '',
-        aiCompositionCoverFileName: (s as any)?.aiCompositionCoverFileName ?? '',
-        aiCompositionFinalFileName: (s as any)?.aiCompositionFinalFileName ?? '',
+        // fileName de cada PDF vem do seu row próprio, com fallback legado no row settings
+        pdfTemplateFileName:        (pdfTemplateRow?.content as any)?.fileName        ?? (s as any)?.pdfTemplateFileName        ?? '',
+        aiCompositionCoverFileName: (coverRow?.content        as any)?.fileName        ?? (s as any)?.aiCompositionCoverFileName ?? '',
+        aiCompositionFinalFileName: (finalRow?.content        as any)?.fileName        ?? (s as any)?.aiCompositionFinalFileName ?? '',
       }
     } catch (error) {
       console.error('Erro ao carregar configurações:', error)
@@ -925,11 +943,17 @@ export default function SettingsEditor() {
         { data: settingsRow },
         { data: apiKeysRow },
         { data: globalRow },
+        { data: pdfTemplateRow },
+        { data: coverRow },
+        { data: finalRow },
       ] = await Promise.all([
         supabase.from('admin_users').select('role').eq('id', adminId).maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'settings').maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'api_keys').maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'global_email_settings').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'pdf_template').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'ai_composition_cover').maybeSingle(),
+        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'ai_composition_final').maybeSingle(),
       ])
 
       const role = meRow?.role as AdminUser['role'] | undefined
@@ -954,13 +978,15 @@ export default function SettingsEditor() {
         pdfTemplateBase64:          '',
         aiCompositionCoverBase64:   '',
         aiCompositionFinalBase64:   '',
-        // nomes de arquivo vêm do settings row (salvos junto com o resto das configs)
-        pdfTemplateFileName:        (s as any)?.pdfTemplateFileName        ?? '',
-        aiCompositionCoverFileName: (s as any)?.aiCompositionCoverFileName ?? '',
-        aiCompositionFinalFileName: (s as any)?.aiCompositionFinalFileName ?? '',
+        // pdfTemplateFileName vem do row pdf_template (nao do row settings)
+        pdfTemplateFileName:        (pdfTemplateRow?.content as any)?.fileName ?? (s as any)?.pdfTemplateFileName ?? '',
+        aiCompositionCoverFileName: (coverRow?.content as any)?.fileName ?? (s as any)?.aiCompositionCoverFileName ?? '',
+        aiCompositionFinalFileName: (finalRow?.content as any)?.fileName ?? (s as any)?.aiCompositionFinalFileName ?? '',
       })
 
-      if (role === 'super_admin' && globalRow?.content) {
+      // Carrega globalEmail se o row existir — não depende do role para evitar
+      // falha silenciosa caso a query admin_users seja bloqueada pela RLS.
+      if (globalRow?.content) {
         const c = globalRow.content as any
         setGlobalEmail({
           resendApiKey: c.resendApiKey || '',
@@ -1001,6 +1027,17 @@ export default function SettingsEditor() {
     } finally {
       setSaving(false)
     }
+  }
+
+  // Persiste global_email_settings sempre que uma ação inline (upload de PDF,
+  // branding) aciona um save parcial — evita que o e-mail global suma quando
+  // o super_admin salva um PDF sem clicar no botão "Salvar" principal.
+  const saveGlobalEmailIfNeeded = async (userId: string) => {
+    if (userRole !== 'super_admin') return
+    await saveOrUpdate('global_email_settings', {
+      resendApiKey: globalEmail.resendApiKey,
+      fromEmail:    globalEmail.fromEmail,
+    }, userId)
   }
 
   if (loading) {
@@ -1092,6 +1129,8 @@ export default function SettingsEditor() {
           currentFileName={settings.pdfTemplateFileName || ''}
           onSave={async (base64, fileName) => {
             try {
+              const { data: { user } } = await supabase.auth.getUser()
+              if (!user) throw new Error('Sessão expirada. Faça login novamente.')
               // Blob (pdf_template) — salvo em row próprio do admin_content.
               // saveSettings descarta o base64 pra não duplicar MBs no row 'settings'.
               if (base64) {
@@ -1101,7 +1140,10 @@ export default function SettingsEditor() {
               }
               const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
               setSettings(updated)
-              await settingsStorageService.saveSettings(updated)
+              await Promise.all([
+                settingsStorageService.saveSettings(updated, user.id),
+                saveGlobalEmailIfNeeded(user.id),
+              ])
             } catch (e: any) {
               alert('Erro ao salvar PDF modelo: ' + e.message)
             }
@@ -1280,6 +1322,8 @@ export default function SettingsEditor() {
           currentFileName={settings.pdfTemplateFileName || ''}
           onSave={async (base64, fileName) => {
             try {
+              const { data: { user } } = await supabase.auth.getUser()
+              if (!user) throw new Error('Sessão expirada. Faça login novamente.')
               if (base64) {
                 await settingsStorageService.savePdfTemplate(base64, fileName)
               } else {
@@ -1287,7 +1331,10 @@ export default function SettingsEditor() {
               }
               const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
               setSettings(updated)
-              await settingsStorageService.saveSettings(updated)
+              await Promise.all([
+                settingsStorageService.saveSettings(updated, user.id),
+                saveGlobalEmailIfNeeded(user.id),
+              ])
             } catch (e: any) {
               alert('Erro ao salvar PDF modelo: ' + e.message)
             }
@@ -1640,6 +1687,8 @@ export default function SettingsEditor() {
         currentFileName={settings.pdfTemplateFileName || ''}
         onSave={async (base64, fileName) => {
           try {
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) throw new Error('Sessão expirada. Faça login novamente.')
             if (base64) {
               await settingsStorageService.savePdfTemplate(base64, fileName)
             } else {
@@ -1647,7 +1696,10 @@ export default function SettingsEditor() {
             }
             const updated = { ...settings, pdfTemplateBase64: base64, pdfTemplateFileName: fileName }
             setSettings(updated)
-            await settingsStorageService.saveSettings(updated)
+            await Promise.all([
+              settingsStorageService.saveSettings(updated, user.id),
+              saveGlobalEmailIfNeeded(user.id),
+            ])
           } catch (e: any) {
             alert('Erro ao salvar PDF modelo: ' + e.message)
           }
