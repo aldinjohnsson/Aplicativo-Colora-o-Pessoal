@@ -3,7 +3,6 @@
 // Wrapper das chamadas pra Edge Function única `drive`.
 
 import { supabase } from './supabase'
-import { fixImageOrientation, rotateImageBlob } from './imageOrientation'
 
 const FN = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/drive`
 
@@ -35,20 +34,6 @@ export function isDriveScopeError(err: unknown): boolean {
     msg.includes('insufficient authentication scopes') ||
     msg.includes('permission_denied')
   )
-}
-
-// Corrige a orientação EXIF da imagem antes de subir (foto de celular vem
-// "deitada"). Não-imagens (PDF, vídeo) passam intactas. Assim TODA foto que
-// sobe pelo driveStorage já vai em pé — fica certa em qualquer lugar que usar.
-async function uprightImageFile(file: File): Promise<File> {
-  if (!file.type || !file.type.startsWith('image/')) return file
-  try {
-    const fixed = await fixImageOrientation(file, { maxSize: 3000, quality: 0.92 })
-    const base  = file.name.replace(/\.[^.]+$/, '') || 'foto'
-    return new File([fixed], `${base}.jpg`, { type: 'image/jpeg' })
-  } catch {
-    return file
-  }
 }
 
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
@@ -164,7 +149,7 @@ export const driveStorage = {
     fd.append('portal_token', opts.portalToken)
     fd.append('kind', opts.kind || 'photo')
     if (opts.categoryId) fd.append('category_id', opts.categoryId)
-    fd.append('file', await uprightImageFile(opts.file))
+    fd.append('file', opts.file)
 
     const r = await fetch(`${FN}/upload`, { method: 'POST', body: fd })
     if (!r.ok) {
@@ -193,7 +178,7 @@ export const driveStorage = {
     fd.append('client_id', opts.clientId)
     fd.append('kind', 'admin_photo')
     if (opts.categoryId) fd.append('category_id', opts.categoryId)
-    fd.append('file', await uprightImageFile(opts.file))
+    fd.append('file', opts.file)
 
     const r = await authedFetch('/upload', { method: 'POST', body: fd })
     if (!r.ok) {
@@ -229,7 +214,7 @@ export const driveStorage = {
   }): Promise<DriveUploadResult> {
     const fd = new FormData()
     fd.append('kind', 'ms_color_ia_ref')
-    fd.append('file', await uprightImageFile(opts.file))
+    fd.append('file', opts.file)
     if (opts.replaceFileId) fd.append('replace_file_id', opts.replaceFileId)
 
     const r = await authedFetch('/upload', { method: 'POST', body: fd })
@@ -255,31 +240,6 @@ export const driveStorage = {
     })
   },
 
-  /**
-   * Substitui o conteúdo de um arquivo do Drive (MESMO id). Como o id não muda,
-   * a foto corrigida aparece em TODO lugar que a referencia (galeria, IA, PDF).
-   */
-  async replaceDrivePhoto(driveFileId: string, blob: Blob): Promise<void> {
-    const fd = new FormData()
-    fd.append('drive_file_id', driveFileId)
-    fd.append('file', new File([blob], 'rotated.jpg', { type: blob.type || 'image/jpeg' }))
-    const r = await authedFetch('/replace-media', { method: 'POST', body: fd })
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}))
-      throw new Error(j.error || `Falha ao substituir foto: HTTP ${r.status}`)
-    }
-  },
-
-  /**
-   * Gira (90° por padrão) uma foto que JÁ está no Drive e regrava no mesmo id:
-   * baixa pelo proxy, gira no navegador e substitui o conteúdo.
-   */
-  async rotateDrivePhoto(driveFileId: string, degrees = 90): Promise<void> {
-    const current = await this.fetchPhotoBlob(driveFileId)
-    const rotated = await rotateImageBlob(current, degrees)
-    await this.replaceDrivePhoto(driveFileId, rotated)
-  },
-
 
   /**
    * Autenticado com JWT do admin; a Edge Function cria/reutiliza uma pasta
@@ -289,7 +249,7 @@ export const driveStorage = {
   async uploadMsColorIaPhoto(opts: { file: File }): Promise<DriveUploadResult> {
     const fd = new FormData()
     fd.append('kind', 'ms_color_ia')
-    fd.append('file', await uprightImageFile(opts.file))
+    fd.append('file', opts.file)
 
     const r = await authedFetch('/upload', { method: 'POST', body: fd })
     if (!r.ok) {
