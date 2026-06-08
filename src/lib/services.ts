@@ -318,6 +318,90 @@ export const adminService = {
     if (error) throw error
   },
 
+  /**
+   * Clona um plano completo: cria um novo `plans` com nome "{original} (Cópia)"
+   * e duplica `plan_contracts`, `plan_forms` e `plan_photo_categories`
+   * (incluindo `instruction_items` com texto/vídeos/imagens).
+   *
+   * Observações:
+   *  • `share_token` NÃO é copiado — cada plano gera o próprio quando
+   *    compartilhado pela primeira vez.
+   *  • Arquivos referenciados em `instruction_items` (bucket
+   *    `category-instructions`) ficam compartilhados entre origem e clone
+   *    (mesmo storagePath/URL). Se o original for deletado e a limpeza de
+   *    storage executar, o clone perde as mídias. Isso é aceitável para o
+   *    caso de uso típico ("quero um plano parecido para ajustar").
+   *  • Em caso de erro no meio da cópia (contrato/formulário/categorias),
+   *    o plano parcialmente clonado é deletado para não deixar lixo —
+   *    `ON DELETE CASCADE` nas FKs limpa eventuais linhas filhas órfãs.
+   */
+  async clonePlan(sourceId: string, opts?: { newName?: string }): Promise<Plan> {
+    // 1) Busca o plano de origem
+    const { data: source, error: srcErr } = await supabase
+      .from('plans')
+      .select('*')
+      .eq('id', sourceId)
+      .single()
+    if (srcErr) throw srcErr
+    if (!source) throw new Error('Plano de origem não encontrado')
+
+    // 2) Cria o novo plano (createPlan já gera contract+form vazios automaticamente).
+    //    NÃO copiamos share_token — o clone gera o próprio quando for compartilhado.
+    const newPlan = await this.createPlan({
+      name: opts?.newName ?? `${source.name} (Cópia)`,
+      description: source.description,
+      deadline_days: source.deadline_days,
+      is_active: source.is_active,
+    })
+
+    // A partir daqui, se algo falhar, removemos o plano parcial para não deixar lixo.
+    try {
+      // 3) Copia o contrato (upsert sobrescreve a linha vazia criada por createPlan)
+      const contract = await this.getPlanContract(sourceId)
+      if (contract) {
+        await this.savePlanContract(newPlan.id, contract)
+      }
+
+      // 4) Copia o formulário
+      const form = await this.getPlanForm(sourceId)
+      if (form) {
+        await this.savePlanForm(newPlan.id, form)
+      }
+
+      // 5) Copia as categorias de foto (com instruction_items, vídeos, imagens etc.)
+      const { data: cats, error: catsErr } = await supabase
+        .from('plan_photo_categories')
+        .select('*')
+        .eq('plan_id', sourceId)
+        .order('order_index')
+      if (catsErr) throw catsErr
+
+      if (cats && cats.length > 0) {
+        const cloned = cats.map((c: any) => ({
+          plan_id: newPlan.id,
+          title: c.title,
+          description: c.description,
+          instructions: c.instructions ?? null,         // legado
+          video_url: c.video_url ?? null,                // legado
+          instruction_items: c.instruction_items ?? [],  // atual
+          max_photos: c.max_photos,
+          order_index: c.order_index,
+          is_ai_simulation: !!c.is_ai_simulation,
+        }))
+        const { error: insErr } = await supabase
+          .from('plan_photo_categories')
+          .insert(cloned)
+        if (insErr) throw insErr
+      }
+
+      return newPlan
+    } catch (err) {
+      // Rollback: remove o plano clonado pela metade
+      await supabase.from('plans').delete().eq('id', newPlan.id)
+      throw err
+    }
+  },
+
   // ---- Plan contract ----
   async getPlanContract(planId: string): Promise<PlanContract | null> {
     const { data } = await supabase

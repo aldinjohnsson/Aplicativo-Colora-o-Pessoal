@@ -1,5 +1,5 @@
 // src/components/admin/PlansManager.tsx
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { Routes, Route, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Pencil, Trash2, ChevronRight, FileText, ClipboardList,
@@ -32,7 +32,60 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
   )
 }
 
-// ── Plans List ───────────────────────────────────────────────
+// ── Auto-resizing textarea ──────────────────────────────────
+// Cresce automaticamente conforme o conteúdo (sem precisar arrastar).
+// Útil para campos com conteúdo longo como cláusulas de contrato.
+
+type AutoTextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  minRows?: number
+}
+
+const AutoTextarea = React.forwardRef<HTMLTextAreaElement, AutoTextareaProps>(
+  ({ className = '', minRows = 3, value, onInput, style, ...rest }, forwardedRef) => {
+    const innerRef = useRef<HTMLTextAreaElement | null>(null)
+
+    const setRef = (el: HTMLTextAreaElement | null) => {
+      innerRef.current = el
+      if (typeof forwardedRef === 'function') forwardedRef(el)
+      else if (forwardedRef) (forwardedRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
+    }
+
+    const resize = () => {
+      const el = innerRef.current
+      if (!el) return
+      el.style.height = 'auto'
+      el.style.height = `${el.scrollHeight}px`
+    }
+
+    // Reajusta sempre que o valor controlado mudar (paste, programmatic change, etc.)
+    useLayoutEffect(() => {
+      resize()
+    }, [value])
+
+    // Reajusta na primeira montagem (caso o valor inicial seja longo)
+    useLayoutEffect(() => {
+      resize()
+    }, [])
+
+    return (
+      <textarea
+        ref={setRef}
+        value={value}
+        rows={minRows}
+        onInput={e => {
+          resize()
+          onInput?.(e)
+        }}
+        style={{ overflow: 'hidden', resize: 'none', ...style }}
+        className={className}
+        {...rest}
+      />
+    )
+  }
+)
+AutoTextarea.displayName = 'AutoTextarea'
+
+
 
 function PlansList() {
   const [plans, setPlans] = useState<Plan[]>([])
@@ -40,6 +93,7 @@ function PlansList() {
   const [creating, setCreating] = useState(false)
   const [newPlan, setNewPlan] = useState({ name: '', description: '', deadline_days: 5 })
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [cloningId, setCloningId] = useState<string | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => { load() }, [])
@@ -79,6 +133,22 @@ function PlansList() {
     if (!confirm(`Excluir o plano "${plan.name}"? Esta ação não pode ser desfeita.`)) return
     await adminService.deletePlan(plan.id)
     load()
+  }
+
+  const handleClone = async (plan: Plan) => {
+    if (cloningId) return // evita duplo clique
+    setCloningId(plan.id)
+    try {
+      const clone = await adminService.clonePlan(plan.id)
+      await load()
+      // Navega direto para o editor do clone. Comente esta linha se preferir
+      // apenas recarregar a lista (o novo plano aparece no topo por created_at desc).
+      navigate(`/admin/plans/${clone.id}`)
+    } catch (e: any) {
+      alert(`Erro ao duplicar plano: ${e.message}`)
+    } finally {
+      setCloningId(null)
+    }
   }
 
   if (loading) return <div className="flex justify-center py-20"><div className="animate-spin h-8 w-8 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
@@ -153,6 +223,10 @@ function PlansList() {
                   {copiedId === plan.id
                     ? <><CheckCircle className="h-3.5 w-3.5 text-green-500" /><span className="hidden sm:inline">Copiado!</span></>
                     : <><Share2 className="h-3.5 w-3.5" /><span className="hidden sm:inline">Compartilhar</span></>}
+                </Btn>
+                <Btn variant="outline" size="sm" onClick={() => handleClone(plan)} loading={cloningId === plan.id}>
+                  <Copy className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Duplicar</span>
                 </Btn>
                 <Btn variant="outline" size="sm" onClick={() => navigate(`/admin/plans/${plan.id}`)}>
                   <Pencil className="h-3.5 w-3.5" /><span className="hidden sm:inline">Editar</span>
@@ -346,9 +420,9 @@ function ContractTab({ planId }: { planId: string }) {
                   <X className="h-4 w-4" />
                 </button>
               </div>
-              <textarea value={section.content} onChange={e => updateSection(section.id, { content: e.target.value })}
-                rows={3} placeholder="Conteúdo da cláusula..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" />
+              <AutoTextarea value={section.content} onChange={e => updateSection(section.id, { content: e.target.value })}
+                minRows={3} placeholder="Conteúdo da cláusula..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
             </div>
           ))}
 
@@ -616,12 +690,12 @@ function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMove
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Instruções adicionais (opcional)</label>
-            <textarea
+            <AutoTextarea
               value={field.imageInstructions || ''}
               onChange={e => onUpdate({ imageInstructions: e.target.value })}
-              rows={2}
+              minRows={2}
               placeholder="Ex: A foto deve estar em boa iluminação, sem filtros..."
-              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none"
+              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
             />
           </div>
         </>
