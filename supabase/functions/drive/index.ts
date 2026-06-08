@@ -852,6 +852,61 @@ Deno.serve(async (req: Request) => {
       })
     }
 
+ // ─── POST /replace-media ──────────────────────────────────────────────
+if (req.method === 'POST' && path === '/replace-media') {
+  const user = await getAuthUser(req)
+  if (!user) return json({ error: 'Não autenticado' }, 401)
+
+  const sb = adminSb()
+  let accessToken: string
+  try {
+    const t = await getAdminToken(sb, user.id)
+    accessToken = t.accessToken
+  } catch (e: any) {
+    return json({ error: e.message }, 412)
+  }
+
+  const form = await req.formData()
+  const driveFileId = form.get('drive_file_id') as string | null
+  const photoId     = form.get('photo_id')     as string | null
+  const file        = form.get('file')         as File | null
+
+  if (!driveFileId) return json({ error: 'drive_file_id obrigatório' }, 400)
+  if (!photoId)     return json({ error: 'photo_id obrigatório' }, 400)
+  if (!file)        return json({ error: 'file obrigatório' }, 400)
+
+  // Busca a pasta pai do arquivo original no Drive
+  const metaRes = await fetch(
+    `${DRIVE_API}/files/${encodeURIComponent(driveFileId)}?fields=name,parents`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  )
+  if (!metaRes.ok) return json({ error: `Drive meta: ${metaRes.status} ${await metaRes.text()}` }, 500)
+  const meta = await metaRes.json() as { name: string; parents: string[] }
+
+  const bytes    = new Uint8Array(await file.arrayBuffer())
+  const mimeType = file.type || 'image/jpeg'
+
+  // Faz upload do arquivo novo na mesma pasta com o mesmo nome
+  const uploaded = await uploadToDrive(accessToken, {
+    name:     meta.name,
+    mimeType,
+    parents:  meta.parents,
+    body:     bytes,
+  })
+
+  // Apaga o arquivo antigo (best-effort — não bloqueia se falhar)
+  try { await deleteFromDrive(accessToken, driveFileId) } catch {}
+
+  // Atualiza drive_file_id no banco
+  const { error: dbErr } = await sb
+    .from('client_photos')
+    .update({ drive_file_id: uploaded.id })
+    .eq('id', photoId)
+  if (dbErr) return json({ error: `DB update: ${dbErr.message}` }, 500)
+
+  return json({ ok: true, driveFileId: uploaded.id })
+}
+
     // ─── POST /cleanup ─────────────────────────────────────────────────────
     if (req.method === 'POST' && path === '/cleanup') {
       const secret = req.headers.get('x-cleanup-token')
