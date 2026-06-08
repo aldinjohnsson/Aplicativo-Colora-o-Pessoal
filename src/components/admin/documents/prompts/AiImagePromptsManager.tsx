@@ -422,6 +422,8 @@ function PromptFormDialog({
   const [aiInfoLabels, setAiInfoLabels] = useState<string[]>([])
   const builtinLabels = ['Contraste', 'Logo']
   const [varPickerOpenIdx, setVarPickerOpenIdx] = useState<number | null>(null)
+  const [varPickerPos, setVarPickerPos]         = useState<{ top: number; left: number; width: number } | null>(null)
+  const varPickerBtnRefs = useRef<Record<number, HTMLButtonElement | null>>({})
   const textareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({})
 
   useEffect(() => {
@@ -445,7 +447,7 @@ function PromptFormDialog({
     if (varPickerOpenIdx === null) return
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement
-      if (!target.closest('[data-var-picker]')) setVarPickerOpenIdx(null)
+      if (!target.closest('[data-var-picker]')) { setVarPickerOpenIdx(null); setVarPickerPos(null) }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -470,6 +472,7 @@ function PromptFormDialog({
       patchPart(partIdx, { prompt: current + placeholder })
     }
     setVarPickerOpenIdx(null)
+    setVarPickerPos(null)
   }
 
   useEffect(() => {
@@ -722,7 +725,20 @@ function PromptFormDialog({
                     <div className="px-3 py-1.5 border-b border-gray-100 bg-violet-50/40 flex items-center gap-2 relative" data-var-picker>
                       <button
                         type="button"
-                        onClick={() => setVarPickerOpenIdx(varPickerOpenIdx === idx ? null : idx)}
+                        ref={el => { varPickerBtnRefs.current[idx] = el }}
+                        onClick={() => {
+                          if (varPickerOpenIdx === idx) {
+                            setVarPickerOpenIdx(null)
+                            setVarPickerPos(null)
+                          } else {
+                            const btn = varPickerBtnRefs.current[idx]
+                            if (btn) {
+                              const r = btn.getBoundingClientRect()
+                              setVarPickerPos({ top: r.bottom + 4, left: r.left, width: 288 })
+                            }
+                            setVarPickerOpenIdx(idx)
+                          }
+                        }}
                         disabled={aiInfoLabels.length === 0 && builtinLabels.length === 0}
                         className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 disabled:opacity-50 disabled:cursor-not-allowed font-medium border border-violet-200 flex-shrink-0"
                       >
@@ -734,11 +750,17 @@ function PromptFormDialog({
                           ? <>Cadastre tags em <strong>Configurações → Informações da análise</strong>.</>
                           : <>Será substituída pelo valor da cliente na hora da geração.</>}
                       </span>
-                      {varPickerOpenIdx === idx && (
+                      {varPickerOpenIdx === idx && varPickerPos && (
                         <div
                           data-var-picker
-                          className="absolute top-full left-0 right-0 sm:left-3 sm:right-auto mt-1 z-20 bg-white border border-gray-200 rounded-xl shadow-xl sm:w-72 overflow-hidden"
-                          style={{ maxHeight: '260px', overflowY: 'auto' }}
+                          className="fixed z-[200] bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden"
+                          style={{
+                            top: varPickerPos.top,
+                            left: varPickerPos.left,
+                            width: varPickerPos.width,
+                            maxHeight: '260px',
+                            overflowY: 'auto',
+                          }}
                         >
                           {/* Grupo: Marca (Logo) */}
                           <div className="sticky top-0 px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
