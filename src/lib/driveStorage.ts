@@ -3,6 +3,7 @@
 // Wrapper das chamadas pra Edge Function única `drive`.
 
 import { supabase } from './supabase'
+import { rotateImageBlob } from './imageOrientation'
 
 const FN = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/drive`
 
@@ -193,8 +194,9 @@ export const driveStorage = {
   // Baixa uma foto do Drive pelo servidor (Edge Function) para evitar
   // bloqueio CORS ao fazer fetch() direto de drive.google.com no browser.
 
-  async fetchPhotoBlob(driveFileId: string): Promise<Blob> {
-    const r = await authedFetch(`/photo-proxy?id=${encodeURIComponent(driveFileId)}`)
+  async fetchPhotoBlob(driveFileId: string, { bust = false }: { bust?: boolean } = {}): Promise<Blob> {
+    const ts = bust ? `&_t=${Date.now()}` : ''
+    const r = await authedFetch(`/photo-proxy?id=${encodeURIComponent(driveFileId)}${ts}`)
     if (!r.ok) {
       const j = await r.json().catch(() => ({}))
       throw new Error(j.error || `Erro ao baixar foto: HTTP ${r.status}`)
@@ -238,6 +240,38 @@ export const driveStorage = {
       reader.onerror = () => reject(new Error('Erro ao converter foto para base64'))
       reader.readAsDataURL(blob)
     })
+  },
+
+  /**
+   * Delete + re-upload na mesma pasta do Drive (contorna o limite do scope
+   * drive.file que impede PATCH em arquivos criados por outra sessão OAuth).
+   * Atualiza drive_file_id no banco via Edge Function e retorna o novo id.
+   */
+  async replaceDrivePhoto(driveFileId: string, blob: Blob, photoId: string): Promise<string> {
+    const fd = new FormData()
+    fd.append('drive_file_id', driveFileId)
+    fd.append('photo_id', photoId)
+    fd.append('file', new File([blob], 'rotated.jpg', { type: blob.type || 'image/jpeg' }))
+    const r = await authedFetch('/replace-media', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Falha ao substituir foto: HTTP ${r.status}`)
+    }
+    const j = await r.json()
+    return j.driveFileId as string
+  },
+
+  /**
+   * Gira (90° por padrão) uma foto que está no Drive:
+   * baixa pelo proxy, gira no navegador, faz delete + re-upload e retorna
+   * o novo driveFileId (o id muda porque não é mais um PATCH in-place).
+   */
+  async rotateDrivePhoto(driveFileId: string, photoId: string, degrees = 270): Promise<string> {
+    // bust=true: ignora cache do proxy — garante que pegamos o conteúdo atual
+    // do Drive, não uma versão anterior já cacheada (bug da segunda rotação).
+    const current = await this.fetchPhotoBlob(driveFileId, { bust: true })
+    const rotated = await rotateImageBlob(current, degrees)
+    return this.replaceDrivePhoto(driveFileId, rotated, photoId)
   },
 
 

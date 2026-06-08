@@ -7,6 +7,7 @@ import {
   ZoomIn,
   ZoomOut,
   Download,
+  RotateCw,
   Camera,
   Package,
   AlertCircle,
@@ -20,11 +21,13 @@ interface Photo {
   blob: Blob
   size: number
   url: string
+  driveFileId?: string
 }
 
 interface PhotoGalleryProps {
   photos: Photo[]
   onDownloadAll?: () => void
+  onRotate?: (photo: Photo) => Promise<void>
 }
 
 // ─── CONFIGURAÇÃO DE THUMBNAILS ───────────────────────────────────────────
@@ -165,12 +168,14 @@ const PhotoGridItem = memo(({
   prev.converting === next.converting
 )
 
-export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
+export function PhotoGallery({ photos, onDownloadAll, onRotate }: PhotoGalleryProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [, startTransition] = useTransition()
   const [zoom, setZoom] = useState(1)
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set())
   const [isMainImageLoading, setIsMainImageLoading] = useState(false)
+  const [rotatingIds, setRotatingIds] = useState<Set<string>>(new Set())
+  const [rotatedBlobUrl, setRotatedBlobUrl] = useState<string | null>(null)
 
   // Drag refs — sem setState durante mousemove
   const positionRef = useRef({ x: 0, y: 0 })
@@ -375,6 +380,7 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
       dragImageRef.current.style.transition = 'transform 0.2s ease-out'
     }
     if (selectedIndex !== null) setIsMainImageLoading(true)
+    setRotatedBlobUrl(null)
   }, [selectedIndex])
 
   // ─── CONVERSÃO HEIC SOB DEMANDA ───────────────────────────────────────────
@@ -509,6 +515,48 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
       alert('Erro ao baixar a foto. Tente novamente.')
     }
   }
+
+  // Girar foto: delega ao parent (ClientsManager) que regrava no Drive
+  // mantendo o MESMO drive_file_id — galeria/IA/PDF passam a ver a foto certa.
+  const handleRotate = useCallback(async (photo: Photo) => {
+    if (!onRotate || !photo.driveFileId || rotatingIds.has(photo.id)) return
+    setRotatingIds(prev => { const n = new Set(prev); n.add(photo.id); return n })
+    try {
+      await onRotate(photo)
+      // Depois que o Drive foi atualizado, mostra imediatamente a versão girada
+      // sem depender do cache do hook — baixa o blob atualizado e exibe direto.
+      try {
+        const { driveStorage } = await import('./driveStorage')
+        const blob = await driveStorage.fetchPhotoBlob(photo.driveFileId, { bust: true })
+        const url = URL.createObjectURL(blob)
+
+        // Invalida os caches internos desta foto para que a PRÓXIMA rotação
+        // (e o thumbnail na grade) usem o blob atualizado, não o anterior.
+        // Sem isso, blobUrlCacheRef ainda aponta pro URL pré-rotação e a
+        // segunda rotação envia a foto errada pro Drive.
+        const oldBlobUrl = blobUrlCacheRef.current.get(photo.id)
+        if (oldBlobUrl) {
+          try { URL.revokeObjectURL(oldBlobUrl) } catch {}
+          blobUrlCacheRef.current.delete(photo.id)
+        }
+        const oldThumbUrl = thumbnailCacheRef.current.get(photo.id)
+        if (oldThumbUrl) {
+          try { URL.revokeObjectURL(oldThumbUrl) } catch {}
+          thumbnailCacheRef.current.delete(photo.id)
+        }
+
+        setRotatedBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url })
+      } catch {
+        // Se não conseguir baixar, tudo bem — o Drive já foi atualizado,
+        // a foto aparecerá correta na próxima vez que o lightbox abrir.
+      }
+    } catch (error) {
+      console.error('Erro ao girar foto:', error)
+      alert(error instanceof Error ? error.message : 'Erro ao girar a foto. Tente novamente.')
+    } finally {
+      setRotatingIds(prev => { const n = new Set(prev); n.delete(photo.id); return n })
+    }
+  }, [onRotate, rotatingIds])
 
   // ─── DRAG COM ZOOM ────────────────────────────────────────────────────────
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -774,9 +822,23 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
                         <Loader2 style={{ width: 44, height: 44, color: 'rgba(255,255,255,0.5)' }} className="animate-spin" />
                       </div>
                     )}
+                    {rotatingIds.has(photos[selectedIndex].id) && (
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)',
+                        zIndex: 6, borderRadius: 8,
+                      }}>
+                        <RotateCw style={{ width: 44, height: 44, color: '#fff' }} className="animate-spin" />
+                        <p style={{ color: '#fff', fontSize: 14, fontWeight: 600, marginTop: 12, letterSpacing: 0.2 }}>
+                          Girando imagem…
+                        </p>
+                      </div>
+                    )}
                     <img
                       ref={dragImageRef}
-                      src={getPhotoUrl(photos[selectedIndex])}
+                      key={rotatedBlobUrl || getPhotoUrl(photos[selectedIndex])}
+                      src={rotatedBlobUrl || getPhotoUrl(photos[selectedIndex])}
                       alt={photos[selectedIndex].name}
                       style={{
                         maxWidth: '100%',
@@ -913,6 +975,20 @@ export function PhotoGallery({ photos, onDownloadAll }: PhotoGalleryProps) {
               >
                 <ZoomIn style={{ width: 17, height: 17, color: '#fff' }} />
               </button>
+
+              {/* Girar 90° — só aparece quando o parent fornece onRotate e a foto tem driveFileId */}
+              {onRotate && photos[selectedIndex]?.driveFileId && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleRotate(photos[selectedIndex]) }}
+                  disabled={rotatingIds.has(photos[selectedIndex].id)}
+                  style={{ ...btnStyle, width: 38, height: 38, marginLeft: 2 }}
+                  title="Girar 90° (regrava no Drive)"
+                >
+                  {rotatingIds.has(photos[selectedIndex].id)
+                    ? <Loader2 style={{ width: 17, height: 17, color: '#fff' }} className="animate-spin" />
+                    : <RotateCw style={{ width: 17, height: 17, color: '#fff' }} />}
+                </button>
+              )}
 
               {/* Baixar */}
               <button

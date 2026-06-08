@@ -15,7 +15,7 @@ import {
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
   SlidersHorizontal, ChevronDown, Palette, Pencil,
-  Loader2, AlertCircle, Bell, Wand2, Mic, Square, Music,
+  Loader2, AlertCircle, Bell, Wand2, Mic, Square, Music, RotateCcw,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { notifyClientCompleted } from '../../lib/whatsappService'
@@ -3124,9 +3124,20 @@ function FormResponseModal({ formSubmission, planForm, clientId, onClose }: {
 }
 
 // ─── Photo Lightbox ───────────────────────────────────────────────────────
-function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete }: { photos: any[]; initialIndex: number; onClose: () => void; onDelete?: (photo: any) => Promise<void> }) {
+function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete, onPhotoRotated }: { photos: any[]; initialIndex: number; onClose: () => void; onDelete?: (photo: any) => Promise<void>; onPhotoRotated?: (photoId: string, blobUrl: string, newDriveFileId: string) => void }) {
   const [photos, setPhotos] = useState(initialPhotos)
   const [index, setIndex] = useState(initialIndex)
+
+  // Sincroniza com props quando o pai atualiza URLs (ex: após rotação).
+  // Preserva _blobUrl já definido internamente: o blob local é mais atual
+  // que a URL do Drive (que ainda pode estar cacheada).
+  useEffect(() => {
+    setPhotos(prev => initialPhotos.map((incoming: any) => {
+      const existing = prev.find((p: any) => p.id === incoming.id)
+      if (existing?._blobUrl) return { ...incoming, url: existing._blobUrl, _blobUrl: existing._blobUrl }
+      return incoming
+    }))
+  }, [initialPhotos])
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
@@ -3143,6 +3154,40 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
   useEffect(() => { panRef.current = pan }, [pan])
   const imgContainerRef = useRef<HTMLDivElement>(null)
   const [deleting, setDeleting] = useState(false)
+  const [rotating, setRotating] = useState(false)
+
+  const handleRotate = async () => {
+    if (!photo?.drive_file_id || rotating) return
+    console.log('[rotate] iniciando para drive_file_id:', photo.drive_file_id)
+    setRotating(true)
+    const prevBlobUrl = photo._blobUrl as string | undefined
+    try {
+      console.log('[rotate] 1/3 baixando foto via photo-proxy...')
+      const current = await driveStorage.fetchPhotoBlob(photo.drive_file_id, { bust: true })
+      console.log('[rotate] 2/3 foto baixada, tamanho:', current.size, '— girando no canvas...')
+      const { rotateImageBlob } = await import('../../lib/imageOrientation')
+      const rotated = await rotateImageBlob(current, 90)
+      console.log('[rotate] 3/3 girado, tamanho:', rotated.size, '— enviando pro Drive...')
+      const newDriveFileId = await driveStorage.replaceDrivePhoto(photo.drive_file_id, rotated, photo.id)
+      console.log('[rotate] sucesso! novo drive_file_id:', newDriveFileId)
+
+      const blobUrl = URL.createObjectURL(rotated)
+      if (prevBlobUrl) { try { URL.revokeObjectURL(prevBlobUrl) } catch {} }
+
+      setPhotos(prev => prev.map((p: any, i: number) =>
+        i === index
+          ? { ...p, url: blobUrl, _blobUrl: blobUrl, drive_file_id: newDriveFileId }
+          : p
+      ))
+      onPhotoRotated?.(photo.id, blobUrl, newDriveFileId)
+      setZoom(1)
+    } catch (e: any) {
+      console.error('[rotate] ERRO:', e)
+      alert(`Erro ao girar foto: ${e?.message || 'erro desconhecido'}`)
+    } finally {
+      setRotating(false)
+    }
+  }
   const prev = useCallback(() => { setIndex(i => (i - 1 + photos.length) % photos.length); setZoom(1) }, [photos.length])
   const next = useCallback(() => { setIndex(i => (i + 1) % photos.length); setZoom(1) }, [photos.length])
   // Sempre que o zoom voltar pra 1 (ou menor), recentra a imagem. Isso roda
@@ -3332,6 +3377,18 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
           <span className="text-white/70 text-xs w-10 text-center hidden sm:block">{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom(z => Math.min(z + 0.5, 4))} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomIn className="h-5 w-5 sm:h-4 sm:w-4" /></button>
           <button onClick={handleDownload} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><Download className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          {photo?.drive_file_id && (
+            <button
+              onClick={handleRotate}
+              disabled={rotating}
+              className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation disabled:opacity-40"
+              title="Girar foto 90° (salva no Drive)"
+            >
+              {rotating
+                ? <Loader2 className="h-5 w-5 sm:h-4 sm:w-4 animate-spin" />
+                : <RotateCcw className="h-5 w-5 sm:h-4 sm:w-4" />}
+            </button>
+          )}
           {onDelete && (
             <button
               onClick={handleDelete}
@@ -3374,6 +3431,7 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete 
           </div>
         ) : (
           <img
+            key={mainImage.src}
             src={mainImage.src}
             alt={photo.photo_name}
             className="max-w-full max-h-full object-contain select-none"
@@ -3461,7 +3519,10 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
   const { theme: t } = useTheme()
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [lightbox, setLightbox] = useState<{ photos: any[]; index: number } | null>(null)
+  // Guarda categoryId (ou null = sem categoria) em vez de um snapshot de fotos.
+  // Assim ao fechar e reabrir, sempre deriva do photosWithUrls atual — inclui
+  // qualquer blob URL atualizado pela rotação.
+  const [lightbox, setLightbox] = useState<{ categoryId: string | null; index: number } | null>(null)
   const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
   const [downloadingAll, setDownloadingAll] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
@@ -3638,7 +3699,7 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
   }
   const hasPhotos = photosWithUrls.length > 0
 
-  const CategoryCard = ({ title, catPhotos, label }: { title: string; catPhotos: any[]; label: string }) => (
+  const CategoryCard = ({ title, catPhotos, label, categoryId }: { title: string; catPhotos: any[]; label: string; categoryId: string | null }) => (
     <div className="rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
       <div className="flex items-center gap-4 flex-1 min-w-0">
         <div className="w-12 h-12 bg-rose-50 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -3653,7 +3714,7 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
         <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos, label)} loading={downloadingAll === label} disabled={downloadingAll !== null}>
           <Download className="h-3.5 w-3.5" /> ZIP
         </Btn>
-        <Btn variant="primary" size="sm" onClick={() => setLightbox({ photos: catPhotos, index: 0 })}>
+        <Btn variant="primary" size="sm" onClick={() => setLightbox({ categoryId, index: 0 })}>
           <Eye className="h-3.5 w-3.5" /> Ver Fotos
         </Btn>
       </div>
@@ -3698,10 +3759,10 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
         {photoCategories.map(cat => {
           const catPhotos = photosByCat[cat.id] || []
           if (catPhotos.length === 0) return null
-          return <CategoryCard key={cat.id} title={cat.title} catPhotos={catPhotos} label={cat.title} />
+          return <CategoryCard key={cat.id} title={cat.title} catPhotos={catPhotos} label={cat.title} categoryId={cat.id} />
         })}
         {uncategorized.length > 0 && (
-          <CategoryCard title="Fotos sem categoria" catPhotos={uncategorized} label="Fotos" />
+          <CategoryCard title="Fotos sem categoria" catPhotos={uncategorized} label="Fotos" categoryId={null} />
         )}
 
         {!hasPhotos && (
@@ -3712,7 +3773,30 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
           </div>
         )}
       </div>
-      {lightbox && <PhotoLightbox photos={lightbox.photos} initialIndex={lightbox.index} onClose={() => setLightbox(null)} onDelete={handleDeletePhoto} />}
+      {lightbox && (() => {
+        // Deriva as fotos SEMPRE do photosWithUrls atual (nunca de um snapshot).
+        // Assim ao fechar e reabrir, a foto já aparece girada sem recarregar do Drive.
+        const liveCatPhotos = lightbox.categoryId !== null
+          ? (photosByCat[lightbox.categoryId] ?? [])
+          : uncategorized
+        return (
+          <PhotoLightbox
+            photos={liveCatPhotos}
+            initialIndex={lightbox.index}
+            onClose={() => setLightbox(null)}
+            onDelete={handleDeletePhoto}
+            onPhotoRotated={(photoId, blobUrl, newDriveFileId) => {
+              // Atualiza só photosWithUrls; o lightbox recomputa liveCatPhotos
+              // no próximo render automaticamente, sem precisar atualizar lightbox.photos.
+              setPhotosWithUrls(prev => prev.map(p =>
+                p.id === photoId
+                  ? { ...p, url: blobUrl, _blobUrl: blobUrl, drive_file_id: newDriveFileId }
+                  : p
+              ))
+            }}
+          />
+        )
+      })()}
     </>
   )
 }
