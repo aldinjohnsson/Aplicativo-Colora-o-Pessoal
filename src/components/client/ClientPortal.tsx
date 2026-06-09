@@ -153,6 +153,29 @@ function getResultFileKind(fileName: string): 'pdf' | 'audio' | 'image' | 'other
   return 'other'
 }
 
+/** Deriva um MIME de áudio específico a partir da extensão do arquivo.
+ *  Necessário porque o /audio-proxy às vezes devolve Content-Type genérico
+ *  (application/octet-stream) e o Chrome não toca um blob: URL sem um tipo
+ *  de mídia reconhecido — o Safari "fareja" os bytes e toca mesmo assim. */
+function audioMimeFromName(fileName: string): string {
+  const ext = (fileName.split('.').pop() || '').toLowerCase()
+  switch (ext) {
+    case 'webm':            return 'audio/webm'
+    case 'm4a':
+    case 'mp4':             return 'audio/mp4'
+    case 'aac':             return 'audio/aac'
+    case 'mp3':
+    case 'mpga':
+    case 'mpeg':            return 'audio/mpeg'
+    case 'ogg':
+    case 'oga':
+    case 'opus':            return 'audio/ogg'
+    case 'wav':             return 'audio/wav'
+    case 'flac':            return 'audio/flac'
+    default:                return 'audio/mpeg'
+  }
+}
+
 // ── Portal Audio Player ───────────────────────────────────────────────────────
 //
 // Faz fetch do áudio via proxy (Edge Function) e cria um blob: URL local antes
@@ -170,7 +193,7 @@ function getResultFileKind(fileName: string): 'pdf' | 'audio' | 'image' | 'other
 // Ao fazer fetch aqui e expor um blob: URL, o <audio> lê bytes locais — sem
 // restrições de range request nem de CORS — e funciona em qualquer browser.
 
-function PortalAudioPlayer({ audioSrc, className }: { audioSrc: string; className?: string }) {
+function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string; fileName?: string; className?: string }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState(false)
 
@@ -181,9 +204,14 @@ function PortalAudioPlayer({ audioSrc, className }: { audioSrc: string; classNam
       try {
         const res = await fetch(audioSrc)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const blob = await res.blob()
+        const raw = await res.blob()
         if (cancelled) return
-        created = URL.createObjectURL(blob)
+        // Reembrulha os bytes forçando um MIME de áudio derivado da extensão.
+        // Sem isso, quando o proxy devolve Content-Type genérico, o Chrome se
+        // recusa a tocar o blob: URL (erro de decode); o Safari toca mesmo assim.
+        const mime = fileName ? audioMimeFromName(fileName) : (raw.type || 'audio/mpeg')
+        const typed = raw.type === mime ? raw : new Blob([raw], { type: mime })
+        created = URL.createObjectURL(typed)
         setBlobUrl(created)
       } catch {
         if (!cancelled) setLoadErr(true)
@@ -193,7 +221,7 @@ function PortalAudioPlayer({ audioSrc, className }: { audioSrc: string; classNam
       cancelled = true
       if (created) URL.revokeObjectURL(created)
     }
-  }, [audioSrc])
+  }, [audioSrc, fileName])
 
   if (loadErr) return (
     <p className="text-xs text-red-400 py-2 flex items-center gap-1.5">
@@ -2377,6 +2405,7 @@ function ResultScreen({
 
                   <PortalAudioPlayer
                     audioSrc={audioSrc}
+                    fileName={file.file_name}
                     className="w-full rounded-xl"
                   />
                 </div>
