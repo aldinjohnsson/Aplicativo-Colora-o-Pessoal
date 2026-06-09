@@ -235,35 +235,55 @@ function SafeImage({
   )
 }
 
-// ─── Corrige metadados de duração em arquivos WEBM do MediaRecorder ─────────
-// O MediaRecorder do Chrome gera WEBM sem o campo Duration no header, o que
-// faz o <audio> mostrar 0:00 e não conseguir reproduzir corretamente.
-// Esta função localiza o elemento EBML Duration (ID 0x44 0x89) e grava o
-// valor correto em big-endian float64 antes do upload.
-async function fixWebmDuration(blob: Blob, durationMs: number): Promise<Blob> {
+// ─── Re-encode de áudio gravado → WAV ──────────────────────────────────────
+// O WebM do MediaRecorder não escreve o elemento Duration no header. Um blob:
+// WebM sem duração não toca no Chrome do Android (no desktop e no Safari toca).
+// Aqui decodificamos via Web Audio e remontamos um WAV (PCM 16-bit), que tem
+// duração correta e toca em qualquer navegador. Reamostramos pra `targetRate`
+// mono (16 kHz é ótimo pra voz) pra não inflar o tamanho do arquivo.
+async function reencodeToWav(blob: Blob, targetRate = 16000): Promise<Blob> {
+  const arrayBuf = await blob.arrayBuffer()
+  const AC: typeof AudioContext = window.AudioContext || (window as any).webkitAudioContext
+  const decodeCtx = new AC()
+  let decoded: AudioBuffer
   try {
-    const buf = await blob.arrayBuffer()
-    const arr = new Uint8Array(buf)
-    for (let i = 0; i < arr.length - 10; i++) {
-      if (arr[i] !== 0x44 || arr[i + 1] !== 0x89) continue
-      const vint = arr[i + 2]
-      let dataSize: number
-      let dataOffset: number
-      if (vint & 0x80)       { dataSize = vint & 0x7f; dataOffset = i + 3 }
-      else if (vint & 0x40)  { dataSize = ((vint & 0x3f) << 8) | arr[i + 3]; dataOffset = i + 4 }
-      else if (vint & 0x20)  { dataSize = ((vint & 0x1f) << 16) | (arr[i + 3] << 8) | arr[i + 4]; dataOffset = i + 5 }
-      else continue
-      if (dataSize === 8) {
-        new DataView(buf, dataOffset, 8).setFloat64(0, durationMs, false)
-        return new Blob([new Uint8Array(buf)], { type: blob.type })
-      }
-      if (dataSize === 4) {
-        new DataView(buf, dataOffset, 4).setFloat32(0, durationMs, false)
-        return new Blob([new Uint8Array(buf)], { type: blob.type })
-      }
-    }
-  } catch {}
-  return blob
+    decoded = await decodeCtx.decodeAudioData(arrayBuf.slice(0))
+  } finally {
+    decodeCtx.close()
+  }
+
+  // Reamostra + faz downmix pra mono usando OfflineAudioContext
+  const OAC: typeof OfflineAudioContext =
+    window.OfflineAudioContext || (window as any).webkitOfflineAudioContext
+  const frames = Math.max(1, Math.ceil(decoded.duration * targetRate))
+  const offline = new OAC(1, frames, targetRate)
+  const node = offline.createBufferSource()
+  node.buffer = decoded
+  node.connect(offline.destination)
+  node.start()
+  const rendered = await offline.startRendering()
+  const samples = rendered.getChannelData(0)
+
+  // Float32 [-1,1] → PCM Int16 + cabeçalho WAV
+  const bytesPerSample = 2
+  const dataSize = samples.length * bytesPerSample
+  const out = new ArrayBuffer(44 + dataSize)
+  const dv = new DataView(out)
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i))
+  }
+  writeStr(0, 'RIFF');  dv.setUint32(4, 36 + dataSize, true);  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt '); dv.setUint32(16, 16, true);            dv.setUint16(20, 1, true)
+  dv.setUint16(22, 1, true);             dv.setUint32(24, targetRate, true)
+  dv.setUint32(28, targetRate * bytesPerSample, true)
+  dv.setUint16(32, bytesPerSample, true); dv.setUint16(34, 16, true)
+  writeStr(36, 'data'); dv.setUint32(40, dataSize, true)
+  let off = 44
+  for (let i = 0; i < samples.length; i++, off += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    dv.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true)
+  }
+  return new Blob([out], { type: 'audio/wav' })
 }
 
 // ─── DriveAudioPlayer ─────────────────────────────────────────────────────────
@@ -4497,17 +4517,24 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const saveRecording = async () => {
     if (recState.kind !== 'preview') return
     const { blob: rawBlob, url, durationMs } = recState
-    const ext = rawBlob.type.includes('mp4') || rawBlob.type.includes('m4a') ? 'm4a'
-               : rawBlob.type.includes('ogg') ? 'ogg'
-               : 'webm'
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    // Corrige o metadado de duração no WEBM antes de enviar —
-    // MediaRecorder não grava Duration no header, o que faz o <audio>
-    // mostrar 0:00 e travar. Com a duração correta o player funciona normalmente.
-    const fixedBlob = rawBlob.type.includes('webm')
-      ? await fixWebmDuration(rawBlob, durationMs)
-      : rawBlob
-    const file = new File([fixedBlob], `Audio_${stamp}.${ext}`, { type: rawBlob.type })
+    // O WebM do MediaRecorder sai sem o elemento Duration → o Chrome do Android
+    // se recusa a tocar (no desktop e no Safari funciona). Re-encodamos pra WAV,
+    // que tem duração correta e toca em qualquer navegador. Se a decodificação
+    // falhar (raro), mandamos o arquivo original pra não perder a gravação.
+    let uploadBlob = rawBlob
+    let ext = rawBlob.type.includes('mp4') || rawBlob.type.includes('m4a') ? 'm4a'
+            : rawBlob.type.includes('ogg') ? 'ogg'
+            : 'webm'
+    if (rawBlob.type.includes('webm')) {
+      try {
+        uploadBlob = await reencodeToWav(rawBlob, 16000)
+        ext = 'wav'
+      } catch (err) {
+        console.warn('[audio] re-encode falhou — enviando WebM original', err)
+      }
+    }
+    const file = new File([uploadBlob], `Audio_${stamp}.${ext}`, { type: uploadBlob.type })
     setRecState({ kind: 'uploading' })
     try {
       await adminService.uploadResultFile(clientId!, file)
