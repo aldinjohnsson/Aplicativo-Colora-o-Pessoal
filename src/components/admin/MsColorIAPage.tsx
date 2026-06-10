@@ -948,7 +948,13 @@ function EnhancePhotoModal({ adminId, driveFileId, onClose, onApplied }: Enhance
       setRunning(false)
     } catch (err: any) {
       const msg = err?.message || 'Erro ao aprimorar a foto.'
-      setError(msg.includes('QUOTA_EXCEEDED') ? 'QUOTA_EXCEEDED' : msg)
+      if (msg.includes('QUOTA_EXCEEDED')) {
+        setError('QUOTA_EXCEEDED')
+      } else if (msg.includes('moderation_blocked') || msg.includes('safety system') || msg.includes('sexual')) {
+        setError('PHOTO_BLOCKED')
+      } else {
+        setError(msg)
+      }
       setRunning(false)
     }
   }
@@ -1142,6 +1148,17 @@ function EnhancePhotoModal({ adminId, driveFileId, onClose, onApplied }: Enhance
                     </div>
                     <p className="text-xs text-amber-700">
                       Seus aprimoramentos acabaram. Faça uma recarga para continuar usando esta funcionalidade.
+                    </p>
+                  </div>
+                ) : error === 'PHOTO_BLOCKED' ? (
+                  <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-orange-500 flex-shrink-0" />
+                      <p className="text-sm font-semibold text-orange-800">Foto não aceita pela IA</p>
+                    </div>
+                    <p className="text-xs text-orange-700">
+                      A IA bloqueou o processamento desta foto. Use uma foto com o rosto e cabelo bem visíveis,
+                      decote fechado e fundo neutro para melhores resultados.
                     </p>
                   </div>
                 ) : (
