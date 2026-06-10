@@ -4907,7 +4907,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       <Camera className="h-5 w-5 text-pink-500" />
                     </div>
                     <div>
-                      <p className="text-sm font-semibold text-rose-900">Fotos recebidas — aguardando sua revisão</p>
+                      <p className="text-sm font-semibold text-rose-900">Fotos recebidas, aguardando sua revisão</p>
                       <p className="text-xs text-rose-600 mt-0.5">Revise as fotos na aba <strong>Fotos</strong> e, quando estiver pronto, aprove para iniciar a análise e notificar a cliente.</p>
                     </div>
                   </div>
