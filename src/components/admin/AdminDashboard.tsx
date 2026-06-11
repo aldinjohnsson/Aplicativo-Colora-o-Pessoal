@@ -25,22 +25,27 @@
 // terminar — RLS bloqueia os dados nesse intervalo, então é só
 // cosmético, sem implicação de segurança.
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import {
   Users, Layers, LogOut, Palette, Settings, FolderOpen,
   Menu, X, ChevronRight, FileText, Shield, Sparkles, Image, User,
 } from 'lucide-react'
 import { adminService, AdminUser } from '../../lib/services'
-import { ClientsManager } from './ClientsManager'
-import { PlansManager } from './PlansManager'
-import { FoldersManager } from './FoldersManager'
-import SettingsEditor from './SettingsEditor'
-import { DocumentsHub } from './documents/DocumentsHub'
-import { SuperAdminPanel } from './SuperAdminPanel'
-import { MsColorIAPage } from './MsColorIAPage'
-import { StandaloneAiGenerationPage } from './StandaloneAiGenerationPage'
-import { AdminProfile } from './AdminProfile'
+// ⚡ CODE SPLITTING: cada página vira um chunk separado que só baixa quando a
+// rota é aberta. Antes, tudo (kanban 5.8k linhas, hub de documentos com gerador
+// de PDF, painel super, páginas de IA) entrava no bundle inicial e atrasava o
+// primeiro carregamento — principalmente no celular.
+// Páginas com export NOMEADO precisam do .then(m => ({ default: m.X })).
+const ClientsManager             = lazy(() => import('./ClientsManager').then(m => ({ default: m.ClientsManager })))
+const PlansManager               = lazy(() => import('./PlansManager').then(m => ({ default: m.PlansManager })))
+const FoldersManager             = lazy(() => import('./FoldersManager').then(m => ({ default: m.FoldersManager })))
+const SettingsEditor             = lazy(() => import('./SettingsEditor'))
+const DocumentsHub               = lazy(() => import('./documents/DocumentsHub').then(m => ({ default: m.DocumentsHub })))
+const SuperAdminPanel            = lazy(() => import('./SuperAdminPanel').then(m => ({ default: m.SuperAdminPanel })))
+const MsColorIAPage              = lazy(() => import('./MsColorIAPage').then(m => ({ default: m.MsColorIAPage })))
+const StandaloneAiGenerationPage = lazy(() => import('./StandaloneAiGenerationPage').then(m => ({ default: m.StandaloneAiGenerationPage })))
+const AdminProfile               = lazy(() => import('./AdminProfile').then(m => ({ default: m.AdminProfile })))
 import { ThemeProvider, useTheme, THEMES, ThemeName, Theme } from '../../lib/theme'
 
 interface Props {
@@ -401,6 +406,11 @@ function AdminDashboardInner({ onLogout }: Props) {
 
         {/* ── Main content ── */}
         <main className={isClientsRoute ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1'}>
+          <Suspense fallback={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 60 }}>
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-400" />
+            </div>
+          }>
           <Routes>
 
             {/* ═══ MS Color IA — home do chat_admin e full_admin ══════════ */}
@@ -494,6 +504,7 @@ function AdminDashboardInner({ onLogout }: Props) {
             } />
 
           </Routes>
+          </Suspense>
         </main>
       </div>
     </NavContext.Provider>
