@@ -482,10 +482,25 @@ export const adminService = {
   },
 
   // ---- Clients ----
+  // ⚡ PERFORMANCE: lista explícita de colunas SEM iris_analysis.
+  // A iris_analysis (JSONB com imagem em base64) chegou a 28 MB somados —
+  // praticamente 100% do peso da tabela — e era baixada inteira a cada
+  // abertura do painel, sem a lista usar. Ela continua sendo carregada na
+  // visão individual da cliente (getClientDetail usa select('*')).
+  // ⚠️ Se criar coluna nova em clients que a LISTA precise, adicione aqui.
   async getClients(): Promise<Client[]> {
     const { data, error } = await supabase
       .from('clients')
-      .select('*, plan:plans(id, name, deadline_days, is_active, description, created_at)')
+      .select(
+        'id, token, plan_id, full_name, email, phone, notes, status, created_at, updated_at, ' +
+        'birth_date, ai_prompt, ai_reference_photo_path, ai_profile, ai_folder_id, ' +
+        'ai_credits_image, ai_credits_text, ai_credits_used_image, ai_credits_used_text, ' +
+        'ai_info_tags, step_contract, step_form, step_photos, ai_reference_photos, ' +
+        'form_rejection_reason, form_rejected_at, photos_rejection_reason, photos_rejected_at, ' +
+        'admin_id, stage_timestamps, drive_folder_id, drive_purged_at, contrast_layout, ' +
+        'is_archived, whatsapp_opt_in, whatsapp_opt_in_at, ' +
+        'plan:plans(id, name, deadline_days, is_active, description, created_at)'
+      )
       .order('created_at', { ascending: false })
     if (error) throw error
     return (data || []) as Client[]
