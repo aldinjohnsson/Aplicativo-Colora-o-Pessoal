@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react'
 import { CheckCircle, AlertCircle, Folder, Link2, Unlink, Loader2, Clock } from 'lucide-react'
 import { driveStorage, type DriveStatus } from '../../lib/driveStorage'
+import { supabase } from '../../lib/supabase'
 
 export function DriveConnectionSection() {
   const [status, setStatus]   = useState<DriveStatus | null>(null)
@@ -9,6 +10,10 @@ export function DriveConnectionSection() {
   const [busy, setBusy]       = useState(false)
   const [error, setError]     = useState<string | null>(null)
   const [rootInput, setRootInput] = useState({ id: '', name: '' })
+  // Limpeza automática (21 dias). Vive em admin_content type='drive_prefs' —
+  // row próprio, imune ao save geral do SettingsEditor. Sem row = ligada.
+  const [autoCleanup, setAutoCleanup] = useState(true)
+  const [savingCleanup, setSavingCleanup] = useState(false)
 
   const reload = async () => {
     setLoading(true)
@@ -16,10 +21,48 @@ export function DriveConnectionSection() {
       const s = await driveStorage.getStatus()
       setStatus(s)
       setRootInput({ id: s.rootFolderId ?? '', name: s.rootFolderName ?? '' })
+      // Flag da limpeza automática (default: ligada quando não há row)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user?.id) {
+        const { data: prefs } = await supabase
+          .from('admin_content')
+          .select('content')
+          .eq('admin_id', session.user.id)
+          .eq('type', 'drive_prefs')
+          .maybeSingle()
+        setAutoCleanup((prefs?.content as any)?.autoCleanup !== false)
+      }
     } catch (e: any) {
       setError(e.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleToggleCleanup = async () => {
+    const next = !autoCleanup
+    setSavingCleanup(true)
+    setError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user?.id) throw new Error('Sessão expirada. Faça login novamente.')
+      const { error: upErr } = await supabase
+        .from('admin_content')
+        .upsert(
+          {
+            admin_id: session.user.id,
+            type: 'drive_prefs',
+            content: { autoCleanup: next },
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'admin_id,type' }
+        )
+      if (upErr) throw new Error(upErr.message)
+      setAutoCleanup(next)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setSavingCleanup(false)
     }
   }
   useEffect(() => { reload() }, [])
@@ -98,9 +141,29 @@ export function DriveConnectionSection() {
               </button>
             </div>
 
-            <div className="flex items-start gap-2 text-xs text-gray-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              <Clock className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600" />
-              <span>As pastas dos clientes são excluídas automaticamente <strong>21 dias após a análise ser entregue</strong>.</span>
+            <div className={`rounded-lg border px-3 py-2.5 ${autoCleanup ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-start gap-2 text-xs text-gray-600 min-w-0">
+                  <Clock className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${autoCleanup ? 'text-amber-600' : 'text-gray-400'}`} />
+                  <span>
+                    Limpeza automática: pastas das clientes são excluídas do <strong>seu Drive</strong>{' '}
+                    <strong>21 dias após a análise ser entregue</strong>.
+                    {!autoCleanup && <span className="block mt-0.5 text-gray-500">Desativada — nenhuma pasta será apagada automaticamente.</span>}
+                  </span>
+                </div>
+                {/* Toggle */}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoCleanup}
+                  onClick={handleToggleCleanup}
+                  disabled={savingCleanup}
+                  title={autoCleanup ? 'Desativar limpeza automática' : 'Ativar limpeza automática'}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${autoCleanup ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoCleanup ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
             </div>
 
             {/* ── Pasta raiz ─────────────────────────────────────── */}

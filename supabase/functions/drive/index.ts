@@ -928,7 +928,29 @@ if (req.method === 'POST' && path === '/replace-media') {
         byAdmin.set(row.admin_id, arr)
       }
 
+      // ─── Flag por admin: limpeza automática ligada/desligada ────────────
+      // Row admin_content type='drive_prefs' content {autoCleanup: boolean}.
+      // Sem row ou sem o campo = LIGADA (comportamento atual preservado).
+      // Vive em row próprio (não em 'settings') pra não ser sobrescrita pelo
+      // save geral de configurações.
+      const adminIds = [...byAdmin.keys()]
+      const optedOut = new Set<string>()
+      if (adminIds.length > 0) {
+        const { data: prefsRows } = await sb
+          .from('admin_content')
+          .select('admin_id, content')
+          .eq('type', 'drive_prefs')
+          .in('admin_id', adminIds)
+        for (const p of prefsRows || []) {
+          if ((p as any).content?.autoCleanup === false) optedOut.add((p as any).admin_id)
+        }
+      }
+
       for (const [adminId, rows] of byAdmin) {
+        if (optedOut.has(adminId)) {
+          results.push({ adminId, skipped: rows.length, reason: 'limpeza automática desativada pelo admin' })
+          continue
+        }
         let accessToken: string
         try {
           const t = await getAdminToken(sb, adminId)
