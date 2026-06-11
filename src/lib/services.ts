@@ -2280,12 +2280,16 @@ export const clientService = {
       // clientToken; ela hidrata os campos via service role.
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, admin_id, plan:plans(name)')
+        .select('id, full_name, email, token, admin_id, plan:plans(name)')
         .eq('token', token)
         .maybeSingle()
 
       const portalUrl = `${window.location.origin}/c/${token}`
       const planName = (client as any)?.plan?.name || ''
+      const clientId = (client as any)?.id ?? null
+      const adminPanelUrl = clientId
+        ? `${window.location.origin}/admin/clients/${clientId}`
+        : ''
 
       await supabase.functions.invoke('send-contract-email', {
         body: {
@@ -2296,6 +2300,7 @@ export const clientService = {
           clientEmail: client?.email ?? '',
           planName,
           portalUrl,
+          adminPanelUrl,
         }
       })
     } catch (e) {
@@ -2332,12 +2337,16 @@ export const clientService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('full_name, email, token, admin_id, plan:plans(name)')
+        .select('id, full_name, email, token, admin_id, plan:plans(name)')
         .eq('token', token)
         .maybeSingle()
 
       const portalUrl = `${window.location.origin}/c/${token}`
       const planName = (client as any)?.plan?.name || ''
+      const clientId = (client as any)?.id ?? null
+      const adminPanelUrl = clientId
+        ? `${window.location.origin}/admin/clients/${clientId}`
+        : ''
 
       await supabase.functions.invoke('send-contract-email', {
         body: {
@@ -2348,6 +2357,7 @@ export const clientService = {
           clientEmail: client?.email ?? '',
           planName,
           portalUrl,
+          adminPanelUrl,
         }
       })
     } catch (e) {

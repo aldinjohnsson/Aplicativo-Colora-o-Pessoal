@@ -425,11 +425,15 @@ function linkButton(url: string, label: string): string {
 
 function infoTable(rows: Array<[string, string]>): string {
   const trs = rows.map(([label, value]) => `
-    <div class="info-row">
-      <span class="info-label">${label}</span>
-      <span class="info-value">${value}</span>
-    </div>`).join('')
-  return `<div class="info-box">${trs}</div>`
+    <tr>
+      <td style="padding:5px 8px 5px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">${label}</td>
+      <td style="padding:5px 0;font-size:13px;color:#374151;font-weight:600;vertical-align:top;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">${value}</td>
+    </tr>`).join('')
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px 16px;margin:16px 0;border-collapse:separate;border-spacing:0;">
+    <tr><td style="padding:12px 16px;">
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation">${trs}</table>
+    </td></tr>
+  </table>`
 }
 
 // ── Edge Function principal ───────────────────────────────────────────────────
@@ -1005,10 +1009,12 @@ serve(async (req) => {
     // ALIAS: photos_submitted → mesmo comportamento de photos_finalized
     // ============================================================
     if (emailType === 'photos_submitted') {
+      const adminPanelUrl = sanitizePortalUrl(payload.adminPanelUrl || '')
       const adminHtml = renderEmail(
         '📷 Fotos para Revisar',
         `<strong>${clientName}</strong> finalizou o envio de fotos e aguarda sua aprovacao.`,
-        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
+        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}
+        ${adminPanelUrl ? '<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o painel para revisar e aprovar:</p>' + linkButton(adminPanelUrl, 'Revisar fotos no painel') : ''}`
       )
 
       const results = await Promise.allSettled([
@@ -1022,10 +1028,12 @@ serve(async (req) => {
     // TIPO 12: FOTO PARA SIMULAÇÃO (IA) ENVIADA
     // ============================================================
     if (emailType === 'ai_photo_submitted') {
+      const adminPanelUrl = sanitizePortalUrl(payload.adminPanelUrl || '')
       const adminHtml = renderEmail(
         '✨ Foto para simulação enviada',
         `<strong>${clientName}</strong> enviou a foto para a simulação. A consultora deve validar antes de avançar para "Simulações".`,
-        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}`
+        `${infoTable([['Cliente', clientName], ['E-mail', clientEmail], ['Plano', planName]])}
+        ${adminPanelUrl ? '<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o painel para validar a foto:</p>' + linkButton(adminPanelUrl, 'Validar foto no painel') : ''}`
       )
 
       const results = await Promise.allSettled([
