@@ -1735,10 +1735,17 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
     setSubmitting(true)
     setError('')
     try {
-      // Envia uma a uma (a função apaga as antigas dessa categoria no primeiro envio)
-      for (const file of uploads) {
-        await clientService.submitAiPhoto(token, data.client.id, aiCat.id, file)
+      // Envia uma a uma. Só a PRIMEIRA foto do lote limpa as fotos antigas
+      // da categoria (clearPrevious=true) — cobre o reenvio pós-rejeição.
+      // As demais acumulam (antes, cada upload apagava o anterior e só a
+      // última foto do lote sobrevivia no banco).
+      // submitAiPhoto SÓ faz o upload — não dispara e-mail.
+      for (let i = 0; i < uploads.length; i++) {
+        await clientService.submitAiPhoto(token, data.client.id, aiCat.id, uploads[i], i === 0)
       }
+      // Notificação ÚNICA pra consultora, só depois que TODAS as fotos
+      // subiram. Antes o e-mail saía por foto (5 fotos = 5 e-mails).
+      await clientService.notifyAiPhotosSubmitted(token)
       setUploads([])
       onDone()
     } catch (e: any) {

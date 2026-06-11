@@ -4,6 +4,28 @@ import { driveStorage } from './driveStorage'
 import { calculateDeadline, formatDateForDB } from './deadlineCalculator'
 
 // ============================================================
+// THROTTLE DE E-MAILS DE NOTIFICACAO (anti-burst)
+// ============================================================
+//
+// Evita disparar varios e-mails identicos em sequencia quando o
+// cliente envia varias fotos seguidas (ou troca a foto varias vezes).
+// O check+set e sincrono (sem await no meio), entao mesmo com N
+// uploads em paralelo apenas o primeiro passa — JS e single-threaded.
+//
+// Obs: o mapa vive em memoria da aba. Se a cliente recarregar a pagina
+// o throttle zera — por isso existe tambem o dedupe no servidor
+// (Edge Function send-contract-email + tabela email_dedup).
+const _emailThrottle = new Map<string, number>()
+
+function shouldSendThrottledEmail(key: string, windowMs: number): boolean {
+  const now = Date.now()
+  const last = _emailThrottle.get(key) || 0
+  if (now - last < windowMs) return false
+  _emailThrottle.set(key, now)
+  return true
+}
+
+// ============================================================
 // TYPES
 // ============================================================
 
@@ -2274,6 +2296,11 @@ export const clientService = {
       .in('status', ['awaiting_photos', 'photos_submitted', 'in_analysis'])
 
     // Notificação para a admin
+    // Throttle: ignora cliques repetidos no botao de finalizar (2 min)
+    if (!shouldSendThrottledEmail(`photos_submitted:${token}`, 2 * 60 * 1000)) {
+      console.log('Notificacao photos_submitted suprimida (throttle 2min)')
+      return
+    }
     try {
       // .maybeSingle() em vez de .single() — RLS no portal anon pode bloquear
       // a leitura. Se voltar null, ainda invocamos a Edge Function passando
@@ -2316,24 +2343,47 @@ export const clientService = {
    *   - Faz upload no Drive da admin (pasta do cliente)
    *   - Chama RPC `save_client_photo_drive` (valida status + categoria IA)
    *   - NÃO muda o status — admin valida e avança via StageController
-   *   - Dispara e-mail 'ai_photo_submitted' pra consultora
+   *   - NÃO envia e-mail. A notificação é disparada UMA vez, depois que
+   *     TODAS as fotos do lote subiram, via `notifyAiPhotosSubmitted()`.
+   *     (Antes o e-mail era enviado aqui, por foto: cliente que subia
+   *     5 fotos num envio só gerava 5 e-mails idênticos pra consultora.)
    */
   async submitAiPhoto(
     token: string,
     _clientId: string,
     categoryId: string,
-    file: File
+    file: File,
+    clearPrevious = true
   ): Promise<void> {
-    // A Edge Function drive/upload já apaga a foto IA anterior da mesma
-    // categoria (via save_client_photo_drive com is_ai_photo=true).
+    // clearPrevious=true (1ª foto do lote ou reenvio pós-rejeição): o RPC
+    // save_client_photo_drive apaga as fotos anteriores da categoria antes
+    // de gravar. clearPrevious=false (fotos 2..N do mesmo lote): acumula.
     await driveStorage.uploadPhoto({
       portalToken: token,
       file,
       categoryId,
       kind: 'ai_photo',
+      clearPrevious,
     })
+  },
 
-    // E-mail pra consultora (mantido igual ao fluxo original)
+  /**
+   * Notifica a consultora que a(s) foto(s) da simulação foram enviadas.
+   *
+   * Chamado UMA vez pelo portal (AiPhotoStep.handleSubmit), DEPOIS que
+   * todas as fotos do lote subiram com sucesso — assim a consultora
+   * recebe um único e-mail por envio, independente da quantidade de fotos,
+   * e nunca é avisada de um envio que falhou no meio.
+   *
+   * Camadas extras de proteção contra duplicados:
+   *   - throttle local de 10 min (clique duplo / re-render)
+   *   - dedupe atômico no servidor (tabela email_dedup, janela de 10 min)
+   */
+  async notifyAiPhotosSubmitted(token: string): Promise<void> {
+    if (!shouldSendThrottledEmail(`ai_photo_submitted:${token}`, 10 * 60 * 1000)) {
+      console.log('Notificacao ai_photo_submitted suprimida (throttle 10min)')
+      return
+    }
     try {
       const { data: client } = await supabase
         .from('clients')

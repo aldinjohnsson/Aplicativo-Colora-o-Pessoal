@@ -380,6 +380,10 @@ Deno.serve(async (req: Request) => {
       const form       = await req.formData()
       const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo' | 'composition' | 'ms_color_ia' | 'ms_color_ia_ref'
       const categoryId = form.get('category_id') ? String(form.get('category_id')) : null
+      // Lote de fotos IA: '0' = NAO apagar fotos anteriores da categoria
+      // (fotos 2..N do mesmo lote). Ausente ou '1' = apaga (1a foto do lote
+      // ou chamadas legadas) — preserva o comportamento antigo por padrao.
+      const clearPrevious = String(form.get('clear_previous') ?? '1') !== '0'
       const file       = form.get('file') as File | null
 
       if (!(file instanceof File)) return json({ error: 'file obrigatório' }, 400)
@@ -697,13 +701,14 @@ Deno.serve(async (req: Request) => {
       // Registra no DB
       if (kind === 'photo' || kind === 'ai_photo') {
         const { data: rpcData, error: rpcErr } = await sb.rpc('save_client_photo_drive', {
-          p_token:         portalToken,
-          p_photo_name:    safeName,
-          p_photo_type:    file.type,
-          p_photo_size:    file.size,
-          p_drive_file_id: uploaded.id,
-          p_category_id:   categoryId,
-          p_is_ai_photo:   kind === 'ai_photo',
+          p_token:          portalToken,
+          p_photo_name:     safeName,
+          p_photo_type:     file.type,
+          p_photo_size:     file.size,
+          p_drive_file_id:  uploaded.id,
+          p_category_id:    categoryId,
+          p_is_ai_photo:    kind === 'ai_photo',
+          p_clear_previous: clearPrevious,
         })
         if (rpcErr || rpcData?.error) {
           try { await deleteFromDrive(accessToken, uploaded.id) } catch {}

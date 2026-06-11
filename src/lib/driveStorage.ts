@@ -145,11 +145,18 @@ export const driveStorage = {
     file: File
     categoryId: string | null
     kind?: 'photo' | 'ai_photo' | 'result_file' | 'form_image'
+    /**
+     * Só relevante pra kind='ai_photo'. true (padrão) = apaga as fotos
+     * anteriores da categoria antes de gravar (1ª foto do lote / reenvio).
+     * false = acumula (fotos 2..N do mesmo lote).
+     */
+    clearPrevious?: boolean
   }): Promise<DriveUploadResult> {
     const fd = new FormData()
     fd.append('portal_token', opts.portalToken)
     fd.append('kind', opts.kind || 'photo')
     if (opts.categoryId) fd.append('category_id', opts.categoryId)
+    fd.append('clear_previous', opts.clearPrevious === false ? '0' : '1')
     fd.append('file', opts.file)
 
     const r = await fetch(`${FN}/upload`, { method: 'POST', body: fd })
