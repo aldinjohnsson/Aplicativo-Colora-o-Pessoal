@@ -1475,7 +1475,7 @@ export const adminService = {
 
   async saveResult(
     clientId: string,
-    result: { folder_url?: string; observations?: string; custom_link_url?: string }
+    result: { folder_url?: string | null; observations?: string; custom_link_url?: string }
   ): Promise<void> {
     const { error } = await supabase
       .from('client_results')

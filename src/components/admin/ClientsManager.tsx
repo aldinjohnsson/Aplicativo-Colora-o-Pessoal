@@ -4473,8 +4473,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       // O folder_url do FoldersManager só é propagado pro client_results de
       // clientes pertencentes ao super_admin. Pra admins comuns o link da
       // pasta nunca é salvo, então também nunca aparece no ClientPortal.
-      const driveLink = linkedFolderConfig?.driveLink || ''
-      if (driveLink && isSuperAdmin) {
+      //
+      // SEMPRE sincroniza, inclusive limpando com null: antes, ao trocar pra
+      // "Nenhuma pasta vinculada" (ou pra uma pasta sem driveLink), o
+      // folder_url antigo ficava órfão no client_results e a cliente
+      // continuava vendo o card "Pasta com Materiais" da pasta anterior.
+      if (isSuperAdmin) {
+        const driveLink = linkedFolderConfig?.driveLink || null
         await adminService.saveResult(clientId!, { ...resultForm, folder_url: driveLink })
       }
       setAiSaveStatus('saved'); setTimeout(() => setAiSaveStatus('idle'), 3000)
