@@ -459,6 +459,7 @@ function getInitials(name: string): string {
 interface DeadlineData {
   deadline_date: string
   photos_sent_at: string
+  no_deadline?: boolean
 }
 interface DeadlineInfo {
   label: string
@@ -469,7 +470,7 @@ interface DeadlineInfo {
   textColor: string
 }
 function getDeadlineInfo(client: Client, deadline?: DeadlineData | null): DeadlineInfo | null {
-  if (!deadline?.deadline_date || client.status === 'completed' || client.status === 'photos_submitted' || client.status === 'awaiting_ai_photo') return null
+  if (deadline?.no_deadline || !deadline?.deadline_date || client.status === 'completed' || client.status === 'photos_submitted' || client.status === 'awaiting_ai_photo') return null
  
   const today = new Date(); today.setHours(0, 0, 0, 0)
   // CORRIGIDO: parseLocalDate evita bug de timezone (new Date("YYYY-MM-DD") = UTC = dia errado no Brasil)
@@ -1262,6 +1263,11 @@ function KanbanSidebar({
     [clients, deadlines]
   )
 
+  const inAnalysisCount = useMemo(() =>
+    clients.filter(c => c.status === 'in_analysis').length,
+    [clients]
+  )
+
   // Fotos IA aguardando revisão: clientes em awaiting_ai_photo que JÁ enviaram a foto.
   const aiPhotoPendingCount = useMemo(() => {
     if (!aiPhotoPendingIds || aiPhotoPendingIds.size === 0) return 0
@@ -1315,6 +1321,7 @@ function KanbanSidebar({
           <div style={{ padding: '4px 8px', flex: 1, overflowY: 'auto', paddingTop: 10 }}>
             {navBtn('all', 'Todas as clientes', total)}
             {navBtn('danger', 'Prazo crítico', dangerCount, '#ef4444', <AlertTriangle size={14} />)}
+            {inAnalysisCount > 0 && navBtn('in_analysis', 'Em análise', inAnalysisCount, '#f97316', <SlidersHorizontal size={14} />)}
             {navBtn('photos_submitted', 'Aguardando revisão', counts['photos_submitted'] || 0, '#9d174d', <Camera size={14} />)}
             {aiPhotoPendingCount > 0 && navBtn('awaiting_ai_photo', 'Foto IA p/ revisar', aiPhotoPendingCount, '#c2410c', <Wand2 size={14} />)}
             {navBtn('preparing_materials', 'Preparando materiais', counts['preparing_materials'] || 0, '#0d9488', <Layers size={14} />)}
@@ -1879,53 +1886,80 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     return new Set<string>((photos.data || []).map((p: any) => p.client_id))
   }
 
+  // ── Blindagem mobile ──────────────────────────────────────────────────
+  // 1) Sessão: ao voltar de aba suspensa no celular, o token pode estar em
+  //    renovação; query sem token + RLS devolve LISTA VAZIA sem erro — e o
+  //    kanban "esvaziava do nada". Sem sessão válida, não sobrescrevemos nada.
+  // 2) Sequência: se dois loads correm em paralelo (rede móvel lenta), só a
+  //    resposta MAIS RECENTE pode escrever no estado — resposta velha é jogada
+  //    fora em vez de sobrescrever dados novos.
+  const loadSeqRef = useRef(0)
+
   const load = async () => {
+    const seq = ++loadSeqRef.current
     setLoading(true)
-    const [c, p, dl, fs, aiPending] = await Promise.all([
-      adminService.getClients(),
-      adminService.getPlans(),
-      supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
-      supabase.from('client_form_submissions').select('client_id, form_data'),
-      fetchAiPhotoSenders(),
-    ])
-    setClients(c)
-    setPlans(p.filter((pl: any) => pl.is_active))
-    const dlMap: Record<string, DeadlineData> = {}
-    ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at } })
-    setDeadlines(dlMap)
-    const obsSet = new Set<string>()
-    ;(fs.data || []).forEach((row: any) => {
-      const fd = row.form_data || {}
-      if (Object.keys(fd).some(k => k.endsWith('__obs') && String(fd[k] || '').trim())) {
-        obsSet.add(row.client_id)
-      }
-    })
-    setFormObsIds(obsSet)
-    setAiPhotoPendingIds(aiPending)
-    setLoading(false)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return // sem sessão: mantém a lista atual na tela
+      const [c, p, dl, fs, aiPending] = await Promise.all([
+        adminService.getClients(),
+        adminService.getPlans(),
+        supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at, no_deadline'),
+        supabase.from('client_form_submissions').select('client_id, form_data'),
+        fetchAiPhotoSenders(),
+      ])
+      if (seq !== loadSeqRef.current) return // resposta antiga: descarta
+      setClients(c)
+      setPlans(p.filter((pl: any) => pl.is_active))
+      const dlMap: Record<string, DeadlineData> = {}
+      ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at, no_deadline: d.no_deadline } })
+      setDeadlines(dlMap)
+      const obsSet = new Set<string>()
+      ;(fs.data || []).forEach((row: any) => {
+        const fd = row.form_data || {}
+        if (Object.keys(fd).some(k => k.endsWith('__obs') && String(fd[k] || '').trim())) {
+          obsSet.add(row.client_id)
+        }
+      })
+      setFormObsIds(obsSet)
+      setAiPhotoPendingIds(aiPending)
+    } catch (e) {
+      // Falha de rede/token: NÃO esvazia a lista — mantém o que está na tela.
+      console.warn('load() falhou; mantendo lista atual:', e)
+    } finally {
+      if (seq === loadSeqRef.current) setLoading(false)
+    }
   }
 
   // Sincroniza dados em segundo plano sem mostrar spinner (usado após optimistic updates)
   const silentLoad = async () => {
-    const [c, dl, fs, aiPending] = await Promise.all([
-      adminService.getClients(),
-      supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at'),
-      supabase.from('client_form_submissions').select('client_id, form_data'),
-      fetchAiPhotoSenders(),
-    ])
-    setClients(c)
-    const dlMap: Record<string, DeadlineData> = {}
-    ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at } })
-    setDeadlines(dlMap)
-    const obsSet = new Set<string>()
-    ;(fs.data || []).forEach((row: any) => {
-      const fd = row.form_data || {}
-      if (Object.keys(fd).some(k => k.endsWith('__obs') && String(fd[k] || '').trim())) {
-        obsSet.add(row.client_id)
-      }
-    })
-    setFormObsIds(obsSet)
-    setAiPhotoPendingIds(aiPending)
+    const seq = ++loadSeqRef.current
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return // sem sessão (token renovando no mobile): não toca na lista
+      const [c, dl, fs, aiPending] = await Promise.all([
+        adminService.getClients(),
+        supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at, no_deadline'),
+        supabase.from('client_form_submissions').select('client_id, form_data'),
+        fetchAiPhotoSenders(),
+      ])
+      if (seq !== loadSeqRef.current) return // resposta antiga: descarta
+      setClients(c)
+      const dlMap: Record<string, DeadlineData> = {}
+      ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at, no_deadline: d.no_deadline } })
+      setDeadlines(dlMap)
+      const obsSet = new Set<string>()
+      ;(fs.data || []).forEach((row: any) => {
+        const fd = row.form_data || {}
+        if (Object.keys(fd).some(k => k.endsWith('__obs') && String(fd[k] || '').trim())) {
+          obsSet.add(row.client_id)
+        }
+      })
+      setFormObsIds(obsSet)
+      setAiPhotoPendingIds(aiPending)
+    } catch (e) {
+      console.warn('silentLoad() falhou; mantendo lista atual:', e)
+    }
   }
 
   const handleCreate = async () => {
@@ -2489,7 +2523,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                     WebkitOverflowScrolling: 'touch',
                   } as React.CSSProperties}
                 >
-                  {COL_ORDER.map(key => (
+                  {COL_ORDER.filter(key => {
+                    // Quando um filtro está ativo (≠ 'all'), oculta colunas sem cards
+                    if (filter !== 'all') return (groupedByStatus[key]?.length ?? 0) > 0
+                    return true
+                  }).map(key => (
                     <KanbanColumn
                       key={key}
                       statusKey={key}
@@ -4319,12 +4357,40 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           {
             client_id: clientId!,
             deadline_date: deadlineInput,
+            no_deadline: false,
             // photos_sent_at: mantém o valor existente se já houver um registro
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'client_id', ignoreDuplicates: false }
         )
       if (error) throw error
+      setEditingDeadline(false)
+      load()
+    } catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
+  }
+
+  const handleSetNoDeadline = async () => {
+    setSavingDeadline(true)
+    try {
+      if (deadline) {
+        // Registro já existe — só atualiza o flag
+        const { error } = await supabase
+          .from('client_deadlines')
+          .update({ no_deadline: true, updated_at: new Date().toISOString() })
+          .eq('client_id', clientId!)
+        if (error) throw error
+      } else {
+        // Nenhum registro ainda — insere marcando sem prazo
+        const { error } = await supabase
+          .from('client_deadlines')
+          .insert({
+            client_id: clientId!,
+            no_deadline: true,
+            deadline_date: null,
+            photos_sent_at: null,
+          })
+        if (error) throw error
+      }
       setEditingDeadline(false)
       load()
     } catch (e: any) { alert(e.message) } finally { setSavingDeadline(false) }
@@ -4962,9 +5028,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold" style={{ color: t.text }}>Prazo</h3>
                   {!editingDeadline && (
-                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline?.deadline_date ?? ''); setEditingDeadline(true) }}>
+                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline?.no_deadline ? '' : (deadline?.deadline_date ?? '')); setEditingDeadline(true) }}>
                       <Calendar className="h-3.5 w-3.5" />
-                      {deadline?.deadline_date ? 'Editar' : 'Definir prazo'}
+                      {deadline?.deadline_date && !deadline?.no_deadline ? 'Editar' : 'Definir prazo'}
                     </Btn>
                   )}
                 </div>
@@ -4977,7 +5043,19 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   </div>
                 )}
 
-                {deadline?.deadline_date ? (
+                {editingDeadline ? (
+                  // Formulário de edição/inserção
+                  <div className="space-y-2">
+                    <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
+                    <div className="flex gap-2">
+                      <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
+                      <Btn variant="outline" size="sm" onClick={handleSetNoDeadline} loading={savingDeadline}>Sem prazo</Btn>
+                      <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
+                    </div>
+                  </div>
+                ) : deadline?.no_deadline ? (
+                  <p className="text-sm" style={{ color: t.text3 }}>Sem prazo de entrega</p>
+                ) : deadline?.deadline_date ? (
                   <div className="space-y-3">
                     {deadline.photos_sent_at && (
                       <div>
@@ -4987,36 +5065,15 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                     )}
                     <div>
                       <p className="text-xs mb-0.5" style={{ color: t.text3 }}>Prazo de entrega</p>
-                      {editingDeadline ? (
-                        <div className="space-y-2">
-                          <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
-                          <div className="flex gap-2">
-                            <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
-                            <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
-                          </div>
-                        </div>
-                      ) : (
-                        <>
-                          <p className="text-sm font-medium" style={{ color: t.text }}>{formatDeadlineDate(deadline.deadline_date)}</p>
-                          {client.status !== 'completed' && (() => {
-                            const dias = calendarDaysUntil(deadline.deadline_date)
-                            return (
-                              <p className="text-xs text-orange-600 mt-0.5">
-                                {dias === 0 ? 'Vence hoje' : `${dias} dia${dias !== 1 ? 's' : ''} restante${dias !== 1 ? 's' : ''}`}
-                              </p>
-                            )
-                          })()}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ) : editingDeadline ? (
-                  // Formulário de inserção — nenhum prazo existe ainda
-                  <div className="space-y-2">
-                    <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
-                    <div className="flex gap-2">
-                      <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
-                      <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
+                      <p className="text-sm font-medium" style={{ color: t.text }}>{formatDeadlineDate(deadline.deadline_date)}</p>
+                      {client.status !== 'completed' && (() => {
+                        const dias = calendarDaysUntil(deadline.deadline_date)
+                        return (
+                          <p className="text-xs text-orange-600 mt-0.5">
+                            {dias === 0 ? 'Vence hoje' : `${dias} dia${dias !== 1 ? 's' : ''} restante${dias !== 1 ? 's' : ''}`}
+                          </p>
+                        )
+                      })()}
                     </div>
                   </div>
                 ) : (
