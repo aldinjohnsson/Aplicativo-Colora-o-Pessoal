@@ -44,7 +44,7 @@ interface Props {
   onSave:     (data: ContrastLayoutData, formatted: string) => Promise<void>
 }
 
-const LABEL_OPTIONS = ['baixo', 'médio', 'médio alto', 'alto', 'muito alto'] as const
+const LABEL_OPTIONS = ['baixo', 'médio baixo', 'médio', 'médio alto', 'alto'] as const
 
 /** "médio alto" → "Médio Alto" — usado só no <select> de label (UI). */
 function titleCase(s: string): string {
