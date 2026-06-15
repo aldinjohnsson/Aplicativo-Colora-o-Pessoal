@@ -20,17 +20,19 @@ import React, { useState, useRef } from 'react'
 import {
   Plus, Trash2, GripVertical, Image as ImageIcon, Video, Type,
   ChevronLeft, ChevronRight, Play, X, Upload, Eye, EyeOff,
-  Youtube, FileImage, AlignLeft, ArrowUp, ArrowDown
+  Youtube, FileImage, AlignLeft, ArrowUp, ArrowDown, FileText, Link2
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface InstructionItem {
   id: string
-  type: 'text' | 'video' | 'image'
-  content: string        // text / YouTube URL / caption
-  imageUrl?: string      // for type === 'image'
-  storagePath?: string   // for type === 'image'
+  type: 'text' | 'video' | 'image' | 'pdf' | 'link'
+  content: string        // text / YouTube URL / caption / link (URL colado)
+  imageUrl?: string      // image: URL da imagem | pdf: URL do PDF enviado
+  storagePath?: string   // image/pdf: caminho no storage (quando enviado)
+  fileName?: string      // pdf: nome amigável exibido pro cliente
+  linkLabel?: string     // link: rótulo do botão exibido pro cliente
 }
 
 interface PhotoCategoryInstructionsEditorProps {
@@ -70,10 +72,11 @@ export function PhotoCategoryInstructionsEditor({
   const [uploadingId, setUploadingId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingItemId = useRef<string | null>(null)
+  const [uploadAccept, setUploadAccept] = useState('image/*')
 
   // ── CRUD ────────────────────────────────────────────────────────────────────
 
-  const addItem = (type: 'text' | 'video' | 'image') => {
+  const addItem = (type: InstructionItem['type']) => {
     const item: InstructionItem = { id: uid(), type, content: '' }
     onChange([...items, item])
   }
@@ -100,6 +103,12 @@ export function PhotoCategoryInstructionsEditor({
 
   const triggerImageUpload = (itemId: string) => {
     pendingItemId.current = itemId
+    const it = items.find(i => i.id === itemId)
+    const acc = it?.type === 'pdf' ? 'application/pdf,.pdf' : 'image/*'
+    setUploadAccept(acc)
+    // Seta o accept DIRETO no DOM antes do click: setState é assíncrono e o
+    // diálogo do SO abre antes do React re-renderizar — por isso vinha 'imagem'.
+    if (fileInputRef.current) fileInputRef.current.accept = acc
     fileInputRef.current?.click()
   }
 
@@ -111,9 +120,14 @@ export function PhotoCategoryInstructionsEditor({
     setUploadingId(id)
     try {
       const { url, storagePath } = await onUpload(file)
-      updateItem(id, { imageUrl: url, storagePath })
+      const target = items.find(it => it.id === id)
+      if (target?.type === 'pdf') {
+        updateItem(id, { imageUrl: url, storagePath, fileName: file.name })
+      } else {
+        updateItem(id, { imageUrl: url, storagePath })
+      }
     } catch (err: any) {
-      alert('Erro ao enviar imagem: ' + err.message)
+      alert('Erro ao enviar arquivo: ' + err.message)
     } finally {
       setUploadingId(null)
       pendingItemId.current = null
@@ -132,7 +146,7 @@ export function PhotoCategoryInstructionsEditor({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept={uploadAccept}
         className="hidden"
         onChange={handleFileChange}
       />
@@ -216,6 +230,22 @@ export function PhotoCategoryInstructionsEditor({
           <FileImage className="h-3.5 w-3.5" />
           + Imagem
         </button>
+        <button
+          type="button"
+          onClick={() => addItem('pdf')}
+          className="inline-flex items-center gap-1.5 text-xs px-3 py-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-100 transition-colors"
+        >
+          <FileText className="h-3.5 w-3.5" />
+          + PDF
+        </button>
+        <button
+          type="button"
+          onClick={() => addItem('link')}
+          className="inline-flex items-center gap-1.5 text-xs px-3 py-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 transition-colors"
+        >
+          <Link2 className="h-3.5 w-3.5" />
+          + Link
+        </button>
       </div>
 
       {items.length > 0 && (
@@ -244,9 +274,11 @@ function InstructionItemRow({
   item, index, total, uploading, onUpdate, onRemove, onMove, onTriggerUpload
 }: ItemRowProps) {
   const TYPE_CONFIG = {
-    text:  { label: 'Texto',   icon: AlignLeft,  bg: 'bg-gray-100',  text: 'text-gray-600',  border: 'border-gray-200' },
-    video: { label: 'Vídeo',   icon: Youtube,    bg: 'bg-red-50',    text: 'text-red-600',   border: 'border-red-200' },
-    image: { label: 'Imagem',  icon: FileImage,  bg: 'bg-blue-50',   text: 'text-blue-600',  border: 'border-blue-200' },
+    text:  { label: 'Texto',   icon: AlignLeft,  bg: 'bg-gray-100',  text: 'text-gray-600',   border: 'border-gray-200' },
+    video: { label: 'Vídeo',   icon: Youtube,    bg: 'bg-red-50',    text: 'text-red-600',    border: 'border-red-200' },
+    image: { label: 'Imagem',  icon: FileImage,  bg: 'bg-blue-50',   text: 'text-blue-600',   border: 'border-blue-200' },
+    pdf:   { label: 'PDF',     icon: FileText,   bg: 'bg-rose-50',   text: 'text-rose-600',   border: 'border-rose-200' },
+    link:  { label: 'Link',    icon: Link2,      bg: 'bg-emerald-50',text: 'text-emerald-600',border: 'border-emerald-200' },
   }
   const cfg = TYPE_CONFIG[item.type]
   const Icon = cfg.icon
@@ -387,6 +419,97 @@ function InstructionItemRow({
               placeholder="Legenda da imagem (opcional)"
               className="w-full text-xs px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
+          </div>
+        )}
+
+        {item.type === 'pdf' && (
+          <div className="space-y-2">
+            {/* Forma 1: enviar arquivo */}
+            {item.imageUrl ? (
+              <div className="flex items-center gap-2 p-3 border border-rose-200 rounded-lg bg-rose-50">
+                <FileText className="h-5 w-5 text-rose-600 flex-shrink-0" />
+                <span className="text-sm text-rose-700 flex-1 truncate">{item.fileName || 'Arquivo PDF'}</span>
+                <button
+                  type="button"
+                  onClick={onTriggerUpload}
+                  className="p-1.5 bg-white rounded-lg shadow text-gray-600 hover:text-gray-900"
+                  title="Trocar arquivo"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onUpdate({ imageUrl: undefined, storagePath: undefined, fileName: undefined })}
+                  className="p-1.5 bg-white rounded-lg shadow text-red-500 hover:text-red-700"
+                  title="Remover arquivo"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onTriggerUpload}
+                disabled={uploading}
+                className="w-full border-2 border-dashed border-rose-200 rounded-xl py-5 flex flex-col items-center gap-2 hover:border-rose-400 hover:bg-rose-50/50 transition-colors disabled:opacity-50"
+              >
+                {uploading ? (
+                  <div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" />
+                ) : (
+                  <FileText className="h-7 w-7 text-rose-300" />
+                )}
+                <span className="text-sm text-rose-500">
+                  {uploading ? 'Enviando...' : 'Clique para enviar um PDF'}
+                </span>
+              </button>
+            )}
+
+            {/* Forma 2: colar link de PDF (alternativa ao upload) */}
+            {!item.imageUrl && (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-gray-400 whitespace-nowrap">ou cole um link:</span>
+                <input
+                  type="url"
+                  value={item.content}
+                  onChange={e => onUpdate({ content: e.target.value })}
+                  placeholder="https://… (Drive, etc.)"
+                  className="flex-1 text-xs px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-400"
+                />
+              </div>
+            )}
+
+            <input
+              type="text"
+              value={item.fileName || ''}
+              onChange={e => onUpdate({ fileName: e.target.value })}
+              placeholder="Nome exibido pro cliente (opcional)"
+              className="w-full text-xs px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-400"
+            />
+          </div>
+        )}
+
+        {item.type === 'link' && (
+          <div className="space-y-2">
+            <input
+              type="url"
+              value={item.content}
+              onChange={e => onUpdate({ content: e.target.value })}
+              placeholder="https://… (endereço do link)"
+              className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            />
+            <input
+              type="text"
+              value={item.linkLabel || ''}
+              onChange={e => onUpdate({ linkLabel: e.target.value })}
+              placeholder="Texto do botão (ex: Acessar guia de cores)"
+              className="w-full text-xs px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            />
+            {item.content && (
+              <a href={item.content} target="_blank" rel="noopener noreferrer"
+                 className="inline-flex items-center gap-1.5 text-xs text-emerald-600 hover:underline">
+                <Link2 className="h-3.5 w-3.5" /> {item.linkLabel || item.content}
+              </a>
+            )}
           </div>
         )}
       </div>

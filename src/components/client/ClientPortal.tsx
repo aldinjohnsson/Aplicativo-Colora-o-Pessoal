@@ -948,10 +948,12 @@ function ImageUploadFormField({
 
 interface InstructionItem {
   id: string
-  type: 'text' | 'video' | 'image'
+  type: 'text' | 'video' | 'image' | 'pdf' | 'link'
   content: string
   imageUrl?: string
   storagePath?: string
+  fileName?: string
+  linkLabel?: string
 }
 
 interface PhotoCategory {
@@ -1023,6 +1025,88 @@ async function processImage(file: File): Promise<File> {
   })
 }
 
+// ── PDF instruction (visualizador + tela cheia) ──────────────────────────────
+
+function PdfInstruction({ item }: { item: InstructionItem }) {
+  const [fullscreen, setFullscreen] = useState(false)
+  const src = item.imageUrl || item.content
+  if (!src) return null
+  const label = item.fileName || 'Documento PDF'
+  // Google Docs Viewer: renderiza o PDF AJUSTADO À LARGURA, inclusive no mobile
+  // (o visualizador nativo via <object> não ajusta o tamanho no celular).
+  // Requer URL pública — PDFs enviados ficam em bucket público; links colados
+  // precisam ser de acesso público.
+  const viewerUrl = `https://docs.google.com/gview?embedded=true&url=${encodeURIComponent(src)}`
+
+  return (
+    <>
+      <div className="rounded-xl overflow-hidden border border-rose-200 shadow-sm bg-white">
+        <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-rose-500 to-pink-500">
+          <FileText className="h-4 w-4 text-white flex-shrink-0" />
+          <span className="text-sm font-semibold text-white flex-1 truncate">{label}</span>
+        </div>
+
+        {/* Prévia clicável */}
+        <button
+          type="button"
+          onClick={() => setFullscreen(true)}
+          className="relative w-full block group"
+          title="Abrir em tela cheia"
+        >
+          <iframe src={viewerUrl} className="w-full pointer-events-none bg-gray-50" style={{ height: 260 }} title={label} />
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors flex items-end justify-center pb-3">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/95 rounded-full shadow text-xs font-medium text-rose-700">
+              <ZoomIn className="h-3.5 w-3.5" /> Toque para ampliar
+            </span>
+          </div>
+        </button>
+
+        {/* Ações claras */}
+        <div className="flex items-stretch border-t border-rose-100">
+          <button
+            type="button"
+            onClick={() => setFullscreen(true)}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-rose-700 hover:bg-rose-50 transition-colors"
+          >
+            <ZoomIn className="h-4 w-4" /> Ver em tela cheia
+          </button>
+          <a
+            href={src}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors border-l border-rose-100"
+          >
+            <Download className="h-4 w-4" /> Baixar / Abrir
+          </a>
+        </div>
+      </div>
+
+      {/* Modal tela cheia */}
+      {fullscreen && (
+        <div className="fixed inset-0 z-[60] bg-black/80 flex flex-col" onClick={() => setFullscreen(false)}>
+          <div className="flex items-center justify-between px-4 py-3 bg-white shadow" onClick={e => e.stopPropagation()}>
+            <span className="text-sm font-semibold text-gray-800 flex items-center gap-2 min-w-0">
+              <FileText className="h-4 w-4 text-rose-500 flex-shrink-0" />
+              <span className="truncate">{label}</span>
+            </span>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <a href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 px-2 py-1">
+                <ExternalLink className="h-3.5 w-3.5" /> Abrir
+              </a>
+              <button onClick={() => setFullscreen(false)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-hidden bg-gray-100" onClick={e => e.stopPropagation()}>
+            <iframe src={viewerUrl} className="w-full h-full" title={label} />
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 // ── Media item (video or image instruction) ──────────────────────────────────
 
 function MediaItem({ item }: { item: InstructionItem }) {
@@ -1049,6 +1133,21 @@ function MediaItem({ item }: { item: InstructionItem }) {
       <div className="rounded-xl overflow-hidden border border-rose-100 shadow-sm">
         <img src={src} alt="Instrução" className="w-full object-contain max-h-80 bg-gray-50" />
       </div>
+    )
+  }
+
+  if (item.type === 'pdf') {
+    return <PdfInstruction item={item} />
+  }
+
+  if (item.type === 'link') {
+    if (!item.content) return null
+    return (
+      <a href={item.content} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2.5 px-4 py-3 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 transition-colors">
+        <ExternalLink className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+        <span className="text-sm font-medium text-emerald-700 flex-1 truncate">{item.linkLabel || item.content}</span>
+        <ArrowRight className="h-4 w-4 text-emerald-500 flex-shrink-0" />
+      </a>
     )
   }
 
