@@ -728,7 +728,7 @@ export function ClientSignup() {
         )}
 
         <p className="text-center text-xs text-gray-400 pb-4">
-          IA Color · Coloração Pessoal por Marília Santos
+          IA Color · Coloração Pessoal
         </p>
       </div>
     </div>
