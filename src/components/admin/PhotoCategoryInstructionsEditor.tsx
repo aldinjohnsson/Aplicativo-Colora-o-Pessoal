@@ -282,9 +282,13 @@ function InstructionItemRow({
   }
   const cfg = TYPE_CONFIG[item.type]
   const Icon = cfg.icon
+  // Só vídeo e imagem têm miniatura. PDF/link guardam URL em imageUrl mas
+  // não são imagens — renderizar <img> com elas dava o ícone de imagem quebrada.
   const thumb = item.type === 'video'
     ? getYouTubeThumbnail(item.content)
-    : item.imageUrl
+    : item.type === 'image'
+      ? item.imageUrl
+      : null
 
   return (
     <div className={`border ${cfg.border} rounded-xl overflow-hidden bg-white`}>
