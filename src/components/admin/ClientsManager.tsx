@@ -235,6 +235,137 @@ function SafeImage({
   )
 }
 
+// ─── Exibição de fotos do Drive via proxy autenticado ─────────
+// As URLs públicas do Drive (drive.google.com/thumbnail) são instáveis no
+// WebKit/iOS: muitas vezes não carregam no <img> (rate-limit/redirect/cookie)
+// e ficam pretas silenciosamente. Aqui baixamos os bytes pelo /photo-proxy
+// (mesmo caminho confiável já usado por download/áudio/rotação), detectamos
+// HEIC pelos bytes e convertemos quando necessário, servindo um blob: local.
+const __driveSrcCache = new Map<string, string>()
+const __driveSrcInflight = new Map<string, Promise<string>>()
+
+async function __detectHeicFromBytes(blob: Blob): Promise<boolean> {
+  try {
+    const buf = await blob.slice(0, 12).arrayBuffer()
+    const b = new Uint8Array(buf)
+    // 'ftyp' em offset 4 + marca heic/heif/mif1/heix/hevc...
+    if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+      const brand = String.fromCharCode(b[8], b[9], b[10], b[11]).toLowerCase()
+      return /hei|mif1|msf1|heic|heix|hevc|heim|heis|hevm|hevs/.test(brand)
+    }
+  } catch { /* ignora */ }
+  return false
+}
+
+async function loadDriveImageSrc(driveFileId: string): Promise<string> {
+  const cached = __driveSrcCache.get(driveFileId)
+  if (cached) return cached
+  const inflight = __driveSrcInflight.get(driveFileId)
+  if (inflight) return inflight
+
+  const promise = (async () => {
+    let blob = await driveStorage.fetchPhotoBlob(driveFileId)
+    if (await __detectHeicFromBytes(blob)) {
+      const heic2any = (await import('heic2any')).default
+      const result = await heic2any({ blob, toType: 'image/jpeg', quality: 0.9 })
+      blob = (Array.isArray(result) ? result[0] : result) as Blob
+    }
+    const url = URL.createObjectURL(blob)
+    __driveSrcCache.set(driveFileId, url)
+    return url
+  })()
+
+  __driveSrcInflight.set(driveFileId, promise)
+  try {
+    return await promise
+  } finally {
+    __driveSrcInflight.delete(driveFileId)
+  }
+}
+
+/**
+ * Resolve a URL de exibição de uma foto:
+ *  - blob:/data: → usa direto (ex.: já convertido/rotacionado localmente)
+ *  - drive_file_id → baixa pelo proxy (confiável no mobile) + HEIC se preciso
+ *  - senão (legado storage_path) → cai no comportamento antigo (URL pública)
+ */
+function useDrivePhotoSrc(photo?: { url?: string; photo_name?: string; drive_file_id?: string; _blobUrl?: string }) {
+  const directLocal =
+    photo?._blobUrl ||
+    (photo?.url && (photo.url.startsWith('blob:') || photo.url.startsWith('data:')) ? photo.url : undefined)
+
+  const driveId = !directLocal ? photo?.drive_file_id : undefined
+
+  // Legado: sem drive_file_id e sem blob local → usa o hook antigo (URL pública)
+  const legacy = useHeicSafeSrc(
+    !directLocal && !driveId ? photo?.url : undefined,
+    photo?.photo_name
+  )
+
+  const [state, setState] = useState<{ src?: string; loading: boolean; error: boolean }>(() => {
+    if (directLocal) return { src: directLocal, loading: false, error: false }
+    if (driveId && __driveSrcCache.has(driveId)) return { src: __driveSrcCache.get(driveId), loading: false, error: false }
+    if (driveId) return { src: undefined, loading: true, error: false }
+    return { src: legacy.src, loading: legacy.loading, error: legacy.error }
+  })
+
+  useEffect(() => {
+    if (directLocal) { setState({ src: directLocal, loading: false, error: false }); return }
+    if (!driveId) { setState({ src: legacy.src, loading: legacy.loading, error: legacy.error }); return }
+
+    const cached = __driveSrcCache.get(driveId)
+    if (cached) { setState({ src: cached, loading: false, error: false }); return }
+
+    setState({ src: undefined, loading: true, error: false })
+    let cancelled = false
+    loadDriveImageSrc(driveId)
+      .then(url => { if (!cancelled) setState({ src: url, loading: false, error: false }) })
+      .catch(err => {
+        console.error('[useDrivePhotoSrc] falha ao carregar foto do Drive:', driveId, err)
+        if (!cancelled) setState({ src: undefined, loading: false, error: true })
+      })
+    return () => { cancelled = true }
+  }, [directLocal, driveId, legacy.src, legacy.loading, legacy.error])
+
+  return state
+}
+
+/**
+ * <img> resiliente para fotos do Drive. Substitui SafeImage/URL pública nas
+ * miniaturas que têm drive_file_id, garantindo carregamento no mobile.
+ */
+function DrivePhotoImg({
+  photo, className, style, alt, onLoad, onError, decoding,
+}: {
+  photo: { url?: string; photo_name?: string; drive_file_id?: string; _blobUrl?: string }
+  className?: string
+  style?: React.CSSProperties
+  alt?: string
+  onLoad?: React.ReactEventHandler<HTMLImageElement>
+  onError?: React.ReactEventHandler<HTMLImageElement>
+  decoding?: 'sync' | 'async' | 'auto'
+}) {
+  const { src, loading, error } = useDrivePhotoSrc(photo)
+
+  if (loading) {
+    return (
+      <div className={className} style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}>
+        <Loader2 className="h-5 w-5 text-rose-500 animate-spin" />
+      </div>
+    )
+  }
+  if (error || !src) {
+    return (
+      <div className={className} style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e5e7eb' }}>
+        <AlertCircle className="h-5 w-5 text-gray-400" />
+      </div>
+    )
+  }
+  return (
+    <img src={src} alt={alt} className={className} style={style} onLoad={onLoad} onError={onError} decoding={decoding} draggable={false} />
+  )
+}
+
 // ─── Re-encode de áudio gravado → WAV ──────────────────────────────────────
 // O WebM do MediaRecorder não escreve o elemento Duration no header. Um blob:
 // WebM sem duração não toca no Chrome do Android (no desktop e no Safari toca).
@@ -3260,7 +3391,7 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
   }, [prev, next, onClose])
   const photo = photos[index]
-  const mainImage = useHeicSafeSrc(photo?.url, photo?.photo_name)
+  const mainImage = useDrivePhotoSrc(photo)
 
   // ── Drag (1 dedo / mouse) + Pinch (2 dedos) via Pointer Events ──
   // Handlers ficam no container — não na <img> — porque o 2º dedo do pinch
@@ -3478,8 +3609,8 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
         {mainImage.loading ? (
           <div className="text-white text-center px-6">
             <Loader2 className="h-12 w-12 animate-spin mx-auto mb-3" />
-            <p className="text-sm font-medium">Convertendo HEIC...</p>
-            <p className="text-xs text-white/60 mt-1">Fotos do iPhone precisam ser convertidas</p>
+            <p className="text-sm font-medium">Carregando foto...</p>
+            <p className="text-xs text-white/60 mt-1">Baixando do Drive (HEIC do iPhone é convertido)</p>
           </div>
         ) : mainImage.error || !mainImage.src ? (
           <div className="text-white text-center px-6">
@@ -3510,7 +3641,7 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
           <div className="flex gap-1.5 sm:gap-2 justify-center overflow-x-auto pb-1">
             {photos.map((p, i) => (
               <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }} className={`flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden transition-all touch-manipulation ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
-                <SafeImage src={p.url} fileName={p.photo_name} alt={p.photo_name} className="w-full h-full object-cover" />
+                <DrivePhotoImg photo={p} alt={p.photo_name} className="w-full h-full object-cover" />
               </button>
             ))}
           </div>
