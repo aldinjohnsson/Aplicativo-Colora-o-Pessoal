@@ -3559,18 +3559,21 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
 
   return createPortal(
     <div className="fixed inset-0 bg-black/95 flex flex-col" style={{ zIndex: 2147483647 }} onClick={onClose}>
-      <div className="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
-        <p className="text-white text-xs sm:text-sm font-medium truncate max-w-[40vw] sm:max-w-xs">{photo.photo_name}</p>
-        <div className="flex items-center gap-1 sm:gap-2">
-          <button onClick={() => setZoom(z => Math.max(z - 0.5, 0.5))} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomOut className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+      <div className="flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
+        <p className="text-white text-xs sm:text-sm font-medium truncate flex-1 min-w-0">{photo.photo_name}</p>
+
+        {/* Grupo de ações: pode encolher e rolar na horizontal em telas estreitas,
+            assim o botão de fechar (fora deste grupo) nunca é cortado no mobile. */}
+        <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto flex-shrink min-w-0">
+          <button onClick={() => setZoom(z => Math.max(z - 0.5, 0.5))} className="flex-shrink-0 p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomOut className="h-5 w-5 sm:h-4 sm:w-4" /></button>
           <span className="text-white/70 text-xs w-10 text-center hidden sm:block">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(z => Math.min(z + 0.5, 4))} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomIn className="h-5 w-5 sm:h-4 sm:w-4" /></button>
-          <button onClick={handleDownload} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><Download className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          <button onClick={() => setZoom(z => Math.min(z + 0.5, 4))} className="flex-shrink-0 p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><ZoomIn className="h-5 w-5 sm:h-4 sm:w-4" /></button>
+          <button onClick={handleDownload} className="flex-shrink-0 p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><Download className="h-5 w-5 sm:h-4 sm:w-4" /></button>
           {photo?.drive_file_id && (
             <button
               onClick={handleRotate}
               disabled={rotating}
-              className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation disabled:opacity-40"
+              className="flex-shrink-0 p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation disabled:opacity-40"
               title="Girar foto 90° (salva no Drive)"
             >
               {rotating
@@ -3582,15 +3585,17 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
             <button
               onClick={handleDelete}
               disabled={deleting}
-              className="p-2.5 sm:p-2 text-red-400 hover:text-red-300 active:bg-red-500/20 hover:bg-red-500/10 rounded-lg touch-manipulation disabled:opacity-40"
+              className="flex-shrink-0 p-2.5 sm:p-2 text-red-400 hover:text-red-300 active:bg-red-500/20 hover:bg-red-500/10 rounded-lg touch-manipulation disabled:opacity-40"
               title="Excluir foto"
             >
               {deleting ? <Loader2 className="h-5 w-5 sm:h-4 sm:w-4 animate-spin" /> : <Trash2 className="h-5 w-5 sm:h-4 sm:w-4" />}
             </button>
           )}
-          <span className="text-white/40 text-xs px-1">{index + 1}/{photos.length}</span>
-          <button onClick={onClose} className="p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation ml-1"><X className="h-5 w-5" /></button>
+          <span className="text-white/40 text-xs px-1 flex-shrink-0">{index + 1}/{photos.length}</span>
         </div>
+
+        {/* Fechar: fora do grupo, fixo. Nunca encolhe nem sai da tela no mobile. */}
+        <button onClick={onClose} className="flex-shrink-0 p-2.5 sm:p-2 text-white/70 hover:text-white active:bg-white/20 hover:bg-white/10 rounded-lg touch-manipulation"><X className="h-5 w-5" /></button>
       </div>
       <div
         ref={imgContainerRef}
