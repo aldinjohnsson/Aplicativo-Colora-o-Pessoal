@@ -266,6 +266,44 @@ interface RendLine {
 const EMOJI_RE      = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}\u{FE00}-\u{FEFF}]/gu
 const EMOJI_RE_TEST = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}\u{FE00}-\u{FEFF}]/u
 
+// ─── Configuração da página em branco ────────────────────────────────────────
+//
+// Quando blankPageIndex é omitido (undefined), o gerador usa o comportamento
+// legado: templateDoc[0] = capa, templateDoc[1] = página em branco,
+// templateDoc[2] = contracapa — compatível com todos os templates de 3 páginas.
+//
+// Quando definido, o gerador usa blankPageIndex como o índice da página em
+// branco, e todas as páginas antes dela formam a capa, e todas depois formam a
+// contracapa — suportando templates de qualquer número de páginas.
+
+export interface PdfTemplatePageConfig {
+  blankPageIndex?: number  // índice 0-based da página em branco no template
+}
+
+interface ResolvedTemplatePages {
+  coverIndices:  number[]   // páginas da capa (antes da página em branco)
+  blankIndex:    number     // índice da página em branco (usada por cada item)
+  backIndices:   number[]   // páginas da contracapa (depois da página em branco)
+}
+
+function resolveTemplatePages(totalPages: number, config?: PdfTemplatePageConfig): ResolvedTemplatePages {
+  // Sem config ou sem índice explícito → comportamento legado: [0]=capa, [1]=branco, [2..]=contracapa
+  if (config?.blankPageIndex === undefined || config.blankPageIndex === null) {
+    const backStart = Math.min(2, totalPages - 1)
+    const backIndices = totalPages > 2
+      ? Array.from({ length: totalPages - backStart }, (_, i) => backStart + i)
+      : [2]  // legado: assume 3 páginas, índice 2
+    return { coverIndices: [0], blankIndex: 1, backIndices }
+  }
+
+  const blank = Math.max(0, Math.min(config.blankPageIndex, totalPages - 1))
+  const coverIndices = blank > 0 ? Array.from({ length: blank }, (_, i) => i) : [0]
+  const backIndices  = blank < totalPages - 1
+    ? Array.from({ length: totalPages - blank - 1 }, (_, i) => blank + 1 + i)
+    : [totalPages - 1]  // fallback: última página como contracapa
+  return { coverIndices, blankIndex: blank, backIndices }
+}
+
 // ─── Função principal ─────────────────────────────────────────────────────────
 
 export async function generateStylePDF(
@@ -274,6 +312,7 @@ export async function generateStylePDF(
   items:         PdfImageItem[],
   styleConfig?:  PdfStyleConfig,
   collageTitle?: string,
+  pageConfig?:   PdfTemplatePageConfig,
 ): Promise<Uint8Array> {
 
   const templateDoc = await PDFDocument.load(templateBytes)
@@ -285,9 +324,12 @@ export async function generateStylePDF(
     day: '2-digit', month: '2-digit', year: 'numeric',
   })
 
-  // Capa
-  const [coverPage] = await pdf.copyPages(templateDoc, [0])
-  pdf.addPage(coverPage)
+  // Resolve quais índices do template são capa, página em branco e contracapa
+  const { coverIndices, blankIndex, backIndices } = resolveTemplatePages(templateDoc.getPageCount(), pageConfig)
+
+  // Capa (uma ou mais páginas)
+  const coverPages = await pdf.copyPages(templateDoc, coverIndices)
+  coverPages.forEach(p => pdf.addPage(p))
 
   // Pré-carregar imagens
   const imgCache = new Map<string, { image: any; width: number; height: number }>()
@@ -300,7 +342,7 @@ export async function generateStylePDF(
 
   // ── Página de Colagem (todas as fotos juntas) ────────────────────────────────
   if (items.length > 0) {
-    await renderCollagePage(pdf, templateDoc, items, imgCache, clientName, style, collageTitle)
+    await renderCollagePage(pdf, templateDoc, items, imgCache, clientName, style, collageTitle, blankIndex)
   }
 
   // ── Renderizar cada item individualmente ─────────────────────────────────────
@@ -313,15 +355,15 @@ export async function generateStylePDF(
     const isFreeform = layout?.layoutMode === 'freeform'
 
     if (isFreeform) {
-      await renderFreeformItem(pdf, templateDoc, item, layout!, itemStyle, imgEntry, clientName, sectionTitle, dateStr, styleConfig)
+      await renderFreeformItem(pdf, templateDoc, item, layout!, itemStyle, imgEntry, clientName, sectionTitle, dateStr, styleConfig, blankIndex)
     } else {
-      await renderFlowItem(pdf, templateDoc, item, layout, itemStyle, imgEntry, clientName, sectionTitle, dateStr, styleConfig)
+      await renderFlowItem(pdf, templateDoc, item, layout, itemStyle, imgEntry, clientName, sectionTitle, dateStr, styleConfig, blankIndex)
     }
   }
 
-  // Contra-capa
-  const [backPage] = await pdf.copyPages(templateDoc, [2])
-  pdf.addPage(backPage)
+  // Contracapa (uma ou mais páginas)
+  const backPages = await pdf.copyPages(templateDoc, backIndices)
+  backPages.forEach(p => pdf.addPage(p))
 
   return await pdf.save()
 }
@@ -350,6 +392,7 @@ async function renderCollagePage(
   clientName: string,
   style:     ResolvedStyle,
   collageTitle?: string,
+  blankIndex: number = 1,
 ): Promise<void> {
   // Divide os items em páginas de 9
   const pageChunks: PdfImageItem[][] = []
@@ -358,7 +401,7 @@ async function renderCollagePage(
   }
 
   for (let pIdx = 0; pIdx < pageChunks.length; pIdx++) {
-    await renderCollageSinglePage(pdf, templateDoc, pageChunks[pIdx], imgCache, clientName, style, pIdx, pageChunks.length, collageTitle)
+    await renderCollageSinglePage(pdf, templateDoc, pageChunks[pIdx], imgCache, clientName, style, pIdx, pageChunks.length, collageTitle, blankIndex)
   }
 }
 
@@ -372,8 +415,9 @@ async function renderCollageSinglePage(
   pageIdx:   number,
   totalPages:number,
   collageTitle?: string,
+  blankIndex: number = 1,
 ): Promise<void> {
-  const [tpl] = await pdf.copyPages(templateDoc, [1])
+  const [tpl] = await pdf.copyPages(templateDoc, [blankIndex])
   const page  = pdf.addPage(tpl)
 
   const baseTitle = collageTitle ?? 'Simulações'
@@ -545,9 +589,10 @@ async function renderFlowItem(
   sectionTitle: string,
   dateStr: string,
   styleConfig?: PdfStyleConfig,
+  blankIndex: number = 1,
 ) {
   const newContentPage = async (): Promise<PDFPage> => {
-    const [tpl] = await pdf.copyPages(templateDoc, [1])
+    const [tpl] = await pdf.copyPages(templateDoc, [blankIndex])
     const page = pdf.addPage(tpl)
     drawPageHeader(page, sectionTitle, clientName, itemStyle)
     return page
@@ -750,6 +795,7 @@ async function renderFreeformItem(
   sectionTitle: string,
   dateStr: string,
   styleConfig?: PdfStyleConfig,
+  blankIndex: number = 1,
 ) {
   const blocks      = layout.blocks ?? []
   const photoConfig = layout.photo ?? { x: MG, y: 72, w: IMG_COL_W, h: IMG_DEFAULT_H }
@@ -868,7 +914,7 @@ async function renderFreeformItem(
   }
 
   for (let pi = 0; pi < totalPages; pi++) {
-    const [tpl] = await pdf.copyPages(templateDoc, [1])
+    const [tpl] = await pdf.copyPages(templateDoc, [blankIndex])
     const page  = pdf.addPage(tpl)
     drawPageHeader(page, sectionTitle, clientName, itemStyle)
 
@@ -1274,7 +1320,7 @@ async function embedImage(pdf: PDFDocument, dataUrl: string): Promise<{ image: a
 
 // ─── Carregamento do template + settings ─────────────────────────────────────
 
-interface LoadedTemplate { templateBytes: ArrayBuffer; style?: PdfStyleConfig }
+interface LoadedTemplate { templateBytes: ArrayBuffer; style?: PdfStyleConfig; blankPageIndex?: number }
 
 async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
   // IMPORTANTE: filtrar SEMPRE por admin_id.
@@ -1296,7 +1342,7 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
     .eq('admin_id', user.id)   // ← CORRIGIDO: filtro explícito por admin
     .maybeSingle()
 
-  const tplContent = tplRow?.content as { pdfTemplateBase64?: string } | null
+  const tplContent = tplRow?.content as { pdfTemplateBase64?: string; blankPageIndex?: number } | null
   const settings   = settingsRow?.content as Record<string, any> | null
 
   const base64: string | undefined =
@@ -1309,7 +1355,11 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
   const bytes = new Uint8Array(binaryStr.length)
   for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
 
-  return { templateBytes: bytes.buffer, style: settings?.pdfStyle as PdfStyleConfig | undefined }
+  return {
+    templateBytes: bytes.buffer,
+    style: settings?.pdfStyle as PdfStyleConfig | undefined,
+    blankPageIndex: tplContent?.blankPageIndex,
+  }
 }
 
 // ─── Build (Blob) ─────────────────────────────────────────────────────────────
@@ -1322,8 +1372,9 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
 export async function buildStylePdfBlob({
   clientName, items, styleOverride, collageTitle,
 }: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig; collageTitle?: string }): Promise<Blob> {
-  const { templateBytes, style } = await loadTemplateFromSettings()
-  const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style, collageTitle)
+  const { templateBytes, style, blankPageIndex } = await loadTemplateFromSettings()
+  const pageConfig: PdfTemplatePageConfig = { blankPageIndex }
+  const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style, collageTitle, pageConfig)
   return new Blob([pdfBytes], { type: 'application/pdf' })
 }
 

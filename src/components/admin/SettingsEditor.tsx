@@ -120,6 +120,11 @@ interface AppSettings {
   pdfTemplateUrl: string
   pdfTemplateBase64?: string
   pdfTemplateFileName?: string
+  // Índice (0-based) da página do PDF modelo que é a "página em branco" onde
+  // a IA insere o conteúdo. undefined = comportamento padrão legado (página 1,
+  // ou seja, a segunda de um PDF de 3 páginas: capa / em branco / contracapa).
+  // Só fica definido quando o usuário escolhe explicitamente no seletor.
+  pdfTemplateBlankPageIndex?: number
   pdfStyle?: PdfStyleConfig
   adminEmail: string
   resendApiKey: string
@@ -234,16 +239,37 @@ const settingsStorageService = {
   // ⚠ NOME DO CAMPO: 'pdfTemplateBase64' (não 'pdfBase64'). Esse é o nome
   // que o templatePDFGenerator.loadTemplateFromSettings() procura ao ler
   // tplRow.content. Mudar aqui sem mudar lá quebra a geração do dossiê.
-  async savePdfTemplate(base64: string, fileName: string) {
+  //
+  // blankPageIndex é opcional — quando omitido, o templatePDFGenerator usa o
+  // default legado (página índice 1, ou seja, a 2ª de 3: capa/em branco/
+  // contracapa). Só é definido quando o usuário escolhe explicitamente a
+  // página no seletor visual (PdfPageSelector), preservando o comportamento
+  // de todo template já existente.
+  async savePdfTemplate(base64: string, fileName: string, blankPageIndex?: number) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
-    await saveOrUpdate('pdf_template', { pdfTemplateBase64: base64, fileName }, user.id)
+    const content: Record<string, any> = { pdfTemplateBase64: base64, fileName }
+    if (typeof blankPageIndex === 'number') content.blankPageIndex = blankPageIndex
+    await saveOrUpdate('pdf_template', content, user.id)
   },
 
   async deletePdfTemplate() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada')
     await deleteRow('pdf_template', user.id)
+  },
+
+  // Atualiza só o índice da página em branco, sem reenviar o base64 do PDF
+  // (que já está salvo). Usado quando o usuário troca a seleção no
+  // PdfPageSelector sem trocar o arquivo.
+  async updatePdfTemplateBlankPageIndex(blankPageIndex: number) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    const { data: row } = await supabase
+      .from('admin_content').select('content')
+      .eq('admin_id', user.id).eq('type', 'pdf_template').maybeSingle()
+    const current = (row?.content as Record<string, any>) ?? {}
+    await saveOrUpdate('pdf_template', { ...current, blankPageIndex }, user.id)
   },
 
   async getSettings(): Promise<AppSettings> {
@@ -262,6 +288,7 @@ const settingsStorageService = {
       pdfTemplateUrl: '',
       pdfTemplateBase64: '',
       pdfTemplateFileName: '',
+      pdfTemplateBlankPageIndex: undefined,
       pdfStyle: PDF_STYLE_DEFAULTS,
       adminEmail: '',
       resendApiKey: '',
@@ -325,6 +352,9 @@ const settingsStorageService = {
         aiCompositionFinalBase64:   '',
         // fileName de cada PDF vem do seu row próprio, com fallback legado no row settings
         pdfTemplateFileName:        (pdfTemplateRow?.content as any)?.fileName        ?? (s as any)?.pdfTemplateFileName        ?? '',
+        // blankPageIndex só existe no row próprio (feature nova) — sem fallback legado,
+        // pois sua ausência É o comportamento legado (default de 3 páginas fixas).
+        pdfTemplateBlankPageIndex:  (pdfTemplateRow?.content as any)?.blankPageIndex  ?? undefined,
         aiCompositionCoverFileName: (coverRow?.content        as any)?.fileName        ?? (s as any)?.aiCompositionCoverFileName ?? '',
         aiCompositionFinalFileName: (finalRow?.content        as any)?.fileName        ?? (s as any)?.aiCompositionFinalFileName ?? '',
       }
@@ -508,16 +538,187 @@ function OpenAiKeyCard({
   )
 }
 
+// ── Seletor visual de páginas do PDF modelo ─────────────────────────────────
+//
+// Renderiza uma miniatura de cada página do PDF (via pdfjs-dist, carregado
+// dinamicamente — só baixa essa lib pra quem realmente abre o seletor) e
+// deixa o usuário clicar na que será a "página em branco" onde a IA insere
+// o conteúdo do dossiê. Tudo antes dela vira capa; tudo depois, contracapa.
+//
+// pdfjs-dist é importado via import() dinâmico: a maioria dos admins nunca
+// abre esse seletor (o default de 3 páginas já funciona sem ele), então não
+// faz sentido pagar o custo desse bundle pra todo mundo.
+let pdfjsLibPromise: Promise<any> | null = null
+function loadPdfJs(): Promise<any> {
+  if (!pdfjsLibPromise) {
+    pdfjsLibPromise = import('pdfjs-dist').then(mod => {
+      // unpkg serve qualquer versão do npm incluindo 5.x; cdnjs só tem até 4.x
+      mod.GlobalWorkerOptions.workerSrc =
+        `https://unpkg.com/pdfjs-dist@${mod.version}/build/pdf.worker.min.mjs`
+      return mod
+    })
+  }
+  return pdfjsLibPromise
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const raw = base64.includes(',') ? base64.split(',')[1] : base64
+  const binaryStr = atob(raw)
+  const bytes = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+  return bytes
+}
+
+function PdfPageSelector({
+  pdfBase64, selectedIndex, onSelect, onClose,
+}: {
+  pdfBase64: string
+  selectedIndex: number | undefined
+  onSelect: (index: number) => void
+  onClose: () => void
+}) {
+  const { theme } = useTheme()
+  const [thumbs, setThumbs] = useState<string[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // Seleção provisória — só é confirmada (chama onSelect) ao clicar "Usar esta página".
+  const [pending, setPending] = useState<number>(selectedIndex ?? 1)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const pdfjsLib = await loadPdfJs()
+        const bytes = base64ToUint8Array(pdfBase64)
+        const doc = await pdfjsLib.getDocument({ data: bytes }).promise
+        const renders: string[] = []
+        for (let i = 1; i <= doc.numPages; i++) {
+          const page = await doc.getPage(i)
+          const viewport = page.getViewport({ scale: 0.5 })
+          const canvas = document.createElement('canvas')
+          canvas.width = viewport.width
+          canvas.height = viewport.height
+          const ctx = canvas.getContext('2d')
+          if (!ctx) continue
+          await page.render({ canvasContext: ctx, viewport }).promise
+          renders.push(canvas.toDataURL('image/png'))
+        }
+        if (!cancelled) setThumbs(renders)
+      } catch (err: any) {
+        console.error('[PdfPageSelector] falha ao renderizar páginas:', err)
+        if (!cancelled) setError('Não foi possível abrir o preview do PDF.')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [pdfBase64])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }} onClick={onClose}>
+      <div
+        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl shadow-xl"
+        style={{ background: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 sticky top-0" style={{ borderBottom: `1px solid ${theme.border}`, background: theme.cardBg }}>
+          <div>
+            <h3 className="text-base font-semibold" style={{ color: theme.text }}>Escolha a página em branco</h3>
+            <p className="text-xs mt-0.5" style={{ color: theme.text2 }}>
+              Clique na página onde a IA deve inserir o conteúdo do dossiê. As páginas antes dela formam a capa; as depois, a contracapa.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg flex-shrink-0" style={{ color: theme.text2 }}>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-5">
+          {error && (
+            <div className="flex items-center gap-2 text-sm rounded-xl p-3" style={{ background: 'color-mix(in srgb, #ef4444 10%, transparent)', color: '#ef4444' }}>
+              <AlertCircle className="h-4 w-4 flex-shrink-0" /> {error}
+            </div>
+          )}
+
+          {!thumbs && !error && (
+            <div className="flex flex-col items-center gap-3 py-12">
+              <Loader2 className="h-6 w-6 animate-spin" style={{ color: '#d946ef' }} />
+              <p className="text-sm" style={{ color: theme.text2 }}>Carregando páginas do PDF…</p>
+            </div>
+          )}
+
+          {thumbs && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              {thumbs.map((src, idx) => {
+                const isPending = pending === idx
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => setPending(idx)}
+                    className="relative rounded-lg overflow-hidden text-left transition-all"
+                    style={{
+                      border: isPending ? '2px solid #d946ef' : `1px solid ${theme.border}`,
+                      boxShadow: isPending ? '0 0 0 3px color-mix(in srgb, #d946ef 25%, transparent)' : 'none',
+                    }}
+                  >
+                    <img src={src} alt={`Página ${idx + 1}`} className="w-full block" style={{ background: '#fff' }} />
+                    <div
+                      className="absolute bottom-0 left-0 right-0 px-2 py-1 text-xs font-medium text-center"
+                      style={{
+                        background: isPending ? '#d946ef' : 'rgba(0,0,0,0.55)',
+                        color: '#fff',
+                      }}
+                    >
+                      {idx === 0 ? 'Página 1 (capa atual)' : `Página ${idx + 1}`}
+                      {isPending ? ' ✓' : ''}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-4 sticky bottom-0" style={{ borderTop: `1px solid ${theme.border}`, background: theme.cardBg }}>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl text-sm font-medium"
+            style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={() => onSelect(pending)}
+            disabled={false}
+            className="px-4 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-50"
+            style={{ background: 'linear-gradient(135deg, #d946ef, #ec4899)' }}
+          >
+            Usar esta página
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── PDF Modelo (reusado) ────────────────────────────────────────────────────
 
 function PdfTemplateSection({
-  currentFileName, onSave,
+  currentFileName, currentBlankPageIndex, onSave, onSelectBlankPageIndex,
 }: {
   currentFileName: string
+  currentBlankPageIndex?: number
   onSave: (base64: string, fileName: string) => void | Promise<void>
+  // Chamado quando o usuário escolhe a página no seletor visual, SEM reenviar
+  // o PDF (o arquivo já está salvo). Quando omitido, a opção "Escolher página"
+  // não aparece — usado pelo caller que ainda não plugou a persistência.
+  onSelectBlankPageIndex?: (index: number) => void | Promise<void>
 }) {
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [showSelector, setShowSelector] = useState(false)
+  // Base64 do PDF atualmente carregado, só em memória — usado pra alimentar o
+  // seletor de páginas sem precisar buscar o blob de novo no banco se o
+  // usuário acabou de fazer upload nesta mesma sessão.
+  const [lastUploadedBase64, setLastUploadedBase64] = useState<string | null>(null)
+  const [fetchingPreview, setFetchingPreview] = useState(false)
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -534,6 +735,7 @@ function PdfTemplateSection({
       // onSave agora é async (salva no Supabase). Sem await, o spinner some
       // antes do save real terminar e erros caem em unhandled-rejection.
       await onSave(base64, file.name)
+      setLastUploadedBase64(base64)
       setStatus('saved')
       setTimeout(() => setStatus('idle'), 3000)
     } catch (err: any) {
@@ -548,10 +750,33 @@ function PdfTemplateSection({
     setSaving(true)
     try {
       await onSave('', '')
+      setLastUploadedBase64(null)
     } catch (err: any) {
       console.error('[PdfTemplateSection] delete falhou:', err)
       alert('Erro ao remover PDF: ' + (err?.message || err))
     } finally { setSaving(false) }
+  }
+
+  // Busca o base64 do PDF já salvo (caso o usuário não tenha feito upload
+  // nesta sessão) só quando ele realmente abre o seletor — evita baixar o
+  // blob inteiro a cada carregamento da tela de configurações.
+  const handleOpenSelector = async () => {
+    if (lastUploadedBase64) { setShowSelector(true); return }
+    setFetchingPreview(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+      const { data } = await supabase
+        .from('admin_content').select('content')
+        .eq('admin_id', user.id).eq('type', 'pdf_template').maybeSingle()
+      const base64 = (data?.content as any)?.pdfTemplateBase64
+      if (!base64) throw new Error('PDF modelo não encontrado.')
+      setLastUploadedBase64(base64)
+      setShowSelector(true)
+    } catch (err: any) {
+      console.error('[PdfTemplateSection] falha ao buscar PDF p/ preview:', err)
+      alert('Erro ao abrir o preview do PDF: ' + (err?.message || err))
+    } finally { setFetchingPreview(false) }
   }
 
   const { theme } = useTheme()
@@ -572,7 +797,7 @@ function PdfTemplateSection({
 
       <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
-          Envie um PDF com <strong>3 páginas</strong>: uma capa, uma página em branco com o fundo nas suas cores (será onde a IA insere o conteúdo do dossiê) e uma contracapa. A IA usa esse modelo como base e adiciona automaticamente as informações capilares de cada cliente na página do meio.
+          Envie um PDF com a sua capa, contracapa e (opcionalmente) quantas páginas quiser entre elas. Por padrão usamos a <strong>2ª página</strong> como "página em branco" — onde a IA insere o conteúdo do dossiê — mas você pode escolher outra qualquer depois do upload.
         </p>
 
         {currentFileName ? (
@@ -583,8 +808,22 @@ function PdfTemplateSection({
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium" style={{ color: theme.text }}>PDF modelo carregado</p>
               <p className="text-xs truncate" style={{ color: theme.text2 }}>{currentFileName}</p>
+              <p className="text-xs mt-0.5" style={{ color: theme.text3 }}>
+                Página em branco: {typeof currentBlankPageIndex === 'number' ? `página ${currentBlankPageIndex + 1}` : 'página 2 (padrão)'}
+              </p>
             </div>
             <div className="flex gap-2 flex-shrink-0 ml-auto">
+              {onSelectBlankPageIndex && (
+                <button
+                  onClick={handleOpenSelector}
+                  disabled={fetchingPreview}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-60"
+                  style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}
+                >
+                  {fetchingPreview ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
+                  Escolher página
+                </button>
+              )}
               <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text2 }}>
                 <Upload className="h-3.5 w-3.5" />
                 {saving ? 'Salvando...' : 'Trocar'}
@@ -620,6 +859,23 @@ function PdfTemplateSection({
           </div>
         )}
       </div>
+
+      {showSelector && lastUploadedBase64 && (
+        <PdfPageSelector
+          pdfBase64={lastUploadedBase64}
+          selectedIndex={currentBlankPageIndex}
+          onClose={() => setShowSelector(false)}
+          onSelect={async (index) => {
+            setShowSelector(false)
+            try {
+              await onSelectBlankPageIndex?.(index)
+            } catch (err: any) {
+              console.error('[PdfTemplateSection] falha ao salvar página escolhida:', err)
+              alert('Erro ao salvar a página escolhida: ' + (err?.message || err))
+            }
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1127,6 +1383,7 @@ export default function SettingsEditor() {
 
         <PdfTemplateSection
           currentFileName={settings.pdfTemplateFileName || ''}
+          currentBlankPageIndex={settings.pdfTemplateBlankPageIndex}
           onSave={async (base64, fileName) => {
             try {
               const { data: { user } } = await supabase.auth.getUser()
@@ -1147,6 +1404,10 @@ export default function SettingsEditor() {
             } catch (e: any) {
               alert('Erro ao salvar PDF modelo: ' + e.message)
             }
+          }}
+          onSelectBlankPageIndex={async (index) => {
+            await settingsStorageService.updatePdfTemplateBlankPageIndex(index)
+            setSettings(prev => ({ ...prev, pdfTemplateBlankPageIndex: index }))
           }}
         />
 
@@ -1320,6 +1581,7 @@ export default function SettingsEditor() {
         {/* PDF Modelo */}
         <PdfTemplateSection
           currentFileName={settings.pdfTemplateFileName || ''}
+          currentBlankPageIndex={settings.pdfTemplateBlankPageIndex}
           onSave={async (base64, fileName) => {
             try {
               const { data: { user } } = await supabase.auth.getUser()
@@ -1338,6 +1600,10 @@ export default function SettingsEditor() {
             } catch (e: any) {
               alert('Erro ao salvar PDF modelo: ' + e.message)
             }
+          }}
+          onSelectBlankPageIndex={async (index) => {
+            await settingsStorageService.updatePdfTemplateBlankPageIndex(index)
+            setSettings(prev => ({ ...prev, pdfTemplateBlankPageIndex: index }))
           }}
         />
 
@@ -1685,6 +1951,7 @@ export default function SettingsEditor() {
 
       <PdfTemplateSection
         currentFileName={settings.pdfTemplateFileName || ''}
+        currentBlankPageIndex={settings.pdfTemplateBlankPageIndex}
         onSave={async (base64, fileName) => {
           try {
             const { data: { user } } = await supabase.auth.getUser()
@@ -1703,6 +1970,10 @@ export default function SettingsEditor() {
           } catch (e: any) {
             alert('Erro ao salvar PDF modelo: ' + e.message)
           }
+        }}
+        onSelectBlankPageIndex={async (index) => {
+          await settingsStorageService.updatePdfTemplateBlankPageIndex(index)
+          setSettings(prev => ({ ...prev, pdfTemplateBlankPageIndex: index }))
         }}
       />
 
