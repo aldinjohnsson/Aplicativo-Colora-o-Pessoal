@@ -13,6 +13,30 @@ import { documentsService } from './documents/lib/documentsService'
 import { REF_CATEGORIES } from './documents/prompts/refCategories'
 import { billingService } from '../../lib/billingService'
 
+// ─── HEIC detection (mesma lógica de ClientsManager.tsx) ────────────────
+// A OpenAI recusa HEIC/HEIF mesmo quando o arquivo tem mime/extensão .jpg
+// (comum em fotos de iPhone). Detectamos pelos magic bytes (caixa ISOBMFF
+// 'ftyp' + brand heic/heif) em vez de confiar no Blob.type declarado, e
+// convertemos para JPEG antes de enviar à Edge Function.
+async function isHeicBlob(blob: Blob): Promise<boolean> {
+  try {
+    const buf = await blob.slice(0, 12).arrayBuffer()
+    const b = new Uint8Array(buf)
+    if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+      const brand = String.fromCharCode(b[8], b[9], b[10], b[11]).toLowerCase()
+      return /hei|mif1|msf1|heic|heix|hevc|heim|heis|hevm|hevs/.test(brand)
+    }
+  } catch { /* ignora */ }
+  return false
+}
+
+async function ensureNotHeic(blob: Blob): Promise<Blob> {
+  if (!(await isHeicBlob(blob))) return blob
+  const heic2any = (await import('heic2any')).default
+  const result = await heic2any({ blob, toType: 'image/jpeg', quality: 0.9 })
+  return (Array.isArray(result) ? result[0] : result) as Blob
+}
+
 interface AIPromptConfigProps {
   clientId: string
   clientName: string
@@ -621,6 +645,18 @@ function StandardizeModal({ clientId, type, photo, onClose, onDone }: Standardiz
         throw new Error('Foto sem origem válida')
       }
 
+      // 1.5 Detectar HEIC pelos bytes (independente do mime declarado) e
+      // converter para JPEG — a OpenAI rejeita HEIC com invalid_image_file,
+      // mesmo quando o arquivo tem extensão/mime .jpg (caso comum de iPhone).
+      if (await isHeicBlob(photoBlob)) {
+        setProgress('Convertendo HEIC…')
+        try {
+          photoBlob = await ensureNotHeic(photoBlob)
+        } catch {
+          throw new Error('Não foi possível converter a foto (formato HEIC). Tente reenviar a foto em JPEG.')
+        }
+      }
+
       // 2. Converter para base64 para enviar à API
       setProgress('Preparando imagem…')
       const base64Photo = await new Promise<string>((res, rej) => {
@@ -635,6 +671,13 @@ function StandardizeModal({ clientId, type, photo, onClose, onDone }: Standardiz
         ? prompt.parts[0].prompt
         : ''
       if (!promptText) throw new Error('O prompt não tem texto definido.')
+
+      // DEBUG TEMP: confirmar o que está realmente sendo enviado (remover depois)
+      try {
+        const dbgBuf = await photoBlob.slice(0, 12).arrayBuffer()
+        const dbgBytes = Array.from(new Uint8Array(dbgBuf)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        console.log('[aprimorar-foto][DEBUG] blob.type=', photoBlob.type, 'size=', photoBlob.size, 'magicBytes=', dbgBytes, 'promptId=', prompt.id, 'compositionId=', `ref_standardize_${type.id}`)
+      } catch (e) { console.log('[aprimorar-foto][DEBUG] falha ao ler magic bytes', e) }
 
       // 4. Chamar a Edge Function generate-tag-image (modo standalone)
       setProgress('Enviando para a IA… (pode levar até 30s)')
@@ -660,6 +703,7 @@ function StandardizeModal({ clientId, type, photo, onClose, onDone }: Standardiz
       })
       if (!resp.ok) {
         const j = await resp.json().catch(() => ({}))
+        console.log('[aprimorar-foto][DEBUG] resposta de erro da edge function:', resp.status, j)
         throw new Error(j.error || `Erro da API: HTTP ${resp.status}`)
       }
       const result = await resp.json() as { success?: boolean; imageBase64?: string; imageMime?: string; error?: string }

@@ -3709,7 +3709,7 @@ function PhotoThumb({ photo, onClick }: { photo: any; onClick: () => void }) {
 }
 
 // ─── Photos View ──────────────────────────────────────────────────────────
-function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosChange }: { clientId: string; photos: any[]; photoCategories: any[]; clientToken: string; onPhotosChange?: () => void }) {
+function PhotosView({ clientId, photos, photoCategories, clientToken, clientName, onPhotosChange }: { clientId: string; photos: any[]; photoCategories: any[]; clientToken: string; clientName?: string; onPhotosChange?: () => void }) {
   const { theme: t } = useTheme()
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -3860,27 +3860,55 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
   const photosByCat: Record<string, any[]> = {}
   const uncategorized: any[] = []
   photosWithUrls.forEach(p => { if (p.category_id) { if (!photosByCat[p.category_id]) photosByCat[p.category_id] = []; photosByCat[p.category_id].push(p) } else uncategorized.push(p) })
-  const downloadAll = async (catPhotos: any[], label: string) => {
+  const downloadZip = async (groups: { label: string; photos: any[] }[], zipName: string, busyKey: string) => {
     if (downloadingAll) return
-    setDownloadingAll(label)
+    setDownloadingAll(busyKey)
     try {
       const JSZip = (await import('jszip')).default
       const zip = new JSZip()
-      const folder = zip.folder(label) ?? zip
+      const failed: string[] = []
+      let totalPhotos = 0
+
       await Promise.all(
-        catPhotos.map(async (p) => {
-          try {
-            const res = await fetch(p.url)
-            const blob = await res.blob()
-            folder.file(p.photo_name, blob)
-          } catch { /* pula foto com erro */ }
+        groups.map(async ({ label, photos }) => {
+          const folder = zip.folder(label) ?? zip
+          await Promise.all(
+            photos.map(async (p) => {
+              totalPhotos++
+              try {
+                // Fotos do Drive: usa o proxy autenticado da Edge Function, igual
+                // ao handleDownload do lightbox. fetch() direto na URL do Drive
+                // não funciona — sem header CORS, falha silenciosa e o ZIP sai vazio.
+                let blob: Blob
+                if (p.drive_file_id) {
+                  blob = await driveStorage.fetchPhotoBlob(p.drive_file_id)
+                } else {
+                  const res = await fetch(p.url)
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                  blob = await res.blob()
+                }
+                folder.file(p.photo_name || `foto-${p.id || Math.random().toString(36).slice(2)}`, blob)
+              } catch (e) {
+                console.error('[downloadZip] falha ao baixar foto:', label, p.photo_name, e)
+                failed.push(`${label}/${p.photo_name || 'foto sem nome'}`)
+              }
+            })
+          )
         })
       )
+
+      if (failed.length === totalPhotos) {
+        throw new Error('Nenhuma foto pôde ser baixada (todas falharam)')
+      }
+      if (failed.length > 0) {
+        console.warn(`[downloadZip] ${failed.length} de ${totalPhotos} fotos falharam:`, failed)
+      }
+
       const blob = await zip.generateAsync({ type: 'blob' })
       const blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = blobUrl
-      a.download = `${label}.zip`
+      a.download = `${zipName}.zip`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -3890,6 +3918,21 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
     } finally {
       setDownloadingAll(null)
     }
+  }
+
+  const downloadAll = (catPhotos: any[], label: string) =>
+    downloadZip([{ label, photos: catPhotos }], label, label)
+
+  const downloadAllCategories = () => {
+    const groups: { label: string; photos: any[] }[] = []
+    photoCategories.forEach(cat => {
+      const catPhotos = photosByCat[cat.id] || []
+      if (catPhotos.length > 0) groups.push({ label: cat.title, photos: catPhotos })
+    })
+    if (uncategorized.length > 0) groups.push({ label: 'Fotos sem categoria', photos: uncategorized })
+    if (groups.length === 0) return
+    const zipName = `Fotos - ${clientName || 'Cliente'}`
+    downloadZip(groups, zipName, '__ALL__')
   }
   const hasPhotos = photosWithUrls.length > 0
 
@@ -3948,6 +3991,24 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, onPhotosCh
             </Btn>
           </div>
         </div>
+
+        {/* Baixar tudo — só faz sentido com mais de uma categoria com fotos */}
+        {(photoCategories.filter(cat => (photosByCat[cat.id] || []).length > 0).length + (uncategorized.length > 0 ? 1 : 0)) > 1 && (
+          <div className="rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+            <div className="flex items-center gap-4 flex-1 min-w-0">
+              <div className="w-12 h-12 bg-violet-50 rounded-xl flex items-center justify-center flex-shrink-0">
+                <Download className="h-6 w-6 text-violet-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="font-semibold truncate" style={{ color: t.text }}>Baixar todas as fotos</p>
+                <p className="text-sm mt-0.5" style={{ color: t.text3 }}>{photosWithUrls.length} foto{photosWithUrls.length !== 1 ? 's' : ''} em todas as categorias, organizadas em pastas</p>
+              </div>
+            </div>
+            <Btn variant="primary" size="sm" onClick={downloadAllCategories} loading={downloadingAll === '__ALL__'} disabled={downloadingAll !== null} className="flex-shrink-0">
+              <Download className="h-3.5 w-3.5" /> Baixar Tudo (ZIP)
+            </Btn>
+          </div>
+        )}
 
         {/* Cards por categoria */}
         {photoCategories.map(cat => {
@@ -5256,7 +5317,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
           {tab === 'photos' && (
             <div className="space-y-4">
-              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} clientToken={client.token} onPhotosChange={load} />
+              <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} clientToken={client.token} clientName={client.full_name} onPhotosChange={load} />
 
               {/* Zona de limpeza — visível apenas para clientes concluídos */}
               {client.status === 'completed' && (

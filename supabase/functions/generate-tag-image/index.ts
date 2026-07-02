@@ -4,6 +4,8 @@
 // com base em um prompt salvo + uma foto da galeria do cliente.
 //
 // COBRANÇA (novo): toda imagem aqui é OpenAI. O guard de billing decide:
+//   • super_admin → SEMPRE usa a CHAVE GERAL (secret), sem cota, sem linha
+//                    em admin_billing e sem precisar de chave própria.
 //   • prepaid  → reserva 1 crédito na cota e usa a CHAVE GERAL (secret).
 //                A chave nunca vai pro front; se a cota acabou → 402.
 //   • postpaid → não consome cota e usa a chave do próprio admin (como hoje).
@@ -28,7 +30,8 @@ export class QuotaError extends Error {
 }
 
 export interface BillingDecision {
-  mode: 'prepaid' | 'postpaid'
+  /** 'unmetered' = super_admin: chave geral, sem cota, sem reserva/estorno. */
+  mode: 'prepaid' | 'postpaid' | 'unmetered'
   remaining?: number
   /** Chave a usar na chamada ao provedor. */
   apiKey: string
@@ -37,21 +40,33 @@ export interface BillingDecision {
 
 /**
  * Reserva `count` crédito(s) ANTES de gerar e resolve qual chave usar.
+ *  • super_admin → sempre chave geral, sem RPC de cota (não tem linha em
+ *                  admin_billing — o próprio SuperAdminPanel esconde esse
+ *                  controle pra esse role).
  *  • prepaid  → consome cota + chave geral (secret da edge)
  *  • postpaid → não consome cota + chave do próprio admin (admin_content)
  * Lança QuotaError se a cota pré-paga estourou.
  *
  * @param admin  cliente service_role JÁ existente na edge
  * @param adminId  user.id JÁ verificado pela edge
+ * @param role  role do admin (admin_users.role) — usado só pro atalho do super_admin
  */
 export async function reserveAndResolveKey(opts: {
   admin: SupabaseClient
   adminId: string
   provider: Provider
+  role?: string
   count?: number
 }): Promise<BillingDecision> {
-  const { admin, adminId, provider } = opts
+  const { admin, adminId, provider, role } = opts
   const count = opts.count ?? 1
+
+  // ── Super admin: sempre chave geral, sem cota, sem chave própria ──────
+  if (role === 'super_admin') {
+    const general = generalKey(provider)
+    if (!general) throw new Error('GENERAL_KEY_NOT_CONFIGURED')
+    return { mode: 'unmetered', apiKey: general, keySource: 'general' }
+  }
 
   const { data, error } = await admin.rpc('consume_generation_quota', {
     p_admin_id: adminId, p_provider: provider, p_count: count,
@@ -69,13 +84,21 @@ export async function reserveAndResolveKey(opts: {
     return { mode, remaining: (data as any).remaining, apiKey: general, keySource: 'general' }
   }
 
-  // postpaid → chave do próprio admin (mesmo lugar de hoje), com fallback env
-  // só pro OpenAI (mantém o comportamento atual e não quebra ninguém).
-  const { data: row } = await admin.from('admin_content').select('content')
-    .eq('admin_id', adminId).eq('type', 'settings').maybeSingle()
-
+  // postpaid → chave do próprio admin. Vive no row 'api_keys' (separado do
+  // 'settings' por segurança); fallback pro 'settings' durante a transição,
+  // e fallback env só pro OpenAI (mantém o comportamento atual).
   const field = provider === 'openai' ? 'openaiApiKey' : 'geminiApiKey'
-  const own = (row?.content as any)?.[field]
+  let own: unknown
+  {
+    const { data: kRow } = await admin.from('admin_content').select('content')
+      .eq('admin_id', adminId).eq('type', 'api_keys').maybeSingle()
+    own = (kRow?.content as any)?.[field]
+    if (!(typeof own === 'string' && own.trim())) {
+      const { data: sRow } = await admin.from('admin_content').select('content')
+        .eq('admin_id', adminId).eq('type', 'settings').maybeSingle()
+      own = (sRow?.content as any)?.[field]
+    }
+  }
   if (typeof own === 'string' && own.trim()) {
     return { mode, apiKey: own.trim(), keySource: 'admin' }
   }
@@ -147,6 +170,48 @@ function safeSlug(s: string, max = 60): string {
     .slice(0, max) || 'x'
 }
 
+// ─── Sniff de formato real da imagem (magic bytes) ──────────────────────
+// A OpenAI (/v1/images/edits) devolve "invalid_image_file" tanto para HEIC
+// quanto para qualquer imagem cujo conteúdo real não bate com o que foi
+// declarado (mime/extensão). Aqui detectamos pelos bytes reais em vez de
+// confiar no photo_type do banco ou em valores hardcoded.
+type ImgFmt = 'png' | 'jpeg' | 'webp' | 'gif' | 'heic' | 'unknown'
+
+function sniffImageFormat(bytes: Uint8Array): ImgFmt {
+  if (bytes.length < 12) return 'unknown'
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'png'
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg'
+  if (
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return 'webp'
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return 'gif'
+  // ISOBMFF 'ftyp' box no offset 4 + brand heic/heif/mif1/...
+  if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]).toLowerCase()
+    if (/hei|mif1|msf1|heic|heix|hevc|heim|heis|hevm|hevs/.test(brand)) return 'heic'
+  }
+  return 'unknown'
+}
+
+/**
+ * Decodifica e reconstrói a imagem como PNG "de verdade" via imagescript.
+ * Isso resolve casos que o sniff de magic bytes não pega: JPEG em CMYK
+ * (a OpenAI só aceita RGB), perfis de cor incomuns, ou arquivo com header
+ * válido mas conteúdo corrompido no meio. Devolve null se não conseguir
+ * decodificar de jeito nenhum (arquivo realmente inválido/corrompido).
+ */
+async function normalizeToPng(bytes: Uint8Array): Promise<Uint8Array | null> {
+  try {
+    const { Image } = await import('https://deno.land/x/imagescript@1.2.15/mod.ts')
+    const img = await Image.decode(bytes)
+    return await img.encode() // PNG por padrão — sempre RGB(A) válido
+  } catch (err) {
+    console.warn('normalizeToPng: falha ao decodificar/reencodar imagem:', err)
+    return null
+  }
+}
+
 async function compositeLogoBottomRight(
   baseBytes: Uint8Array,
   logoBytes: Uint8Array,
@@ -197,7 +262,7 @@ serve(async (req) => {
     if (userErr || !user) return jsonRes({ error: 'Unauthorized' }, 401)
 
     const admin = createClient(supabaseUrl, supabaseService, { auth: { persistSession: false } })
-    const { data: adm } = await admin.from('admin_users').select('id').eq('id', user.id).maybeSingle()
+    const { data: adm } = await admin.from('admin_users').select('id, role').eq('id', user.id).maybeSingle()
     if (!adm) return jsonRes({ error: 'Admin access required' }, 403)
 
     // ── 2. Parse body ───────────────────────────────────────────────
@@ -285,6 +350,40 @@ serve(async (req) => {
       }
     }
 
+    // ── 4c. Normaliza formato de verdade (decode + reencode) ─────────
+    // O sniff de magic bytes só pega HEIC/lixo no header. JPEG em CMYK
+    // (comum em fotos de câmera profissional/estúdio — a OpenAI só aceita
+    // RGB) ou corrupção no meio do arquivo passam pelo sniff mas ainda
+    // quebram na OpenAI com "invalid_image_file". Por isso decodificamos
+    // de verdade e reencodamos como PNG antes de enviar.
+    const photoSniffBytes = new Uint8Array(await photoBlob.slice(0, 16).arrayBuffer())
+    const photoFmt = sniffImageFormat(photoSniffBytes)
+    console.log(`[generate-tag-image] foto principal — mime declarado=${photoMime} formato real=${photoFmt} tamanho=${photoBlob.size}`)
+
+    const photoRawBytes = new Uint8Array(await photoBlob.arrayBuffer())
+    let photoPngBytes: Uint8Array | null = photoFmt === 'heic' ? null : await normalizeToPng(photoRawBytes)
+    console.log(`[generate-tag-image] foto principal — normalização ${photoPngBytes ? 'OK' : 'FALHOU'}${photoFmt === 'heic' ? ' (HEIC, nem tentou)' : ''}`)
+    if (!photoPngBytes) {
+      return jsonRes({
+        error: photoFmt === 'heic'
+          ? 'Esta foto está em formato HEIC (comum em fotos de iPhone) e a IA não consegue processá-la. Converta a foto para JPEG ou PNG e tente novamente.'
+          : 'Não foi possível processar esta foto (o arquivo pode estar corrompido, incompleto, ou em um modo de cor não suportado como CMYK). Tente reenviar a foto em JPEG ou PNG comum (RGB).',
+      }, 400)
+    }
+
+    let refPngBytes: Uint8Array | null = null
+    if (refBlob) {
+      const refSniffBytes = new Uint8Array(await refBlob.slice(0, 16).arrayBuffer())
+      const refFmt = sniffImageFormat(refSniffBytes)
+      const refRawBytes = new Uint8Array(await refBlob.arrayBuffer())
+      refPngBytes = refFmt === 'heic' ? null : await normalizeToPng(refRawBytes)
+      console.log(`[generate-tag-image] imagem de referência — path=${prompt.reference_image_path} formato real=${refFmt} normalização ${refPngBytes ? 'OK' : 'FALHOU'}`)
+      if (!refPngBytes) {
+        console.warn(`Ref do prompt (${prompt.reference_image_path}) inválida/não decodificável. Gerando sem ela.`)
+        refBlob = null
+      }
+    }
+
     // settingsRow: usado adiante pra pegar o logo (tag mode).
     const { data: settingsRow } = await admin
       .from('admin_content').select('content')
@@ -293,7 +392,7 @@ serve(async (req) => {
     // ── 5. BILLING GUARD (OpenAI) — reserva crédito + resolve chave ──
     let decision
     try {
-      decision = await reserveAndResolveKey({ admin, adminId: user.id, provider: 'openai' })
+      decision = await reserveAndResolveKey({ admin, adminId: user.id, provider: 'openai', role: adm.role })
     } catch (e) {
       if (e instanceof QuotaError)
         return jsonRes({ error: 'QUOTA_EXCEEDED', message: 'Seu limite de imagens deste período acabou. Fale com o suporte para liberar mais.' }, 402)
@@ -306,6 +405,7 @@ serve(async (req) => {
     const openaiKey = decision.apiKey
 
     // Estorno (uma única vez) em caso de falha após a reserva.
+    // 'unmetered' (super_admin) nunca reservou crédito — nunca estorna.
     let settled = false
     const settleRefund = async () => {
       if (decision!.mode === 'prepaid' && !settled) {
@@ -338,8 +438,10 @@ serve(async (req) => {
       .split('\n').filter(line => !line.includes('{{Logo}}')).join('\n').trim()
 
     // ── 6. Chama OpenAI images/edits ────────────────────────────────
-    const photoBytes = new Uint8Array(await photoBlob.arrayBuffer())
-    const photoFile  = new Blob([photoBytes], { type: photoMime })
+    // photoPngBytes/refPngBytes já são PNG normalizado (decode+reencode
+    // feito no passo 4c) — sempre RGB(A) válido, sem risco de CMYK/HEIC.
+    const photoNameFinal = (photoFileName.replace(/\.[a-zA-Z0-9]+$/, '') || 'client') + '.png'
+    const photoFile = new Blob([photoPngBytes], { type: 'image/png' })
 
     const form = new FormData()
     form.append('model',   prompt.model   || 'gpt-image-1')
@@ -348,12 +450,11 @@ serve(async (req) => {
     form.append('quality', prompt.quality || 'medium')
     form.append('n',       '1')
 
-    if (refBlob) {
-      const refBytes = new Uint8Array(await refBlob.arrayBuffer())
-      form.append('image[]', new Blob([refBytes], { type: 'image/jpeg' }), 'reference.jpg')
-      form.append('image[]', photoFile, photoFileName)
+    if (refBlob && refPngBytes) {
+      form.append('image[]', new Blob([refPngBytes], { type: 'image/png' }), 'reference.png')
+      form.append('image[]', photoFile, photoNameFinal)
     } else {
-      form.append('image', photoFile, photoFileName)
+      form.append('image', photoFile, photoNameFinal)
     }
 
     const openaiRes = await fetch('https://api.openai.com/v1/images/edits', {
