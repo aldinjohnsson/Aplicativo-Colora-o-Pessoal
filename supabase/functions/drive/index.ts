@@ -9,6 +9,7 @@
 //   POST /disconnect   — admin: remove credenciais
 //   POST /set-root     — admin: define pasta raiz no Drive
 //   POST /upload       — cliente (portal_token) ou admin (kind=admin_photo|composition + JWT): envia foto pro Drive
+//   GET  /file-proxy   — cliente (portal_token) ou admin (JWT): download de client_result_files com nome/Content-Disposition corretos
 //   GET  /photo-proxy  — admin (JWT): proxy de download de foto do Drive sem CORS
 //   POST /cleanup      — cron: apaga pastas de clientes finalizados há 21+ dias
 //
@@ -815,9 +816,103 @@ Deno.serve(async (req: Request) => {
       })
     }
 
+    // ─── GET /file-proxy ─────────────────────────────────────────────────
+    // Proxy de download pra "Arquivos de Resultado" (PDFs etc), usado tanto
+    // pelo ClientPortal (sem JWT — via portal_token) quanto pelo painel admin
+    // (com JWT). Ao contrário de expor a URL pública do Drive direto pro
+    // browser (window.open / <a href>), aqui:
+    //   1. Buscamos o file_name real salvo em client_result_files no banco
+    //      (não o nome interno do arquivo no Drive, que costuma ter um
+    //      prefixo de timestamp tipo "1778272089164_Karla_...").
+    //   2. Devolvemos os bytes com Content-Disposition: attachment e esse
+    //      nome — o browser baixa direto com o nome certo, sem precisar de
+    //      fetch+blob no cliente (que falha às vezes por CORS do Drive) e
+    //      sem abrir aba nova.
+    if (req.method === 'GET' && path === '/file-proxy') {
+      const fileId      = url.searchParams.get('id')
+      const portalToken = url.searchParams.get('token')
+      if (!fileId) return json({ error: 'id obrigatório' }, 400)
+
+      const sb = adminSb()
+      let adminId: string
+      let fileName: string
+
+      if (portalToken) {
+        // Caminho do ClientPortal: valida pelo token da cliente.
+        const { data: client } = await sb
+          .from('clients')
+          .select('id, admin_id')
+          .eq('token', portalToken)
+          .maybeSingle()
+        if (!client) return json({ error: 'Token inválido' }, 401)
+
+        const { data: resultFile } = await sb
+          .from('client_result_files')
+          .select('file_name')
+          .eq('client_id', client.id)
+          .eq('drive_file_id', fileId)
+          .maybeSingle()
+        if (!resultFile) return json({ error: 'Arquivo não encontrado' }, 404)
+
+        adminId  = client.admin_id
+        fileName = resultFile.file_name
+      } else {
+        // Caminho do painel admin: valida pelo JWT.
+        const user = await getAuthUser(req)
+        if (!user) return json({ error: 'Não autenticado' }, 401)
+
+        const { data: resultFile } = await sb
+          .from('client_result_files')
+          .select('file_name, client_id, clients!inner(admin_id)')
+          .eq('drive_file_id', fileId)
+          .maybeSingle()
+        if (!resultFile) return json({ error: 'Arquivo não encontrado' }, 404)
+
+        const ownerAdminId = (resultFile as any).clients?.admin_id
+        if (ownerAdminId !== user.id) return json({ error: 'Não autorizado' }, 403)
+
+        adminId  = ownerAdminId
+        fileName = resultFile.file_name
+      }
+
+      let accessToken: string
+      try {
+        const t = await getAdminToken(sb, adminId)
+        accessToken = t.accessToken
+      } catch (e: any) {
+        return json({ error: e.message }, 412)
+      }
+
+      const driveRes = await fetch(
+        `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      )
+      if (!driveRes.ok) {
+        return json({ error: `Drive: ${driveRes.status}` }, driveRes.status as number)
+      }
+
+      const contentType = driveRes.headers.get('content-type') || 'application/octet-stream'
+
+      // Content-Disposition precisa de um fallback ASCII (filename=) além da
+      // versão UTF-8 (filename*=) pra nomes com acento (ex: "Elisângela").
+      const asciiName = fileName.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7E]/g, '_')
+      const disposition = `attachment; filename="${asciiName.replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`
+
+      return new Response(driveRes.body, {
+        status: 200,
+        headers: {
+          ...CORS,
+          'Content-Type':        contentType,
+          'Content-Disposition': disposition,
+          'Cache-Control':       'private, max-age=300',
+        },
+      })
+    }
+
     // ─── GET /photo-proxy ──────────────────────────────────────────────────
     // Proxy autenticado pra baixar fotos do Drive sem CORS no browser.
     // O browser não consegue fazer fetch() direto de drive.google.com
+
     // (CORS + auth), então o frontend passa o driveFileId e a Edge Function
     // busca com o access_token do admin e devolve o blob.
     // Usado por driveStorage.fetchPhotoBlob() — necessário pra evitar

@@ -2160,25 +2160,25 @@ function ResultScreen({
     if (downloadingId) return
     setDownloadingId(file.id)
     try {
-      const url = clientService.getResultFileUrl(file)
-
-      // Arquivos do Google Drive não podem ser baixados via fetch:
-      // o Google retorna uma página HTML de confirmação antivírus para
-      // arquivos grandes (> ~25 MB). Abrimos diretamente no browser,
-      // que trata o redirect e inicia o download corretamente.
-      if (file.drive_file_id) {
-        window.open(url, '_blank')
-        return
-      }
+      // Arquivos do Drive: usa o proxy da Edge Function (/file-proxy), que
+      // já devolve os bytes com Content-Disposition setado com o nome
+      // certo (file.file_name), servido pelo nosso próprio domínio — sem
+      // depender do CORS instável do drive.google.com (que às vezes libera
+      // fetch() cross-origin e às vezes não, causando o nome errado e a
+      // aba que fica só carregando no celular).
+      const url = file.drive_file_id
+        ? driveStorage.filePortalProxyUrl(file.drive_file_id, token)
+        : clientService.getResultFileUrl(file)
 
       const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-      // Garante content-type correto independente do header devolvido pelo storage
       const rawBlob = await res.blob()
-      const blob = rawBlob.type === 'application/pdf'
-        ? rawBlob
-        : new Blob([rawBlob], { type: 'application/pdf' })
+
+      // Garante content-type correto independente do header devolvido pelo storage
+      const blob = (!file.drive_file_id && rawBlob.type !== 'application/pdf')
+        ? new Blob([rawBlob], { type: 'application/pdf' })
+        : rawBlob
 
       const objectUrl = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
@@ -2194,7 +2194,8 @@ function ResultScreen({
       setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000)
     } catch (err) {
       console.error('Erro ao baixar arquivo:', err)
-      // fallback: abre na aba mesmo
+      // fallback: abre na aba mesmo (só chega aqui se o proxy falhar de
+      // verdade, ex: admin desconectou o Drive)
       window.open(clientService.getResultFileUrl(file), '_blank')
     } finally {
       setDownloadingId(null)

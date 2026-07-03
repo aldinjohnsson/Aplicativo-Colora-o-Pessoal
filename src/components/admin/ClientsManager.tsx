@@ -4210,6 +4210,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   // Upload de arquivos do Resultado — separados por tipo pra que cada botão
   // tenha seu próprio loading spinner sem afetar os outros.
   const [uploadingKind, setUploadingKind] = useState<null | 'pdf' | 'audio' | 'photo'>(null)
+  const [downloadingResultFileId, setDownloadingResultFileId] = useState<string | null>(null)
   const pdfInputRef = useRef<HTMLInputElement>(null)
   const audioInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -4816,6 +4817,41 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     }
   }
   const handleDeleteFile = async (fileId: string, storagePath: string) => { if (!confirm('Remover este arquivo?')) return; await adminService.deleteResultFile(fileId, storagePath); load() }
+
+  // Baixa arquivo de Resultado (PDF/áudio) forçando o nome correto.
+  // Antes usava <a href> direto pra URL do Drive, que baixa com o nome
+  // interno do arquivo no Drive (ex: "1778272089164_Karla...") em vez do
+  // file_name salvo no banco. Usa o proxy autenticado (/photo-proxy) —
+  // mesmo padrão já usado pro download de fotos — pra trazer os bytes e
+  // forçar o nome via blob + <a download>.
+  const handleDownloadResultFile = async (f: { id: string; file_name: string; drive_file_id?: string | null; storage_path?: string | null }) => {
+    if (downloadingResultFileId) return
+    setDownloadingResultFileId(f.id)
+    try {
+      let blob: Blob
+      if (f.drive_file_id) {
+        blob = await driveStorage.fetchPhotoBlob(f.drive_file_id)
+      } else {
+        const res = await fetch(adminService.getResultFileUrl(f as any))
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        blob = await res.blob()
+      }
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = f.file_name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+    } catch (e: any) {
+      console.error('[handleDownloadResultFile] erro:', e)
+      // fallback: abre na aba mesmo, se o proxy falhar
+      window.open(adminService.getResultFileUrl(f as any), '_blank')
+    } finally {
+      setDownloadingResultFileId(null)
+    }
+  }
 
   if (loading) return <div className="flex justify-center py-20" style={{ background: t.bg, flex: 1 }}><div className="animate-spin h-8 w-8 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
   if (!data) return <div className="text-center py-20" style={{ background: t.bg, color: t.text2, flex: 1 }}>Cliente não encontrado</div>
@@ -5793,9 +5829,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                           <span className="text-xs whitespace-nowrap flex-shrink-0" style={{ color: t.text3 }}>{(f.file_size / 1024).toFixed(0)} KB</span>
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
-                          <a href={adminService.getResultFileUrl(f)} target="_blank" rel="noopener noreferrer">
-                            <Btn variant="ghost" size="sm"><Download className="h-3.5 w-3.5" /></Btn>
-                          </a>
+                          <Btn
+                            variant="ghost"
+                            size="sm"
+                            loading={downloadingResultFileId === f.id}
+                            onClick={() => handleDownloadResultFile(f)}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </Btn>
                           <Btn variant="ghost" size="sm" onClick={() => handleDeleteFile(f.id, f.storage_path)} className="text-red-500 hover:bg-red-50">
                             <X className="h-3.5 w-3.5" />
                           </Btn>

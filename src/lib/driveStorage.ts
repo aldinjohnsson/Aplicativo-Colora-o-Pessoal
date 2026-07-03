@@ -311,4 +311,21 @@ export const driveStorage = {
   downloadUrl(driveFileId: string): string {
     return `https://drive.google.com/uc?export=download&id=${driveFileId}`
   },
+
+  /**
+   * URL do proxy autenticado (JWT) pra baixar um client_result_file com o
+   * Content-Disposition já setado com o nome correto — usar no painel admin.
+   */
+  fileProxyUrl(driveFileId: string): string {
+    return `${FN}/file-proxy?id=${encodeURIComponent(driveFileId)}`
+  },
+
+  /**
+   * URL do proxy sem JWT (portal_token) pra baixar um client_result_file
+   * com o Content-Disposition já setado com o nome correto — usar no
+   * ClientPortal (sem sessão autenticada).
+   */
+  filePortalProxyUrl(driveFileId: string, portalToken: string): string {
+    return `${FN}/file-proxy?id=${encodeURIComponent(driveFileId)}&token=${encodeURIComponent(portalToken)}`
+  },
 }
