@@ -32,6 +32,8 @@ import {
   Menu, X, ChevronRight, FileText, Shield, Sparkles, Image, User,
 } from 'lucide-react'
 import { adminService, AdminUser } from '../../lib/services'
+import { useLicenseGuard } from '../../hooks/useLicenseGuard'
+import { LicenseWarningBanner } from './LicenseWarningBanner'
 // ⚡ CODE SPLITTING: cada página vira um chunk separado que só baixa quando a
 // rota é aberta. Antes, tudo (kanban 5.8k linhas, hub de documentos com gerador
 // de PDF, painel super, páginas de IA) entrava no bundle inicial e atrasava o
@@ -164,6 +166,11 @@ function AdminDashboardInner({ onLogout }: Props) {
     navigate('/admin/login')
   }
 
+  // Reconsulta a licença periodicamente enquanto o dashboard está aberto
+  // (a SPA não recarrega sozinha, então sem isso um admin com a aba
+  // aberta continuaria logado indefinidamente após a licença vencer).
+  const { warnDaysLeft } = useLicenseGuard(handleLogout)
+
   // Aguarda a role carregar antes de renderizar as rotas.
   // Sem isso, recarregar em /admin/documents ou /admin/folders redireciona
   // porque isSuperAdmin=false durante o ~200ms da query do getCurrentAdmin.
@@ -199,6 +206,9 @@ function AdminDashboardInner({ onLogout }: Props) {
           zIndex: 0,
         }}
       >
+
+        {/* ── Aviso de licença perto do vencimento ── */}
+        {warnDaysLeft !== null && <LicenseWarningBanner daysLeft={warnDaysLeft} />}
 
         {/* ── Global Nav Drawer Overlay ── */}
         {navOpen && (

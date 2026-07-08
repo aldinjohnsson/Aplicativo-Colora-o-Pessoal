@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { adminService } from './services'
 
 export interface ContractContent {
   title: string
@@ -29,6 +30,19 @@ export interface FormContent {
 }
 
 class AdminContentService {
+  /**
+   * Confirma sessão + licença válida (getSession já faz o full check e
+   * desloga silenciosamente se a licença estiver vencida/inativa).
+   * Usado quando uma linha não é encontrada em admin_content, pra
+   * diferenciar "admin novo, ainda sem conteúdo" de "bloqueado por
+   * licença vencida" — os dois casos chegam aqui como 0 linhas via RLS.
+   */
+  private async assertLicenseOrThrow() {
+    const user = await adminService.getSession()
+    if (!user) throw new Error('Sua sessão expirou ou sua licença venceu. Faça login novamente.')
+    return user
+  }
+
   async getContract(): Promise<ContractContent> {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return this.getDefaultContract()
@@ -40,9 +54,12 @@ class AdminContentService {
       .eq('admin_id', user.id)   // ← filtro explícito (já estava correto)
       .single()
 
-    if (error || !data) {
+    if (error?.code === 'PGRST116' || !data) {
+      // Sem linha: admin novo OU licença vencida (RLS filtra igual nos dois casos).
+      await this.assertLicenseOrThrow()
       return this.getDefaultContract()
     }
+    if (error) throw error
 
     return data.content as ContractContent
   }
@@ -52,8 +69,7 @@ class AdminContentService {
     // Sem isso, em upsert o Postgres usa DEFAULT auth.uid() apenas no INSERT;
     // no UPDATE (conflito) o campo não é reatribuído e pode apontar para outra
     // linha se o super_admin estiver logado e a RLS enxergar outra linha.
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    const user = await this.assertLicenseOrThrow()
 
     const { error } = await supabase
       .from('admin_content')
@@ -119,17 +135,19 @@ class AdminContentService {
       .eq('admin_id', user.id)   // ← filtro explícito (já estava correto)
       .single()
 
-    if (error || !data) {
+    if (error?.code === 'PGRST116' || !data) {
+      // Sem linha: admin novo OU licença vencida (RLS filtra igual nos dois casos).
+      await this.assertLicenseOrThrow()
       return this.getDefaultForm()
     }
+    if (error) throw error
 
     return data.content as FormContent
   }
 
   async saveForm(content: FormContent): Promise<void> {
     // FIX: mesmo motivo de saveContract — admin_id explícito no upsert.
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+    const user = await this.assertLicenseOrThrow()
 
     const { error } = await supabase
       .from('admin_content')
@@ -221,16 +239,16 @@ class AdminContentService {
 
   generateContractText(contract: ContractContent): string {
     let text = contract.title + '\n\n'
-    
+
     const sortedSections = [...contract.sections].sort((a, b) => a.order - b.order)
-    
+
     for (const section of sortedSections) {
       text += section.title + '\n'
       text += section.content + '\n\n'
     }
-    
+
     text += 'Ao aceitar este contrato, o cliente declara estar ciente e de acordo com todos os termos apresentados.'
-    
+
     return text
   }
 }
