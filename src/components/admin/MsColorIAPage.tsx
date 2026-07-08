@@ -422,10 +422,13 @@ export function MsColorIAPage() {
   //
   // O modal já salvou a foto aprimorada no Drive e retorna o novo driveFileId.
   // Aqui atualizamos preview, URL e fileId no estado local.
-  // Conta de imagens do plano pré-pago (OpenAI) — cobre aprimoramento e páginas.
+  // ★ POOL ÚNICO: o badge mostra o saldo COMPARTILHADO (quota/used) —
+  // aprimoramento, páginas e chat descontam todos do mesmo pool.
   function refreshImgQuota() {
     billingService.getMine().then(b => {
-      if (b && b.openai_mode === 'prepaid') { setImgLeft(Math.max(0, b.openai_quota - b.openai_used)); setImgQuota(b.openai_quota) }
+      if (b && (b.openai_mode === 'prepaid' || b.gemini_mode === 'prepaid')) {
+        setImgLeft(Math.max(0, b.quota - b.used)); setImgQuota(b.quota)
+      }
       else setImgLeft(null)
     }).catch(() => {})
   }

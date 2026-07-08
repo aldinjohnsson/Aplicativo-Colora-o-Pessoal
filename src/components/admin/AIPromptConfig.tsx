@@ -90,15 +90,15 @@ export function AIPromptConfig({
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
-  // Cota de aprimoramentos do plano pré-pago (OpenAI)
+  // ★ POOL ÚNICO: saldo compartilhado do plano pré-pago (todas as IAs).
   const [imgLeft,  setImgLeft]  = useState<number | null>(null)
   const [imgQuota, setImgQuota] = useState(0)
 
   useEffect(() => {
     billingService.getMine().then(b => {
-      if (b && b.openai_mode === 'prepaid') {
-        setImgLeft(Math.max(0, b.openai_quota - b.openai_used))
-        setImgQuota(b.openai_quota)
+      if (b && (b.openai_mode === 'prepaid' || b.gemini_mode === 'prepaid')) {
+        setImgLeft(Math.max(0, b.quota - b.used))
+        setImgQuota(b.quota)
       } else {
         setImgLeft(null)
       }

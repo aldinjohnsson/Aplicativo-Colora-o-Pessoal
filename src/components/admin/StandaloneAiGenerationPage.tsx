@@ -26,6 +26,7 @@ import { documentsService } from './documents/lib/documentsService'
 import { driveStorage } from '../../lib/driveStorage'
 import { supabase } from '../../lib/supabase'
 import { adminService } from '../../lib/services'
+import { billingService } from '../../lib/billingService'
 import {
   generateCompositionPdf,
   fetchAllByDriveId,
@@ -1034,6 +1035,7 @@ export function StandaloneAiGenerationPage() {
     }
 
     setRunningBatch(false)
+    refreshImgQuota() // ★ atualiza o badge do saldo após o lote
     const erros = snapshot.filter(p => p.status === 'error').length
     if (erros > 0) {
       setGlobalError(`${erros} página${erros !== 1 ? 's' : ''} falharam. Clique em ↺ e tente de novo.`)
@@ -1135,6 +1137,22 @@ export function StandaloneAiGenerationPage() {
   const doneCount    = pages.filter(p => p.status === 'done').length
   const allDone      = pages.length > 0 && pendingCount === 0 && !pages.some(p => p.status === 'generating')
 
+  // ── ★ POOL ÚNICO: saldo de imagens do plano pré-pago ──────────────
+  // Badge no header (mesmo padrão do MS Color IA). null = pós-pago
+  // (sem cota, chave própria) → badge não aparece.
+  const [imgLeft,  setImgLeft]  = useState<number | null>(null)
+  const [imgQuota, setImgQuota] = useState(0)
+
+  const refreshImgQuota = useCallback(() => {
+    billingService.getMine().then(b => {
+      if (b && (b.openai_mode === 'prepaid' || b.gemini_mode === 'prepaid')) {
+        setImgLeft(Math.max(0, b.quota - b.used)); setImgQuota(b.quota)
+      } else setImgLeft(null)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => { refreshImgQuota() }, [refreshImgQuota])
+
   // ── Render ────────────────────────────────────────────────────────
 
   return (
@@ -1149,6 +1167,11 @@ export function StandaloneAiGenerationPage() {
           <h1 className="text-lg font-bold text-gray-900">Geração por IA</h1>
           <p className="text-xs text-gray-500">Selecione um prompt, envie uma foto e gere o dossiê em PDF</p>
         </div>
+        {imgLeft !== null && (
+          <span className="ml-auto text-xs font-medium text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 rounded-full px-3 py-1 whitespace-nowrap">
+            ✨ {imgLeft}/{imgQuota} imagens
+          </span>
+        )}
       </div>
 
       {/* ═══ Painel de configuração: prompt + foto + botão adicionar ═══ */}

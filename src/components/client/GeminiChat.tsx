@@ -435,13 +435,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     })
   }, [clientId, unlimited])
 
-  // Medidor do plano pré-pago do admin (Gemini) — MS Color IA e modo admin (unlimited).
+  // Medidor do plano pré-pago do admin — MS Color IA e modo admin (unlimited).
+  // ★ POOL ÚNICO: mostra o saldo COMPARTILHADO (quota/used) — chat,
+  // aprimoramento e dossiês descontam todos do mesmo pool.
   const refreshAdminGeminiQuota = () => {
     if (!msColorIaMode && !unlimited) return
     billingService.getMine().then(b => {
-      if (b && b.gemini_mode === 'prepaid') {
-        setAdminGeminiLeft(Math.max(0, b.gemini_quota - b.gemini_used))
-        setAdminGeminiQuota(b.gemini_quota)
+      if (b && (b.gemini_mode === 'prepaid' || b.openai_mode === 'prepaid')) {
+        setAdminGeminiLeft(Math.max(0, b.quota - b.used))
+        setAdminGeminiQuota(b.quota)
       } else {
         setAdminGeminiLeft(null)
       }
@@ -751,7 +753,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       const raw = err?.message || 'Erro'
       const isQuota = /QUOTA_EXCEEDED|limite de (imagens|simula)/i.test(raw)
       const text = isQuota
-        ? 'Suas simulações acabaram. Faça uma nova recarga.'
+        ? 'Suas imagens do plano acabaram. Faça uma nova recarga.'
         : raw
       setMessages(prev => prev.map(m => m.id === lid ? { ...m, loading: false, text: '', error: text, quotaExceeded: isQuota } : m))
       if (isQuota) refreshAdminGeminiQuota()
@@ -1646,7 +1648,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           <div className="px-3 sm:px-4 pt-3">
             <div className="rounded-xl border border-violet-100 bg-gradient-to-r from-violet-50 to-fuchsia-50 px-4 py-3">
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-semibold text-violet-700">✨ Simulações do seu plano</span>
+                <span className="text-xs font-semibold text-violet-700">✨ Imagens do seu plano</span>
                 <span className="text-xs font-medium text-violet-700">
                   {adminGeminiLeft === 0 ? 'esgotado' : <><strong>{adminGeminiLeft}</strong> de {adminGeminiQuota} restantes</>}
                 </span>
@@ -1658,7 +1660,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 />
               </div>
               {adminGeminiLeft === 0 && (
-                <p className="text-[11px] text-rose-500 mt-1.5">Suas simulações acabaram. Faça uma nova recarga.</p>
+                <p className="text-[11px] text-rose-500 mt-1.5">Suas imagens do plano acabaram. Faça uma nova recarga.</p>
               )}
             </div>
           </div>

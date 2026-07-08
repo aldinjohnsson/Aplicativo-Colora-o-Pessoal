@@ -37,6 +37,7 @@ import {
 import { documentsService } from '../lib/documentsService'
 import { driveStorage } from '../../../../lib/driveStorage'
 import { adminService } from '../../../../lib/services'
+import { billingService } from '../../../../lib/billingService'
 import { supabase } from '../../../../lib/supabase'
 import { AddPageDialog, AddPageResult } from './AddPageDialog'
 import {
@@ -191,6 +192,20 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
   const [showAdd, setShowAdd]           = useState(false)
   const [runningBatch, setRunningBatch] = useState(false)
   const [generatingId, setGeneratingId] = useState<string | null>(null)
+
+  // ── ★ POOL ÚNICO: saldo de imagens do plano pré-pago ──────────────
+  // Badge no header do card. null = pós-pago (sem cota) → não aparece.
+  const [imgLeft,  setImgLeft]  = useState<number | null>(null)
+  const [imgQuota, setImgQuota] = useState(0)
+
+  const refreshImgQuota = () => {
+    billingService.getMine().then(b => {
+      if (b && (b.openai_mode === 'prepaid' || b.gemini_mode === 'prepaid')) {
+        setImgLeft(Math.max(0, b.quota - b.used)); setImgQuota(b.quota)
+      } else setImgLeft(null)
+    }).catch(() => {})
+  }
+  useEffect(() => { refreshImgQuota() }, [])
   const [buildingPdf, setBuildingPdf]   = useState(false)
   const [savingDoc, setSavingDoc]       = useState(false)
   const [globalError, setGlobalError]   = useState<string | null>(null)
@@ -438,6 +453,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
       patchPage(pageId, { status: 'error', errorMsg: e?.message || 'Erro na geração' })
     } finally {
       setGeneratingId(null)
+      refreshImgQuota() // ★ atualiza o badge do saldo (sucesso ou estorno)
     }
   }
 
@@ -504,6 +520,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
     }
 
     setRunningBatch(false)
+    refreshImgQuota() // ★ atualiza o badge do saldo após o lote
 
     const nowErrored = snapshot.filter(p => p.status === 'error').length
     if (nowErrored > 0) {
@@ -738,6 +755,11 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
               Selecione um prompt (com N partes) + foto e gere todas as imagens de uma vez.
             </p>
           </div>
+          {imgLeft !== null && (
+            <span className="ml-auto text-xs font-medium text-fuchsia-700 bg-white/70 border border-fuchsia-200 rounded-full px-3 py-1 whitespace-nowrap">
+              ✨ {imgLeft}/{imgQuota} imagens
+            </span>
+          )}
         </div>
       </div>
 
