@@ -735,13 +735,29 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       }
       if (clientId || msColorIaMode) {
         const imageParts = response.parts.filter(p => p.type === 'image' && p.imageBase64)
-        if (imageParts.length > 0) {
-          Promise.all(imageParts.map(p => uploadChatImageToDrive(clientId, p.imageBase64!, p.imageMimeType || 'image/png', portalToken, msColorIaMode))).then(urls => {
-            const saved = urls.filter(Boolean) as string[]
-            if (saved.length > 0) setMessages(prev => prev.map(m => m.id === lid ? { ...m, savedImageUrls: saved } : m))
-          })
+        const uploadDone = imageParts.length > 0
+          ? Promise.all(imageParts.map(p => uploadChatImageToDrive(clientId, p.imageBase64!, p.imageMimeType || 'image/png', portalToken, msColorIaMode))).then(urls => {
+              const saved = urls.filter(Boolean) as string[]
+              if (saved.length > 0) setMessages(prev => prev.map(m => m.id === lid ? { ...m, savedImageUrls: saved } : m))
+            })
+          : Promise.resolve()
+
+        // ★ Atualiza o saldo do pool tanto no MS Color IA (msColorIaMode)
+        // quanto no preview "modo admin" da aba Chat IA do ClientsManager
+        // (unlimited, sem msColorIaMode) — os dois consomem do mesmo pool
+        // compartilhado. Antes só cobria msColorIaMode, por isso a aba Chat
+        // IA do ClientsManager nunca atualizava o contador sozinha.
+        if ((msColorIaMode || unlimited) && hasImage && !response.imageGenerationFailed) {
+          // Decremento otimista local: já sabemos que 1 imagem foi consumida
+          // agora, então atualiza a UI na hora em vez de esperar o servidor
+          // (mesmo padrão usado em AIPromptConfig com setRefPhotos).
+          setAdminGeminiLeft(prev => prev !== null ? Math.max(0, prev - 1) : prev)
+          // Correção de fundo: só depois que o upload da imagem no Drive
+          // termina — sinal real de que o backend processou tudo — igual ao
+          // padrão do AiCompositionsManager (refreshImgQuota logo após o
+          // await da operação que efetivamente debita a cota terminar).
+          uploadDone.then(refreshAdminGeminiQuota)
         }
-        if (msColorIaMode && hasImage && !response.imageGenerationFailed) refreshAdminGeminiQuota()
         if (!unlimited) {
           const creditType = hasImage ? 'image' : 'text'
           supabase.rpc('use_ai_credit', { p_client_id: clientId, p_type: creditType }).then(({ data }) => {
