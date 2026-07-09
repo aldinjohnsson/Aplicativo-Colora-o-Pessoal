@@ -29,7 +29,12 @@ export const LANGUAGES: { code: Language; label: string; flag: string }[] = [
   { code: 'pt-BR', label: 'Português (Brasil)', flag: '🇧🇷' },
   { code: 'en-US', label: 'English (US)',        flag: '🇺🇸' },
   { code: 'en-GB', label: 'English (UK)',         flag: '🇬🇧' },
-  // Pra adicionar espanhol: acrescente aqui + o bloco 'es-ES' em translations.ts
+  { code: 'es-ES', label: 'Español',              flag: '🇪🇸' },
+  { code: 'fr-FR', label: 'Français',             flag: '🇫🇷' },
+  { code: 'it-IT', label: 'Italiano',             flag: '🇮🇹' },
+  { code: 'de-DE', label: 'Deutsch',              flag: '🇩🇪' },
+  // Pra adicionar mais um idioma: acrescente aqui + o bloco correspondente em
+  // translations.ts, com as mesmas 292 chaves dos outros idiomas.
 ]
 
 const STORAGE_PREFIX = 'client-portal-lang'

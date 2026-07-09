@@ -43,10 +43,53 @@ function FlagGB({ className = '' }: { className?: string }) {
   )
 }
 
+function FlagES({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 16" className={className} aria-hidden="true">
+      <rect width="24" height="16" rx="2" fill="#AA151B" />
+      <rect y="4" width="24" height="8" fill="#F1BF00" />
+    </svg>
+  )
+}
+
+function FlagFR({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 16" className={className} aria-hidden="true">
+      <rect width="24" height="16" rx="2" fill="#FFFFFF" />
+      <rect width="8" height="16" fill="#0055A4" />
+      <rect x="16" width="8" height="16" fill="#EF4135" />
+    </svg>
+  )
+}
+
+function FlagIT({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 16" className={className} aria-hidden="true">
+      <rect width="24" height="16" rx="2" fill="#FFFFFF" />
+      <rect width="8" height="16" fill="#009246" />
+      <rect x="16" width="8" height="16" fill="#CE2B37" />
+    </svg>
+  )
+}
+
+function FlagDE({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 16" className={className} aria-hidden="true">
+      <rect width="24" height="16" rx="2" fill="#FFCE00" />
+      <rect width="24" height="5.33" fill="#000000" />
+      <rect y="5.33" width="24" height="5.34" fill="#DD0000" />
+    </svg>
+  )
+}
+
 const FLAGS: Record<Language, React.FC<{ className?: string }>> = {
   'pt-BR': FlagBR,
   'en-US': FlagUS,
   'en-GB': FlagGB,
+  'es-ES': FlagES,
+  'fr-FR': FlagFR,
+  'it-IT': FlagIT,
+  'de-DE': FlagDE,
 }
 
 interface LanguageSwitcherProps {

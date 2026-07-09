@@ -29,6 +29,10 @@ const PRIORITY_CODE: Record<Language, string> = {
   'pt-BR': 'BR',
   'en-US': 'US',
   'en-GB': 'GB', // GB não está na lista original de 193 — ver nota abaixo
+  'es-ES': 'ES',
+  'fr-FR': 'FR',
+  'it-IT': 'IT',
+  'de-DE': 'DE',
 }
 
 export interface CountryOption {

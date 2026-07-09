@@ -135,7 +135,7 @@ interface AppSettings {
 
   // Idioma padrão do portal do cliente — usado quando a cliente ainda não
   // escolheu um idioma ela mesma (ver seletor de idioma no ClientPortal).
-  defaultLanguage?: 'pt-BR' | 'en-US' | 'en-GB'
+  defaultLanguage?: 'pt-BR' | 'en-US' | 'en-GB' | 'es-ES' | 'fr-FR' | 'it-IT' | 'de-DE'
 
   aiCompositionCoverBase64?:   string
   aiCompositionCoverFileName?: string
