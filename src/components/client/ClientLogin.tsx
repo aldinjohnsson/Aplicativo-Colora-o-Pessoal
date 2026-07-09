@@ -3,8 +3,28 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Palette, Mail, Calendar, LogIn, AlertCircle } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { LanguageProvider, useTranslation } from '../../lib/i18n'
+import { LanguageSwitcher } from './LanguageSwitcher'
 
+// A tela de login é acessada ANTES de existir qualquer token de cliente —
+// por isso o LanguageProvider aqui não recebe persistKey (usa uma chave
+// genérica no localStorage, compartilhada entre visitas nesta tela) nem
+// fallbackLanguage (não há admin/plano conhecido neste ponto ainda).
+//
+// ⚠️ Sem este wrapper, `useTranslation()` (chamado logo abaixo em
+// ClientLoginInner) lança um erro porque não existe LanguageProvider
+// ancestral — mesmo tipo de crash de tela branca que já aconteceu no
+// ClientSignup.tsx com o SignatureCanvas.
 export function ClientLogin() {
+  return (
+    <LanguageProvider>
+      <ClientLoginInner />
+    </LanguageProvider>
+  )
+}
+
+function ClientLoginInner() {
+  const { t } = useTranslation()
   const [email, setEmail] = useState('')
   const [birthDate, setBirthDate] = useState('')
   const [loading, setLoading] = useState(false)
@@ -14,7 +34,7 @@ export function ClientLogin() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!email.trim() || !birthDate) {
-      setError('Preencha o e-mail e a data de nascimento.')
+      setError(t('login.errorMissingFields'))
       return
     }
 
@@ -29,13 +49,14 @@ export function ClientLogin() {
 
       if (rpcError) throw rpcError
       if (data?.error) {
+        // Mensagem vem do backend — mantida como veio (normalmente já é curta e neutra).
         setError(data.error)
         return
       }
 
       navigate(`/c/${data.token}`)
     } catch (err: any) {
-      setError('Erro ao acessar. Tente novamente.')
+      setError(t('login.errorGeneric'))
     } finally {
       setLoading(false)
     }
@@ -44,24 +65,31 @@ export function ClientLogin() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 to-pink-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
+        {/* Seletor de idioma — antes do login o cliente ainda não tem token nem
+            preferência salva no banco, então o LanguageProvider aqui de cima usa
+            só localStorage genérico + idioma do navegador como ponto de partida. */}
+        <div className="flex justify-end mb-3">
+          <LanguageSwitcher />
+        </div>
+
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-rose-400 to-pink-500 rounded-2xl mb-4 shadow-lg">
             <Palette className="h-8 w-8 text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">IA Color</h1>
-          <p className="text-gray-500 mt-1">Acesse seu portal de análise</p>
+          <h1 className="text-2xl font-bold text-gray-900">{t('login.title')}</h1>
+          <p className="text-gray-500 mt-1">{t('login.subtitle')}</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8">
-          <h2 className="text-lg font-semibold text-gray-800 mb-2">Entrar</h2>
+          <h2 className="text-lg font-semibold text-gray-800 mb-2">{t('login.heading')}</h2>
           <p className="text-sm text-gray-500 mb-6">
-            Use o e-mail cadastrado e sua data de nascimento como senha.
+            {t('login.instructions')}
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">E-mail</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{t('login.emailLabel')}</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
@@ -70,7 +98,7 @@ export function ClientLogin() {
                   onChange={e => setEmail(e.target.value)}
                   required
                   autoFocus
-                  placeholder="seu@email.com"
+                  placeholder={t('login.emailPlaceholder')}
                   className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent"
                 />
               </div>
@@ -78,7 +106,7 @@ export function ClientLogin() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Data de Nascimento <span className="text-gray-400 font-normal">(sua senha)</span>
+                {t('login.birthDateLabel')} <span className="text-gray-400 font-normal">{t('login.birthDatePasswordHint')}</span>
               </label>
               <div className="relative">
                 <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -90,6 +118,10 @@ export function ClientLogin() {
                   className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent"
                 />
               </div>
+              {/* O placeholder nativo do <input type="date"> segue o idioma do
+                  sistema operacional em alguns navegadores — essa legenda
+                  garante que o formato esperado sempre apareça certo. */}
+              <p className="text-xs text-gray-400 mt-1">{t('signup.birthDateFormatHint')}</p>
             </div>
 
             {error && (
@@ -106,13 +138,13 @@ export function ClientLogin() {
             >
               {loading
                 ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
-                : <><LogIn className="h-4 w-4" /> Acessar</>
+                : <><LogIn className="h-4 w-4" /> {t('login.submit')}</>
               }
             </button>
           </form>
 
           <p className="text-xs text-gray-400 text-center mt-6">
-            Não consegue acessar? Entre em contato com a consultora.
+            {t('common.contactConsultant')}
           </p>
         </div>
       </div>

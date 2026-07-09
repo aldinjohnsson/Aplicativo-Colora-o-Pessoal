@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react'
 import { DocumentUploader } from "../DocumentUploader";
 import { DocumentFolder } from '../../lib/documentStorage'
 import { AlertCircle, CheckCircle, Camera, FileText, Loader2 } from 'lucide-react'
+import { useTranslation } from '../../lib/i18n'
 
 interface FinalStepProps {
   clientName: string
@@ -20,8 +21,9 @@ export function FinalStep({
   photos,
   onComplete
 }: FinalStepProps) {
+  const { t } = useTranslation()
   const [documentFolder, setDocumentFolder] = useState<DocumentFolder | null>(null)
-  
+
   // 🔥 CORREÇÃO: Usar ref para garantir que onComplete só é chamado uma vez
   const completedRef = useRef(false)
 
@@ -49,10 +51,10 @@ export function FinalStep({
         {/* Header Mobile-Friendly */}
         <div className="mb-4 sm:mb-6">
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 mb-2 sm:mb-3">
-            Finalização
+            {t('finalStep.heading')}
           </h1>
           <p className="text-sm sm:text-base text-gray-600">
-            Estamos processando seus documentos para <span className="font-semibold text-indigo-600">{clientName}</span>
+            {t('finalStep.processingFor')} <span className="font-semibold text-indigo-600">{clientName}</span>
           </p>
         </div>
 
@@ -74,12 +76,12 @@ export function FinalStep({
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="text-sm sm:text-base font-semibold text-gray-900 mb-1">
-                  Fotos
+                  {t('finalStep.photosCardTitle')}
                 </h3>
                 <p className="text-xs sm:text-sm text-gray-600 break-words">
-                  {hasPhotos 
-                    ? `${photos.length} ${photos.length === 1 ? 'foto enviada' : 'fotos enviadas'}` 
-                    : 'Nenhuma foto recebida'}
+                  {hasPhotos
+                    ? t('finalStep.photosSent', { count: photos.length })
+                    : t('finalStep.photosNone')}
                 </p>
               </div>
               {hasPhotos ? (
@@ -106,12 +108,12 @@ export function FinalStep({
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="text-sm sm:text-base font-semibold text-gray-900 mb-1">
-                  Anexos
+                  {t('finalStep.attachmentsCardTitle')}
                 </h3>
                 <p className="text-xs sm:text-sm text-gray-600 break-words">
-                  {hasFormAttachments 
-                    ? `${formAttachments.length} ${formAttachments.length === 1 ? 'arquivo' : 'arquivos'}` 
-                    : 'Nenhum anexo'}
+                  {hasFormAttachments
+                    ? t('finalStep.attachments', { count: formAttachments.length })
+                    : t('finalStep.attachmentsNone')}
                 </p>
               </div>
               {hasFormAttachments && (
@@ -128,17 +130,17 @@ export function FinalStep({
               <AlertCircle className="flex-shrink-0 w-5 h-5 sm:w-6 sm:h-6 text-red-600 mt-0.5" />
               <div className="flex-1 min-w-0">
                 <h3 className="text-sm sm:text-base font-bold text-red-900 mb-1 sm:mb-2">
-                  ⚠️ Atenção: Nenhuma foto foi recebida!
+                  {t('finalStep.warningTitle')}
                 </h3>
                 <p className="text-xs sm:text-sm text-red-800 leading-relaxed">
-                  Por favor, volte ao passo anterior e envie suas fotos para completar o processo.
+                  {t('finalStep.warningBody')}
                 </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* Debug info em desenvolvimento - Mobile Friendly */}
+        {/* Debug info em desenvolvimento — mantido em PT-BR, é interno e não aparece em produção */}
         {process.env.NODE_ENV === 'development' && (
           <div className="mb-4 sm:mb-6 rounded-xl sm:rounded-2xl p-4 sm:p-5 bg-yellow-50 border-2 border-yellow-200 shadow-sm">
             <div className="flex items-start gap-3 mb-3">
@@ -173,7 +175,7 @@ export function FinalStep({
         {/* Info adicional no rodapé - Mobile */}
         <div className="mt-4 sm:mt-6 text-center">
           <p className="text-xs sm:text-sm text-gray-500">
-            Seus arquivos estão sendo processados de forma segura
+            {t('finalStep.footerNote')}
           </p>
         </div>
       </div>

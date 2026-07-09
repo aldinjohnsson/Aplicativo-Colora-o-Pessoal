@@ -1,6 +1,7 @@
 import React from 'react'
 import { Check, Loader, Lock } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useTranslation } from '../../lib/i18n'
 
 interface Step {
   id: number
@@ -16,9 +17,11 @@ interface ProgressIndicatorProps {
 }
 
 export function ProgressIndicator({ steps }: ProgressIndicatorProps) {
+  const { t } = useTranslation()
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 sm:p-6 mb-4 sm:mb-6">
-      <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-3 sm:mb-4">Seu Progresso</h2>
+      <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-3 sm:mb-4">{t('progress.title')}</h2>
 
       <div className="space-y-0">
         {steps.map((step, index) => {
@@ -73,12 +76,12 @@ export function ProgressIndicator({ steps }: ProgressIndicatorProps) {
                 <div className="flex-shrink-0 pt-1">
                   {step.completed && (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap">
-                      Concluído
+                      {t('progress.completed')}
                     </span>
                   )}
                   {step.current && !step.completed && (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 whitespace-nowrap">
-                      Em andamento
+                      {t('progress.inProgress')}
                     </span>
                   )}
                 </div>

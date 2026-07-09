@@ -140,7 +140,13 @@ export interface ClientPortalData {
     form_rejected_at?: string | null
     photos_rejection_reason?: string | null
     photos_rejected_at?: string | null
+    // Idioma escolhido pela cliente no portal (i18n). NULL = ainda não escolheu,
+    // o front cai no `admin_default_language` abaixo.
+    language?: string | null
   }
+  // Idioma padrão configurado pelo admin em Settings — usado como fallback
+  // quando client.language ainda é NULL.
+  admin_default_language?: string | null
   plan: { id: string; name: string; deadline_days: number } | null
   contract: PlanContract | null
   form: PlanForm | null
@@ -2055,6 +2061,29 @@ export const clientService = {
     }
 
     return portalData
+  },
+
+  /**
+   * Salva o idioma escolhido pela cliente no portal (i18n). Chamado pelo
+   * LanguageProvider sempre que ela troca de idioma no seletor — assim a
+   * preferência persiste entre dispositivos/sessões, não só no localStorage
+   * do navegador atual.
+   *
+   * Usa a RPC `update_client_language` (SECURITY DEFINER, autenticada por
+   * portal_token) — mesmo padrão de sign_client_contract. Falha aqui não deve
+   * quebrar o fluxo do portal, por isso é silenciosa (apenas console.warn).
+   */
+  async updateClientLanguage(token: string, language: string): Promise<void> {
+    try {
+      const { data, error } = await supabase.rpc('update_client_language', {
+        p_token: token,
+        p_language: language,
+      })
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+    } catch (e) {
+      console.warn('Erro ao salvar idioma do cliente (não crítico):', e)
+    }
   },
 
   async signContract(

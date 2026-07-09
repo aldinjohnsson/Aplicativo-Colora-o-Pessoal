@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { PenLine, Trash2, CheckCircle } from 'lucide-react'
+import { useTranslation } from '../../lib/i18n'
 
 interface SignatureCanvasProps {
   onSignature: (dataUrl: string | null) => void
@@ -10,6 +11,7 @@ interface SignatureCanvasProps {
 }
 
 export function SignatureCanvas({ onSignature, width = 600, height = 180 }: SignatureCanvasProps) {
+  const { t } = useTranslation()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const isDrawingRef = useRef(false)
@@ -167,7 +169,7 @@ export function SignatureCanvas({ onSignature, width = 600, height = 180 }: Sign
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700">
           <PenLine className="h-4 w-4 text-gray-500" />
-          Assinatura <span className="text-red-500">*</span>
+          {t('signature.label')} <span className="text-red-500">*</span>
         </div>
         {!isEmpty && (
           <button
@@ -176,7 +178,7 @@ export function SignatureCanvas({ onSignature, width = 600, height = 180 }: Sign
             className="flex items-center gap-1 px-2.5 py-1 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
           >
             <Trash2 className="h-3.5 w-3.5" />
-            Limpar
+            {t('signature.clear')}
           </button>
         )}
       </div>
@@ -197,7 +199,7 @@ export function SignatureCanvas({ onSignature, width = 600, height = 180 }: Sign
         {isEmpty && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-gray-400">
             <PenLine className="h-6 w-6" />
-            <p className="text-xs">Assine aqui com o dedo ou mouse</p>
+            <p className="text-xs">{t('signature.placeholder')}</p>
           </div>
         )}
 
@@ -219,7 +221,7 @@ export function SignatureCanvas({ onSignature, width = 600, height = 180 }: Sign
         {confirmed && (
           <div className="pointer-events-none absolute top-2 right-2 flex items-center gap-1 bg-green-100 text-green-700 text-xs font-medium px-2 py-1 rounded-full">
             <CheckCircle className="h-3.5 w-3.5" />
-            Confirmada
+            {t('progress.completed')}
           </div>
         )}
       </div>
@@ -232,19 +234,19 @@ export function SignatureCanvas({ onSignature, width = 600, height = 180 }: Sign
           className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
         >
           <CheckCircle className="h-4 w-4" />
-          Confirmar Assinatura
+          {t('signature.confirm')}
         </button>
       )}
 
       {confirmed && (
         <p className="text-xs text-green-600 text-center">
-          ✓ Assinatura registrada. Clique em "Limpar" para refazer.
+          {t('signature.confirmedNote')}
         </p>
       )}
 
       {isEmpty && (
         <p className="text-xs text-gray-400 text-center">
-          Após desenhar, clique em "Confirmar Assinatura"
+          {t('signature.emptyNote')}
         </p>
       )}
     </div>

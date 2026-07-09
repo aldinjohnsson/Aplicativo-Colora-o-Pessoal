@@ -2,6 +2,369 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { PDFDocument, StandardFonts, rgb } from 'https://esm.sh/pdf-lib@1.17.1'
+// ── i18n dos e-mails (inline — sem depender de outro arquivo no deploy) ─────
+//
+// Conteudo do que antes era email-i18n.ts, colado direto aqui para evitar
+// o erro 'Module not found' quando o deploy so envia um arquivo por vez.
+
+export type EmailLanguage = 'pt-BR' | 'en-US' | 'en-GB'
+
+export function resolveEmailLanguage(value: unknown): EmailLanguage {
+  return value === 'en-US' || value === 'en-GB' ? value : 'pt-BR'
+}
+
+function interpolate(template: string, vars?: Record<string, string>): string {
+  if (!vars) return template
+  return template.replace(/\{(\w+)\}/g, (_, key) => (vars[key] !== undefined ? vars[key] : `{${key}}`))
+}
+
+export const EMAIL_TRANSLATIONS = {
+  'pt-BR': {
+    common: {
+      greeting: 'Olá, <strong>{name}</strong>!',
+      anyQuestions: 'Qualquer dúvida, entre em contato com a consultora.',
+      deadlineTitle: '📅 Previsão de entrega',
+      deadlineSub: 'Prazo calculado em dias úteis. Você receberá um aviso quando o resultado estiver pronto.',
+      btnAccessFix: 'Acessar e corrigir',
+      dateLocale: 'pt-BR',
+    },
+    contractSigned: {
+      subject: 'Contrato de {plan}{brandSuffix}',
+      title: 'Contrato Assinado',
+      successTitle: '&#10003; Contrato assinado com sucesso!',
+      successText: 'O PDF do contrato está anexo neste e-mail para seu registro.',
+      labelPlan: 'Plano',
+      labelName: 'Nome',
+      labelEmail: 'E-mail',
+      labelSignedAt: 'Assinado em',
+      labelIp: 'IP',
+      followPortal: 'Acompanhe o andamento da sua análise pelo portal:',
+      btnAccessPortal: 'Acessar meu portal',
+    },
+    analysisApproved: {
+      subject: 'Sua análise foi aprovada!{brandSuffix}',
+      title: 'Análise em Andamento!',
+      successTitle: '&#10003; Tudo certo! Sua análise foi aprovada.',
+      successText: 'Suas fotos e formulário foram revisados e estão prontos para a análise de coloração.',
+      followStatus: 'Acompanhe o status da sua análise pelo portal:',
+      btnViewStatus: 'Ver status da minha análise',
+    },
+    analysisRejected: {
+      subject: 'Ajuste necessário na sua análise{brandSuffix}',
+      title: 'Ajuste Necessário',
+      warnTitle: '&#9888;&#65039; Precisamos de um ajuste antes de continuar',
+      warnText: 'Não se preocupe — seus dados estão salvos. Acesse o portal e ajuste apenas o que for solicitado abaixo.',
+      photosAdjustLabel: '&#128247; Ajuste nas fotos',
+      formAdjustLabel: '&#128203; Ajuste no formulário',
+      goFix: 'Acesse o portal para realizar os ajustes:',
+      afterFixNote: 'Após o ajuste, o envio será feito automaticamente para nova revisão.',
+    },
+    partialResultReleased: {
+      subject: 'Prévia do seu resultado disponível{brandSuffix}',
+      title: 'Prévia do seu Resultado',
+      previewTitle: 'Sua prévia está disponível!',
+      previewText: 'Acesse o portal para conferir o resultado parcial da sua análise.',
+      stillWorkingTitle: '&#9203; Simulações ainda em andamento',
+      stillWorkingSub: 'Nossa consultora ainda está finalizando os últimos detalhes. Você receberá um novo aviso assim que o resultado completo estiver pronto.',
+      btnViewPreview: 'Ver minha prévia',
+    },
+    resultReleased: {
+      subject: 'Sua análise {plan} está pronta!{brandSuffix}',
+      title: 'Sua Análise {plan} está Pronta!',
+      readyTitle: 'Sua análise {plan} está pronta!',
+      readyText: 'Acesse o link abaixo para ver seu resultado completo.',
+      btnViewResult: 'Ver meu resultado',
+      thanksNote: 'Muito obrigada por me escolher para fazer parte dessa descoberta,<br>foi um prazer atender você. &#10084;&#65039;',
+    },
+    photosApproved: {
+      subject: 'Suas fotos foram aprovadas!{brandSuffix}',
+      title: 'Fotos Aprovadas!',
+      successTitle: '&#10003; Suas fotos foram aprovadas!',
+      successText: 'Tudo certo por aqui. Sua análise já está em andamento.',
+      followPortal: 'Acompanhe o andamento da sua análise pelo portal:',
+      btnFollow: 'Acompanhar minha análise',
+    },
+    photosRejected: {
+      subject: 'Suas fotos precisam de um ajuste{brandSuffix}',
+      title: 'Ajuste nas Fotos',
+      warnTitle: '&#9888;&#65039; Precisamos de um ajuste nas suas fotos',
+      warnText: 'Não se preocupe — suas fotos atuais estão salvas. Acesse o portal e substitua apenas o que for solicitado abaixo.',
+      reasonLabel: '&#128247; Motivo do ajuste',
+      goSendNew: 'Acesse o portal para enviar as novas fotos:',
+      afterResendNote: 'Após o reenvio, suas fotos serão revisadas novamente.',
+    },
+    formRejected: {
+      subject: 'Seu formulário precisa de um ajuste{brandSuffix}',
+      title: 'Ajuste no Formulário',
+      warnTitle: '&#9888;&#65039; Precisamos de um ajuste no seu formulário',
+      warnText: 'Não se preocupe — seus dados estão salvos. Acesse o portal e corrija apenas o que for solicitado abaixo.',
+      reasonLabel: '&#128203; Motivo do ajuste',
+      goCorrect: 'Acesse o portal para realizar a correção:',
+      afterCorrectNote: 'Após a correção, o formulário será reenviado automaticamente para revisão.',
+    },
+    bothRejected: {
+      subject: 'Ajustes necessários na sua análise{brandSuffix}',
+      title: 'Ajustes Necessários',
+      warnTitle: '&#9888;&#65039; Precisamos de alguns ajustes antes de continuar',
+      warnText: 'Não se preocupe — seus dados estão salvos. Acesse o portal e corrija apenas o que for solicitado abaixo.',
+      photosAdjustLabel: '&#128247; Ajuste nas fotos',
+      formAdjustLabel: '&#128203; Ajuste no formulário',
+      goFix: 'Acesse o portal para realizar os ajustes:',
+      afterFixNote: 'Após os ajustes, o envio será feito automaticamente para nova revisão.',
+    },
+    pdfContract: {
+      defaultTitle: 'Contrato de Prestação de Serviços',
+      contractorSection: 'CONTRATANTE',
+      planLabel: 'Plano',
+      signedBadge: '[ASSINADO]  Aceito digitalmente por {name}',
+      onDate: 'em {datetime}',
+      atSeparator: 'às',
+      emailLabel: 'E-mail',
+      ipLabel: 'IP do signatario',
+      handwrittenSignature: 'Assinatura manuscrita digital:',
+      signatureFallback: 'Assinatura',
+      confirmationText: 'O contratante declara ter lido, compreendido e aceito todos os termos e condicoes deste contrato.',
+      pageOf: 'Pagina {current} de {total}',
+    },
+  },
+
+  'en-US': {
+    common: {
+      greeting: 'Hi, <strong>{name}</strong>!',
+      anyQuestions: 'If you have any questions, contact your consultant.',
+      deadlineTitle: '📅 Estimated delivery',
+      deadlineSub: 'Timeframe calculated in business days. You will get a notice once your results are ready.',
+      btnAccessFix: 'Go to portal and fix',
+      dateLocale: 'en-US',
+    },
+    contractSigned: {
+      subject: '{plan} contract{brandSuffix}',
+      title: 'Contract Signed',
+      successTitle: '&#10003; Contract signed successfully!',
+      successText: 'The contract PDF is attached to this email for your records.',
+      labelPlan: 'Plan',
+      labelName: 'Name',
+      labelEmail: 'Email',
+      labelSignedAt: 'Signed on',
+      labelIp: 'IP',
+      followPortal: 'Track your analysis progress on the portal:',
+      btnAccessPortal: 'Go to my portal',
+    },
+    analysisApproved: {
+      subject: 'Your analysis was approved!{brandSuffix}',
+      title: 'Analysis In Progress!',
+      successTitle: '&#10003; All set! Your analysis was approved.',
+      successText: 'Your photos and form have been reviewed and are ready for your color analysis.',
+      followStatus: 'Track the status of your analysis on the portal:',
+      btnViewStatus: 'View my analysis status',
+    },
+    analysisRejected: {
+      subject: 'Your analysis needs an adjustment{brandSuffix}',
+      title: 'Adjustment Needed',
+      warnTitle: '&#9888;&#65039; We need an adjustment before continuing',
+      warnText: "Don't worry — your data is saved. Go to the portal and adjust only what's requested below.",
+      photosAdjustLabel: '&#128247; Adjustment on photos',
+      formAdjustLabel: '&#128203; Adjustment on form',
+      goFix: 'Go to the portal to make the adjustments:',
+      afterFixNote: 'After the adjustment, it will be automatically sent for a new review.',
+    },
+    partialResultReleased: {
+      subject: 'Your results preview is available{brandSuffix}',
+      title: 'Your Results Preview',
+      previewTitle: 'Your preview is available!',
+      previewText: 'Go to the portal to check the partial results of your analysis.',
+      stillWorkingTitle: '&#9203; Simulations still in progress',
+      stillWorkingSub: "Your consultant is still finishing the last details. You'll get a new notice as soon as the full results are ready.",
+      btnViewPreview: 'View my preview',
+    },
+    resultReleased: {
+      subject: 'Your {plan} analysis is ready!{brandSuffix}',
+      title: 'Your {plan} Analysis is Ready!',
+      readyTitle: 'Your {plan} analysis is ready!',
+      readyText: 'Follow the link below to see your full results.',
+      btnViewResult: 'View my results',
+      thanksNote: 'Thank you so much for choosing me for this discovery,<br>it was a pleasure working with you. &#10084;&#65039;',
+    },
+    photosApproved: {
+      subject: 'Your photos were approved!{brandSuffix}',
+      title: 'Photos Approved!',
+      successTitle: '&#10003; Your photos were approved!',
+      successText: "You're all set. Your analysis is already in progress.",
+      followPortal: 'Track your analysis progress on the portal:',
+      btnFollow: 'Track my analysis',
+    },
+    photosRejected: {
+      subject: 'Your photos need an adjustment{brandSuffix}',
+      title: 'Photo Adjustment',
+      warnTitle: '&#9888;&#65039; We need an adjustment on your photos',
+      warnText: "Don't worry — your current photos are saved. Go to the portal and replace only what's requested below.",
+      reasonLabel: '&#128247; Reason for the adjustment',
+      goSendNew: 'Go to the portal to send the new photos:',
+      afterResendNote: 'After resubmitting, your photos will be reviewed again.',
+    },
+    formRejected: {
+      subject: 'Your form needs an adjustment{brandSuffix}',
+      title: 'Form Adjustment',
+      warnTitle: '&#9888;&#65039; We need an adjustment on your form',
+      warnText: "Don't worry — your data is saved. Go to the portal and fix only what's requested below.",
+      reasonLabel: '&#128203; Reason for the adjustment',
+      goCorrect: 'Go to the portal to make the correction:',
+      afterCorrectNote: 'After the correction, the form will be automatically resent for review.',
+    },
+    bothRejected: {
+      subject: 'Adjustments needed on your analysis{brandSuffix}',
+      title: 'Adjustments Needed',
+      warnTitle: '&#9888;&#65039; We need a few adjustments before continuing',
+      warnText: "Don't worry — your data is saved. Go to the portal and fix only what's requested below.",
+      photosAdjustLabel: '&#128247; Adjustment on photos',
+      formAdjustLabel: '&#128203; Adjustment on form',
+      goFix: 'Go to the portal to make the adjustments:',
+      afterFixNote: 'After the adjustments, it will be automatically sent for a new review.',
+    },
+    pdfContract: {
+      defaultTitle: 'Service Agreement',
+      contractorSection: 'CLIENT',
+      planLabel: 'Plan',
+      signedBadge: '[SIGNED]  Digitally accepted by {name}',
+      onDate: 'on {datetime}',
+      atSeparator: 'at',
+      emailLabel: 'Email',
+      ipLabel: 'Signatory IP',
+      handwrittenSignature: 'Digital handwritten signature:',
+      signatureFallback: 'Signature',
+      confirmationText: 'The client declares having read, understood, and accepted all terms and conditions of this contract.',
+      pageOf: 'Page {current} of {total}',
+    },
+  },
+
+  'en-GB': {
+    common: {
+      greeting: 'Hi, <strong>{name}</strong>!',
+      anyQuestions: 'If you have any questions, contact your consultant.',
+      deadlineTitle: '📅 Estimated delivery',
+      deadlineSub: 'Timeframe calculated in working days. You will get a notice once your results are ready.',
+      btnAccessFix: 'Go to portal and fix',
+      dateLocale: 'en-GB',
+    },
+    contractSigned: {
+      subject: '{plan} contract{brandSuffix}',
+      title: 'Contract Signed',
+      successTitle: '&#10003; Contract signed successfully!',
+      successText: 'The contract PDF is attached to this email for your records.',
+      labelPlan: 'Plan',
+      labelName: 'Name',
+      labelEmail: 'Email',
+      labelSignedAt: 'Signed on',
+      labelIp: 'IP',
+      followPortal: 'Track your analysis progress on the portal:',
+      btnAccessPortal: 'Go to my portal',
+    },
+    analysisApproved: {
+      subject: 'Your analysis was approved!{brandSuffix}',
+      title: 'Analysis In Progress!',
+      successTitle: '&#10003; All set! Your analysis was approved.',
+      successText: 'Your photos and form have been reviewed and are ready for your colour analysis.',
+      followStatus: 'Track the status of your analysis on the portal:',
+      btnViewStatus: 'View my analysis status',
+    },
+    analysisRejected: {
+      subject: 'Your analysis needs an adjustment{brandSuffix}',
+      title: 'Adjustment Needed',
+      warnTitle: '&#9888;&#65039; We need an adjustment before continuing',
+      warnText: "Don't worry — your data is saved. Go to the portal and adjust only what's requested below.",
+      photosAdjustLabel: '&#128247; Adjustment on photos',
+      formAdjustLabel: '&#128203; Adjustment on form',
+      goFix: 'Go to the portal to make the adjustments:',
+      afterFixNote: 'After the adjustment, it will be automatically sent for a new review.',
+    },
+    partialResultReleased: {
+      subject: 'Your results preview is available{brandSuffix}',
+      title: 'Your Results Preview',
+      previewTitle: 'Your preview is available!',
+      previewText: 'Go to the portal to check the partial results of your analysis.',
+      stillWorkingTitle: '&#9203; Simulations still in progress',
+      stillWorkingSub: "Your consultant is still finishing the last details. You'll get a new notice as soon as the full results are ready.",
+      btnViewPreview: 'View my preview',
+    },
+    resultReleased: {
+      subject: 'Your {plan} analysis is ready!{brandSuffix}',
+      title: 'Your {plan} Analysis is Ready!',
+      readyTitle: 'Your {plan} analysis is ready!',
+      readyText: 'Follow the link below to see your full results.',
+      btnViewResult: 'View my results',
+      thanksNote: 'Thank you so much for choosing me for this discovery,<br>it was a pleasure working with you. &#10084;&#65039;',
+    },
+    photosApproved: {
+      subject: 'Your photos were approved!{brandSuffix}',
+      title: 'Photos Approved!',
+      successTitle: '&#10003; Your photos were approved!',
+      successText: "You're all set. Your analysis is already in progress.",
+      followPortal: 'Track your analysis progress on the portal:',
+      btnFollow: 'Track my analysis',
+    },
+    photosRejected: {
+      subject: 'Your photos need an adjustment{brandSuffix}',
+      title: 'Photo Adjustment',
+      warnTitle: '&#9888;&#65039; We need an adjustment on your photos',
+      warnText: "Don't worry — your current photos are saved. Go to the portal and replace only what's requested below.",
+      reasonLabel: '&#128247; Reason for the adjustment',
+      goSendNew: 'Go to the portal to send the new photos:',
+      afterResendNote: 'After resubmitting, your photos will be reviewed again.',
+    },
+    formRejected: {
+      subject: 'Your form needs an adjustment{brandSuffix}',
+      title: 'Form Adjustment',
+      warnTitle: '&#9888;&#65039; We need an adjustment on your form',
+      warnText: "Don't worry — your data is saved. Go to the portal and fix only what's requested below.",
+      reasonLabel: '&#128203; Reason for the adjustment',
+      goCorrect: 'Go to the portal to make the correction:',
+      afterCorrectNote: 'After the correction, the form will be automatically resent for review.',
+    },
+    bothRejected: {
+      subject: 'Adjustments needed on your analysis{brandSuffix}',
+      title: 'Adjustments Needed',
+      warnTitle: '&#9888;&#65039; We need a few adjustments before continuing',
+      warnText: "Don't worry — your data is saved. Go to the portal and fix only what's requested below.",
+      photosAdjustLabel: '&#128247; Adjustment on photos',
+      formAdjustLabel: '&#128203; Adjustment on form',
+      goFix: 'Go to the portal to make the adjustments:',
+      afterFixNote: 'After the adjustments, it will be automatically sent for a new review.',
+    },
+    pdfContract: {
+      defaultTitle: 'Service Agreement',
+      contractorSection: 'CLIENT',
+      planLabel: 'Plan',
+      signedBadge: '[SIGNED]  Digitally accepted by {name}',
+      onDate: 'on {datetime}',
+      atSeparator: 'at',
+      emailLabel: 'Email',
+      ipLabel: 'Signatory IP',
+      handwrittenSignature: 'Digital handwritten signature:',
+      signatureFallback: 'Signature',
+      confirmationText: 'The client declares having read, understood, and accepted all terms and conditions of this contract.',
+      pageOf: 'Page {current} of {total}',
+    },
+  },
+} as const
+
+type Dict = typeof EMAIL_TRANSLATIONS['pt-BR']
+
+/** Busca `t(lang, 'contractSigned.subject', { plan: 'Plano 1' })` com fallback pt-BR. */
+export function t(
+  lang: EmailLanguage,
+  key: string,
+  vars?: Record<string, string>
+): string {
+  const dict = (EMAIL_TRANSLATIONS[lang] ?? EMAIL_TRANSLATIONS['pt-BR']) as Dict
+  const fallback = EMAIL_TRANSLATIONS['pt-BR'] as Dict
+  const [section, field] = key.split('.') as [keyof Dict, string]
+  const value =
+    (dict[section] as any)?.[field] ??
+    (fallback[section] as any)?.[field] ??
+    key
+  return interpolate(value, vars)
+}
+
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -84,6 +447,7 @@ async function generateContractPDF(
   clientIp?: string,
   signatureDataUrl?: string,
   brandName?: string,
+  lang: EmailLanguage = 'pt-BR',
 ): Promise<Uint8Array> {
   const pdfDoc      = await PDFDocument.create()
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
@@ -133,13 +497,13 @@ async function generateContractPDF(
     color: rgb(0.96, 0.96, 0.98),
     borderColor: rgb(0.88, 0.88, 0.92), borderWidth: 0.5,
   })
-  page.drawText('CONTRATANTE', {
+  page.drawText(t(lang, 'pdfContract.contractorSection'), {
     x: MARGIN + 14, y: y - 16, size: 9, font: fontBold, color: rgb(0.4, 0.4, 0.5),
   })
   page.drawText(clientName, {
     x: MARGIN + 14, y: y - 32, size: 11, font: fontBold, color: rgb(0.1, 0.1, 0.1),
   })
-  page.drawText(`${clientEmail}  -  Plano: ${planName}`, {
+  page.drawText(`${clientEmail}  -  ${t(lang, 'pdfContract.planLabel')}: ${planName}`, {
     x: MARGIN + 14, y: y - 48, size: 10, font: fontRegular, color: rgb(0.4, 0.4, 0.45),
   })
   y -= 84
@@ -200,33 +564,33 @@ async function generateContractPDF(
 
   // Data e hora com segundos (timezone Brasil — servidor roda em UTC)
   const signDate    = new Date(signedAt)
-  const dateStr     = signDate.toLocaleDateString('pt-BR', {
+  const dateStr     = signDate.toLocaleDateString(lang, {
     day: '2-digit', month: '2-digit', year: 'numeric',
     timeZone: 'America/Sao_Paulo',
   })
-  const timeStr     = signDate.toLocaleTimeString('pt-BR', {
+  const timeStr     = signDate.toLocaleTimeString(lang, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     timeZone: 'America/Sao_Paulo',
   })
-  const datetimeStr = `${dateStr} às ${timeStr}`
+  const datetimeStr = `${dateStr} ${t(lang, 'pdfContract.atSeparator')} ${timeStr}`
 
-  page.drawText(`[ASSINADO]  Aceito digitalmente por ${clientName}`, {
+  page.drawText(t(lang, 'pdfContract.signedBadge', { name: clientName }), {
     x: MARGIN, y, size: 10, font: fontBold, color: rgb(0.13, 0.55, 0.33),
   })
   y -= LINE_HEIGHT
 
-  page.drawText(`em ${datetimeStr}`, {
+  page.drawText(t(lang, 'pdfContract.onDate', { datetime: datetimeStr }), {
     x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45),
   })
   y -= LINE_HEIGHT
 
-  page.drawText(`E-mail: ${clientEmail}`, {
+  page.drawText(`${t(lang, 'pdfContract.emailLabel')}: ${clientEmail}`, {
     x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45),
   })
   y -= LINE_HEIGHT
 
   if (clientIp) {
-    page.drawText(`IP do signatario: ${clientIp}`, {
+    page.drawText(`${t(lang, 'pdfContract.ipLabel')}: ${clientIp}`, {
       x: MARGIN + 14, y, size: 9, font: fontRegular, color: rgb(0.42, 0.42, 0.45),
     })
     y -= LINE_HEIGHT
@@ -244,7 +608,7 @@ async function generateContractPDF(
       const sigW = 160
       const sigH = 48
 
-      page.drawText('Assinatura manuscrita digital:', {
+      page.drawText(t(lang, 'pdfContract.handwrittenSignature'), {
         x: MARGIN, y, size: 8, font: fontBold, color: rgb(0.3, 0.3, 0.3),
       })
       y -= 6
@@ -286,7 +650,7 @@ async function generateContractPDF(
       start: { x: MARGIN, y: y - 12 }, end: { x: MARGIN + 120, y: y - 12 },
       thickness: 0.5, color: rgb(0, 0, 0),
     })
-    page.drawText('Assinatura', {
+    page.drawText(t(lang, 'pdfContract.signatureFallback'), {
       x: MARGIN, y: y - 22, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.6),
     })
     y -= 30
@@ -294,8 +658,7 @@ async function generateContractPDF(
 
   // ── Declaração legal ──────────────────────────────────────────────────────
   y -= 4
-  const declarationText =
-    'O contratante declara ter lido, compreendido e aceito todos os termos e condicoes deste contrato.'
+  const declarationText = t(lang, 'pdfContract.confirmationText')
   const declarationLines = wrapText(declarationText, fontRegular, 8, CONTENT_W - 20)
   const declBoxH = declarationLines.length * 12 + 16
 
@@ -317,9 +680,10 @@ async function generateContractPDF(
   const pages = pdfDoc.getPages()
   const footerBrand = (brandName || '').trim()
   pages.forEach((p, i) => {
+    const pageLabel = t(lang, 'pdfContract.pageOf', { current: String(i + 1), total: String(pages.length) })
     const text = footerBrand
-      ? `${footerBrand}  -  Pagina ${i + 1} de ${pages.length}`
-      : `Pagina ${i + 1} de ${pages.length}`
+      ? `${footerBrand}  -  ${pageLabel}`
+      : pageLabel
     p.drawText(
       text,
       { x: MARGIN, y: 30, size: 8, font: fontRegular, color: rgb(0.6, 0.6, 0.65) }
@@ -331,7 +695,7 @@ async function generateContractPDF(
 
 // ── Template base de e-mail (responsivo para mobile) ─────────────────────────
 
-function buildEmail(title: string, greeting: string, body: string, brandName?: string): string {
+function buildEmail(title: string, greeting: string, body: string, brandName?: string, lang: EmailLanguage = 'pt-BR'): string {
   const brand = (brandName || '').trim()
   const headerBrandHtml = brand
     ? `<p class="header-brand" style="margin: 0 0 4px; font-size: 11px; color: #ffe4e6; letter-spacing: 2px; text-transform: uppercase;">${brand}</p>`
@@ -340,7 +704,7 @@ function buildEmail(title: string, greeting: string, body: string, brandName?: s
     ? `<p class="footer-brand" style="margin: 28px 0 0; color: #9ca3af; font-size: 11px; text-align: center;">${brand}</p>`
     : ''
   return `<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -476,12 +840,13 @@ serve(async (req) => {
       email?: string
       admin_id?: string | null
       plan_name?: string
+      language?: string | null
     } | null = null
 
     if (payload.clientToken) {
       const { data: row } = await supabaseClient
         .from('clients')
-        .select('full_name, email, admin_id, plan:plans(name)')
+        .select('full_name, email, admin_id, plan:plans(name), language')
         .eq('token', payload.clientToken)
         .maybeSingle()
 
@@ -491,6 +856,7 @@ serve(async (req) => {
           email:     (row as any).email     ?? '',
           admin_id:  (row as any).admin_id  ?? null,
           plan_name: (row as any).plan?.name ?? '',
+          language:  (row as any).language  ?? null,
         }
         console.log(`[${emailType}] cliente hidratado via clientToken: email=${clientFromDb.email} admin_id=${clientFromDb.admin_id ?? 'NULL'}`)
       } else {
@@ -525,6 +891,15 @@ serve(async (req) => {
 
     const cfg = settingsRow?.content as any
     const ADMIN_EMAIL = cfg?.adminEmail
+
+    // Idioma da CLIENTE para os e-mails que vao pra ela (contrato, aprovacao,
+    // ajuste, resultado...). Prioridade: idioma explicito no payload (caso o
+    // front va mandar no futuro) -> idioma ja salvo em clients.language ->
+    // idioma padrao do admin (settings.defaultLanguage) -> pt-BR.
+    // Os e-mails que vao SO pro admin continuam sempre em portugues.
+    const clientLanguage = resolveEmailLanguage(
+      payload.clientLanguage || clientFromDb?.language || cfg?.defaultLanguage
+    )
 
     // ─── Config global compartilhada (super_admin) ─────────────────────────
     //
@@ -591,8 +966,12 @@ serve(async (req) => {
 
     // Wrapper que injeta o BRAND automaticamente em todas as chamadas de buildEmail.
     // Evita repetir BRAND como último argumento em cada uma das ~12 chamadas.
-    const renderEmail = (title: string, greeting: string, body: string) =>
-      buildEmail(title, greeting, body, BRAND)
+    const renderEmail = (title: string, greeting: string, body: string, lang: EmailLanguage = 'pt-BR') =>
+      buildEmail(title, greeting, body, BRAND, lang)
+
+    // Atalho para os e-mails de CLIENTE: ja injeta o idioma dela automaticamente.
+    const renderClientEmail = (title: string, greeting: string, body: string) =>
+      renderEmail(title, greeting, body, clientLanguage)
 
     if (!RESEND_API_KEY || !ADMIN_EMAIL) {
       console.warn(`[${emailType}] E-mail nao configurado para admin ${adminId}. Pulando envio. (resendKey=${!!RESEND_API_KEY}, adminEmail=${!!ADMIN_EMAIL})`)
@@ -633,14 +1012,17 @@ serve(async (req) => {
       const contractIp           = (payload.ip             || '').trim()
       const contractSignatureUrl = (payload.signatureDataUrl || '').trim()
 
-      const portalUrl     = sanitizePortalUrl(payload.portalUrl || '')
-      const formattedDate = new Date(signedAt).toLocaleString('pt-BR', {
+      const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
+      const dateOpts: Intl.DateTimeFormatOptions = {
         day: '2-digit', month: 'long', year: 'numeric',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
         timeZone: 'America/Sao_Paulo',
-      })
+      }
+      // Admin sempre ve em pt-BR; a cliente ve no idioma que ela escolheu.
+      const formattedDateAdmin  = new Date(signedAt).toLocaleString('pt-BR', dateOpts)
+      const formattedDateClient = new Date(signedAt).toLocaleString(clientLanguage, dateOpts)
 
-      const title = contractTitle ?? 'CONTRATO DE PRESTACAO DE SERVICOS'
+      const title = contractTitle ?? t(clientLanguage, 'pdfContract.defaultTitle')
       let pdfBase64 = ''
 
       if (sections?.length) {
@@ -654,6 +1036,7 @@ serve(async (req) => {
           contractIp           || undefined,
           contractSignatureUrl || undefined,
           BRAND,
+          clientLanguage,
         )
         let binary = ''
         for (let i = 0; i < pdfBytes.length; i++) binary += String.fromCharCode(pdfBytes[i])
@@ -664,24 +1047,24 @@ serve(async (req) => {
         ? [{ filename: `Contrato - ${planName}.pdf`, content: pdfBase64 }]
         : []
 
-      const subject = `Contrato de ${planName}${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'contractSigned.subject', { plan: planName, brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        'Contrato Assinado',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'contractSigned.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-green">
-          <p class="alert-green-title">&#10003; Contrato assinado com sucesso!</p>
-          <p class="alert-green-text">O PDF do contrato esta anexo neste e-mail para seu registro.</p>
+          <p class="alert-green-title">${t(clientLanguage, 'contractSigned.successTitle')}</p>
+          <p class="alert-green-text">${t(clientLanguage, 'contractSigned.successText')}</p>
         </div>
         ${infoTable([
-          ['Plano',       planName],
-          ['Nome',        clientName],
-          ['E-mail',      clientEmail],
-          ['Assinado em', formattedDate],
-          ...(contractIp ? [['IP', contractIp] as [string, string]] : []),
+          [t(clientLanguage, 'contractSigned.labelPlan'),     planName],
+          [t(clientLanguage, 'contractSigned.labelName'),     clientName],
+          [t(clientLanguage, 'contractSigned.labelEmail'),    clientEmail],
+          [t(clientLanguage, 'contractSigned.labelSignedAt'), formattedDateClient],
+          ...(contractIp ? [[t(clientLanguage, 'contractSigned.labelIp'), contractIp] as [string, string]] : []),
         ])}
         ${portalUrl
-          ? `<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 0">Acompanhe o andamento da sua analise pelo portal:</p>${linkButton(portalUrl, 'Acessar meu portal')}`
+          ? `<p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 0">${t(clientLanguage, 'contractSigned.followPortal')}</p>${linkButton(portalUrl, t(clientLanguage, 'contractSigned.btnAccessPortal'))}`
           : ''
         }`
       )
@@ -693,7 +1076,7 @@ serve(async (req) => {
           ['Cliente',     clientName],
           ['E-mail',      clientEmail],
           ['Plano',       planName],
-          ['Assinado em', formattedDate],
+          ['Assinado em', formattedDateAdmin],
           ...(contractIp ? [['IP', contractIp] as [string, string]] : []),
         ])}`
       )
@@ -731,30 +1114,30 @@ serve(async (req) => {
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDeadline = deadlineDate
-        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', {
+        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString(clientLanguage, {
             weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
             timeZone: 'America/Sao_Paulo',
           })
         : ''
 
-      const subject = `Sua analise foi aprovada!${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'analysisApproved.subject', { brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        'Analise em Andamento!',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'analysisApproved.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-green">
-          <p class="alert-green-title">&#10003; Tudo certo! Sua analise foi aprovada.</p>
-          <p class="alert-green-text">Suas fotos e formulario foram revisados e estao prontos para a analise de coloracao.</p>
+          <p class="alert-green-title">${t(clientLanguage, 'analysisApproved.successTitle')}</p>
+          <p class="alert-green-text">${t(clientLanguage, 'analysisApproved.successText')}</p>
         </div>
         ${formattedDeadline ? `
         <div class="alert-yellow">
-          <p class="alert-yellow-title">&#128197; Previsao de entrega</p>
+          <p class="alert-yellow-title">${t(clientLanguage, 'common.deadlineTitle')}</p>
           <p class="alert-yellow-value">${formattedDeadline}</p>
-          <p class="alert-yellow-sub">Prazo calculado em dias uteis. Voce recebera um aviso quando o resultado estiver pronto.</p>
+          <p class="alert-yellow-sub">${t(clientLanguage, 'common.deadlineSub')}</p>
         </div>` : ''}
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">Acompanhe o status da sua analise pelo portal:</p>
-        ${linkButton(portalUrl, 'Ver status da minha analise')}
-        <p class="small-center">Qualquer duvida, entre em contato com a consultora.</p>`
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">${t(clientLanguage, 'analysisApproved.followStatus')}</p>
+        ${linkButton(portalUrl, t(clientLanguage, 'analysisApproved.btnViewStatus'))}
+        <p class="small-center">${t(clientLanguage, 'common.anyQuestions')}</p>`
       )
 
       const results = await Promise.allSettled([
@@ -771,32 +1154,32 @@ serve(async (req) => {
       const { rejectPhotos, photosReason, rejectForm, formReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
-      const subject = `Ajuste necessario na sua analise${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'analysisRejected.subject', { brandSuffix: BRAND_SUFFIX })
 
       const rejectionBlocks = [
         rejectPhotos && photosReason ? `
         <div class="rejection-box rejection-purple">
-          <p class="rejection-type rejection-type-purple">&#128247; Ajuste nas fotos</p>
+          <p class="rejection-type rejection-type-purple">${t(clientLanguage, 'analysisRejected.photosAdjustLabel')}</p>
           <p class="rejection-reason">${photosReason}</p>
         </div>` : '',
         rejectForm && formReason ? `
         <div class="rejection-box rejection-blue">
-          <p class="rejection-type rejection-type-blue">&#128203; Ajuste no formulario</p>
+          <p class="rejection-type rejection-type-blue">${t(clientLanguage, 'analysisRejected.formAdjustLabel')}</p>
           <p class="rejection-reason">${formReason}</p>
         </div>` : '',
       ].filter(Boolean).join('')
 
-      const clientHtml = renderEmail(
-        'Ajuste Necessario',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'analysisRejected.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-amber">
-          <p class="alert-amber-title">&#9888;&#65039; Precisamos de um ajuste antes de continuar</p>
-          <p class="alert-amber-text">Nao se preocupe — seus dados estao salvos. Acesse o portal e ajuste apenas o que for solicitado abaixo.</p>
+          <p class="alert-amber-title">${t(clientLanguage, 'analysisRejected.warnTitle')}</p>
+          <p class="alert-amber-text">${t(clientLanguage, 'analysisRejected.warnText')}</p>
         </div>
         ${rejectionBlocks}
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para realizar os ajustes:</p>
-        ${linkButton(portalUrl, 'Acessar e corrigir')}
-        <p class="small-center">Apos o ajuste, o envio sera feito automaticamente para nova revisao.</p>`
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">${t(clientLanguage, 'analysisRejected.goFix')}</p>
+        ${linkButton(portalUrl, t(clientLanguage, 'common.btnAccessFix'))}
+        <p class="small-center">${t(clientLanguage, 'analysisRejected.afterFixNote')}</p>`
       )
 
       const results = await Promise.allSettled([
@@ -811,22 +1194,22 @@ serve(async (req) => {
     // ============================================================
     if (emailType === 'partial_result_released') {
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject   = `Prévia do seu resultado disponível${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'partialResultReleased.subject', { brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        `Prévia do seu Resultado`,
-        `Olá, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'partialResultReleased.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-pink">
           <p class="alert-pink-emoji">✨</p>
-          <p class="alert-pink-title">Sua prévia está disponível!</p>
-          <p class="alert-pink-text">Acesse o portal para conferir o resultado parcial da sua análise.</p>
+          <p class="alert-pink-title">${t(clientLanguage, 'partialResultReleased.previewTitle')}</p>
+          <p class="alert-pink-text">${t(clientLanguage, 'partialResultReleased.previewText')}</p>
         </div>
         <div class="alert-yellow">
-          <p class="alert-yellow-title">⏳ Simulações ainda em andamento</p>
-          <p class="alert-yellow-sub">Nossa consultora ainda está finalizando os últimos detalhes. Você receberá um novo aviso assim que o resultado completo estiver pronto.</p>
+          <p class="alert-yellow-title">${t(clientLanguage, 'partialResultReleased.stillWorkingTitle')}</p>
+          <p class="alert-yellow-sub">${t(clientLanguage, 'partialResultReleased.stillWorkingSub')}</p>
         </div>
-        ${linkButton(portalUrl, 'Ver minha prévia')}
-        <p class="small-center">Qualquer dúvida, entre em contato com a consultora.</p>`
+        ${linkButton(portalUrl, t(clientLanguage, 'partialResultReleased.btnViewPreview'))}
+        <p class="small-center">${t(clientLanguage, 'common.anyQuestions')}</p>`
       )
 
       const results = await Promise.allSettled([
@@ -841,20 +1224,19 @@ serve(async (req) => {
     // ============================================================
     if (emailType === 'result_released') {
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject   = `Sua analise ${planName} esta pronta!${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'resultReleased.subject', { plan: planName, brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        `Sua Analise ${planName} esta Pronta!`,
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'resultReleased.title', { plan: planName }),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-pink">
           <p class="alert-pink-emoji">&#127881;</p>
-          <p class="alert-pink-title">Sua analise ${planName} esta pronta!</p>
-          <p class="alert-pink-text">Acesse o link abaixo para ver seu resultado completo.</p>
+          <p class="alert-pink-title">${t(clientLanguage, 'resultReleased.readyTitle', { plan: planName })}</p>
+          <p class="alert-pink-text">${t(clientLanguage, 'resultReleased.readyText')}</p>
         </div>
-        ${linkButton(portalUrl, 'Ver meu resultado')}
+        ${linkButton(portalUrl, t(clientLanguage, 'resultReleased.btnViewResult'))}
         <p class="small-center">
-          Muito obrigada por me escolher para fazer parte dessa descoberta,<br>
-          foi um prazer atender voce. &#10084;&#65039;
+          ${t(clientLanguage, 'resultReleased.thanksNote')}
         </p>`
       )
 
@@ -873,30 +1255,30 @@ serve(async (req) => {
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
 
       const formattedDeadline = deadlineDate
-        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString('pt-BR', {
+        ? new Date(deadlineDate + 'T12:00:00').toLocaleDateString(clientLanguage, {
             weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
             timeZone: 'America/Sao_Paulo',
           })
         : ''
 
-      const subject = `Suas fotos foram aprovadas!${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'photosApproved.subject', { brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        'Fotos Aprovadas!',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'photosApproved.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-green">
-          <p class="alert-green-title">&#10003; Suas fotos foram aprovadas!</p>
-          <p class="alert-green-text">Tudo certo por aqui. Sua analise ja está em andamento.</p>
+          <p class="alert-green-title">${t(clientLanguage, 'photosApproved.successTitle')}</p>
+          <p class="alert-green-text">${t(clientLanguage, 'photosApproved.successText')}</p>
         </div>
         ${formattedDeadline ? `
         <div class="alert-yellow">
-          <p class="alert-yellow-title">&#128197; Previsao de entrega</p>
+          <p class="alert-yellow-title">${t(clientLanguage, 'common.deadlineTitle')}</p>
           <p class="alert-yellow-value">${formattedDeadline}</p>
-          <p class="alert-yellow-sub">Prazo calculado em dias uteis. Voce recebera um aviso quando o resultado estiver pronto.</p>
+          <p class="alert-yellow-sub">${t(clientLanguage, 'common.deadlineSub')}</p>
         </div>` : ''}
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">Acompanhe o andamento da sua analise pelo portal:</p>
-        ${linkButton(portalUrl, 'Acompanhar minha analise')}
-        <p class="small-center">Qualquer duvida, entre em contato com a consultora.</p>`
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 4px">${t(clientLanguage, 'photosApproved.followPortal')}</p>
+        ${linkButton(portalUrl, t(clientLanguage, 'photosApproved.btnFollow'))}
+        <p class="small-center">${t(clientLanguage, 'common.anyQuestions')}</p>`
       )
 
       const results = await Promise.allSettled([
@@ -912,22 +1294,22 @@ serve(async (req) => {
     if (emailType === 'photos_rejected') {
       const { reason } = payload
       const portalUrl  = sanitizePortalUrl(payload.portalUrl || '')
-      const subject    = `Suas fotos precisam de um ajuste${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'photosRejected.subject', { brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        'Ajuste nas Fotos',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'photosRejected.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-amber">
-          <p class="alert-amber-title">&#9888;&#65039; Precisamos de um ajuste nas suas fotos</p>
-          <p class="alert-amber-text">Nao se preocupe — suas fotos atuais estao salvas. Acesse o portal e substitua apenas o que for solicitado abaixo.</p>
+          <p class="alert-amber-title">${t(clientLanguage, 'photosRejected.warnTitle')}</p>
+          <p class="alert-amber-text">${t(clientLanguage, 'photosRejected.warnText')}</p>
         </div>
         <div class="rejection-box rejection-purple">
-          <p class="rejection-type rejection-type-purple">&#128247; Motivo do ajuste</p>
+          <p class="rejection-type rejection-type-purple">${t(clientLanguage, 'photosRejected.reasonLabel')}</p>
           <p class="rejection-reason">${reason}</p>
         </div>
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para enviar as novas fotos:</p>
-        ${linkButton(portalUrl, 'Acessar portal e corrigir')}
-        <p class="small-center">Apos o reenvio, suas fotos serao revisadas novamente.</p>`
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">${t(clientLanguage, 'photosRejected.goSendNew')}</p>
+        ${linkButton(portalUrl, t(clientLanguage, 'common.btnAccessFix'))}
+        <p class="small-center">${t(clientLanguage, 'photosRejected.afterResendNote')}</p>`
       )
 
       const results = await Promise.allSettled([
@@ -943,22 +1325,22 @@ serve(async (req) => {
     if (emailType === 'form_rejected') {
       const { reason } = payload
       const portalUrl  = sanitizePortalUrl(payload.portalUrl || '')
-      const subject    = `Seu formulario precisa de um ajuste${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'formRejected.subject', { brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        'Ajuste no Formulario',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'formRejected.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-amber">
-          <p class="alert-amber-title">&#9888;&#65039; Precisamos de um ajuste no seu formulario</p>
-          <p class="alert-amber-text">Nao se preocupe — seus dados estao salvos. Acesse o portal e corrija apenas o que for solicitado abaixo.</p>
+          <p class="alert-amber-title">${t(clientLanguage, 'formRejected.warnTitle')}</p>
+          <p class="alert-amber-text">${t(clientLanguage, 'formRejected.warnText')}</p>
         </div>
         <div class="rejection-box rejection-blue">
-          <p class="rejection-type rejection-type-blue">&#128203; Motivo do ajuste</p>
+          <p class="rejection-type rejection-type-blue">${t(clientLanguage, 'formRejected.reasonLabel')}</p>
           <p class="rejection-reason">${reason}</p>
         </div>
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para realizar a correcao:</p>
-        ${linkButton(portalUrl, 'Acessar portal e corrigir')}
-        <p class="small-center">Apos a correcao, o formulario sera reenviado automaticamente para revisao.</p>`
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">${t(clientLanguage, 'formRejected.goCorrect')}</p>
+        ${linkButton(portalUrl, t(clientLanguage, 'common.btnAccessFix'))}
+        <p class="small-center">${t(clientLanguage, 'formRejected.afterCorrectNote')}</p>`
       )
 
       const results = await Promise.allSettled([
@@ -974,28 +1356,28 @@ serve(async (req) => {
     if (emailType === 'both_rejected') {
       const { formReason, photosReason } = payload
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject   = `Ajustes necessarios na sua analise${BRAND_SUFFIX}`
+      const subject = t(clientLanguage, 'bothRejected.subject', { brandSuffix: BRAND_SUFFIX })
 
-      const clientHtml = renderEmail(
-        'Ajustes Necessarios',
-        `Ola, <strong>${clientName}</strong>!`,
+      const clientHtml = renderClientEmail(
+        t(clientLanguage, 'bothRejected.title'),
+        t(clientLanguage, 'common.greeting', { name: clientName }),
         `<div class="alert-amber">
-          <p class="alert-amber-title">&#9888;&#65039; Precisamos de alguns ajustes antes de continuar</p>
-          <p class="alert-amber-text">Nao se preocupe — seus dados estao salvos. Acesse o portal e corrija apenas o que for solicitado abaixo.</p>
+          <p class="alert-amber-title">${t(clientLanguage, 'bothRejected.warnTitle')}</p>
+          <p class="alert-amber-text">${t(clientLanguage, 'bothRejected.warnText')}</p>
         </div>
         ${photosReason ? `
         <div class="rejection-box rejection-purple">
-          <p class="rejection-type rejection-type-purple">&#128247; Ajuste nas fotos</p>
+          <p class="rejection-type rejection-type-purple">${t(clientLanguage, 'bothRejected.photosAdjustLabel')}</p>
           <p class="rejection-reason">${photosReason}</p>
         </div>` : ''}
         ${formReason ? `
         <div class="rejection-box rejection-blue">
-          <p class="rejection-type rejection-type-blue">&#128203; Ajuste no formulario</p>
+          <p class="rejection-type rejection-type-blue">${t(clientLanguage, 'bothRejected.formAdjustLabel')}</p>
           <p class="rejection-reason">${formReason}</p>
         </div>` : ''}
-        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">Acesse o portal para realizar os ajustes:</p>
-        ${linkButton(portalUrl, 'Acessar portal e corrigir')}
-        <p class="small-center">Apos os ajustes, o envio sera feito automaticamente para nova revisao.</p>`
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:16px 0 4px">${t(clientLanguage, 'bothRejected.goFix')}</p>
+        ${linkButton(portalUrl, t(clientLanguage, 'common.btnAccessFix'))}
+        <p class="small-center">${t(clientLanguage, 'bothRejected.afterFixNote')}</p>`
       )
 
       const results = await Promise.allSettled([

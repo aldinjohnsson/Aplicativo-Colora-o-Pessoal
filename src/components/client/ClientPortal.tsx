@@ -9,10 +9,13 @@ import {
   Package, Sparkles, ZoomIn, ZoomOut, Mic,
 } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
-import { formatDeadlineDate, businessDaysUntil } from '../../lib/deadlineCalculator'
+import { businessDaysUntil } from '../../lib/deadlineCalculator'
 import { supabase } from '../../lib/supabase'
 import { driveStorage } from '../../lib/driveStorage'
 import { GeminiChat } from './GeminiChat'
+import { LanguageProvider, useTranslation, useLanguage } from '../../lib/i18n'
+import { getCountryOptions } from '../../lib/i18n/countries'
+import { LanguageSwitcher } from './LanguageSwitcher'
 
 // ── Tiny UI ──────────────────────────────────────────────────────────────────
 
@@ -48,9 +51,9 @@ export function ClientPortal() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!token) { setError('Token inválido'); setLoading(false); return }
+    if (!token) { setError('invalid-token'); setLoading(false); return }
     clientService.getPortalData(token).then(d => {
-      if (!d) setError('Link de acesso inválido. Verifique com a consultora.')
+      if (!d) setError('invalid-link')
       else setData(d)
       setLoading(false)
     })
@@ -62,29 +65,75 @@ export function ClientPortal() {
     if (d) setData(d)
   }
 
+  // idioma: prioriza o já salvo pro cliente (data.client.language), senão o
+  // padrão do admin (data.admin_default_language) — ambos só existem depois
+  // que o portal carrega, então o LanguageProvider fica por fora do
+  // loading/error state também, pra já mostrar esses textos no idioma certo
+  // assim que possível (localStorage resolve isso mesmo antes do fetch).
+  return (
+    <LanguageProvider
+      persistKey={token}
+      initialLanguage={data?.client?.language}
+      fallbackLanguage={(data as any)?.admin_default_language}
+      onLanguageChange={lang => token && clientService.updateClientLanguage(token, lang)}
+    >
+      <ClientPortalInner
+        token={token}
+        data={data}
+        loading={loading}
+        error={error}
+        reload={reload}
+      />
+    </LanguageProvider>
+  )
+}
+
+function ClientPortalInner({
+  token, data, loading, error, reload,
+}: {
+  token?: string
+  data: ClientPortalData | null
+  loading: boolean
+  error: string
+  reload: () => Promise<void>
+}) {
+  const { t, language } = useTranslation()
+
+  // Nota: a sincronização de "idioma resolvido -> banco" (pra cliente que
+  // nunca clicou no seletor manualmente) agora é feita centralmente dentro
+  // do próprio LanguageProvider — ver LanguageContext.tsx. Não precisa de
+  // um efeito duplicado aqui.
+
   if (loading) return (
     <div className="min-h-screen bg-rose-50 flex items-center justify-center">
       <div className="text-center">
         <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-rose-500 mx-auto mb-3" />
-        <p className="text-rose-600 text-sm">Carregando seu portal...</p>
+        <p className="text-rose-600 text-sm">{t('portal.root.loading')}</p>
       </div>
     </div>
   )
 
-  if (error || !data) return (
-    <div className="min-h-screen bg-rose-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-sm p-8 max-w-sm w-full text-center">
-        <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
-        <h2 className="font-semibold text-gray-900 mb-2">Acesso não encontrado</h2>
-        <p className="text-sm text-gray-500">{error || 'Link inválido. Entre em contato com a consultora.'}</p>
+  if (error || !data) {
+    const errorMessage =
+      error === 'invalid-token' ? t('portal.root.invalidTokenError')
+      : error === 'invalid-link' ? t('portal.root.invalidLinkError')
+      : t('portal.root.invalidLinkFallback')
+
+    return (
+      <div className="min-h-screen bg-rose-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-8 max-w-sm w-full text-center">
+          <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
+          <h2 className="font-semibold text-gray-900 mb-2">{t('portal.root.accessNotFoundTitle')}</h2>
+          <p className="text-sm text-gray-500">{errorMessage}</p>
+        </div>
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-white">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-rose-100 sticky top-0 z-10">
+      <header className="bg-white/80 backdrop-blur-sm border-b border-rose-100 sticky top-0 z-30">
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 bg-gradient-to-br from-rose-400 to-pink-500 rounded-lg flex items-center justify-center">
@@ -92,9 +141,12 @@ export function ClientPortal() {
             </div>
             <span className="font-semibold text-gray-800">IA Color</span>
           </div>
-          <div className="text-right">
-            <p className="text-sm font-medium text-gray-800">{data.client.full_name.split(' ')[0]}</p>
-            {data.plan && <p className="text-xs text-gray-400">{data.plan.name}</p>}
+          <div className="flex items-center gap-3">
+            <LanguageSwitcher variant="minimal" />
+            <div className="text-right">
+              <p className="text-sm font-medium text-gray-800">{data.client.full_name.split(' ')[0]}</p>
+              {data.plan && <p className="text-xs text-gray-400">{data.plan.name}</p>}
+            </div>
           </div>
         </div>
       </header>
@@ -194,6 +246,7 @@ function audioMimeFromName(fileName: string): string {
 // restrições de range request nem de CORS — e funciona em qualquer browser.
 
 function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string; fileName?: string; className?: string }) {
+  const { t } = useTranslation()
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState(false)
 
@@ -225,13 +278,13 @@ function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string
 
   if (loadErr) return (
     <p className="text-xs text-red-400 py-2 flex items-center gap-1.5">
-      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /> Erro ao carregar áudio
+      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /> {t('portal.result.audioLoadError')}
     </p>
   )
   if (!blobUrl) return (
     <div className="flex items-center gap-2 py-2">
       <div className="animate-spin h-3.5 w-3.5 border-2 border-violet-300 border-t-transparent rounded-full flex-shrink-0" />
-      <span className="text-xs text-violet-400">Carregando áudio…</span>
+      <span className="text-xs text-violet-400">{t('portal.result.audioLoading')}</span>
     </div>
   )
   return (
@@ -248,11 +301,12 @@ function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string
 // ── Step Header ──────────────────────────────────────────────────────────────
 
 function StepHeader({ current, total, label }: { current: number; total: number; label: string }) {
+  const { t } = useTranslation()
   return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm px-4 sm:px-6 py-4">
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm font-medium text-gray-900">{label}</span>
-        <span className="text-xs text-gray-400">Etapa {current} de {total}</span>
+        <span className="text-xs text-gray-400">{t('portal.common.stepOf', { current: String(current), total: String(total) })}</span>
       </div>
       <div className="flex gap-1.5">
         {Array.from({ length: total }).map((_, i) => (
@@ -268,53 +322,17 @@ function StepHeader({ current, total, label }: { current: number; total: number;
   )
 }
 
-// ── Lista de países (Brasil primeiro) ────────────────────────────────────────
-
-const COUNTRIES = [
-  'Brasil',
-  'Afeganistão', 'África do Sul', 'Albânia', 'Alemanha', 'Andorra', 'Angola',
-  'Antígua e Barbuda', 'Arábia Saudita', 'Argélia', 'Argentina', 'Armênia',
-  'Austrália', 'Áustria', 'Azerbaijão', 'Bahamas', 'Bangladesh', 'Barbados',
-  'Barein', 'Bélgica', 'Belize', 'Benin', 'Bielorrússia', 'Bolívia',
-  'Bósnia e Herzegovina', 'Botsuana', 'Brunei', 'Bulgária', 'Burquina Faso',
-  'Burundi', 'Butão', 'Cabo Verde', 'Camarões', 'Camboja', 'Canadá', 'Catar',
-  'Cazaquistão', 'Chade', 'Chile', 'China', 'Chipre', 'Colômbia', 'Comores',
-  'Congo', 'Coreia do Norte', 'Coreia do Sul', 'Costa do Marfim', 'Costa Rica',
-  'Croácia', 'Cuba', 'Dinamarca', 'Djibuti', 'Dominica', 'Egito', 'El Salvador',
-  'Emirados Árabes Unidos', 'Equador', 'Eritreia', 'Eslováquia', 'Eslovênia',
-  'Espanha', 'Eswatini', 'Estado da Palestina', 'Estados Unidos', 'Estônia',
-  'Etiópia', 'Fiji', 'Filipinas', 'Finlândia', 'França', 'Gabão', 'Gâmbia',
-  'Gana', 'Geórgia', 'Granada', 'Grécia', 'Guatemala', 'Guiana', 'Guiné',
-  'Guiné Equatorial', 'Guiné-Bissau', 'Haiti', 'Honduras', 'Hungria', 'Iêmen',
-  'Ilhas Marshall', 'Ilhas Salomão', 'Índia', 'Indonésia', 'Irã', 'Iraque',
-  'Irlanda', 'Islândia', 'Israel', 'Itália', 'Jamaica', 'Japão', 'Jordânia',
-  'Kiribati', 'Kuwait', 'Laos', 'Lesoto', 'Letônia', 'Líbano', 'Libéria',
-  'Líbia', 'Liechtenstein', 'Lituânia', 'Luxemburgo', 'Macedônia do Norte',
-  'Madagáscar', 'Malásia', 'Malawi', 'Maldivas', 'Mali', 'Malta', 'Marrocos',
-  'Maurícia', 'Mauritânia', 'México', 'Micronésia', 'Moçambique', 'Moldávia',
-  'Mônaco', 'Mongólia', 'Montenegro', 'Myanmar', 'Namíbia', 'Nauru', 'Nepal',
-  'Nicarágua', 'Níger', 'Nigéria', 'Noruega', 'Nova Zelândia', 'Omã',
-  'Países Baixos', 'Paquistão', 'Palau', 'Panamá', 'Papua Nova Guiné',
-  'Paraguai', 'Peru', 'Polônia', 'Portugal', 'Quênia', 'Quirguistão',
-  'República Centro-Africana', 'República Checa', 'República Democrática do Congo',
-  'República Dominicana', 'Romênia', 'Ruanda', 'Rússia', 'Samoa', 'San Marino',
-  'Santa Lúcia', 'São Cristóvão e Névis', 'São Tomé e Príncipe',
-  'São Vicente e Granadinas', 'Senegal', 'Serra Leoa', 'Sérvia', 'Seychelles',
-  'Singapura', 'Síria', 'Somália', 'Sri Lanka', 'Sudão', 'Sudão do Sul',
-  'Suécia', 'Suíça', 'Suriname', 'Tailândia', 'Tanzânia', 'Timor-Leste',
-  'Togo', 'Tonga', 'Trinidad e Tobago', 'Tunísia', 'Turcomenistão', 'Turquia',
-  'Tuvalu', 'Ucrânia', 'Uganda', 'Uruguai', 'Uzbequistão', 'Vanuatu',
-  'Vaticano', 'Venezuela', 'Vietnã', 'Zâmbia', 'Zimbábue',
-]
-
 // ── Step 1: Contract ─────────────────────────────────────────────────────────
 
 function ContractStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const { t, language } = useTranslation()
+  const countryOptions = React.useMemo(() => getCountryOptions(language), [language])
+
   const [read, setRead] = useState(false)
   const [agreed, setAgreed] = useState(false)
   const [signing, setSigning] = useState(false)
-  const [country, setCountry] = useState('Brasil')
-  const [clientIp, setClientIp] = useState<string>('Obtendo...')
+  const [countryCode, setCountryCode] = useState(countryOptions[0]?.code || 'BR')
+  const [clientIp, setClientIp] = useState<string>(t('portal.contract.fetchingIp'))
   const [signTime] = useState(() => new Date())
   const [scrollProgress, setScrollProgress] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -323,8 +341,9 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
   useEffect(() => {
     fetch('https://api.ipify.org?format=json')
       .then(r => r.json())
-      .then(d => setClientIp(d.ip || 'Não disponível'))
-      .catch(() => setClientIp('Não disponível'))
+      .then(d => setClientIp(d.ip || t('portal.contract.ipUnavailable')))
+      .catch(() => setClientIp(t('portal.contract.ipUnavailable')))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Verifica se o contrato é curto o suficiente para não precisar de scroll
@@ -347,12 +366,17 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 50) setRead(true)
   }
 
+  // Guardamos o NOME do país (não o código) no cadastro do cliente e no PDF
+  // do contrato — mesmo formato que já era usado antes, só que agora o nome
+  // é resolvido no idioma que a cliente está usando no momento da assinatura.
+  const countryName = countryOptions.find(c => c.code === countryCode)?.name || countryCode
+
   const handleSign = async () => {
     if (!agreed) return
     setSigning(true)
     try {
       await clientService.signContract(token, {
-        country,
+        country: countryName,
         ip: clientIp,
         signedAt: new Date().toISOString(),
       })
@@ -362,38 +386,38 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
 
   const contract = data.contract
 
-  const formattedDate = signTime.toLocaleDateString('pt-BR', {
+  const formattedDate = signTime.toLocaleDateString(language, {
     day: '2-digit', month: '2-digit', year: 'numeric',
   })
-  const formattedTime = signTime.toLocaleTimeString('pt-BR', {
+  const formattedTime = signTime.toLocaleTimeString(language, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 
   return (
     <div className="space-y-4">
-      <StepHeader current={1} total={3} label="Contrato" />
+      <StepHeader current={1} total={3} label={t('portal.contract.stepLabel')} />
 
       {/* ── Banner de metadados (IP / Data / Hora) ── */}
       <div className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 space-y-1.5">
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
-          Registro de acesso
+          {t('portal.contract.accessLog')}
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs text-gray-700">
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
-            <span><strong>IP:</strong> {clientIp}</span>
+            <span><strong>{t('portal.contract.ip')}:</strong> {clientIp}</span>
           </span>
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
-            <span><strong>Data:</strong> {formattedDate}</span>
+            <span><strong>{t('portal.contract.date')}:</strong> {formattedDate}</span>
           </span>
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
-            <span><strong>Hora:</strong> {formattedTime}</span>
+            <span><strong>{t('portal.contract.time')}:</strong> {formattedTime}</span>
           </span>
         </div>
         <p className="text-[10px] text-gray-400 pt-0.5">
-          Esses dados serão registrados junto à assinatura digital no PDF do contrato.
+          {t('portal.contract.recordNote')}
         </p>
       </div>
 
@@ -401,15 +425,15 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
         {/* Header com barra de progresso de leitura */}
         <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold text-gray-900">Leia o contrato</h2>
+            <h2 className="font-semibold text-gray-900">{t('portal.contract.readContract')}</h2>
             {!read && (
               <span className="text-xs font-bold text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-full">
-                {scrollProgress}% lido
+                {t('portal.contract.percentRead', { percent: scrollProgress })}
               </span>
             )}
             {read && (
               <span className="text-xs font-semibold text-green-600 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                <Check className="h-3 w-3" /> Lido
+                <Check className="h-3 w-3" /> {t('portal.contract.readDone')}
               </span>
             )}
           </div>
@@ -425,7 +449,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
             <div className="mt-3 flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
               <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <p className="text-sm text-amber-900 leading-snug">
-                <span className="font-semibold">Role até o final do contrato</span> abaixo para liberar a assinatura.
+                <span className="font-semibold">{t('portal.contract.scrollWarningBold')}</span> {t('portal.contract.scrollWarningRest')}
               </p>
             </div>
           )}
@@ -438,9 +462,9 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
             className="px-4 sm:px-6 py-4 sm:py-5 max-h-72 overflow-y-auto text-sm text-gray-700 space-y-4 leading-relaxed"
             onScroll={handleScroll}
           >
-            <h3 className="font-bold text-base text-gray-800">{contract?.title || 'Contrato'}</h3>
+            <h3 className="font-bold text-base text-gray-800">{contract?.title || t('portal.contract.defaultTitle')}</h3>
             {contract?.sections?.length === 0 && (
-              <p className="text-gray-400 text-center py-8">Nenhuma cláusula configurada</p>
+              <p className="text-gray-400 text-center py-8">{t('portal.contract.noClauses')}</p>
             )}
             {contract?.sections?.map(s => (
               <div key={s.id}>
@@ -464,7 +488,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
               <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
             </div>
             <p className="text-xs font-semibold text-amber-700">
-              Continue rolando para ler o contrato completo
+              {t('portal.contract.continueScrolling')}
             </p>
             <div className="flex flex-col items-center animate-bounce">
               <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
@@ -477,15 +501,15 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
           {/* Campo de País */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              País de residência
+              {t('portal.contract.countryLabel')}
             </label>
             <select
-              value={country}
-              onChange={e => setCountry(e.target.value)}
+              value={countryCode}
+              onChange={e => setCountryCode(e.target.value)}
               className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
             >
-              {COUNTRIES.map(c => (
-                <option key={c} value={c}>{c}</option>
+              {countryOptions.map(c => (
+                <option key={c.code} value={c.code}>{c.name}</option>
               ))}
             </select>
           </div>
@@ -499,7 +523,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
               disabled={!read}
               className="mt-0.5 w-4 h-4 accent-rose-500"
             />
-            <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>
+            <span className="text-sm text-gray-700">{t('portal.contract.agreeLabel')}</span>
           </label>
 
           {/* Botão de assinar — estado visual claro */}
@@ -507,21 +531,21 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
             <div className="w-full flex flex-col items-center justify-center gap-1 py-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-800 cursor-not-allowed select-none">
               <div className="flex items-center gap-2">
                 <Lock className="h-4 w-4" />
-                <span className="font-semibold text-sm">Assinatura bloqueada</span>
+                <span className="font-semibold text-sm">{t('portal.contract.lockedTitle')}</span>
               </div>
               <p className="text-xs text-amber-700">
-                Role até o final do contrato ({scrollProgress}% lido)
+                {t('portal.contract.lockedNote', { percent: scrollProgress })}
               </p>
             </div>
           ) : (
             <Btn onClick={handleSign} disabled={!agreed} loading={signing} className="w-full">
-              <Check className="h-4 w-4" /> Assinar Contrato
+              <Check className="h-4 w-4" /> {t('portal.contract.signButton')}
             </Btn>
           )}
 
           {read && !agreed && (
             <p className="text-xs text-gray-400 text-center">
-              Marque a caixa acima para confirmar que leu e concordou
+              {t('portal.contract.confirmNote')}
             </p>
           )}
         </div>
@@ -533,6 +557,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
 // ── NOVO: Fluxo combinado Form + Photos quando ambos são rejeitados ─────────
 
 function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const { t } = useTranslation()
   const hasFormRejection   = !!data.client.form_rejection_reason
   const hasPhotosRejection = !!data.client.photos_rejection_reason
   const hasExistingPhotos  = (data.photos || []).length > 0
@@ -555,17 +580,17 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
   // então ao confirmar o form chamamos onDone direto
   return (
     <div className="space-y-4">
-      <StepHeader current={2} total={3} label={hasFormRejection ? 'Ajustes Solicitados' : 'Formulário'} />
+      <StepHeader current={2} total={3} label={hasFormRejection ? t('portal.formPhotoFlow.adjustmentsTitle') : t('portal.form.stepLabel')} />
 
       {(hasFormRejection || hasPhotosRejection) && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
           <div className="flex gap-3 items-start">
             <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
             <div>
-              <p className="text-sm font-semibold text-amber-800">Ajustes solicitados</p>
+              <p className="text-sm font-semibold text-amber-800">{t('portal.formPhotoFlow.adjustmentsRequested')}</p>
               <p className="text-sm text-amber-700 mt-0.5">
                 {hasFormRejection && hasPhotosRejection
-                  ? 'A consultora solicitou ajustes no formulário e nas fotos'
+                  ? t('portal.formPhotoFlow.adjustmentsBoth')
                   : hasFormRejection
                     ? data.client.form_rejection_reason
                     : data.client.photos_rejection_reason}
@@ -588,7 +613,7 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
           >
             <div className="flex items-center justify-center gap-2">
               <FileText className="h-4 w-4" />
-              Formulário
+              {t('portal.formPhotoFlow.formTab')}
               {hasFormRejection && <div className="w-2 h-2 bg-amber-400 rounded-full" />}
             </div>
           </button>
@@ -602,7 +627,7 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
           >
             <div className="flex items-center justify-center gap-2">
               <Camera className="h-4 w-4" />
-              Fotos
+              {t('portal.formPhotoFlow.photosTab')}
               {hasPhotosRejection && <div className="w-2 h-2 bg-amber-400 rounded-full" />}
             </div>
           </button>
@@ -627,15 +652,16 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
 // ── Step 2: Form (conteúdo reutilizável) ─────────────────────────────────────
 
 function FormStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const { t } = useTranslation()
   return (
     <div className="space-y-4">
-      <StepHeader current={2} total={3} label="Formulário" />
+      <StepHeader current={2} total={3} label={t('portal.form.stepLabel')} />
 
       {data.client.form_rejection_reason && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex gap-3 items-start">
           <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-sm font-semibold text-amber-800">Ajuste solicitado no formulário</p>
+            <p className="text-sm font-semibold text-amber-800">{t('portal.form.adjustmentRequested')}</p>
             <p className="text-sm text-amber-700 mt-0.5">{data.client.form_rejection_reason}</p>
           </div>
         </div>
@@ -649,6 +675,7 @@ function FormStep({ token, data, onDone }: { token: string; data: ClientPortalDa
 }
 
 function FormStepContent({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const { t } = useTranslation()
   const form = data.form
   const fields = form?.fields || []
   const savedData = data.form_submission?.form_data || {}
@@ -672,12 +699,12 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
         formData[f.id] === (f as any).conditionalTrigger &&
         !String(formData[`${f.id}__obs`] || '').trim()
       ) {
-        missing.push((f as any).conditionalLabel || 'Observação')
+        missing.push((f as any).conditionalLabel || t('portal.form.observationLabel'))
       }
     })
 
     if (missing.length > 0) {
-      alert(`Preencha os campos obrigatórios:\n• ${missing.join('\n• ')}`)
+      alert(t('portal.form.missingFieldsAlert', { list: missing.join('\n• ') }))
       return
     }
     setSubmitting(true)
@@ -690,13 +717,13 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
   return (
     <>
       <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
-        <h2 className="font-semibold text-gray-900">{form?.title || 'Formulário'}</h2>
+        <h2 className="font-semibold text-gray-900">{form?.title || t('portal.form.defaultTitle')}</h2>
         {form?.description && <p className="text-sm text-gray-500 mt-0.5">{form.description}</p>}
       </div>
 
       <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-5">
         {fields.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center py-8">Nenhum campo configurado</p>
+          <p className="text-sm text-gray-400 text-center py-8">{t('portal.form.noFields')}</p>
         ) : (
           fields.map(f => (
             <div key={f.id}>
@@ -711,7 +738,7 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
               )}
               {f.type === 'select' && (
                 <select value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400">
-                  <option value="">— Selecione —</option>
+                  <option value="">{t('portal.form.selectPlaceholder')}</option>
                   {(f.options || []).map((opt, i) => <option key={i} value={opt}>{opt}</option>)}
                 </select>
               )}
@@ -727,13 +754,13 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                   {(f as any).conditionalTrigger && formData[f.id] === (f as any).conditionalTrigger && (
                     <div className="mt-2 pl-5 border-l-2 border-rose-300">
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        {(f as any).conditionalLabel || 'Observação'}
+                        {(f as any).conditionalLabel || t('portal.form.observationLabel')}
                         {(f as any).conditionalRequired && <span className="text-red-500 ml-1">*</span>}
                       </label>
                       <textarea
                         value={formData[`${f.id}__obs`] || ''}
                         onChange={e => handleChange(`${f.id}__obs`, e.target.value)}
-                        placeholder="Digite aqui..."
+                        placeholder={t('portal.form.observationPlaceholder')}
                         rows={3}
                         className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none"
                       />
@@ -770,7 +797,7 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
 
       <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-gray-100">
         <Btn onClick={handleSubmit} loading={submitting} className="w-full">
-          <Send className="h-4 w-4" /> Enviar Respostas
+          <Send className="h-4 w-4" /> {t('portal.form.submit')}
         </Btn>
       </div>
     </>
@@ -797,6 +824,7 @@ function ImageUploadFormField({
   value: FormImage[]
   onChange: (imgs: FormImage[]) => void
 }) {
+  const { t } = useTranslation()
   const maxImages: number = field.maxImages ?? 1
   const [uploading, setUploading] = useState(false)
   const [removing, setRemoving] = useState<Set<string>>(new Set())
@@ -808,7 +836,7 @@ function ImageUploadFormField({
     if (!files) return
     const toAdd = Array.from(files).slice(0, maxImages - value.length)
     if (toAdd.length === 0) {
-      setError(`Limite de ${maxImages} foto${maxImages !== 1 ? 's' : ''} atingido`)
+      setError(t('portal.imageUpload.limitReached', { count: maxImages, max: maxImages }))
       return
     }
     setError('')
@@ -830,7 +858,7 @@ function ImageUploadFormField({
       }
       onChange([...value, ...uploaded])
     } catch (e: any) {
-      setError(`Erro ao enviar: ${e.message}`)
+      setError(t('portal.imageUpload.uploadError', { error: e.message }))
     } finally {
       setUploading(false)
     }
@@ -882,7 +910,7 @@ function ImageUploadFormField({
               />
               <Camera className="h-5 w-5 text-gray-300" />
               <span className="text-[10px] text-gray-400">
-                {maxImages - value.length} restante{maxImages - value.length !== 1 ? 's' : ''}
+                {t('portal.imageUpload.remaining', { count: maxImages - value.length })}
               </span>
             </label>
           )}
@@ -915,9 +943,9 @@ function ImageUploadFormField({
                 <div className="w-10 h-10 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-2">
                   <Camera className="h-5 w-5 text-rose-400" />
                 </div>
-                <p className="text-sm font-medium text-gray-700 mb-0.5">Toque para adicionar fotos</p>
+                <p className="text-sm font-medium text-gray-700 mb-0.5">{t('portal.imageUpload.tapToAddPhotos')}</p>
                 <p className="text-xs text-gray-400">
-                  JPG, PNG, HEIC · até {maxImages} foto{maxImages !== 1 ? 's' : ''}
+                  {t('portal.imageUpload.formatsHint', { count: maxImages, max: maxImages })}
                 </p>
               </>
             )}
@@ -936,7 +964,7 @@ function ImageUploadFormField({
         <div className="flex items-center gap-2 bg-green-50 rounded-xl px-3 py-2 border border-green-100">
           <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
           <p className="text-sm text-green-700">
-            {value.length} foto{value.length !== 1 ? 's' : ''} adicionada{value.length !== 1 ? 's' : ''} ✓
+            {t('portal.imageUpload.photosAdded', { count: value.length })}
           </p>
         </div>
       )}
@@ -1028,10 +1056,11 @@ async function processImage(file: File): Promise<File> {
 // ── PDF instruction (visualizador + tela cheia) ──────────────────────────────
 
 function PdfInstruction({ item }: { item: InstructionItem }) {
+  const { t } = useTranslation()
   const [fullscreen, setFullscreen] = useState(false)
   const src = item.imageUrl || item.content
   if (!src) return null
-  const label = item.fileName || 'Documento PDF'
+  const label = item.fileName || 'PDF'
   // Google Docs Viewer: renderiza o PDF AJUSTADO À LARGURA, inclusive no mobile
   // (o visualizador nativo via <object> não ajusta o tamanho no celular).
   // Requer URL pública — PDFs enviados ficam em bucket público; links colados
@@ -1051,12 +1080,12 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
           type="button"
           onClick={() => setFullscreen(true)}
           className="relative w-full block group"
-          title="Abrir em tela cheia"
+          title={t('portal.pdfInstruction.openFullscreen')}
         >
           <iframe src={viewerUrl} className="w-full pointer-events-none bg-gray-50" style={{ height: 260 }} title={label} />
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors flex items-end justify-center pb-3">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/95 rounded-full shadow text-xs font-medium text-rose-700">
-              <ZoomIn className="h-3.5 w-3.5" /> Toque para ampliar
+              <ZoomIn className="h-3.5 w-3.5" /> {t('portal.pdfInstruction.tapToEnlarge')}
             </span>
           </div>
         </button>
@@ -1068,7 +1097,7 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
             onClick={() => setFullscreen(true)}
             className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-rose-700 hover:bg-rose-50 transition-colors"
           >
-            <ZoomIn className="h-4 w-4" /> Ver em tela cheia
+            <ZoomIn className="h-4 w-4" /> {t('portal.pdfInstruction.viewFullscreen')}
           </button>
           <a
             href={src}
@@ -1076,7 +1105,7 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
             rel="noopener noreferrer"
             className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors border-l border-rose-100"
           >
-            <Download className="h-4 w-4" /> Baixar / Abrir
+            <Download className="h-4 w-4" /> {t('portal.pdfInstruction.downloadOpen')}
           </a>
         </div>
       </div>
@@ -1091,7 +1120,7 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
             </span>
             <div className="flex items-center gap-2 flex-shrink-0">
               <a href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 px-2 py-1">
-                <ExternalLink className="h-3.5 w-3.5" /> Abrir
+                <ExternalLink className="h-3.5 w-3.5" /> {t('portal.common.open')}
               </a>
               <button onClick={() => setFullscreen(false)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500">
                 <X className="h-5 w-5" />
@@ -1110,6 +1139,7 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
 // ── Media item (video or image instruction) ──────────────────────────────────
 
 function MediaItem({ item }: { item: InstructionItem }) {
+  const { t } = useTranslation()
   const embedUrl = item.type === 'video' ? getYouTubeEmbed(item.content) : null
 
   if (item.type === 'video' && embedUrl) {
@@ -1120,7 +1150,7 @@ function MediaItem({ item }: { item: InstructionItem }) {
           className="w-full h-full"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
-          title="Instrução em vídeo"
+          title={t('portal.instructions.videoTitle')}
         />
       </div>
     )
@@ -1131,7 +1161,7 @@ function MediaItem({ item }: { item: InstructionItem }) {
     if (!src) return null
     return (
       <div className="rounded-xl overflow-hidden border border-rose-100 shadow-sm">
-        <img src={src} alt="Instrução" className="w-full object-contain max-h-80 bg-gray-50" />
+        <img src={src} alt={t('portal.instructions.imageAlt')} className="w-full object-contain max-h-80 bg-gray-50" />
       </div>
     )
   }
@@ -1157,6 +1187,7 @@ function MediaItem({ item }: { item: InstructionItem }) {
 // ── Instructions panel (collapsible) ────────────────────────────────────────
 
 function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionItem[]; defaultOpen?: boolean }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
 
   const mediaItems = items.filter(i => i.type !== 'text')
@@ -1172,7 +1203,7 @@ function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionIt
       >
         <span className="text-xs font-semibold text-rose-700 uppercase tracking-wide flex items-center gap-2">
           <FileText className="h-3.5 w-3.5" />
-          Instruções
+          {t('portal.instructions.panelTitle')}
         </span>
         {open
           ? <ChevronUp className="h-4 w-4 text-rose-400 flex-shrink-0" />
@@ -1218,6 +1249,7 @@ interface CategoryCardProps {
 }
 
 function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, onAdd, onRemove, onRemoveExisting, removingExisting }: CategoryCardProps) {
+  const { t } = useTranslation()
   const instructions = normalizeInstructions(cat)
   const totalCount = existingPhotos.length + uploads.length
   const isFull = totalCount >= cat.max_photos
@@ -1248,7 +1280,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
           </div>
           <div className="text-right flex-shrink-0">
             <p className="text-xs font-medium text-gray-500">
-              {totalCount}/{cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}
+              {t('portal.categoryCard.photoCountOf', { count: cat.max_photos, current: totalCount, max: cat.max_photos })}
             </p>
           </div>
         </div>
@@ -1296,7 +1328,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
                     <X className="h-3 w-3" />
                   </button>
                   <div className="absolute bottom-1 left-1 bg-rose-500 text-white text-[9px] px-1.5 py-0.5 rounded font-medium">
-                    NOVA
+                    {t('portal.categoryCard.newBadge')}
                   </div>
                 </div>
               )
@@ -1312,7 +1344,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
                 />
                 <Camera className="h-5 w-5 text-gray-300" />
                 <span className="text-[10px] text-gray-400">
-                  {cat.max_photos - totalCount} restante{cat.max_photos - totalCount !== 1 ? 's' : ''}
+                  {t('portal.imageUpload.remaining', { count: cat.max_photos - totalCount })}
                 </span>
               </label>
             )}
@@ -1337,10 +1369,10 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
                   </div>
                   <div>
                     <p className="text-sm font-medium text-gray-700 mb-0.5">
-                      Toque para adicionar fotos
+                      {t('portal.imageUpload.tapToAddPhotos')}
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5">
-                      JPG, PNG, HEIC · até {cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}
+                      {t('portal.imageUpload.formatsHint', { count: cat.max_photos, max: cat.max_photos })}
                     </p>
                   </div>
                 </>
@@ -1362,7 +1394,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
           <div className="flex items-center gap-2 bg-green-50 rounded-xl px-4 py-2.5 border border-green-100">
             <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
             <p className="text-sm text-green-700 font-medium">
-              {totalCount} foto{totalCount !== 1 ? 's' : ''} adicionada{totalCount !== 1 ? 's' : ''} ✓
+              {t('portal.imageUpload.photosAdded', { count: totalCount })}
             </p>
           </div>
         )}
@@ -1374,15 +1406,16 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
 // ── PhotoStep ────────────────────────────────────────────────────────────────
 
 function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const { t } = useTranslation()
   return (
     <div className="space-y-4">
-      <StepHeader current={3} total={3} label="Fotos" />
+      <StepHeader current={3} total={3} label={t('portal.photoStep.stepLabel')} />
 
       {data.client.photos_rejection_reason && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex gap-3 items-start">
           <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-sm font-semibold text-amber-800">Ajuste solicitado nas fotos</p>
+            <p className="text-sm font-semibold text-amber-800">{t('portal.photoStep.adjustmentRequested')}</p>
             <p className="text-sm text-amber-700 mt-0.5">{data.client.photos_rejection_reason}</p>
           </div>
         </div>
@@ -1406,6 +1439,7 @@ function PhotoStepContent({
   showBackButton?: boolean
   onBack?: () => void
 }) {
+  const { t } = useTranslation()
   // Filtra a categoria de Foto IA — ela é enviada em outra etapa do fluxo
   // (status 'awaiting_ai_photo'), pelo componente AiPhotoStep. Não deve
   // aparecer junto das fotos iniciais.
@@ -1435,7 +1469,7 @@ function PhotoStepContent({
     const remaining = maxPhotos - currentExisting - current.length
     const toAdd     = Array.from(files).slice(0, remaining)
     if (toAdd.length === 0) {
-      setErrors(e => ({ ...e, [catId]: `Limite de ${maxPhotos} foto${maxPhotos !== 1 ? 's' : ''} atingido` }))
+      setErrors(e => ({ ...e, [catId]: t('portal.imageUpload.limitReached', { count: maxPhotos, max: maxPhotos }) }))
       return
     }
     setErrors(e => ({ ...e, [catId]: '' }))
@@ -1458,7 +1492,7 @@ function PhotoStepContent({
         [catId]: (prev[catId] || []).filter(p => p.id !== photoId),
       }))
     } catch (e: any) {
-      alert(`Erro ao remover foto: ${e.message}`)
+      alert(t('portal.imageUpload.removeError', { error: e.message }))
     } finally {
       setRemovingExisting(s => { const n = new Set(s); n.delete(photoId); return n })
     }
@@ -1484,7 +1518,7 @@ function PhotoStepContent({
       await clientService.finalizePhotos(token)
       onDone()
     } catch (e: any) {
-      alert(`Erro ao enviar fotos: ${e.message}`)
+      alert(t('portal.photoStep.uploadPhotosError', { error: e.message }))
     } finally {
       setFinalizing(false)
     }
@@ -1498,7 +1532,7 @@ function PhotoStepContent({
     return (
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
         <Camera className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-        <p className="text-sm text-gray-400">Nenhuma categoria configurada</p>
+        <p className="text-sm text-gray-400">{t('portal.photoStep.noCategoriesConfigured')}</p>
       </div>
     )
   }
@@ -1517,7 +1551,9 @@ function PhotoStepContent({
           </div>
           <span className="text-xs font-semibold text-gray-600 whitespace-nowrap">
             {doneCount}/{categories.length}
-            {doneCount === categories.length ? ' ✓ completo' : ' categorias'}
+            {doneCount === categories.length
+              ? ` ${t('portal.photoStep.completeSuffix')}`
+              : ` ${t('portal.photoStep.categoriesSuffix')}`}
           </span>
         </div>
 
@@ -1586,7 +1622,7 @@ function PhotoStepContent({
                 </span>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-amber-800 truncate">{cat.title}</p>
-                  <p className="text-xs text-amber-600">Nenhuma foto enviada</p>
+                  <p className="text-xs text-amber-600">{t('portal.photoStep.noPhotoSent')}</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-amber-500 flex-shrink-0" />
               </button>
@@ -1601,9 +1637,9 @@ function PhotoStepContent({
                 <CheckCircle className="h-5 w-5 text-white" />
               </div>
               <div className="flex-1">
-                <p className="text-sm font-semibold text-green-800">Tudo pronto!</p>
+                <p className="text-sm font-semibold text-green-800">{t('portal.photoStep.allReadyTitle')}</p>
                 <p className="text-xs text-green-700 mt-0.5">
-                  {totalPhotos} foto{totalPhotos !== 1 ? 's' : ''} em {categories.length} categoria{categories.length !== 1 ? 's' : ''}
+                  {t('portal.photoStep.photoCount', { count: totalPhotos })} {t('portal.common.inLabel')} {t('portal.photoStep.categoryCount', { count: categories.length })}
                 </p>
               </div>
             </div>
@@ -1614,7 +1650,7 @@ function PhotoStepContent({
         <div className="flex gap-2">
           {showBackButton && onBack && (
             <Btn onClick={onBack} variant="outline" className="flex-1">
-              <ChevronLeft className="h-4 w-4" /> Voltar
+              <ChevronLeft className="h-4 w-4" /> {t('portal.photoStep.backButton')}
             </Btn>
           )}
           <Btn
@@ -1625,11 +1661,11 @@ function PhotoStepContent({
           >
             {finalizing ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" /> Finalizando...
+                <Loader2 className="h-4 w-4 animate-spin" /> {t('portal.photoStep.finalizing')}
               </>
             ) : (
               <>
-                <CheckCircle className="h-4 w-4" /> Finalizar Envio
+                <CheckCircle className="h-4 w-4" /> {t('portal.photoStep.finalizeSubmit')}
               </>
             )}
           </Btn>
@@ -1637,7 +1673,7 @@ function PhotoStepContent({
 
         {!allFilled && (
           <p className="text-xs text-gray-400 text-center">
-            Envie ao menos 1 foto em cada categoria para continuar
+            {t('portal.photoStep.fillAllCategoriesNote')}
           </p>
         )}
       </div>
@@ -1648,15 +1684,16 @@ function PhotoStepContent({
 // ── Review screen ────────────────────────────────────────────────────────────
 
 function ReviewScreen() {
+  const { t } = useTranslation()
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
         <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-50 rounded-2xl mb-4">
           <Clock className="h-8 w-8 text-blue-400" />
         </div>
-        <h2 className="text-xl font-semibold text-gray-900 mb-2">Em revisão</h2>
+        <h2 className="text-xl font-semibold text-gray-900 mb-2">{t('portal.review.title')}</h2>
         <p className="text-sm text-gray-500 leading-relaxed max-w-md mx-auto">
-          Suas fotos e formulário foram enviados com sucesso! A consultora está revisando tudo.
+          {t('portal.review.body')}
         </p>
       </div>
 
@@ -1667,10 +1704,9 @@ function ReviewScreen() {
             <Clock className="h-5 w-5 text-blue-500" />
           </div>
           <div className="flex-1">
-            <h3 className="text-sm font-semibold text-gray-900 mb-1">Prazo de revisão</h3>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">{t('portal.review.deadlineTitle')}</h3>
             <p className="text-sm text-gray-600 leading-relaxed">
-              A revisão é feita em até <strong className="text-gray-900">1 dia útil</strong>. Você receberá um e-mail
-              quando suas fotos forem aprovadas ou se algum ajuste for necessário, com instruções para reenviar.
+              {t('portal.review.deadlineBodyPre')} <strong className="text-gray-900">{t('portal.review.oneBusinessDay')}</strong>{t('portal.review.deadlineBodyPost')}
             </p>
           </div>
         </div>
@@ -1694,20 +1730,23 @@ function AnalysisScreen({
   data: ClientPortalData
   materialsBeingPrepared?: boolean
 }) {
+  const { t, language } = useTranslation()
   const deadline = data.deadline
 
   if (!deadline?.deadline_date) {
     return (
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
         <Clock className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-        <h2 className="font-semibold text-gray-900 mb-2">Análise aprovada</h2>
-        <p className="text-sm text-gray-500">Aguardando prazo ser definido...</p>
+        <h2 className="font-semibold text-gray-900 mb-2">{t('portal.analysis.approvedTitle')}</h2>
+        <p className="text-sm text-gray-500">{t('portal.analysis.waitingDeadline')}</p>
       </div>
     )
   }
 
   const daysLeft = businessDaysUntil(deadline.deadline_date)
-  const formatted = formatDeadlineDate(deadline.deadline_date)
+  const formatted = new Date(deadline.deadline_date + 'T12:00:00').toLocaleDateString(language, {
+    weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+  })
 
   return (
     <div className="space-y-4">
@@ -1721,8 +1760,8 @@ function AnalysisScreen({
           <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
             <Palette className="h-9 w-9 text-white" />
           </div>
-          <h2 className="text-2xl font-bold tracking-tight mb-1">Análise em andamento</h2>
-          <p className="text-blue-100 text-sm">Sua consultora está trabalhando na sua análise!</p>
+          <h2 className="text-2xl font-bold tracking-tight mb-1">{t('portal.analysis.inProgressTitle')}</h2>
+          <p className="text-blue-100 text-sm">{t('portal.analysis.inProgressSubtitle')}</p>
         </div>
       </div>
 
@@ -1733,14 +1772,14 @@ function AnalysisScreen({
             <Clock className="h-7 w-7 text-white" />
           </div>
           <div className="flex-1">
-            <p className="text-sm text-gray-500 mb-0.5">Previsão de entrega</p>
+            <p className="text-sm text-gray-500 mb-0.5">{t('portal.analysis.deliveryForecast')}</p>
             <p className="text-lg font-bold text-gray-900">{formatted}</p>
             <p className="text-xs text-gray-400 mt-1">
               {daysLeft > 0
-                ? `${daysLeft} dia${daysLeft !== 1 ? 's' : ''} útei${daysLeft !== 1 ? 's' : ''} restante${daysLeft !== 1 ? 's' : ''}`
+                ? t('portal.analysis.daysLeft', { count: daysLeft })
                 : daysLeft === 0
-                  ? 'Prazo vence hoje!'
-                  : `Prazo vencido há ${Math.abs(daysLeft)} dia${Math.abs(daysLeft) !== 1 ? 's' : ''}`
+                  ? t('portal.analysis.dueToday')
+                  : t('portal.analysis.overdue', { count: Math.abs(daysLeft) })
               }
             </p>
           </div>
@@ -1755,8 +1794,8 @@ function AnalysisScreen({
               <Package className="h-5 w-5 text-teal-500" />
             </div>
             <p className="text-sm text-gray-700 leading-snug">
-              <strong className="text-gray-900">Os materiais estão sendo preparados.</strong>{' '}
-              Em breve você terá acesso ao seu resultado completo.
+              <strong className="text-gray-900">{t('portal.analysis.materialsPreparedBold')}</strong>{' '}
+              {t('portal.analysis.materialsPreparedRest')}
             </p>
           </div>
         </div>
@@ -1764,7 +1803,7 @@ function AnalysisScreen({
 
       <div className="text-center py-2">
         <p className="text-xs text-gray-400">
-          Você receberá um e-mail assim que o resultado estiver disponível
+          {t('portal.analysis.emailNotice')}
         </p>
       </div>
     </div>
@@ -1776,6 +1815,7 @@ function AnalysisScreen({
 // admin e a cliente precisa enviar a foto adicional para a simulação.
 // Após enviar, vê tela de "consultora verificando".
 function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
+  const { t } = useTranslation()
   const aiCat = (data.photo_categories || []).find(c => (c as any).is_ai_simulation) as PhotoCategory | undefined
 
   // Foto já enviada nessa categoria? (status "verificando")
@@ -1802,9 +1842,9 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
     return (
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
         <AlertCircle className="h-10 w-10 text-amber-500 mx-auto mb-3" />
-        <h2 className="font-semibold text-amber-900">Aguardando consultora</h2>
+        <h2 className="font-semibold text-amber-900">{t('portal.aiPhoto.waitingConsultantTitle')}</h2>
         <p className="text-sm text-amber-700 mt-2">
-          Sua consultora está preparando a próxima etapa do seu atendimento. Em breve daremos novidades por e-mail.
+          {t('portal.aiPhoto.waitingConsultantBody')}
         </p>
       </div>
     )
@@ -1814,7 +1854,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
     const remaining = aiCat.max_photos - uploads.length - (aiPhotoSent ? 1 : 0)
     const toAdd = Array.from(files).slice(0, remaining)
     if (toAdd.length === 0) {
-      setError(`Limite de ${aiCat.max_photos} foto${aiCat.max_photos !== 1 ? 's' : ''} atingido`)
+      setError(t('portal.imageUpload.limitReached', { count: aiCat.max_photos, max: aiCat.max_photos }))
       return
     }
     setError('')
@@ -1848,7 +1888,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
       setUploads([])
       onDone()
     } catch (e: any) {
-      setError(e?.message || 'Erro ao enviar foto')
+      setError(e?.message || t('portal.aiPhoto.genericSendError'))
     } finally {
       setSubmitting(false)
     }
@@ -1868,9 +1908,9 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
           <div className="inline-flex items-center justify-center w-12 h-12 bg-white/20 rounded-xl mb-3 backdrop-blur-sm">
             <Camera className="h-6 w-6 text-white" />
           </div>
-          <h2 className="text-xl font-bold">Envie sua foto para a simulação</h2>
+          <h2 className="text-xl font-bold">{t('portal.aiPhoto.sendPhotoTitle')}</h2>
           <p className="text-violet-100 text-sm mt-1">
-            Sua consultora precisa de uma foto adicional pra gerar suas simulações personalizadas.
+            {t('portal.aiPhoto.sendPhotoBody')}
           </p>
         </div>
       )}
@@ -1885,14 +1925,14 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
                 <Loader2 className="h-5 w-5 animate-spin" />
               </div>
               <div>
-                <h3 className="font-semibold text-gray-900">Foto recebida — consultora verificando</h3>
-                <p className="text-xs text-gray-600 mt-0.5">Recebemos sua foto. Sua consultora vai conferir e em breve as simulações estarão disponíveis.</p>
+                <h3 className="font-semibold text-gray-900">{t('portal.aiPhoto.photoReceivedTitle')}</h3>
+                <p className="text-xs text-gray-600 mt-0.5">{t('portal.aiPhoto.photoReceivedBody')}</p>
               </div>
             </div>
           </div>
           <div className="px-5 py-4 flex items-center gap-3 text-sm text-gray-700">
             <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
-            <span>Você não precisa fazer mais nada por enquanto.</span>
+            <span>{t('portal.aiPhoto.nothingElseToDo')}</span>
           </div>
         </div>
       ) : (
@@ -1920,11 +1960,11 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
             {submitting ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Enviando...
+                {t('portal.aiPhoto.sending')}
               </>
             ) : (
               <>
-                Enviar foto
+                {t('portal.aiPhoto.sendPhotoBtn')}
                 <ArrowRight className="h-4 w-4" />
               </>
             )}
@@ -1960,6 +2000,7 @@ function ResultPhotoLightbox({ photos, initialIndex, onClose }: {
   initialIndex: number
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const [index, setIndex] = useState(initialIndex)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
@@ -2042,15 +2083,15 @@ function ResultPhotoLightbox({ photos, initialIndex, onClose }: {
           onClick={handleDownload}
           disabled={downloading}
           className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-white bg-white/10 hover:bg-white/20 disabled:opacity-40 rounded-lg backdrop-blur-sm transition-colors"
-          title="Baixar foto"
+          title={t('portal.result.downloadPhoto')}
         >
           {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-          <span className="hidden sm:inline">Baixar</span>
+          <span className="hidden sm:inline">{t('portal.common.download')}</span>
         </button>
         <button
           onClick={onClose}
           className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
-          title="Fechar"
+          title={t('portal.common.close')}
         >
           <X className="h-6 w-6" />
         </button>
@@ -2058,9 +2099,9 @@ function ResultPhotoLightbox({ photos, initialIndex, onClose }: {
 
       {/* Zoom controls (canto inferior) */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1 z-10 bg-white/10 backdrop-blur-sm rounded-lg p-1" onClick={e => e.stopPropagation()}>
-        <button onClick={() => setZoom(z => Math.max(z / 1.5, 0.5))} className="p-2 text-white hover:bg-white/20 rounded" title="Diminuir"><ZoomOut className="h-4 w-4" /></button>
-        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} className="px-3 py-2 text-xs text-white hover:bg-white/20 rounded font-medium" title="Ajustar à tela">{Math.round(zoom * 100)}%</button>
-        <button onClick={() => setZoom(z => Math.min(z * 1.5, 5))} className="p-2 text-white hover:bg-white/20 rounded" title="Aumentar"><ZoomIn className="h-4 w-4" /></button>
+        <button onClick={() => setZoom(z => Math.max(z / 1.5, 0.5))} className="p-2 text-white hover:bg-white/20 rounded" title={t('portal.common.decrease')}><ZoomOut className="h-4 w-4" /></button>
+        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} className="px-3 py-2 text-xs text-white hover:bg-white/20 rounded font-medium" title={t('portal.common.fitToScreen')}>{Math.round(zoom * 100)}%</button>
+        <button onClick={() => setZoom(z => Math.min(z * 1.5, 5))} className="p-2 text-white hover:bg-white/20 rounded" title={t('portal.common.increase')}><ZoomIn className="h-4 w-4" /></button>
       </div>
 
       {/* Prev/Next quando há mais de uma foto */}
@@ -2069,14 +2110,14 @@ function ResultPhotoLightbox({ photos, initialIndex, onClose }: {
           <button
             onClick={e => { e.stopPropagation(); setIndex(i => (i - 1 + photos.length) % photos.length) }}
             className="absolute left-4 top-1/2 -translate-y-1/2 z-10 p-2 text-white bg-white/10 hover:bg-white/20 rounded-full backdrop-blur-sm transition-colors"
-            title="Anterior"
+            title={t('portal.common.previous')}
           >
             <ChevronLeft className="h-6 w-6" />
           </button>
           <button
             onClick={e => { e.stopPropagation(); setIndex(i => (i + 1) % photos.length) }}
             className="absolute right-4 top-1/2 -translate-y-1/2 z-10 p-2 text-white bg-white/10 hover:bg-white/20 rounded-full backdrop-blur-sm transition-colors"
-            title="Próxima"
+            title={t('portal.common.next')}
           >
             <ChevronRight className="h-6 w-6" />
           </button>
@@ -2126,6 +2167,7 @@ function ResultScreen({
   simulatingMode?: boolean
   aiPhotoMode?: boolean
 }) {
+  const { t, language } = useTranslation()
   const result = data.result
 
   const [aiPrompt, setAiPrompt] = useState<string | null>(null)
@@ -2256,8 +2298,8 @@ function ResultScreen({
   if (!result) return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
       <Lock className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-      <h2 className="font-semibold text-gray-900">Resultado em preparação</h2>
-      <p className="text-sm text-gray-500 mt-2">Seu resultado será disponibilizado em breve.</p>
+      <h2 className="font-semibold text-gray-900">{t('portal.result.prepStateTitle')}</h2>
+      <p className="text-sm text-gray-500 mt-2">{t('portal.result.prepStateBody')}</p>
     </div>
   )
 
@@ -2300,9 +2342,9 @@ function ResultScreen({
               <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
                 <Camera className="h-9 w-9 text-white" />
               </div>
-              <h2 className="text-2xl font-bold tracking-tight">Envie sua foto para a simulação</h2>
+              <h2 className="text-2xl font-bold tracking-tight">{t('portal.aiPhoto.sendPhotoTitle')}</h2>
               <p className="text-violet-100 text-sm mt-1.5">
-                Confira seu resultado parcial abaixo e, em seguida, envie a foto pedida pela sua consultora para gerar suas simulações personalizadas.
+                {t('portal.result.aiPhotoBannerBody')}
               </p>
             </div>
           </div>
@@ -2318,9 +2360,9 @@ function ResultScreen({
               <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
                 <Sparkles className="h-9 w-9 text-white" />
               </div>
-              <h2 className="text-2xl font-bold tracking-tight">Simulações em andamento</h2>
+              <h2 className="text-2xl font-bold tracking-tight">{t('portal.result.simulatingTitle')}</h2>
               <p className="text-violet-100 text-sm mt-1.5">
-                Sua consultora está finalizando os últimos detalhes. Confira abaixo o resultado parcial!
+                {t('portal.result.simulatingBody')}
               </p>
             </div>
           </div>
@@ -2328,7 +2370,9 @@ function ResultScreen({
           {/* Card de prazo final */}
           {data.deadline?.deadline_date && (() => {
             const daysLeft = businessDaysUntil(data.deadline.deadline_date)
-            const formatted = formatDeadlineDate(data.deadline.deadline_date)
+            const formatted = new Date(data.deadline.deadline_date + 'T12:00:00').toLocaleDateString(language, {
+              weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+            })
             return (
               <div className="bg-white rounded-2xl border border-violet-200 shadow-sm p-5">
                 <div className="flex items-center gap-4">
@@ -2336,14 +2380,14 @@ function ResultScreen({
                     <Clock className="h-6 w-6 text-white" />
                   </div>
                   <div className="flex-1">
-                    <p className="text-xs text-gray-500 mb-0.5">Previsão de entrega final</p>
+                    <p className="text-xs text-gray-500 mb-0.5">{t('portal.result.finalDeliveryForecast')}</p>
                     <p className="text-base font-bold text-gray-900">{formatted}</p>
                     <p className="text-xs text-gray-400 mt-0.5">
                       {daysLeft > 0
-                        ? `${daysLeft} dia${daysLeft !== 1 ? 's' : ''} útei${daysLeft !== 1 ? 's' : ''} restante${daysLeft !== 1 ? 's' : ''}`
+                        ? t('portal.analysis.daysLeft', { count: daysLeft })
                         : daysLeft === 0
-                          ? 'Prazo vence hoje!'
-                          : `Prazo vencido há ${Math.abs(daysLeft)} dia${Math.abs(daysLeft) !== 1 ? 's' : ''}`
+                          ? t('portal.analysis.dueToday')
+                          : t('portal.analysis.overdue', { count: Math.abs(daysLeft) })
                       }
                     </p>
                   </div>
@@ -2362,8 +2406,8 @@ function ResultScreen({
             <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
               <CheckCircle className="h-9 w-9 text-white" />
             </div>
-            <h2 className="text-2xl font-bold tracking-tight">Sua análise está pronta!</h2>
-            <p className="text-rose-100 text-sm mt-1.5">Confira todos os materiais abaixo</p>
+            <h2 className="text-2xl font-bold tracking-tight">{t('portal.result.readyTitle')}</h2>
+            <p className="text-rose-100 text-sm mt-1.5">{t('portal.result.readySubtitle')}</p>
           </div>
         </div>
       )}
@@ -2371,9 +2415,9 @@ function ResultScreen({
       {!hasContent && (
         <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-8 text-center">
           <Clock className="h-12 w-12 text-amber-300 mx-auto mb-4" />
-          <h2 className="font-semibold text-gray-900">Materiais sendo preparados</h2>
+          <h2 className="font-semibold text-gray-900">{t('portal.result.materialsPreparingTitle')}</h2>
           <p className="text-sm text-gray-500 mt-2 leading-relaxed">
-            Sua análise foi liberada! Os materiais serão adicionados em breve pela consultora.
+            {t('portal.result.materialsPreparingBody')}
           </p>
         </div>
       )}
@@ -2381,7 +2425,7 @@ function ResultScreen({
       {folderUrl && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <ExternalLink className="h-5 w-5 text-rose-400" /> Pasta com Materiais
+            <ExternalLink className="h-5 w-5 text-rose-400" /> {t('portal.result.folderTitle')}
           </h3>
           <a
             href={folderUrl}
@@ -2393,8 +2437,8 @@ function ResultScreen({
               <ExternalLink className="h-5 w-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-rose-700">Acessar pasta completa</p>
-              <p className="text-xs text-rose-400 mt-0.5">Clique para abrir seus materiais</p>
+              <p className="text-sm font-semibold text-rose-700">{t('portal.result.folderCta')}</p>
+              <p className="text-xs text-rose-400 mt-0.5">{t('portal.result.folderCtaNote')}</p>
             </div>
             <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
               <ExternalLink className="h-3.5 w-3.5 text-rose-500" />
@@ -2410,7 +2454,7 @@ function ResultScreen({
       {customLinkUrl && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <ExternalLink className="h-5 w-5 text-rose-400" /> Link de Acesso
+            <ExternalLink className="h-5 w-5 text-rose-400" /> {t('portal.result.linkTitle')}
           </h3>
           <a
             href={customLinkUrl}
@@ -2422,8 +2466,8 @@ function ResultScreen({
               <ExternalLink className="h-5 w-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-rose-700">Acessar link</p>
-              <p className="text-xs text-rose-400 mt-0.5">Clique para abrir o link enviado pela consultora</p>
+              <p className="text-sm font-semibold text-rose-700">{t('portal.result.linkCta')}</p>
+              <p className="text-xs text-rose-400 mt-0.5">{t('portal.result.linkCtaNote')}</p>
             </div>
             <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
               <ExternalLink className="h-3.5 w-3.5 text-rose-500" />
@@ -2435,7 +2479,7 @@ function ResultScreen({
       {(pdfs.length > 0 || others.length > 0) && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <FileText className="h-5 w-5 text-rose-400" /> Documentos
+            <FileText className="h-5 w-5 text-rose-400" /> {t('portal.result.documentsTitle')}
           </h3>
           <div className="space-y-2">
             {[...pdfs, ...others].map((file: any) => (
@@ -2470,7 +2514,7 @@ function ResultScreen({
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <Mic className="h-5 w-5 text-rose-400" />
-            {audios.length === 1 ? 'Mensagem do consultor(a)' : 'Mensagens do consultor(a)'}
+            {t('portal.result.audioMessage', { count: audios.length })}
           </h3>
           <div className="space-y-4">
             {audios.map((file: any, idx: number) => {
@@ -2494,15 +2538,15 @@ function ResultScreen({
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-violet-900">
-                        {audios.length > 1 ? `Mensagem ${idx + 1}` : 'Mensagem do consultor(a)'}
+                        {audios.length > 1 ? t('portal.result.audioMessageNumbered', { index: idx + 1 }) : t('portal.result.audioMessage', { count: 1 })}
                       </p>
-                      <p className="text-xs text-violet-400 mt-0.5">Toque para ouvir</p>
+                      <p className="text-xs text-violet-400 mt-0.5">{t('portal.result.tapToListen')}</p>
                     </div>
                     <button
                       onClick={() => handleDownload(file)}
                       disabled={downloadingId === file.id}
                       className="p-2 text-violet-300 hover:text-violet-600 hover:bg-violet-100 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
-                      title="Baixar áudio"
+                      title={t('portal.result.downloadAudio')}
                     >
                       {downloadingId === file.id
                         ? <Loader2 className="h-4 w-4 animate-spin" />
@@ -2527,7 +2571,7 @@ function ResultScreen({
       {images.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <ImageIcon className="h-5 w-5 text-rose-400" /> Fotos
+            <ImageIcon className="h-5 w-5 text-rose-400" /> {t('portal.result.photosTitle')}
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
             {images.map((file: any, idx: number) => {
@@ -2570,7 +2614,7 @@ function ResultScreen({
       {result.observations && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <span className="text-rose-400">✦</span> Observações da Consultora
+            <span className="text-rose-400">✦</span> {t('portal.result.observationsTitle')}
           </h3>
           <div className="bg-gradient-to-br from-rose-50 to-pink-50 rounded-xl p-4 border border-rose-100">
             <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{result.observations}</p>
@@ -2580,7 +2624,9 @@ function ResultScreen({
 
       <div className="rounded-2xl px-5 py-3 text-center">
         <p className="text-xs text-gray-400">
-          Liberado em {new Date(result.released_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })}
+          {t('portal.result.releasedOn', {
+            date: new Date(result.released_at).toLocaleDateString(language, { day: '2-digit', month: 'long', year: 'numeric' }),
+          })}
         </p>
       </div>
 
@@ -2588,7 +2634,7 @@ function ResultScreen({
         <div className="space-y-2">
           <div className="flex items-center gap-2 px-1">
             <div className="h-px flex-1 bg-gradient-to-r from-transparent to-violet-200" />
-            <span className="text-xs font-medium text-violet-500 px-2">Mensagem consultor(a)</span>
+            <span className="text-xs font-medium text-violet-500 px-2">{t('portal.result.consultantMessage')}</span>
             <div className="h-px flex-1 bg-gradient-to-l from-transparent to-violet-200" />
           </div>
           <GeminiChat

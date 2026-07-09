@@ -11,44 +11,9 @@ import { supabase } from '../../lib/supabase'
 import { clientService } from '../../lib/services'
 import { SignatureCanvas } from './SignatureCanvas'
 import { downloadContractPDF } from '../../lib/contractPDFGenerator'
-
-// ── Lista de países (Brasil primeiro) ────────────────────────────────────────
-const COUNTRIES = [
-  'Brasil',
-  'Afeganistão', 'África do Sul', 'Albânia', 'Alemanha', 'Andorra', 'Angola',
-  'Antígua e Barbuda', 'Arábia Saudita', 'Argélia', 'Argentina', 'Armênia',
-  'Austrália', 'Áustria', 'Azerbaijão', 'Bahamas', 'Bangladesh', 'Barbados',
-  'Barein', 'Bélgica', 'Belize', 'Benin', 'Bielorrússia', 'Bolívia',
-  'Bósnia e Herzegovina', 'Botsuana', 'Brunei', 'Bulgária', 'Burquina Faso',
-  'Burundi', 'Butão', 'Cabo Verde', 'Camarões', 'Camboja', 'Canadá', 'Catar',
-  'Cazaquistão', 'Chade', 'Chile', 'China', 'Chipre', 'Colômbia', 'Comores',
-  'Congo', 'Coreia do Norte', 'Coreia do Sul', 'Costa do Marfim', 'Costa Rica',
-  'Croácia', 'Cuba', 'Dinamarca', 'Djibuti', 'Dominica', 'Egito', 'El Salvador',
-  'Emirados Árabes Unidos', 'Equador', 'Eritreia', 'Eslováquia', 'Eslovênia',
-  'Espanha', 'Eswatini', 'Estado da Palestina', 'Estados Unidos', 'Estônia',
-  'Etiópia', 'Fiji', 'Filipinas', 'Finlândia', 'França', 'Gabão', 'Gâmbia',
-  'Gana', 'Geórgia', 'Granada', 'Grécia', 'Guatemala', 'Guiana', 'Guiné',
-  'Guiné Equatorial', 'Guiné-Bissau', 'Haiti', 'Honduras', 'Hungria', 'Iêmen',
-  'Ilhas Marshall', 'Ilhas Salomão', 'Índia', 'Indonésia', 'Irã', 'Iraque',
-  'Irlanda', 'Islândia', 'Israel', 'Itália', 'Jamaica', 'Japão', 'Jordânia',
-  'Kiribati', 'Kuwait', 'Laos', 'Lesoto', 'Letônia', 'Líbano', 'Libéria',
-  'Líbia', 'Liechtenstein', 'Lituânia', 'Luxemburgo', 'Macedônia do Norte',
-  'Madagáscar', 'Malásia', 'Malawi', 'Maldivas', 'Mali', 'Malta', 'Marrocos',
-  'Maurícia', 'Mauritânia', 'México', 'Micronésia', 'Moçambique', 'Moldávia',
-  'Mônaco', 'Mongólia', 'Montenegro', 'Myanmar', 'Namíbia', 'Nauru', 'Nepal',
-  'Nicarágua', 'Níger', 'Nigéria', 'Noruega', 'Nova Zelândia', 'Omã',
-  'Países Baixos', 'Paquistão', 'Palau', 'Panamá', 'Papua Nova Guiné',
-  'Paraguai', 'Peru', 'Polônia', 'Portugal', 'Quênia', 'Quirguistão',
-  'República Centro-Africana', 'República Checa', 'República Democrática do Congo',
-  'República Dominicana', 'Romênia', 'Ruanda', 'Rússia', 'Samoa', 'San Marino',
-  'Santa Lúcia', 'São Cristóvão e Névis', 'São Tomé e Príncipe',
-  'São Vicente e Granadinas', 'Senegal', 'Serra Leoa', 'Sérvia', 'Seychelles',
-  'Singapura', 'Síria', 'Somália', 'Sri Lanka', 'Sudão', 'Sudão do Sul',
-  'Suécia', 'Suíça', 'Suriname', 'Tailândia', 'Tanzânia', 'Timor-Leste',
-  'Togo', 'Tonga', 'Trinidad e Tobago', 'Tunísia', 'Turcomenistão', 'Turquia',
-  'Tuvalu', 'Ucrânia', 'Uganda', 'Uruguai', 'Uzbequistão', 'Vanuatu',
-  'Vaticano', 'Venezuela', 'Vietnã', 'Zâmbia', 'Zimbábue',
-]
+import { LanguageProvider, useTranslation, useLanguage, writeStoredLanguage } from '../../lib/i18n'
+import { getCountryOptions } from '../../lib/i18n/countries'
+import { LanguageSwitcher } from './LanguageSwitcher'
 
 interface PlanData {
   id: string
@@ -57,38 +22,114 @@ interface PlanData {
   contract: { title?: string; sections?: { id: string; title: string; content: string; order: number }[] } | null
   form_config: any
   photo_categories: any
+  /** Idioma padrão configurado pelo admin em Settings (settings.defaultLanguage).
+   *  Precisa vir junto do plano porque, nesta tela, ainda não existe cliente
+   *  cadastrada — não há como buscar isso por outro caminho. */
+  admin_default_language?: string | null
 }
 
 // Fluxo completo: welcome → info (dados) → contract (assinatura) → done (confirmação)
 type Step = 'welcome' | 'info' | 'contract' | 'done'
 
+// ── Wrapper: carrega o plano e resolve o idioma ANTES de renderizar o resto ──
+//
+// O carregamento do plano (via `shareToken`) mora AQUI, não dentro do
+// componente filho, porque o `<LanguageProvider>` precisa do
+// `admin_default_language` que vem junto da resposta — se o fetch
+// acontecesse só depois do Provider já montado, o idioma padrão do admin
+// nunca chegaria a tempo de ser considerado (mesmo problema que já foi
+// corrigido no ClientPortal.tsx, mas pro link de COMPARTILHAMENTO DO PLANO
+// era preciso mover o fetch pra cá em vez de só ajustar o Provider).
+//
+// Este componente ainda não tem `token` de cliente (ela só existe depois que
+// o formulário "Seus Dados" é enviado) — por isso o LanguageProvider aqui usa
+// `shareToken` (o token do link do plano, que já existe desde o início) como
+// chave de persistência no localStorage. Uma vez que a cliente é criada
+// (resultToken), a preferência de idioma passa a ser salva no banco também
+// (ver `onLanguageChange` abaixo). Resolve também o crash de tela branca no
+// passo "Contrato": o SignatureCanvas usado ali dentro precisa estar sob um
+// LanguageProvider.
 export function ClientSignup() {
   const { shareToken } = useParams<{ shareToken: string }>()
-  const navigate = useNavigate()
-
+  const [resultToken, setResultToken] = useState<string | null>(null)
   const [plan, setPlan] = useState<PlanData | null>(null)
   const [loading, setLoading] = useState(true)
   const [pageError, setPageError] = useState('')
+
+  const loadPlan = React.useCallback(async () => {
+    if (!shareToken) { setPageError('invalid-link'); setLoading(false); return }
+    setLoading(true)
+    setPageError('')
+    try {
+      const { data, error } = await supabase.rpc('get_plan_by_share_token', { p_token: shareToken })
+      if (error) throw error
+      if (data?.error) { setPageError(data.error); return }
+      setPlan(data)
+    } catch {
+      setPageError('load-error')
+    } finally {
+      setLoading(false)
+    }
+  }, [shareToken])
+
+  useEffect(() => { loadPlan() }, [loadPlan])
+
+  return (
+    <LanguageProvider
+      persistKey={resultToken || shareToken}
+      fallbackLanguage={plan?.admin_default_language}
+      onLanguageChange={lang => resultToken && clientService.updateClientLanguage(resultToken, lang)}
+    >
+      <ClientSignupInner
+        plan={plan}
+        loading={loading}
+        pageError={pageError}
+        onRetry={loadPlan}
+        onClientCreated={setResultToken}
+      />
+    </LanguageProvider>
+  )
+}
+
+function ClientSignupInner({
+  plan,
+  loading,
+  pageError,
+  onRetry,
+  onClientCreated,
+}: {
+  plan: PlanData | null
+  loading: boolean
+  pageError: string
+  onRetry: () => void
+  onClientCreated: (token: string) => void
+}) {
+  const { t, language } = useTranslation()
+  const navigate = useNavigate()
+  const { shareToken } = useParams<{ shareToken: string }>()
+
   const [step, setStep] = useState<Step>('welcome')
+
+  const countryOptions = React.useMemo(() => getCountryOptions(language), [language])
 
   // ── Step: Dados ───────────────────────────────────────────
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [birthDate, setBirthDate] = useState('')
-  const [country, setCountry] = useState('Brasil')
+  const [countryCode, setCountryCode] = useState(countryOptions[0]?.code || 'BR')
   const [whatsappOptIn, setWhatsappOptIn] = useState(true)
-  const [clientIp, setClientIp] = useState('Obtendo...')
+  const [clientIp, setClientIp] = useState('...')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
-  const [resultToken, setResultToken] = useState('')
+  const [resultToken, setResultTokenLocal] = useState('')
 
   // ── Step: Contrato ────────────────────────────────────────
   const [contractRead, setContractRead] = useState(false)
   const [contractAgreed, setContractAgreed] = useState(false)
   const [contractSigning, setContractSigning] = useState(false)
   const [contractScrollProgress, setContractScrollProgress] = useState(0)
-  const [contractCountry, setContractCountry] = useState('Brasil')
+  const [contractCountryCode, setContractCountryCode] = useState(countryOptions[0]?.code || 'BR')
   const [contractSignTime, setContractSignTime] = useState<Date | null>(null)
   const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null)
   const [signedAt, setSignedAt] = useState<string>('')
@@ -97,19 +138,40 @@ export function ClientSignup() {
   // ── Step: Done ────────────────────────────────────────────
   const [downloadingPdf, setDownloadingPdf] = useState(false)
 
-  // ── Load plan ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!shareToken) { setPageError('Link inválido.'); setLoading(false); return }
-    loadPlan()
-  }, [shareToken])
-
   // Busca o IP real do cliente
   useEffect(() => {
     fetch('https://api.ipify.org?format=json')
       .then(r => r.json())
-      .then(d => setClientIp(d.ip || 'Não disponível'))
-      .catch(() => setClientIp('Não disponível'))
+      .then(d => setClientIp(d.ip || ''))
+      .catch(() => setClientIp(''))
   }, [])
+
+  // ── Sincroniza o idioma assim que a cliente é criada ────────
+  //
+  // `onLanguageChange` (no LanguageProvider) só grava no banco quando a
+  // cliente CLICA no seletor. Se ela nunca clica — mesmo que o portal já
+  // esteja mostrando em inglês pra ela por detecção automática do navegador
+  // — `clients.language` fica NULL pra sempre, e os e-mails (que leem essa
+  // coluna) saem no idioma padrão do admin em vez do idioma que ela está
+  // vendo. Este efeito roda uma única vez, assim que `resultToken` existe,
+  // e grava o idioma ATUAL (o que já está na tela) — garante que o e-mail
+  // de "Contrato Assinado", disparado poucos segundos depois, bata com o
+  // que a cliente viu.
+  //
+  // Também grava no localStorage sob a chave definitiva (`resultToken`):
+  // se a cliente trocou de idioma ANTES de preencher "Seus Dados" (quando a
+  // chave de persistência ainda era `shareToken`, provisória), essa escolha
+  // ficava presa numa chave que o ClientPortal.tsx nunca reconsulta depois
+  // — fazendo a tela "voltar" pro português ao navegar pro portal. Gravar
+  // aqui também, sob `resultToken`, garante que o ClientPortal já encontre
+  // o idioma certo assim que montar, sem depender do fetch assíncrono.
+  useEffect(() => {
+    if (resultToken) {
+      writeStoredLanguage(language, resultToken)
+      clientService.updateClientLanguage(resultToken, language)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resultToken])
 
   // Verifica contratos curtos (sem scroll necessário) ao entrar na etapa de contrato
   useEffect(() => {
@@ -126,26 +188,14 @@ export function ClientSignup() {
     return () => clearTimeout(timer)
   }, [step])
 
-  const loadPlan = async () => {
-    setLoading(true)
-    setPageError('')
-    try {
-      const { data, error } = await supabase.rpc('get_plan_by_share_token', { p_token: shareToken })
-      if (error) throw error
-      if (data?.error) { setPageError(data.error); return }
-      setPlan(data)
-    } catch {
-      setPageError('Não foi possível carregar o plano. Verifique o link ou tente novamente.')
-    } finally {
-      setLoading(false)
-    }
-  }
+  // Resolve o nome do país no idioma atual a partir do código selecionado.
+  const countryName = (code: string) => countryOptions.find(c => c.code === code)?.name || code
 
   // ── Submit dados (Step 1 → 2) ──────────────────────────────
   const handleInfoSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!fullName.trim() || !email.trim() || !birthDate) {
-      setFormError('Preencha todos os campos obrigatórios.')
+      setFormError(t('signup.requiredFieldsError'))
       return
     }
 
@@ -153,6 +203,7 @@ export function ClientSignup() {
     setFormError('')
 
     try {
+      const country = countryName(countryCode)
       const contractData = {
         clientInfo: { fullName, email, phone, birthDate, country, ip: clientIp },
         registeredAt: new Date().toISOString(),
@@ -174,11 +225,13 @@ export function ClientSignup() {
       if (data?.error) { setFormError(data.error); return }
 
       // Salva o token e vai pro contrato (não pra tela de done)
-      setResultToken(data.token)
+      setResultTokenLocal(data.token)
+      onClientCreated(data.token)
+      setContractCountryCode(countryCode)
       setContractSignTime(new Date())
       setStep('contract')
     } catch (e: any) {
-      setFormError(e.message || 'Erro ao criar conta. Tente novamente.')
+      setFormError(e.message || t('signup.genericSaveError'))
     } finally {
       setSubmitting(false)
     }
@@ -203,11 +256,11 @@ export function ClientSignup() {
     try {
       const signedAtStr = new Date().toISOString()
       await clientService.signContract(resultToken, {
-        country: contractCountry,
+        country: countryName(contractCountryCode),
         ip: clientIp,
         signedAt: signedAtStr,
         // ↓ Campos necessários para a edge gerar o PDF corretamente
-        contractTitle: plan?.contract?.title || 'Contrato de Prestação de Serviços',
+        contractTitle: plan?.contract?.title || t('signup.contractDefaultTitle'),
         sections: plan?.contract?.sections || [],
         signatureDataUrl,                     // PNG base64 da assinatura manuscrita
         portalUrl: `${window.location.origin}/c/${resultToken}`, // Link do portal no e-mail
@@ -215,7 +268,7 @@ export function ClientSignup() {
       setSignedAt(signedAtStr)
       setStep('done')
     } catch (e: any) {
-      alert(e.message || 'Erro ao assinar contrato. Tente novamente.')
+      alert(e.message || t('signup.signError'))
     } finally {
       setContractSigning(false)
     }
@@ -227,20 +280,22 @@ export function ClientSignup() {
     setDownloadingPdf(true)
     try {
       await downloadContractPDF(
-        plan.contract.title || 'Contrato de Prestação de Serviços',
+        plan.contract.title || t('signup.contractDefaultTitle'),
         plan.contract.sections || [],
         {
           fullName,
           email,
           phone: phone || '',
-          country: contractCountry,
+          country: countryName(contractCountryCode),
           ip: clientIp,
           signedAt: signedAt || new Date().toISOString(),
           signatureDataUrl: signatureDataUrl ?? undefined,
-        }
+        },
+        undefined,
+        language,
       )
     } catch {
-      alert('Erro ao gerar o PDF. Tente novamente.')
+      alert(t('signup.pdfError'))
     } finally {
       setDownloadingPdf(false)
     }
@@ -253,7 +308,7 @@ export function ClientSignup() {
         <div className="w-14 h-14 bg-white rounded-2xl shadow-sm border border-rose-100 flex items-center justify-center mx-auto mb-4">
           <Loader2 className="h-6 w-6 animate-spin text-rose-400" />
         </div>
-        <p className="text-sm text-gray-500">Preparando sua experiência...</p>
+        <p className="text-sm text-gray-500">{t('signup.loading')}</p>
       </div>
     </div>
   )
@@ -262,10 +317,14 @@ export function ClientSignup() {
     <div className="min-h-screen bg-gradient-to-br from-rose-50 to-pink-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl p-8 text-center max-w-md w-full shadow-sm border border-gray-100">
         <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
-        <h2 className="text-lg font-semibold text-gray-900 mb-2">Link não encontrado</h2>
-        <p className="text-sm text-gray-500 mb-5">{pageError || 'O link pode estar incorreto ou expirado.'}</p>
-        <button onClick={loadPlan} className="inline-flex items-center gap-2 text-sm text-rose-500 hover:text-rose-600 font-medium">
-          <RefreshCw className="h-4 w-4" /> Tentar novamente
+        <h2 className="text-lg font-semibold text-gray-900 mb-2">{t('signup.linkNotFoundTitle')}</h2>
+        <p className="text-sm text-gray-500 mb-5">
+          {pageError === 'invalid-link' ? t('signup.invalidLinkShort')
+            : pageError === 'load-error' ? t('signup.loadPlanError')
+            : pageError || t('signup.linkInvalid')}
+        </p>
+        <button onClick={onRetry} className="inline-flex items-center gap-2 text-sm text-rose-500 hover:text-rose-600 font-medium">
+          <RefreshCw className="h-4 w-4" /> {t('signup.retry')}
         </button>
       </div>
     </div>
@@ -275,18 +334,18 @@ export function ClientSignup() {
 
   // Etapas do progresso (excluindo 'welcome')
   const steps = [
-    { key: 'info',     label: 'Seus Dados' },
-    { key: 'contract', label: 'Contrato'   },
-    { key: 'done',     label: 'Concluído'  },
+    { key: 'info',     label: t('signup.stepInfoLabel') },
+    { key: 'contract', label: t('signup.stepContractLabel') },
+    { key: 'done',     label: t('signup.stepDoneLabel') },
   ] as const
 
   const stepIndex = steps.findIndex(s => s.key === step)
 
-  // Formatação da data/hora de registro do contrato
-  const formattedContractDate = contractSignTime?.toLocaleDateString('pt-BR', {
+  // Formatação da data/hora de registro do contrato — no idioma da cliente
+  const formattedContractDate = contractSignTime?.toLocaleDateString(language, {
     day: '2-digit', month: '2-digit', year: 'numeric',
   }) ?? ''
-  const formattedContractTime = contractSignTime?.toLocaleTimeString('pt-BR', {
+  const formattedContractTime = contractSignTime?.toLocaleTimeString(language, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   }) ?? ''
 
@@ -304,7 +363,8 @@ export function ClientSignup() {
             <p className="text-sm font-semibold text-gray-900 leading-tight">IA Color</p>
             <p className="text-xs text-gray-400 truncate">{plan.name}</p>
           </div>
-          <Lock className="h-4 w-4 text-gray-300" />
+          <LanguageSwitcher variant="minimal" />
+          <Lock className="h-4 w-4 text-gray-300 flex-shrink-0" />
         </div>
       </div>
 
@@ -326,20 +386,19 @@ export function ClientSignup() {
                 </div>
 
                 <div className="space-y-3">
-                  <h1 className="text-2xl font-bold text-gray-900 leading-snug">Bem-vindo(a)!</h1>
+                  <h1 className="text-2xl font-bold text-gray-900 leading-snug">{t('signup.welcomeTitle')}</h1>
                   <p className="text-gray-600 leading-relaxed text-base">
-                    Estou muito feliz em ter você aqui para começarmos essa{' '}
-                    <span className="text-rose-500 font-semibold">jornada de autoconhecimento</span>{' '}
-                    através das cores.
+                    {t('signup.welcomeBodyPre')}{' '}
+                    <span className="text-rose-500 font-semibold">{t('signup.welcomeBodyHighlight')}</span>{' '}
+                    {t('signup.welcomeBodyPost')}
                   </p>
                   <p className="text-gray-500 text-sm leading-relaxed">
-                    Preencha seus dados, leia e assine o contrato, tudo aqui mesmo e, em seguida,
-                    acesse seu portal para continuar o atendimento.
+                    {t('signup.welcomeInstructions')}
                   </p>
                 </div>
 
                 <div className="bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 rounded-xl px-4 py-3 text-left">
-                  <p className="text-xs text-rose-400 font-semibold uppercase tracking-wider mb-0.5">Seu plano</p>
+                  <p className="text-xs text-rose-400 font-semibold uppercase tracking-wider mb-0.5">{t('signup.yourPlan')}</p>
                   <p className="text-sm font-semibold text-gray-900">{plan.name}</p>
                   {plan.description && <p className="text-xs text-gray-500 mt-0.5">{plan.description}</p>}
                 </div>
@@ -349,18 +408,18 @@ export function ClientSignup() {
                   className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
                     hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2 text-base"
                 >
-                  Começar agora <ChevronRight className="h-5 w-5" />
+                  {t('signup.startNow')} <ChevronRight className="h-5 w-5" />
                 </button>
               </div>
             </div>
 
             <div className="bg-white/70 rounded-2xl border border-gray-100 px-5 py-4">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Como funciona</p>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('signup.howItWorks')}</p>
               <div className="space-y-3">
                 {[
-                  { icon: User,         label: 'Dados pessoais',    desc: 'Preencha seu nome, e-mail e telefone' },
-                  { icon: CheckCircle,  label: 'Contrato',          desc: 'Leia e assine digitalmente' },
-                  { icon: Sparkles,     label: 'Portal exclusivo',  desc: 'Acesse para enviar formulário e fotos' },
+                  { icon: User,         label: t('signup.personalDataLabel'), desc: t('signup.personalDataDesc') },
+                  { icon: CheckCircle,  label: t('signup.stepContractLabel'), desc: t('signup.contractStepDesc') },
+                  { icon: Sparkles,     label: t('signup.portalLabel'),       desc: t('signup.portalDesc') },
                 ].map(({ icon: Icon, label, desc }, i) => (
                   <div key={i} className="flex items-start gap-3">
                     <div className="w-8 h-8 bg-rose-100 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -405,20 +464,20 @@ export function ClientSignup() {
             <div className="h-1.5 bg-gradient-to-r from-rose-400 to-pink-500" />
             <div className="p-6 space-y-5">
               <div>
-                <h2 className="text-lg font-bold text-gray-900">Seus dados</h2>
-                <p className="text-sm text-gray-500 mt-0.5">Preencha as informações abaixo para continuar</p>
+                <h2 className="text-lg font-bold text-gray-900">{t('signup.infoTitle')}</h2>
+                <p className="text-sm text-gray-500 mt-0.5">{t('signup.infoSubtitle')}</p>
               </div>
 
               <form onSubmit={handleInfoSubmit} className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Nome completo <span className="text-red-500">*</span>
+                    {t('signup.fullNameLabel')} <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
                     value={fullName}
                     onChange={e => setFullName(e.target.value)}
-                    placeholder="Seu nome completo"
+                    placeholder={t('signup.fullNamePlaceholder')}
                     className={inp}
                     required
                   />
@@ -426,25 +485,25 @@ export function ClientSignup() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    E-mail <span className="text-red-500">*</span>
+                    {t('login.emailLabel')} <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
-                    placeholder="seu@email.com"
+                    placeholder={t('login.emailPlaceholder')}
                     className={inp}
                     required
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Telefone</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.phoneLabel')}</label>
                   <input
                     type="tel"
                     value={phone}
                     onChange={e => setPhone(e.target.value)}
-                    placeholder="(00) 00000-0000"
+                    placeholder={t('signup.phonePlaceholder')}
                     className={inp}
                   />
                   <label className="flex items-start gap-2 mt-2 cursor-pointer">
@@ -455,15 +514,14 @@ export function ClientSignup() {
                       className="mt-0.5 h-4 w-4 accent-rose-500 flex-shrink-0"
                     />
                     <span className="text-xs text-gray-500 leading-relaxed">
-                      Autorizo receber neste número avisos sobre a minha análise pelo WhatsApp
-                      (ex.: quando o resultado ficar pronto). Você pode cancelar quando quiser.
+                      {t('signup.whatsappOptIn')}
                     </span>
                   </label>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Data de nascimento <span className="text-red-500">*</span>
+                    {t('signup.birthDateLabel')} <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="date"
@@ -472,17 +530,23 @@ export function ClientSignup() {
                     className={inp}
                     required
                   />
-                  <p className="text-xs text-gray-400 mt-1">Será usada como sua senha de acesso ao portal</p>
+                  <p className="text-xs text-gray-400 mt-1">{t('signup.birthDateNote')}</p>
+                  {/* O placeholder nativo do <input type="date"> (ex: "dd/mm/aaaa")
+                      segue o idioma do SISTEMA OPERACIONAL em alguns navegadores
+                      (Chrome/Linux, por exemplo) — não dá pra forçar via código.
+                      Esta legenda garante que o formato esperado sempre apareça
+                      certo, independente do que o navegador decidir mostrar. */}
+                  <p className="text-xs text-gray-400">{t('signup.birthDateFormatHint')}</p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">País</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.countryLabel')}</label>
                   <select
-                    value={country}
-                    onChange={e => setCountry(e.target.value)}
+                    value={countryCode}
+                    onChange={e => setCountryCode(e.target.value)}
                     className={inp}
                   >
-                    {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    {countryOptions.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
                   </select>
                 </div>
 
@@ -496,8 +560,8 @@ export function ClientSignup() {
                     disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {submitting
-                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Salvando...</>
-                    : <>Continuar para o contrato <ChevronRight className="h-4 w-4" /></>}
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('signup.saving')}</>
+                    : <>{t('signup.continueToContract')} <ChevronRight className="h-4 w-4" /></>}
                 </button>
               </form>
             </div>
@@ -511,14 +575,14 @@ export function ClientSignup() {
 
             <div className="p-4 sm:p-6 border-b border-gray-100">
               <h2 className="text-lg font-bold text-gray-900">
-                {plan.contract?.title || 'Contrato de Prestação de Serviços'}
+                {plan.contract?.title || t('portal.contract.defaultTitle')}
               </h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                Leia com atenção antes de assinar
+                {t('signup.contractReadCarefully')}
               </p>
               {(formattedContractDate || formattedContractTime) && (
                 <p className="text-xs text-gray-400 mt-1">
-                  Iniciado em {formattedContractDate} às {formattedContractTime}
+                  {t('signup.contractStartedAt', { date: formattedContractDate, time: formattedContractTime })}
                 </p>
               )}
             </div>
@@ -532,7 +596,7 @@ export function ClientSignup() {
                 style={{ scrollbarWidth: 'thin' }}
               >
                 {(!plan.contract?.sections || plan.contract.sections.length === 0) && (
-                  <p className="text-gray-400 text-center py-8">Nenhuma cláusula configurada</p>
+                  <p className="text-gray-400 text-center py-8">{t('portal.contract.noClauses')}</p>
                 )}
                 {plan.contract?.sections?.map(s => (
                   <div key={s.id}>
@@ -556,7 +620,7 @@ export function ClientSignup() {
                   <ChevronDown className="h-3.5 w-3.5 text-amber-300 -mt-2" />
                 </div>
                 <p className="text-xs font-semibold text-amber-700">
-                  Continue rolando para ler o contrato completo
+                  {t('portal.contract.continueScrolling')}
                 </p>
                 <div className="flex flex-col items-center animate-bounce">
                   <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
@@ -571,14 +635,14 @@ export function ClientSignup() {
               {/* País de residência */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  País de residência
+                  {t('portal.contract.countryLabel')}
                 </label>
                 <select
-                  value={contractCountry}
-                  onChange={e => setContractCountry(e.target.value)}
+                  value={contractCountryCode}
+                  onChange={e => setContractCountryCode(e.target.value)}
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
                 >
-                  {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {countryOptions.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
                 </select>
               </div>
 
@@ -594,7 +658,7 @@ export function ClientSignup() {
                   disabled={!contractRead}
                   className="mt-0.5 w-4 h-4 accent-rose-500"
                 />
-                <span className="text-sm text-gray-700">Li e concordo com os termos do contrato</span>
+                <span className="text-sm text-gray-700">{t('portal.contract.agreeLabel')}</span>
               </label>
 
               {/* Botão de assinatura */}
@@ -602,10 +666,10 @@ export function ClientSignup() {
                 <div className="w-full flex flex-col items-center justify-center gap-1 py-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-800 cursor-not-allowed select-none">
                   <div className="flex items-center gap-2">
                     <Lock className="h-4 w-4" />
-                    <span className="font-semibold text-sm">Assinatura bloqueada</span>
+                    <span className="font-semibold text-sm">{t('portal.contract.lockedTitle')}</span>
                   </div>
                   <p className="text-xs text-amber-700">
-                    Role até o final do contrato ({contractScrollProgress}% lido)
+                    {t('portal.contract.lockedNote', { percent: contractScrollProgress })}
                   </p>
                 </div>
               ) : (
@@ -617,16 +681,16 @@ export function ClientSignup() {
                     transition-all shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {contractSigning
-                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Assinando...</>
-                    : <><Check className="h-4 w-4" /> Assinar Contrato</>}
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('portal.contract.signing')}</>
+                    : <><Check className="h-4 w-4" /> {t('portal.contract.signButton')}</>}
                 </button>
               )}
 
               {contractRead && (!contractAgreed || !signatureDataUrl) && (
                 <p className="text-xs text-gray-400 text-center">
                   {!signatureDataUrl
-                    ? 'Desenhe e confirme sua assinatura acima para continuar'
-                    : 'Marque a caixa acima para confirmar que leu e concordou'}
+                    ? t('signup.drawSignatureNote')
+                    : t('portal.contract.confirmNote')}
                 </p>
               )}
             </div>
@@ -649,31 +713,31 @@ export function ClientSignup() {
                 </div>
 
                 <div className="space-y-2">
-                  <h2 className="text-2xl font-bold text-gray-900">Contrato assinado!</h2>
+                  <h2 className="text-2xl font-bold text-gray-900">{t('signup.doneTitle')}</h2>
                   <p className="text-gray-500 text-sm leading-relaxed">
-                    Uma cópia foi enviada para{' '}
+                    {t('signup.doneBodyPre')}{' '}
                     <span className="font-semibold text-gray-700">{email}</span>{' '}
-                    e para a consultora. Você também pode baixar agora.
+                    {t('signup.doneBodyPost')}
                   </p>
                 </div>
 
                 {/* Dados de acesso */}
                 <div className="bg-gradient-to-br from-gray-50 to-rose-50/30 rounded-2xl p-5 text-left space-y-3 border border-gray-100">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Seus dados de acesso</p>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{t('signup.accessDataTitle')}</p>
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs text-gray-400">Login</p>
+                      <p className="text-xs text-gray-400">{t('signup.loginLabel')}</p>
                       <p className="font-semibold text-gray-900 text-sm mt-0.5">{email}</p>
                     </div>
                     <Mail className="h-5 w-5 text-rose-300" />
                   </div>
                   <div className="border-t border-gray-100 pt-3 flex items-center justify-between">
                     <div>
-                      <p className="text-xs text-gray-400">Senha</p>
+                      <p className="text-xs text-gray-400">{t('signup.passwordLabel')}</p>
                       <p className="font-semibold text-gray-900 text-sm mt-0.5">
                         {birthDate.split('-').reverse().join('/')}
                       </p>
-                      <p className="text-xs text-gray-400">Sua data de nascimento</p>
+                      <p className="text-xs text-gray-400">{t('signup.passwordNote')}</p>
                     </div>
                     <Calendar className="h-5 w-5 text-rose-300" />
                   </div>
@@ -688,8 +752,8 @@ export function ClientSignup() {
                     disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {downloadingPdf
-                    ? <><Loader2 className="h-4 w-4 animate-spin" /> Gerando PDF...</>
-                    : <><Download className="h-4 w-4" /> Baixar contrato em PDF</>}
+                    ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('signup.generatingPdf')}</>
+                    : <><Download className="h-4 w-4" /> {t('signup.downloadPdf')}</>}
                 </button>
 
                 {/* Prosseguir para o portal */}
@@ -698,19 +762,19 @@ export function ClientSignup() {
                   className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
                     hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2"
                 >
-                  Prosseguir para as próximas etapas <ChevronRight className="h-4 w-4" />
+                  {t('signup.proceedToNextSteps')} <ChevronRight className="h-4 w-4" />
                 </button>
               </div>
             </div>
 
             {/* Próximas etapas */}
             <div className="bg-white/70 rounded-2xl border border-gray-100 px-5 py-4">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">O que vem a seguir</p>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('signup.whatsNext')}</p>
               <div className="space-y-3">
                 {[
-                  { label: 'Formulário de análise', desc: 'Responda algumas perguntas sobre você' },
-                  { label: 'Envio de fotos', desc: 'Envie as fotos conforme as instruções' },
-                  { label: 'Sua análise personalizada', desc: 'Receba sua paleta de cores exclusiva' },
+                  { label: t('signup.nextStepFormLabel'),   desc: t('signup.nextStepFormDesc') },
+                  { label: t('signup.nextStepPhotosLabel'), desc: t('signup.nextStepPhotosDesc') },
+                  { label: t('signup.nextStepResultLabel'), desc: t('signup.nextStepResultDesc') },
                 ].map((item, i) => (
                   <div key={i} className="flex items-start gap-3">
                     <div className="w-6 h-6 bg-rose-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -728,7 +792,7 @@ export function ClientSignup() {
         )}
 
         <p className="text-center text-xs text-gray-400 pb-4">
-          IA Color · Coloração Pessoal
+          {t('signup.footerTagline')}
         </p>
       </div>
     </div>

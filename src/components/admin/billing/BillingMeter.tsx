@@ -25,7 +25,7 @@ export function BillingMeter({ billing }: { billing: BillingProfile }) {
       </div>
       <p className="text-sm text-gray-500 mb-4">
         Já está tudo configurado, é só usar. Suas imagens valem para qualquer
-        recurso de IA — chat, simulações e dossiês descontam do mesmo saldo.
+        recurso de IA, chat, simulações e dossiês descontam do mesmo saldo.
       </p>
 
       <div className="flex justify-between text-sm mb-1">

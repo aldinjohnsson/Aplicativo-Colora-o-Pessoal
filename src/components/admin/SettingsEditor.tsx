@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield, Globe } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -8,6 +8,7 @@ import { useTheme } from '../../lib/theme'
 import { adminService, AdminUser } from '../../lib/services'
 import { billingService, type BillingProfile } from '../../lib/billingService'
 import { BillingMeter } from './billing/BillingMeter'
+import { LANGUAGES } from '../../lib/i18n'
 
 // ── Modal de instrução de API Key ────────────────────────────────────────────
 
@@ -131,6 +132,10 @@ interface AppSettings {
   fromEmail: string
   emailDisplayName: string  // Nome que aparece como remetente nos e-mails enviados às clientes
   logoStoragePath?: string
+
+  // Idioma padrão do portal do cliente — usado quando a cliente ainda não
+  // escolheu um idioma ela mesma (ver seletor de idioma no ClientPortal).
+  defaultLanguage?: 'pt-BR' | 'en-US' | 'en-GB'
 
   aiCompositionCoverBase64?:   string
   aiCompositionCoverFileName?: string
@@ -295,6 +300,7 @@ const settingsStorageService = {
       fromEmail: '',
       emailDisplayName: '',
       logoStoragePath: '',
+      defaultLanguage: 'pt-BR',
       aiCompositionCoverBase64:   '',
       aiCompositionCoverFileName: '',
       aiCompositionFinalBase64:   '',
@@ -1124,6 +1130,7 @@ export default function SettingsEditor() {
     fromEmail: '',
     emailDisplayName: '',
     logoStoragePath: '',
+    defaultLanguage: 'pt-BR',
     aiCompositionCoverBase64:   '',
     aiCompositionCoverFileName: '',
     aiCompositionFinalBase64:   '',
@@ -1181,6 +1188,7 @@ export default function SettingsEditor() {
         fromEmail: '',
         emailDisplayName: '',
         logoStoragePath: '',
+        defaultLanguage: 'pt-BR',
         aiCompositionCoverBase64:   '',
         aiCompositionCoverFileName: '',
         aiCompositionFinalBase64:   '',
@@ -1852,6 +1860,47 @@ export default function SettingsEditor() {
               <p className="text-sm text-amber-700">⚠️ Preencha seu e-mail para receber a cópia dos contratos assinados.</p>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ── Idioma padrão do Portal do Cliente ───────────────────────────────
+        *
+        * Idioma inicial mostrado pra clientes que ainda não escolheram um
+        * idioma elas mesmas no seletor do portal (ClientPortal.tsx). Depois
+        * que a cliente escolhe, a preferência dela fica salva e este padrão
+        * deixa de valer pra ela — serve só de ponto de partida.
+        */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-emerald-50 to-teal-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-emerald-500 to-teal-500 rounded-xl flex items-center justify-center">
+              <Globe className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Idioma do Portal do Cliente</h2>
+              <p className="text-sm text-gray-500">Idioma inicial de quem ainda não escolheu no portal</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Idioma padrão</label>
+            <select
+              value={settings.defaultLanguage || 'pt-BR'}
+              onChange={e => setSettings({ ...settings, defaultLanguage: e.target.value as AppSettings['defaultLanguage'] })}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-transparent bg-white"
+            >
+              {LANGUAGES.map(l => (
+                <option key={l.code} value={l.code}>{l.flag} {l.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1.5">
+              A cliente sempre pode trocar o idioma dela mesma no portal (contrato, formulário,
+              fotos, resultado). Este campo só define em que idioma o portal abre pra quem
+              nunca trocou.
+            </p>
+          </div>
         </div>
       </div>
 

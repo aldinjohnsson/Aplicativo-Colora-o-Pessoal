@@ -11,8 +11,26 @@ import {
   Download, Package, X
 } from 'lucide-react'
 import { clientDataStorage } from '../../lib/clientDataStorage'
+import { LanguageProvider, useTranslation } from '../../lib/i18n'
+import { LanguageSwitcher } from './LanguageSwitcher'
 
+// ⚠️ Este componente não recebe `token`/`portalData` como prop — se no seu app
+// real ele estiver dentro do fluxo do ClientPortal.tsx (que tem o token), mova o
+// <LanguageProvider> pra lá e passe `persistKey={token}` +
+// `initialLanguage={portalData?.client?.language}` +
+// `fallbackLanguage={adminDefaultLanguage}` +
+// `onLanguageChange={(lang) => clientService.updateClientLanguage(token, lang)}`.
+// Aqui embaixo ele funciona standalone (idioma fica só no localStorage do navegador).
 export function ClientDashboard() {
+  return (
+    <LanguageProvider>
+      <ClientDashboardInner />
+    </LanguageProvider>
+  )
+}
+
+function ClientDashboardInner() {
+  const { t } = useTranslation()
   const [currentStep, setCurrentStep] = useState(1)
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set())
   const [allCompleted, setAllCompleted] = useState(false)
@@ -63,7 +81,7 @@ export function ClientDashboard() {
         const currentPhotos = photosRef.current
         const currentFormData = formDataRef.current
         const currentAttachments = formAttachmentsRef.current
-        if (!currentPhotos?.length) { alert('ERRO: Nenhuma foto detectada.'); return }
+        if (!currentPhotos?.length) { alert(t('dashboard.errorNoPhotosDetected')); return }
         if (currentContract?.clientInfo) {
           try {
             await clientDataStorage.saveClientData({
@@ -73,7 +91,7 @@ export function ClientDashboard() {
               formAttachments: currentAttachments || [],
               photos: currentPhotos || []
             })
-          } catch (error) { alert(`Erro ao salvar dados: ${error}`); return }
+          } catch (error) { alert(t('dashboard.errorSavingData', { error: String(error) })); return }
         }
         break
     }
@@ -89,31 +107,31 @@ export function ClientDashboard() {
         const { generateContractPDF } = await import('../../lib/contractPDFGenerator')
         const blob = await generateContractPDF(contractData.title || 'CONTRATO', contractData.sections || [], contractData.clientInfo, contractData.timestamp)
         const url = URL.createObjectURL(blob)
-        const a = document.createElement('a'); a.href = url; a.download = `${clientName}_Contrato.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+        const a = document.createElement('a'); a.href = url; a.download = `${clientName}_${t('dashboard.fileSuffixContract')}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
       } else if (type === 'form') {
         const { generateFormPDF } = await import('../../lib/formPDFGenerator')
         const formConfig = JSON.parse(localStorage.getItem('admin-form-config') || 'null')
         const blob = await generateFormPDF(contractData.clientInfo.fullName, contractData.clientInfo.email, contractData.clientInfo.phone, formData, formConfig, new Date().toISOString(), formAttachments)
         const url = URL.createObjectURL(blob)
-        const a = document.createElement('a'); a.href = url; a.download = `${clientName}_Formulario.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+        const a = document.createElement('a'); a.href = url; a.download = `${clientName}_${t('dashboard.fileSuffixForm')}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
       } else {
-        if (!photos.length) { alert('Nenhuma foto para baixar.'); return }
+        if (!photos.length) { alert(t('dashboard.errorNoPhotosToDownload')); return }
         const JSZip = (await import('jszip')).default
         const zip = new JSZip()
         const folder = zip.folder('Fotos')
         for (const photo of photos) folder?.file(photo.name, photo)
         const blob = await zip.generateAsync({ type: 'blob' })
         const url = URL.createObjectURL(blob)
-        const a = document.createElement('a'); a.href = url; a.download = `${clientName}_Fotos.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+        const a = document.createElement('a'); a.href = url; a.download = `${clientName}_${t('dashboard.fileSuffixPhotos')}.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
       }
-    } catch (err) { alert('Erro ao baixar. Tente novamente.') }
+    } catch (err) { alert(t('dashboard.errorDownload')) }
   }
 
   const steps = [
-    { id: 1, title: 'Contrato', description: 'Leia e aceite os termos', completed: completedSteps.has(1), current: currentStep === 1, locked: false },
-    { id: 2, title: 'Formulário', description: 'Preencha suas informações', completed: completedSteps.has(2), current: currentStep === 2, locked: !completedSteps.has(1) },
-    { id: 3, title: 'Fotos', description: 'Envie suas fotos', completed: completedSteps.has(3), current: currentStep === 3, locked: !completedSteps.has(2) },
-    { id: 4, title: 'Finalização', description: 'Revise e conclua', completed: completedSteps.has(4), current: currentStep === 4, locked: !completedSteps.has(3) },
+    { id: 1, title: t('dashboard.stepContractTitle'), description: t('dashboard.stepContractDesc'), completed: completedSteps.has(1), current: currentStep === 1, locked: false },
+    { id: 2, title: t('dashboard.stepFormTitle'), description: t('dashboard.stepFormDesc'), completed: completedSteps.has(2), current: currentStep === 2, locked: !completedSteps.has(1) },
+    { id: 3, title: t('dashboard.stepPhotosTitle'), description: t('dashboard.stepPhotosDesc'), completed: completedSteps.has(3), current: currentStep === 3, locked: !completedSteps.has(2) },
+    { id: 4, title: t('dashboard.stepFinalTitle'), description: t('dashboard.stepFinalDesc'), completed: completedSteps.has(4), current: currentStep === 4, locked: !completedSteps.has(3) },
   ]
 
   return (
@@ -127,27 +145,30 @@ export function ClientDashboard() {
                 <Palette className="h-4 w-4 sm:h-5 sm:w-5 text-white" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-sm sm:text-base font-semibold text-gray-900 leading-tight">Portal do Cliente</h1>
-                <p className="text-xs text-gray-500 hidden sm:block">Análise de Coloração Pessoal</p>
+                <h1 className="text-sm sm:text-base font-semibold text-gray-900 leading-tight">{t('dashboard.portalTitle')}</h1>
+                <p className="text-xs text-gray-500 hidden sm:block">{t('common.brandTagline')}</p>
               </div>
             </div>
-            {showAdminToggle && (
-              <div className="flex items-center gap-1 flex-shrink-0">
-                <button
-                  onClick={() => window.location.href = '/admin'}
-                  className="flex items-center gap-1 px-2 py-1.5 text-xs sm:text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <Settings className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                  <span className="hidden sm:inline">Painel Admin</span>
-                </button>
-                <button
-                  onClick={() => setShowAdminToggle(false)}
-                  className="p-1.5 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            )}
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+              <LanguageSwitcher variant="minimal" />
+              {showAdminToggle && (
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button
+                    onClick={() => window.location.href = '/admin'}
+                    className="flex items-center gap-1 px-2 py-1.5 text-xs sm:text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <Settings className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                    <span className="hidden sm:inline">{t('dashboard.adminPanel')}</span>
+                  </button>
+                  <button
+                    onClick={() => setShowAdminToggle(false)}
+                    className="p-1.5 text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -179,30 +200,29 @@ export function ClientDashboard() {
               <div className="inline-flex items-center justify-center w-14 h-14 sm:w-16 sm:h-16 bg-green-100 rounded-full mb-3 sm:mb-4">
                 <CheckCircle className="h-7 w-7 sm:h-8 sm:w-8 text-green-600" />
               </div>
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">Processo Concluído!</h2>
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">{t('dashboard.completedTitle')}</h2>
               <p className="text-sm text-gray-600 mb-5 sm:mb-6 max-w-md mx-auto">
-                Obrigado por completar todas as etapas. Em breve entraremos em contato com os resultados.
+                {t('dashboard.completedSubtitle')}
               </p>
 
               {/* Download actions — stack on mobile */}
               <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 justify-center max-w-xl mx-auto">
                 <Button onClick={() => handleDownload('contract')} variant="outline" className="flex-1 text-sm">
-                  <FileText className="h-4 w-4 mr-2" /> Baixar Contrato
+                  <FileText className="h-4 w-4 mr-2" /> {t('dashboard.downloadContract')}
                 </Button>
                 <Button onClick={() => handleDownload('form')} variant="outline" className="flex-1 text-sm">
-                  <ClipboardList className="h-4 w-4 mr-2" /> Baixar Formulário
+                  <ClipboardList className="h-4 w-4 mr-2" /> {t('dashboard.downloadForm')}
                 </Button>
                 {photos.length > 0 && (
                   <Button onClick={() => handleDownload('photos')} variant="outline" className="flex-1 text-sm">
-                    <Package className="h-4 w-4 mr-2" /> Baixar Fotos
+                    <Package className="h-4 w-4 mr-2" /> {t('dashboard.downloadPhotos')}
                   </Button>
                 )}
               </div>
 
               <div className="mt-5 p-4 bg-blue-50 rounded-lg border border-blue-200 text-left max-w-xl mx-auto">
                 <p className="text-sm text-blue-800">
-                  <strong>Próximos Passos:</strong> Nossa equipe irá analisar suas informações e fotos.
-                  Você receberá o resultado completo em até 5 dias úteis no e-mail cadastrado.
+                  <strong>{t('dashboard.nextStepsTitle')}</strong> {t('dashboard.nextStepsBody')}
                 </p>
               </div>
             </CardContent>

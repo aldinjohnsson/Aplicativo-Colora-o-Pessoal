@@ -1,4 +1,5 @@
 import jsPDF from 'jspdf'
+import { translations, Language } from './i18n/translations'
 
 interface ContractSection {
   id: string
@@ -25,13 +26,22 @@ interface ClientInfo {
  * - Bloco de assinatura (manuscrita + dados legais) nunca quebra de página.
  * - Data, hora e minutos/segundos exatos da assinatura em todos os blocos.
  * - IP do signatário exibido no cabeçalho de metadados e no bloco de assinatura.
+ * - Suporte a múltiplos idiomas: rótulos, texto de confirmação e formatação de
+ *   data/hora seguem o idioma passado em `language` (o mesmo que o cliente
+ *   escolheu no portal — normalmente vindo de `portalData.client.language`).
+ *   `sections` (as cláusulas do contrato) continuam vindo como texto livre —
+ *   o conteúdo jurídico em si deve ser cadastrado por idioma no ContractEditor,
+ *   este gerador só traduz os rótulos fixos ao redor.
  */
 export const generateContractPDF = async (
   title: string,
   sections: ContractSection[],
   clientInfo: ClientInfo,
-  timestamp?: string
+  timestamp?: string,
+  language: Language = 'pt-BR'
 ): Promise<Blob> => {
+  const L = translations[language]?.contractPdf ?? translations['pt-BR'].contractPdf
+
   const pdf = new jsPDF()
   let yPosition = 20
   const pageHeight = pdf.internal.pageSize.height
@@ -62,18 +72,18 @@ export const generateContractPDF = async (
   const signTimestamp = clientInfo.signedAt || timestamp || new Date().toISOString()
   const signDate      = new Date(signTimestamp)
 
-  const signDateStr = signDate.toLocaleDateString('pt-BR', {
+  const signDateStr = signDate.toLocaleDateString(L.dateLocale, {
     day: '2-digit', month: '2-digit', year: 'numeric',
   })
-  const signTimeStr = signDate.toLocaleTimeString('pt-BR', {
+  const signTimeStr = signDate.toLocaleTimeString(L.dateLocale, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
-  const signDatetimeStr = `${signDateStr} às ${signTimeStr}`
+  const signDatetimeStr = `${signDateStr} ${language === 'pt-BR' ? 'às' : 'at'} ${signTimeStr}`
 
   // ── CABEÇALHO ─────────────────────────────────────────────────────────────
 
   // Data por extenso no canto superior direito
-  const dateTextLong = signDate.toLocaleDateString('pt-BR', {
+  const dateTextLong = signDate.toLocaleDateString(L.dateLocale, {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   })
   pdf.setFontSize(10)
@@ -85,9 +95,9 @@ export const generateContractPDF = async (
 
   // ── Bloco de metadados (IP / Data / Hora / País) ──────────────────────────
   const metaLines: string[] = [
-    `IP do signatário : ${clientInfo.ip || 'Não registrado'}`,
-    `Data de assinatura: ${signDateStr}   Horário: ${signTimeStr}`,
-    `País              : ${clientInfo.country || 'Brasil'}`,
+    `${L.signatoryIp} : ${clientInfo.ip || L.notRegistered}`,
+    `${L.signDate}: ${signDateStr}   ${L.signTime}: ${signTimeStr}`,
+    `${L.country}              : ${clientInfo.country || L.defaultCountry}`,
   ]
   const metaLineH  = 5
   const metaPadV   = 5
@@ -124,7 +134,7 @@ export const generateContractPDF = async (
   // ── DADOS DO CLIENTE ──────────────────────────────────────────────────────
   pdf.setFontSize(12)
   pdf.setFont('helvetica', 'bold')
-  pdf.text('CONTRATANTE', margin, yPosition)
+  pdf.text(L.contractorSection, margin, yPosition)
   yPosition += 8
 
   pdf.setFontSize(10)
@@ -136,10 +146,10 @@ export const generateContractPDF = async (
     yPosition += 7
   }
 
-  row('Nome Completo', clientInfo.fullName)
-  row('E-mail', clientInfo.email)
-  row('Telefone', clientInfo.phone || '—')
-  if (clientInfo.country) row('País', clientInfo.country)
+  row(L.fullName, clientInfo.fullName)
+  row(L.email, clientInfo.email)
+  row(L.phone, clientInfo.phone || '—')
+  if (clientInfo.country) row(L.country, clientInfo.country)
 
   yPosition += 5
   addLine()
@@ -201,14 +211,14 @@ export const generateContractPDF = async (
   pdf.setFontSize(11)
   pdf.setFont('helvetica', 'bold')
   pdf.setTextColor(0, 0, 0)
-  pdf.text('ASSINATURA DIGITAL', margin, yPosition)
+  pdf.text(L.digitalSignatureSection, margin, yPosition)
   yPosition += 10
 
   pdf.setFontSize(10)
   pdf.setFont('helvetica', 'normal')
   pdf.setTextColor(60, 60, 60)
 
-  pdf.text('Este contrato foi aceito digitalmente por:', margin, yPosition)
+  pdf.text(L.acceptedDigitallyBy, margin, yPosition)
   yPosition += 7
 
   pdf.setFont('helvetica', 'bold')
@@ -216,22 +226,22 @@ export const generateContractPDF = async (
   yPosition += 7
 
   pdf.setFont('helvetica', 'normal')
-  pdf.text(`Data e hora de aceite: ${signDatetimeStr}`, margin, yPosition)
+  pdf.text(`${L.acceptedAt}: ${signDatetimeStr}`, margin, yPosition)
   yPosition += 7
 
-  pdf.text(`E-mail: ${clientInfo.email}`, margin, yPosition)
+  pdf.text(`${L.email}: ${clientInfo.email}`, margin, yPosition)
   yPosition += 7
 
-  pdf.text(`Telefone: ${clientInfo.phone || '—'}`, margin, yPosition)
+  pdf.text(`${L.phoneLabel}: ${clientInfo.phone || '—'}`, margin, yPosition)
   yPosition += 7
 
   if (clientInfo.country) {
-    pdf.text(`País: ${clientInfo.country}`, margin, yPosition)
+    pdf.text(`${L.countryLabel}: ${clientInfo.country}`, margin, yPosition)
     yPosition += 7
   }
 
   if (clientInfo.ip) {
-    pdf.text(`Endereço IP: ${clientInfo.ip}`, margin, yPosition)
+    pdf.text(`${L.ipLabel}: ${clientInfo.ip}`, margin, yPosition)
     yPosition += 7
   }
 
@@ -245,7 +255,7 @@ export const generateContractPDF = async (
     pdf.setFontSize(9)
     pdf.setFont('helvetica', 'bold')
     pdf.setTextColor(80, 80, 80)
-    pdf.text('Assinatura manuscrita digital:', margin, yPosition)
+    pdf.text(L.handwrittenSignature, margin, yPosition)
     yPosition += 5
 
     // Caixa com borda
@@ -284,7 +294,7 @@ export const generateContractPDF = async (
     pdf.setFontSize(9)
     pdf.setFont('helvetica', 'normal')
     pdf.setTextColor(100, 100, 100)
-    pdf.text('Assinatura', margin, yPosition + 18)
+    pdf.text(L.signatureFallback, margin, yPosition + 18)
     yPosition += 28
   }
 
@@ -292,9 +302,7 @@ export const generateContractPDF = async (
   pdf.setFontSize(9)
   pdf.setFont('helvetica', 'italic')
   pdf.setTextColor(80, 80, 80)
-  const confirmationText =
-    'O contratante declara ter lido, compreendido e aceito todos os termos e condicoes deste contrato.'
-  const confirmationLines = pdf.splitTextToSize(confirmationText, maxWidth - 16)
+  const confirmationLines = pdf.splitTextToSize(L.confirmationText, maxWidth - 16)
   const lineHeight  = 5
   const boxPaddingV = 8
   const boxHeight   = boxPaddingV * 2 + confirmationLines.length * lineHeight
@@ -319,7 +327,7 @@ export const generateContractPDF = async (
     pdf.setFont('helvetica', 'normal')
     pdf.setTextColor(150, 150, 150)
 
-    const pageText      = `Página ${i} de ${totalPages}`
+    const pageText      = L.pageOf.replace('{current}', String(i)).replace('{total}', String(totalPages))
     const pageTextWidth = pdf.getTextWidth(pageText)
     pdf.text(pageText, pageWidth - margin - pageTextWidth, pageHeight - 10)
     pdf.text(clientInfo.fullName, margin, pageHeight - 10)
@@ -338,13 +346,15 @@ export const downloadContractPDF = async (
   title: string,
   sections: ContractSection[],
   clientInfo: ClientInfo,
-  timestamp?: string
+  timestamp?: string,
+  language: Language = 'pt-BR'
 ) => {
-  const blob = await generateContractPDF(title, sections, clientInfo, timestamp)
+  const L = translations[language]?.contractPdf ?? translations['pt-BR'].contractPdf
+  const blob = await generateContractPDF(title, sections, clientInfo, timestamp, language)
   const url  = URL.createObjectURL(blob)
   const a    = document.createElement('a')
   a.href     = url
-  a.download = `${clientInfo.fullName.replace(/\s+/g, '_')}_Contrato.pdf`
+  a.download = `${clientInfo.fullName.replace(/\s+/g, '_')}_${L.filenameSuffix}.pdf`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
