@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { substitutePromptVars, type PromptVarSource } from '../lib/promptVars'
+import { AI_IMAGE_LANGUAGES, applyLanguageInstruction } from '../lib/promptLanguage'
 import type { AiPromptPart } from '../prompts/AiImagePromptsManager'
 
 // ── Btn ───────────────────────────────────────────────────────────────
@@ -104,6 +105,10 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   const [loadingPrompts, setLoadingPrompts]     = useState(true)
   const [promptsError, setPromptsError]         = useState<string | null>(null)
   const [selectedPromptId, setSelectedPromptId] = useState<string>('')
+
+  // ── Idioma da imagem gerada ──
+  // 'pt' = padrão, sem instrução extra (prompts já são cadastrados em português)
+  const [language, setLanguage] = useState<string>('pt')
 
   // ── Foto base ──
   // photoStep: 'category' = escolher categoria primeiro; 'photos' = escolher foto
@@ -207,7 +212,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
       promptName:  selectedPrompt.name,
       partId:      part.id,
       partLabel:   part.label,
-      partPrompt:  substitutePromptVars(part.prompt, promptVarSources),
+      partPrompt:  applyLanguageInstruction(substitutePromptVars(part.prompt, promptVarSources), language),
       modelVersion: selectedPrompt.model,
       photoId:     selectedPhoto.id,
       photoName:   selectedPhoto.photo_name,
@@ -290,6 +295,26 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
 
               </>
             )}
+          </div>
+
+          {/* ═══ Idioma da imagem gerada ═══ */}
+          <div>
+            <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-fuchsia-500" />
+              Idioma da imagem
+            </p>
+            <select
+              value={language}
+              onChange={e => setLanguage(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-fuchsia-400 focus:border-fuchsia-400"
+            >
+              {AI_IMAGE_LANGUAGES.map(l => (
+                <option key={l.code} value={l.code}>{l.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-400 mt-1">
+              Qualquer texto que apareça na imagem será traduzido pra este idioma. O prompt cadastrado continua em português.
+            </p>
           </div>
 
           {/* ═══ Passo 2: Foto base ═══ */}

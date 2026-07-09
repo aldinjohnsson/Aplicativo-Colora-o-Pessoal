@@ -33,6 +33,7 @@ import {
   base64PdfToArrayBuffer,
 } from './documents/ai-compositions/generateCompositionPdf'
 import { substitutePromptVars, type PromptVarSource } from './documents/lib/promptVars'
+import { AI_IMAGE_LANGUAGES, applyLanguageInstruction } from './documents/lib/promptLanguage'
 import type { AiPromptPart } from './documents/prompts/AiImagePromptsManager'
 
 // ── Btn ───────────────────────────────────────────────────────────────
@@ -149,6 +150,7 @@ interface PersistedConfig {
   aiInfoValues:      Record<string, string>
   contrastData:      ContrastData | null
   contrastFormatted: string
+  language?:         string   // 'pt' (padrão) | 'en' | 'es' | 'fr' | 'it' | 'de'
 }
 
 // Workspace NÃO contém base64 de imagens geradas — ficam em chaves separadas
@@ -564,6 +566,10 @@ export function StandaloneAiGenerationPage() {
   const [promptsError,   setPromptsError]   = useState<string | null>(null)
   const [selectedPromptId, setSelectedPromptId] = useState('')
 
+  // ── Idioma da imagem gerada ──
+  // 'pt' = padrão, sem instrução extra (prompts já são cadastrados em português)
+  const [language, setLanguage] = useState<string>('pt')
+
   // Foto de upload
   const fileRef = useRef<HTMLInputElement>(null)
   const [photoPreview,       setPhotoPreview]       = useState<string | null>(null)
@@ -681,6 +687,7 @@ export function StandaloneAiGenerationPage() {
         if (cfg.aiInfoValues)      setAiInfoValues(cfg.aiInfoValues)
         if (cfg.contrastData)      setContrastData(cfg.contrastData)
         if (cfg.contrastFormatted) setContrastFormatted(cfg.contrastFormatted)
+        if (cfg.language)          setLanguage(cfg.language)
       } catch {
         safeRemoveItem(keys.config)
       }
@@ -760,6 +767,7 @@ export function StandaloneAiGenerationPage() {
       aiInfoValues,
       contrastData,
       contrastFormatted,
+      language,
     }
     safeSetItem(
       standaloneAiStorageKeys(adminId).config,
@@ -774,6 +782,7 @@ export function StandaloneAiGenerationPage() {
     aiInfoValues,
     contrastData,
     contrastFormatted,
+    language,
   ])
 
   // ── LocalStorage: persistência do WORKSPACE ───────────────────────
@@ -867,7 +876,7 @@ export function StandaloneAiGenerationPage() {
       promptName:   prompt.name,
       partId:       part.id,
       partLabel:    part.label || `Parte ${idx + 1}`,
-      partPrompt:   substitutePromptVars(part.prompt, promptVarSources),
+      partPrompt:   applyLanguageInstruction(substitutePromptVars(part.prompt, promptVarSources), language),
       photoPreviewUrl:     photoPreview,
       uploadedPhotoBase64: photoBase64,
       uploadedPhotoMime:   photoMime,
@@ -1230,6 +1239,25 @@ export function StandaloneAiGenerationPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          {/* ─ Idioma da imagem ─ */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+              Idioma da imagem
+            </label>
+            <select
+              value={language}
+              onChange={e => setLanguage(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-fuchsia-400"
+            >
+              {AI_IMAGE_LANGUAGES.map(l => (
+                <option key={l.code} value={l.code}>{l.label}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-gray-400 mt-1">
+              Qualquer texto que apareça na imagem será traduzido pra este idioma. O prompt cadastrado continua em português.
+            </p>
           </div>
 
           {/* ─ Foto ─ */}
