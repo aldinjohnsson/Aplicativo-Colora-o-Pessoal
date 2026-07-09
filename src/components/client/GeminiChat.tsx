@@ -96,6 +96,11 @@ interface GeminiChatProps {
    *  Atualmente passado apenas pelo ClientsManager (admin); o portal da
    *  cliente não passa essa prop, então não vê o botão. */
   onSavePdf?: (blob: Blob, fileName: string) => Promise<void>
+  /** Quando true, esconde a caixa de texto livre — a interação só acontece
+   *  clicando nos prompts/categorias já cadastrados (botões de sugestão).
+   *  Usado na pré-visualização do admin: serve pra testar os prompts
+   *  cadastrados, não pra bater papo livre com a IA. */
+  promptsOnly?: boolean
 }
 
 // ── Idiomas suportados ──────────────────────────────────────────────────────
@@ -296,7 +301,7 @@ function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageEleme
   return <img src={resolvedSrc} {...props} onError={() => setFailed(true)} />
 }
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR' }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR', promptsOnly = false }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -1761,7 +1766,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           </div>
         )}
 
-        {/* Input area */}
+        {/* Input area — escondido em modo promptsOnly (admin testando só os
+            prompts cadastrados, sem chat livre). */}
+        {promptsOnly ? (
+          <div className="px-3 sm:px-4 pb-3 sm:pb-4 pt-2 bg-white border-t border-gray-100 flex-shrink-0"
+            style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom, 12px))' }}>
+            <p className="text-center text-xs text-gray-400 py-1.5">
+              Modo admin: use os prompts cadastrados acima — sem caixa de texto livre aqui.
+            </p>
+          </div>
+        ) : (
         <div className="px-3 sm:px-4 pb-3 sm:pb-4 pt-2 bg-white border-t border-gray-100 flex-shrink-0" style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom, 12px))' }}>
           <div className="flex items-end gap-2">
             <textarea
@@ -1783,6 +1797,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           </div>
         </div>
+        )}
       </div>
 
       {/* ── Lightbox ─────────────────────────────────────────────────── */}

@@ -50,6 +50,8 @@ interface AIPromptConfigProps {
   photoCategories?: any[]
   /** Chamado após salvar/trocar/remover foto de referência para forçar reload no pai */
   onAfterSaveRefPhotos?: () => void
+  /** Só super_admin pode liberar/revogar o Chat IA para a cliente. */
+  isSuperAdmin: boolean
 }
 
 // ── Foto de referência vinculada a um type ──────────────────
@@ -67,6 +69,7 @@ export function AIPromptConfig({
   clientId, clientName, isReleased, chatEnabled,
   onChatEnabledChange, onSaveChatEnabled,
   clientPhotos, photoCategories, onAfterSaveRefPhotos,
+  isSuperAdmin,
 }: AIPromptConfigProps) {
   const [photoTypes, setPhotoTypes] = useState<PhotoType[]>([])
   const [refPhotos, setRefPhotos] = useState<RefPhoto[]>([])
@@ -77,6 +80,19 @@ export function AIPromptConfig({
   const [standardizeTypeId, setStandardizeTypeId] = useState<string | null>(null)
   /** Lightbox — URL da foto a ampliar nos cards de referência */
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+
+  // ── Categorias com prompt cadastrado ─────────────────────────
+  //
+  // "Cabelo" sempre aparece (é o tipo principal). Roupas/Look, Maquiagem e
+  // Geral/Rosto só aparecem se já existir pelo menos um prompt de IA do
+  // tipo 'composition' cadastrado (Documentos → Prompts IA) pra categoria
+  // correspondente — 'composition' é o prompt que a IA de fato usa pra
+  // GERAR a imagem daquela categoria (diferente do prompt 'ref_standardize'
+  // do botão "Aprimorar" abaixo, que só padroniza a foto de referência).
+  // Sem isso, mostrar o card de upload de foto de referência é enganoso:
+  // a admin sobe a foto, mas a IA não sabe gerar nada com aquela categoria.
+  const [registeredCategories, setRegisteredCategories] = useState<Set<string>>(new Set())
+  const [loadingPromptCategories, setLoadingPromptCategories] = useState(true)
 
   const [creditsImage, setCreditsImage] = useState(0)
   const [creditsText, setCreditsText] = useState(0)
@@ -106,6 +122,48 @@ export function AIPromptConfig({
   }, [])
 
   useEffect(() => { loadData() }, [clientId])
+
+  // Carrega as categorias com prompt cadastrado uma vez (não depende da
+  // cliente específica — é config global de Documentos → Prompts IA).
+  //
+  // IMPORTANTE: checa prompt_kind='composition', não 'ref_standardize'.
+  // 'composition' é o tipo de prompt que a IA de fato usa pra GERAR as
+  // imagens (cabelo/roupas/maquiagem) — é isso que determina se a
+  // categoria funciona de verdade pra cliente. 'ref_standardize' é só o
+  // prompt do botão "Aprimorar" (padronizar a foto de referência), uma
+  // ferramenta auxiliar; não indica se a IA sabe gerar aquela categoria.
+  //
+  // Prompts SEM categoria (ref_category null) não contam pra nada aqui —
+  // cada tipo (inclusive Geral/Rosto) só libera com um prompt registrado
+  // especificamente pra ele.
+  useEffect(() => {
+    let cancelled = false
+    setLoadingPromptCategories(true)
+    documentsService.listAiImagePrompts({ promptKind: 'composition' })
+      .then(all => {
+        if (cancelled) return
+        const cats = new Set<string>()
+        for (const p of all) {
+          if (p.ref_category) cats.add(p.ref_category)
+        }
+        setRegisteredCategories(cats)
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingPromptCategories(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  /** "Cabelo" sempre visível. Todos os outros (incluindo Geral/Rosto) só
+   *  aparecem se tiverem um prompt 'composition' cadastrado especificamente
+   *  pra sua categoria — sem fallback de prompt "sem categoria". Enquanto
+   *  os prompts ainda carregam, oculta os opcionais por padrão (evita
+   *  "piscar" mostrando e depois sumindo). */
+  const isTypeVisible = (type: PhotoType): boolean => {
+    if (type.id.toLowerCase() === 'cabelo') return true
+    if (loadingPromptCategories) return false
+    const category = inferRefCategory(type.id)
+    return category ? registeredCategories.has(category) : false
+  }
 
   const loadData = async () => {
     setLoading(true)
@@ -284,8 +342,15 @@ export function AIPromptConfig({
           </p>
         )}
 
+        {photoTypes.length > 0 && !loadingPromptCategories && photoTypes.filter(isTypeVisible).length === 0 && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+            ⚠️ Nenhum prompt de IA cadastrado ainda além de Cabelo. Cadastre um prompt em
+            <strong> Documentos → Prompts IA</strong> pra liberar Roupas/Look, Maquiagem e Geral/Rosto aqui.
+          </p>
+        )}
+
         <div className="space-y-3">
-          {photoTypes.map(type => {
+          {photoTypes.filter(isTypeVisible).map(type => {
             const photo = refPhotos.find(p => p.typeId === type.id)
             const isUploading = uploadingTypeId === type.id
 
@@ -370,7 +435,7 @@ export function AIPromptConfig({
           })}
         </div>
 
-        {!hasGeral && photoTypes.some(t => t.id === 'geral') && (
+        {!hasGeral && photoTypes.some(t => t.id === 'geral' && isTypeVisible(t)) && (
           <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
             ⚠️ A foto do type <strong>Geral / Rosto</strong> é o fallback padrão da IA
           </p>
@@ -507,7 +572,11 @@ export function AIPromptConfig({
           </div>
         </div>
 
-        {/* Toggle chat — visível sempre para permitir alteração após liberação */}
+        {/* Toggle chat — só super_admin pode liberar/revogar o Chat IA pra
+            cliente. Admins comuns não veem esta opção (nem o botão salvar
+            dela); o valor atual continua refletido no texto acima
+            ("A cliente já pode acessar o resultado e o chat IA"). */}
+        {isSuperAdmin && (
         <div className="bg-white rounded-xl border border-gray-200 p-3 space-y-2">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -550,6 +619,7 @@ export function AIPromptConfig({
             {savingChat ? 'Salvando...' : chatSaved ? 'Salvo!' : 'Salvar configuração do chat'}
           </button>
         </div>
+        )}
 
       </div>
 
@@ -574,6 +644,7 @@ function inferRefCategory(typeId: string): string | null {
     roupa:     'roupa',
     roupas:    'roupa',
     maquiagem: 'maquiagem',
+    geral:     'geral',
     acessorio: 'acessorio',
     acessórios:'acessorio',
     acessorios:'acessorio',

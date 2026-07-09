@@ -5999,6 +5999,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               clientPhotos={photos}
               photoCategories={photoCategories}
               onAfterSaveRefPhotos={load}
+              isSuperAdmin={isSuperAdmin}
             />
           </div>
         </div>
@@ -6020,7 +6021,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 Pré-visualização do Chat IA — modo admin
               </p>
               <p className="text-xs" style={{ color: t.text3 }}>
-                Mesma experiência que a cliente verá, sem limite de imagens ou textos. As mensagens ficam em histórico separado do chat real da cliente.
+                Sem limite de imagens ou textos, e sem caixa de texto livre — aqui você só dispara os prompts já cadastrados, pra testar como cada um se comporta. As mensagens ficam em histórico separado do chat real da cliente.
               </p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -6053,6 +6054,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               resultFileUrls={adminResultFileUrls}
               resultObservations={result?.observations || ''}
               unlimited
+              promptsOnly
               chatStorageKey={`mscolors_chat_admin_${clientId}`}
               onSavePdf={async (blob, fileName) => {
                 // Salva o PDF gerado pelo chat IA direto em
