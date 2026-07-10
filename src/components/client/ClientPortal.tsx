@@ -2198,6 +2198,28 @@ function ResultScreen({
     return () => { cancelled = true }
   }, [token])
 
+  // Prazo de retenção dos arquivos (dias após liberação até a limpeza
+  // automática apagar tudo do Drive). Vem de admin_content.settings, via
+  // RPC pública (token da cliente, sem auth) — mesmo padrão do
+  // get_client_owner_role acima. null = limpeza automática desligada
+  // pra essa consultora (não mostra aviso nenhum).
+  const [fileRetention, setFileRetention] = useState<{ enabled: boolean; days: number } | null>(null)
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase.rpc('get_client_file_retention', { p_token: token })
+        if (cancelled) return
+        if (error) { console.warn('[ClientPortal] get_client_file_retention:', error); return }
+        if (data) setFileRetention({ enabled: data.enabled ?? true, days: data.days ?? 21 })
+      } catch (e) {
+        if (!cancelled) console.warn('[ClientPortal] file_retention fetch falhou:', e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [token])
+
   const handleDownload = async (file: any) => {
     if (downloadingId) return
     setDownloadingId(file.id)
@@ -2411,6 +2433,46 @@ function ResultScreen({
           </div>
         </div>
       )}
+
+      {/* Aviso de prazo de retenção — só no resultado FINAL (não em preview/
+          simulação) e só quando a consultora não desligou a limpeza automática
+          em Configurações. O mesmo prazo já foi avisado por e-mail. */}
+      {!simulatingMode && !aiPhotoMode && fileRetention?.enabled && result.released_at && (() => {
+        const isPt = language.startsWith('pt')
+        const releasedAt = new Date(result.released_at)
+        const deleteAt = new Date(releasedAt.getTime() + fileRetention.days * 24 * 60 * 60 * 1000)
+        const daysLeft = Math.ceil((deleteAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+        const expired = daysLeft <= 0
+        const formattedDeleteDate = deleteAt.toLocaleDateString(language, {
+          day: '2-digit', month: 'long', year: 'numeric',
+        })
+
+        return (
+          <div className={`bg-white rounded-2xl border shadow-sm p-5 ${expired ? 'border-red-200' : 'border-amber-200'}`}>
+            <div className="flex items-start gap-4">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${expired ? 'from-red-400 to-rose-500' : 'from-amber-400 to-orange-500'}`}>
+                <Clock className="h-6 w-6 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-gray-900">
+                  {expired
+                    ? (isPt ? 'Prazo de download encerrado' : 'Download window closed')
+                    : (isPt ? `Baixe seus arquivos em até ${daysLeft} dia${daysLeft === 1 ? '' : 's'}` : `Download your files within ${daysLeft} day${daysLeft === 1 ? '' : 's'}`)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+                  {expired
+                    ? (isPt
+                        ? 'O prazo para download já passou e os arquivos foram excluídos permanentemente do nosso sistema. Não é possível fornecê-los novamente.'
+                        : 'The download window has passed and the files have been permanently deleted from our system. We are unable to provide them again.')
+                    : (isPt
+                        ? `Por questão de espaço, fotos e arquivos deste resultado são excluídos permanentemente em ${formattedDeleteDate}. Depois desse prazo não é possível recuperá-los.`
+                        : `For storage reasons, the photos and files for this result will be permanently deleted on ${formattedDeleteDate}. After that date they cannot be recovered.`)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {!hasContent && (
         <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-8 text-center">

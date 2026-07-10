@@ -3,7 +3,7 @@ import React, { useState } from 'react'
 import {
   Check, FileText, ClipboardList, Camera, Eye, Sparkles, Package,
   ChevronRight, RotateCcw, ArrowRight, X, AlertTriangle, Loader2, Unlock, Lock, Calendar,
-  Shuffle,
+  Shuffle, Mail,
 } from 'lucide-react'
 import { adminService } from '../../lib/services'
 import { notifyClientCompleted } from '../../lib/whatsappService'
@@ -592,6 +592,7 @@ export function StageController({
   const [releasingPartial, setReleasingPartial] = useState(false)
   const [cancelingPartial, setCancelingPartial] = useState(false)
   const [revokingResult, setRevokingResult] = useState(false)
+  const [resendingEmail, setResendingEmail] = useState(false)
 
   const currentIdx = STEPS.findIndex(s => s.activeStatus === client.status)
   const fromCompleted = client.status === 'completed'
@@ -762,6 +763,19 @@ export function StageController({
       alert(e?.message || 'Erro ao cancelar resultado parcial')
     } finally {
       setCancelingPartial(false)
+    }
+  }
+
+  const handleResendEmail = async () => {
+    if (!confirm(`Reenviar o e-mail de resultado para ${client.full_name}?\n\nO e-mail sai com todos os arquivos que estão na aba Resultado hoje (incluindo os que você adicionou depois de concluir). O status da cliente não muda.`)) return
+    setResendingEmail(true)
+    try {
+      await adminService.resendResultEmail(client.id)
+      alert('E-mail reenviado com sucesso!')
+    } catch (e: any) {
+      alert(e?.message || 'Erro ao reenviar e-mail')
+    } finally {
+      setResendingEmail(false)
     }
   }
 
@@ -1038,6 +1052,31 @@ export function StageController({
                           : <><Unlock className="h-3 w-3" /> Liberar resultado parcial</>}
                       </button>
                     )}
+                  </div>
+                )}
+
+                {/* Botão de reenvio de e-mail — só depois de concluído. Usa os
+                    arquivos que estão na aba Resultado NA HORA do clique, então
+                    serve pra mandar de novo se a consultora anexar algo depois. */}
+                {step.key === 'result' && isCurrent && fromCompleted && (
+                  <div className="mt-2">
+                    <button
+                      onClick={handleResendEmail}
+                      disabled={resendingEmail}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+                      style={{
+                        border: '1px solid rgba(59,130,246,0.4)',
+                        color: '#1d4ed8',
+                        background: 'rgba(59,130,246,0.08)',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(59,130,246,0.15)')}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'rgba(59,130,246,0.08)')}
+                      title="Reenvia o e-mail de resultado com os arquivos atuais, sem mudar o status da cliente"
+                    >
+                      {resendingEmail
+                        ? <><Loader2 className="h-3 w-3 animate-spin" /> Reenviando…</>
+                        : <><Mail className="h-3 w-3" /> Reenviar e-mail com arquivos</>}
+                    </button>
                   </div>
                 )}
 

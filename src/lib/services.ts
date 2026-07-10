@@ -1492,6 +1492,31 @@ export const adminService = {
     if (error) throw error
   },
 
+  /**
+   * Busca os arquivos de resultado do cliente (client_result_files) já no
+   * formato que a Edge Function `send-contract-email` espera para anexar
+   * no e-mail (id do Drive + nome). Só entram arquivos que já têm
+   * drive_file_id — arquivos legados (storage_path do Supabase) não são
+   * anexados automaticamente.
+   *
+   * Usado tanto em releaseResult (primeiro e-mail) quanto em
+   * resendResultEmail (reenvio manual).
+   */
+  async getResultFilesForEmail(
+    clientId: string
+  ): Promise<Array<{ driveFileId: string; fileName: string }>> {
+    const { data: files } = await supabase
+      .from('client_result_files')
+      .select('drive_file_id, file_name')
+      .eq('client_id', clientId)
+      .not('drive_file_id', 'is', null)
+      .order('uploaded_at')
+
+    return (files || [])
+      .filter((f: any) => f.drive_file_id)
+      .map((f: any) => ({ driveFileId: f.drive_file_id as string, fileName: f.file_name as string }))
+  },
+
   async releaseResult(clientId: string, options?: { chatEnabled?: boolean }): Promise<void> {
     const { error } = await supabase
       .from('client_results')
@@ -1522,6 +1547,7 @@ export const adminService = {
       if (client) {
         const portalUrl = `${window.location.origin}/c/${client.token}`
         const planName = (client as any).plan?.name || ''
+        const resultFiles = await this.getResultFilesForEmail(clientId)
 
         await supabase.functions.invoke('send-contract-email', {
           body: {
@@ -1532,12 +1558,54 @@ export const adminService = {
             clientEmail: client.email,
             planName,
             portalUrl,
+            resultFiles,
           }
         })
       }
     } catch (e) {
       console.warn('Erro ao enviar e-mail de resultado liberado:', e)
     }
+  },
+
+  /**
+   * Reenvia o e-mail de resultado concluído — mesmo conteúdo/anexos do
+   * releaseResult, mas SEM mexer em client_results/clients (não altera
+   * released_at nem status). Feito pra quando a consultora adiciona um
+   * arquivo depois de já ter marcado como concluído e quer que a cliente
+   * receba o material novo por e-mail.
+   *
+   * Só funciona com o cliente já em status 'completed' — chame a partir do
+   * botão "Reenviar e-mail" que só aparece nesse estado (ver StageController).
+   */
+  async resendResultEmail(clientId: string): Promise<void> {
+    const { data: client, error: cliErr } = await supabase
+      .from('clients')
+      .select('full_name, email, token, admin_id, status, plan:plans(name)')
+      .eq('id', clientId)
+      .single()
+    if (cliErr || !client) throw new Error('Cliente não encontrado')
+    if ((client as any).status !== 'completed') {
+      throw new Error('Só é possível reenviar o e-mail de um resultado já concluído.')
+    }
+
+    const portalUrl = `${window.location.origin}/c/${client.token}`
+    const planName = (client as any).plan?.name || ''
+    const resultFiles = await this.getResultFilesForEmail(clientId)
+
+    const { error } = await supabase.functions.invoke('send-contract-email', {
+      body: {
+        type: 'result_released',
+        isResend: true,
+        adminId: (client as any).admin_id,
+        clientToken: client.token,
+        clientName: client.full_name,
+        clientEmail: client.email,
+        planName,
+        portalUrl,
+        resultFiles,
+      }
+    })
+    if (error) throw new Error(error.message || 'Erro ao reenviar e-mail')
   },
 
   /**

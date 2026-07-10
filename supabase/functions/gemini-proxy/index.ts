@@ -74,10 +74,23 @@ async function reserveAndResolveKey(opts: {
     if (!general) throw new Error('GENERAL_KEY_NOT_CONFIGURED')
     return { mode, remaining, apiKey: general, keySource: 'general' }
   }
-  const { data: row } = await admin.from('admin_content').select('content')
-    .eq('admin_id', adminId).eq('type', 'settings').maybeSingle()
+  // Chaves vivem no row 'api_keys' desde a migração; 'settings' é fallback p/
+  // contas antigas que ainda não foram migradas. ANTES este resolvedor lia só
+  // 'settings' (já vazio após a migração) → admin pós-pago caía em
+  // ADMIN_KEY_NOT_CONFIGURED. Filtro .eq('admin_id') é essencial: a RLS do
+  // super é USING(true) e sem ele poderia pegar a linha de outro admin.
   const field = provider === 'openai' ? 'openaiApiKey' : 'geminiApiKey'
-  const own = (row?.content as any)?.[field]
+
+  const { data: keyRow } = await admin.from('admin_content').select('content')
+    .eq('admin_id', adminId).eq('type', 'api_keys').maybeSingle()
+  let own = (keyRow?.content as any)?.[field]
+
+  if (!(typeof own === 'string' && own.trim())) {
+    const { data: legacy } = await admin.from('admin_content').select('content')
+      .eq('admin_id', adminId).eq('type', 'settings').maybeSingle()
+    own = (legacy?.content as any)?.[field]
+  }
+
   if (typeof own === 'string' && own.trim()) return { mode, apiKey: own.trim(), keySource: 'admin' }
   const env = ownEnvFallback(provider)
   if (env) return { mode, apiKey: env, keySource: 'env' }
@@ -351,21 +364,27 @@ async function callImageModel(
   body: any,
   maxAttempts = 3,
   timeoutMs = FETCH_TIMEOUT_MS,
+  deadlineAt = Infinity,   // timestamp (ms) — não inicia tentativa após isso
 ): Promise<{ parts: GeminiResponsePart[]; raw: any } | null> {
   const BASE_DELAY = 1500
   let okButNoImageCount = 0
 
   for (let a = 0; a < maxAttempts; a++) {
+    if (Date.now() >= deadlineAt) break
     if (a > 0) {
       const delay = Math.min(BASE_DELAY * Math.pow(2, a - 1), 6000) + jitter()
+      if (Date.now() + delay >= deadlineAt) break
       await sleep(delay)
     }
+
+    const remaining = deadlineAt === Infinity ? timeoutMs : Math.max(1, deadlineAt - Date.now())
+    const attemptTimeout = Math.min(timeoutMs, remaining)
 
     try {
       const res = await fetchWithTimeout(
         `${GEMINI_BASE}/models/${model}:generateContent?key=${apiKey}`,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
-        timeoutMs,
+        attemptTimeout,
       )
 
       if (res.ok) {
@@ -509,11 +528,14 @@ NÃO escreva texto. NÃO comente. NÃO se apresente. Apenas devolva a IMAGEM ger
     // Nota: a fila global (queueImageRequest) do front serializa requests
     // numa mesma aba. No servidor cada invocação é isolada; o controle de
     // rate fica por conta do retry/backoff em 429 abaixo.
-    let imgResult = await callImageModel(GEMINI_MODELS.IMAGE_GEN, apiKey, imgBody, 3, 60_000)
+    const IMG_BUDGET_MS = 70_000
+    const imgDeadline = Date.now() + IMG_BUDGET_MS
+
+    let imgResult = await callImageModel(GEMINI_MODELS.IMAGE_GEN, apiKey, imgBody, 3, 30_000, imgDeadline)
     let modelUsed: string = GEMINI_MODELS.IMAGE_GEN
-    if (!imgResult) {
+    if (!imgResult && Date.now() < imgDeadline) {
       if (DEBUG) console.warn(`[Gemini] principal falhou, fallback ${GEMINI_MODELS.IMAGE_GEN_FALLBACK}`)
-      imgResult = await callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, apiKey, imgBody, 2, 90_000)
+      imgResult = await callImageModel(GEMINI_MODELS.IMAGE_GEN_FALLBACK, apiKey, imgBody, 2, 30_000, imgDeadline)
       modelUsed = GEMINI_MODELS.IMAGE_GEN_FALLBACK
     }
 
@@ -524,6 +546,10 @@ NÃO escreva texto. NÃO comente. NÃO se apresente. Apenas devolva a IMAGEM ger
         imageGenerationFailed: false,
         modelUsed,
       }
+    }
+
+    if (Date.now() >= imgDeadline) {
+      throw new Error('IA sobrecarregada. Aguarde um momento e tente gerar a imagem novamente.')
     }
 
     imgFailed = true
