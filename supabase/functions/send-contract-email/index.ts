@@ -1438,6 +1438,69 @@ serve(async (req) => {
       await send(clientEmail, subject, html, attachments)
     }
 
+    // ─── Anexos de arquivos de resultado (fotos/PDFs/áudios já no Drive) ───
+    //
+    // Reusa o mesmo endpoint público (token da cliente, sem JWT) que o
+    // ClientPortal usa pra baixar arquivo por arquivo — só que rodando aqui
+    // no servidor, pra converter em base64 e anexar no e-mail via Resend.
+    //
+    // Limites de segurança: Resend recusa requests acima de ~40MB no total.
+    // Ficamos com margem (30MB agregados, 15MB por arquivo individual) —
+    // o que não entra no e-mail continua acessível pelo link do portal.
+    const DRIVE_FN_URL = `${Deno.env.get('SUPABASE_URL')}/functions/v1/drive`
+    const MAX_SINGLE_FILE_BYTES = 15 * 1024 * 1024
+    const MAX_TOTAL_ATTACH_BYTES = 30 * 1024 * 1024
+
+    const fetchResultFileAsAttachment = async (
+      driveFileId: string,
+      fileName: string,
+      portalToken: string
+    ): Promise<{ filename: string; content: string; sizeBytes: number } | null> => {
+      try {
+        const url = `${DRIVE_FN_URL}/file-proxy?id=${encodeURIComponent(driveFileId)}&token=${encodeURIComponent(portalToken)}`
+        const res = await fetch(url)
+        if (!res.ok) {
+          console.warn(`[resultFiles] falha ao baixar "${fileName}" (${driveFileId}): HTTP ${res.status}`)
+          return null
+        }
+        const buf = new Uint8Array(await res.arrayBuffer())
+        if (buf.length > MAX_SINGLE_FILE_BYTES) {
+          console.warn(`[resultFiles] "${fileName}" tem ${(buf.length / 1024 / 1024).toFixed(1)}MB — pulado do anexo, continua disponível pelo link do portal`)
+          return null
+        }
+        let binary = ''
+        const chunkSize = 8192
+        for (let i = 0; i < buf.length; i += chunkSize) {
+          binary += String.fromCharCode(...buf.subarray(i, i + chunkSize))
+        }
+        return { filename: fileName, content: btoa(binary), sizeBytes: buf.length }
+      } catch (e) {
+        console.warn(`[resultFiles] erro ao baixar "${fileName}":`, e)
+        return null
+      }
+    }
+
+    const buildResultFileAttachments = async (
+      resultFiles: Array<{ driveFileId: string; fileName: string }> | undefined,
+      portalToken: string
+    ): Promise<any[]> => {
+      if (!resultFiles?.length || !portalToken) return []
+      const attachments: any[] = []
+      let totalBytes = 0
+      for (const f of resultFiles) {
+        if (totalBytes >= MAX_TOTAL_ATTACH_BYTES) {
+          console.warn(`[resultFiles] limite de ${MAX_TOTAL_ATTACH_BYTES / 1024 / 1024}MB atingido — arquivos restantes só ficam disponíveis pelo link do portal`)
+          break
+        }
+        const att = await fetchResultFileAsAttachment(f.driveFileId, f.fileName, portalToken)
+        if (att && totalBytes + att.sizeBytes <= MAX_TOTAL_ATTACH_BYTES) {
+          attachments.push({ filename: att.filename, content: att.content })
+          totalBytes += att.sizeBytes
+        }
+      }
+      return attachments
+    }
+
     // ============================================================
     // TIPO 1: CONTRATO ASSINADO
     // Envia PDF do contrato (com assinatura manuscrita + IP) para
@@ -1658,11 +1721,23 @@ serve(async (req) => {
     }
 
     // ============================================================
-    // TIPO 5: RESULTADO FINAL LIBERADO
+    // TIPO 5: RESULTADO FINAL LIBERADO (e também reenvio manual)
     // ============================================================
     if (emailType === 'result_released') {
+      const isResend = !!payload.isResend
       const portalUrl = sanitizePortalUrl(payload.portalUrl || '')
-      const subject = t(clientLanguage, 'resultReleased.subject', { plan: planName, brandSuffix: BRAND_SUFFIX })
+      const resultFiles = Array.isArray(payload.resultFiles) ? payload.resultFiles : []
+
+      const attachments = await buildResultFileAttachments(resultFiles, payload.clientToken || '')
+
+      const subject = isResend
+        ? `${t(clientLanguage, 'resultReleased.subject', { plan: planName, brandSuffix: BRAND_SUFFIX })} (atualizado)`
+        : t(clientLanguage, 'resultReleased.subject', { plan: planName, brandSuffix: BRAND_SUFFIX })
+
+      // Prazo de retenção NÃO entra no e-mail — só no portal (ClientPortal.tsx
+      // já mostra o banner com o prazo, lendo a mesma settings.fileRetentionDays).
+      // Decisão de produto: manter o e-mail enxuto, aviso só onde a cliente
+      // volta pra baixar de fato.
 
       const clientHtml = renderClientEmail(
         t(clientLanguage, 'resultReleased.title', { plan: planName }),
@@ -1670,7 +1745,9 @@ serve(async (req) => {
         `<div class="alert-pink">
           <p class="alert-pink-emoji">&#127881;</p>
           <p class="alert-pink-title">${t(clientLanguage, 'resultReleased.readyTitle', { plan: planName })}</p>
-          <p class="alert-pink-text">${t(clientLanguage, 'resultReleased.readyText')}</p>
+          <p class="alert-pink-text">${t(clientLanguage, 'resultReleased.readyText')}${attachments.length > 0
+            ? (clientLanguage === 'pt-BR' ? ' Os arquivos também estão anexados neste e-mail.' : ' The files are also attached to this email.')
+            : ''}</p>
         </div>
         ${linkButton(portalUrl, t(clientLanguage, 'resultReleased.btnViewResult'))}
         <p class="small-center">
@@ -1679,10 +1756,10 @@ serve(async (req) => {
       )
 
       const results = await Promise.allSettled([
-        sendToClient(subject, clientHtml),
+        sendToClient(subject, clientHtml, attachments),
       ])
-      logResults(results, 'result_released')
-      return jsonResponse({ success: true, type: 'result_released' })
+      logResults(results, isResend ? 'result_released (resend)' : 'result_released')
+      return jsonResponse({ success: true, type: 'result_released', attachedFiles: attachments.length, skippedFiles: resultFiles.length - attachments.length })
     }
 
     // ============================================================

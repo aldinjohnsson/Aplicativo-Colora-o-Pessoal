@@ -11,7 +11,9 @@
 //   POST /upload       — cliente (portal_token) ou admin (kind=admin_photo|composition + JWT): envia foto pro Drive
 //   GET  /file-proxy   — cliente (portal_token) ou admin (JWT): download de client_result_files com nome/Content-Disposition corretos
 //   GET  /photo-proxy  — admin (JWT): proxy de download de foto do Drive sem CORS
-//   POST /cleanup      — cron: apaga pastas de clientes finalizados há 21+ dias
+//   POST /cleanup      — cron: apaga pastas de clientes finalizados há N+ dias
+//                         (N = admin_content.settings.fileRetentionDays, default 21;
+//                          pulado se settings.fileRetentionEnabled = false)
 //
 // Env vars necessárias:
 //   SUPABASE_URL              (auto)
@@ -1008,9 +1010,26 @@ if (req.method === 'POST' && path === '/replace-media') {
 }
 
     // ─── POST /cleanup ─────────────────────────────────────────────────────
+    //
+    // A view v_drive_expired_clients já filtra por cliente:
+    //   - só entra quem tem fileRetentionEnabled != false em admin_content.settings
+    //   - released_at mais antigo que fileRetentionDays (default 21) do admin dono
+    // Então aqui é só agrupar por admin (reusar access_token) e apagar.
+    //
+    // ?dry_run=1 (ou body {"dry_run": true}) — NÃO apaga nada. Só retorna
+    // quem SERIA apagado nessa rodada (com quantos dias de atraso). Usar isso
+    // pra validar a view nova em produção antes de confiar no cron automático.
     if (req.method === 'POST' && path === '/cleanup') {
       const secret = req.headers.get('x-cleanup-token')
       if (secret !== env('CLEANUP_SECRET')) return json({ error: 'Não autorizado' }, 401)
+
+      let dryRun = url.searchParams.get('dry_run') === '1'
+      if (!dryRun) {
+        try {
+          const body = await req.clone().json().catch(() => null)
+          if (body?.dry_run === true) dryRun = true
+        } catch { /* sem body ou não-JSON — ignora */ }
+      }
 
       const sb = adminSb()
       const { data: expired, error } = await sb
@@ -1018,6 +1037,17 @@ if (req.method === 'POST' && path === '/replace-media') {
         .select('client_id, full_name, admin_id, drive_folder_id, released_at')
         .limit(100)
       if (error) return json({ error: error.message }, 500)
+
+      if (dryRun) {
+        const preview = (expired || []).map(r => ({
+          clientId:   r.client_id,
+          fullName:   r.full_name,
+          adminId:    r.admin_id,
+          releasedAt: r.released_at,
+          daysAgo:    Math.floor((Date.now() - new Date(r.released_at).getTime()) / 86_400_000),
+        }))
+        return json({ ok: true, dryRun: true, wouldPurge: preview.length, clients: preview })
+      }
 
       const results: any[] = []
       // Agrupa por admin pra reusar access_token
@@ -1028,29 +1058,7 @@ if (req.method === 'POST' && path === '/replace-media') {
         byAdmin.set(row.admin_id, arr)
       }
 
-      // ─── Flag por admin: limpeza automática ligada/desligada ────────────
-      // Row admin_content type='drive_prefs' content {autoCleanup: boolean}.
-      // Sem row ou sem o campo = LIGADA (comportamento atual preservado).
-      // Vive em row próprio (não em 'settings') pra não ser sobrescrita pelo
-      // save geral de configurações.
-      const adminIds = [...byAdmin.keys()]
-      const optedOut = new Set<string>()
-      if (adminIds.length > 0) {
-        const { data: prefsRows } = await sb
-          .from('admin_content')
-          .select('admin_id, content')
-          .eq('type', 'drive_prefs')
-          .in('admin_id', adminIds)
-        for (const p of prefsRows || []) {
-          if ((p as any).content?.autoCleanup === false) optedOut.add((p as any).admin_id)
-        }
-      }
-
       for (const [adminId, rows] of byAdmin) {
-        if (optedOut.has(adminId)) {
-          results.push({ adminId, skipped: rows.length, reason: 'limpeza automática desativada pelo admin' })
-          continue
-        }
         let accessToken: string
         try {
           const t = await getAdminToken(sb, adminId)
@@ -1075,6 +1083,7 @@ if (req.method === 'POST' && path === '/replace-media') {
           await sb.from('client_result_files').delete().eq('client_id', r.client_id)
           results.push({ clientId: r.client_id, fullName: r.full_name, purged: true })
         }
+
       }
 
       return json({ ok: true, purged: results.filter(r => r.purged).length, results })
