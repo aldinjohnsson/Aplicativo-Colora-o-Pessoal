@@ -1162,6 +1162,12 @@ function GalleryPhotoPicker({
 
   // ── upload flow
   const [uploadCatId, setUploadCatId] = useState<string | null>(null)
+  // uploadCatId sozinho não basta pra saber se a Etapa 1 (escolha de
+  // categoria) já foi resolvida — null também é o valor de "enviar sem
+  // categoria". Esse flag marca que o usuário decidiu algo (categoria
+  // específica OU explicitamente "sem categoria"), pra poder avançar
+  // pra Etapa 2 nos dois casos.
+  const [uploadCatChosen, setUploadCatChosen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const uploadInputRef = React.useRef<HTMLInputElement>(null)
@@ -1187,7 +1193,7 @@ function GalleryPhotoPicker({
   // ── upload handler
   const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !uploadCatId) return
+    if (!file || !uploadCatChosen) return
     e.target.value = ''
     setUploading(true)
     setUploadError(null)
@@ -1216,7 +1222,9 @@ function GalleryPhotoPicker({
       return 'Escolher da galeria'
     }
     if (mode === 'upload') {
-      if (uploadCatId) return <span>Enviar para — <span className="text-violet-600">{catName(uploadCat)}</span></span>
+      if (uploadCatChosen) return uploadCatId
+        ? <span>Enviar para — <span className="text-violet-600">{catName(uploadCat)}</span></span>
+        : <span>Enviar <span className="text-gray-400">sem categoria</span></span>
       return 'Fazer upload'
     }
   }
@@ -1224,7 +1232,7 @@ function GalleryPhotoPicker({
     if (mode === null) return `Referência para: ${typeName}`
     if (mode === 'gallery' && selectedCatId) return 'Toque na foto para usar como referência'
     if (mode === 'gallery') return 'De qual categoria você quer buscar a foto?'
-    if (mode === 'upload' && uploadCatId) return 'Escolha o arquivo para enviar'
+    if (mode === 'upload' && uploadCatChosen) return 'Escolha o arquivo para enviar'
     if (mode === 'upload') return 'Selecione a categoria de destino'
     return ''
   }
@@ -1232,10 +1240,11 @@ function GalleryPhotoPicker({
   // ── back button
   const handleBack = () => {
     if (mode === 'gallery' && selectedCatId) { setSelectedCatId(null); return }
-    if (mode === 'upload' && uploadCatId) { setUploadCatId(null); setUploadError(null); return }
+    if (mode === 'upload' && uploadCatChosen) { setUploadCatId(null); setUploadCatChosen(false); setUploadError(null); return }
     setMode(null)
     setSelectedCatId(null)
     setUploadCatId(null)
+    setUploadCatChosen(false)
     setUploadError(null)
   }
 
@@ -1394,40 +1403,54 @@ function GalleryPhotoPicker({
           {mode === 'upload' && (
             <>
               {/* Etapa 1: selecionar categoria de destino */}
-              {!uploadCatId && (
+              {!uploadCatChosen && (
                 <div className="p-4 space-y-3">
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1">
                     Para qual categoria enviar?
                   </p>
                   {photoCategories.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-                      <FolderOpen className="h-10 w-10 mb-2 opacity-30" />
-                      <p className="text-sm">Nenhuma categoria cadastrada</p>
+                    <div className="flex flex-col items-center gap-3 py-8 text-gray-400">
+                      <FolderOpen className="h-10 w-10 opacity-30" />
+                      <p className="text-sm text-center">Nenhuma categoria cadastrada</p>
+                      <button
+                        onClick={() => { setUploadCatId(null); setUploadCatChosen(true) }}
+                        className="mt-1 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-pink-300 text-pink-600 text-sm font-medium hover:bg-pink-50 transition-colors"
+                      >
+                        Enviar sem categoria
+                      </button>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 gap-3">
-                      {photoCategories.map((cat: any) => (
-                        <button
-                          key={cat.id}
-                          onClick={() => setUploadCatId(cat.id)}
-                          className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
-                        >
-                          <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
-                            <FolderOpen className="h-4 w-4 text-pink-400" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-800 leading-snug truncate">{catName(cat)}</p>
-                          </div>
-                          <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        {photoCategories.map((cat: any) => (
+                          <button
+                            key={cat.id}
+                            onClick={() => { setUploadCatId(cat.id); setUploadCatChosen(true) }}
+                            className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
+                          >
+                            <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                              <FolderOpen className="h-4 w-4 text-pink-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-800 leading-snug truncate">{catName(cat)}</p>
+                            </div>
+                            <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => { setUploadCatId(null); setUploadCatChosen(true) }}
+                        className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-dashed border-gray-300 text-gray-500 text-sm hover:border-pink-300 hover:text-pink-600 hover:bg-pink-50 transition-all"
+                      >
+                        Enviar sem categoria
+                      </button>
+                    </>
                   )}
                 </div>
               )}
 
               {/* Etapa 2: área de upload */}
-              {uploadCatId && (
+              {uploadCatChosen && (
                 <div className="p-5 flex flex-col items-center gap-4">
                   <input
                     ref={uploadInputRef}
