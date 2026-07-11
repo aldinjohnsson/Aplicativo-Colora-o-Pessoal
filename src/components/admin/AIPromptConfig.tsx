@@ -37,6 +37,49 @@ async function ensureNotHeic(blob: Blob): Promise<Blob> {
   return (Array.isArray(result) ? result[0] : result) as Blob
 }
 
+/**
+ * Comprime uma foto no navegador ANTES do upload: redimensiona pro maior
+ * lado não passar de `maxDim` e reencoda como JPEG. 100% client-side via
+ * Canvas API — reduz foto de celular (12MP+, 4-15MB) em 70-90% sem perda
+ * visível, sem esperar o backend recusar por tamanho.
+ *
+ * Se o arquivo já for pequeno, ou a compressão falhar por qualquer motivo,
+ * devolve o arquivo original sem quebrar o upload — o backend
+ * (generate-tag-image) tem sua própria trava de tamanho como rede de segurança.
+ */
+async function compressImageFile(
+  file: File,
+  opts: { maxDim?: number; quality?: number; skipBelowBytes?: number } = {}
+): Promise<File> {
+  const { maxDim = 2000, quality = 0.85, skipBelowBytes = 1.5 * 1024 * 1024 } = opts
+  if (file.size <= skipBelowBytes) return file
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') return file
+
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close?.()
+
+    const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality))
+    if (!blob || blob.size >= file.size) return file
+
+    const newName = (file.name.replace(/\.[a-zA-Z0-9]+$/, '') || 'foto') + '.jpg'
+    return new File([blob], newName, { type: 'image/jpeg' })
+  } catch (e) {
+    console.warn('[compressImageFile] falhou, usando arquivo original:', e)
+    return file
+  }
+}
+
 interface AIPromptConfigProps {
   clientId: string
   clientName: string
@@ -227,11 +270,12 @@ export function AIPromptConfig({
   }
 
   const handlePhotoUpload = async (type: PhotoType, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const rawFile = e.target.files?.[0]
+    if (!rawFile) return
     e.target.value = ''
     setUploadingTypeId(type.id)
     try {
+      const file = await compressImageFile(rawFile)
       const path = `ai-reference/${clientId}/${type.id}_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
       await supabase.storage.from('client-photos').upload(path, file, { contentType: file.type, upsert: true })
       const url = supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl
@@ -1159,6 +1203,9 @@ function GalleryPhotoPicker({
 
   // ── gallery flow
   const [selectedCatId, setSelectedCatId] = useState<string | null>(null)
+  // Mesmo problema do uploadCatChosen: selectedCatId===null é ambíguo entre
+  // "ainda não escolhi" e "escolhi Sem categoria". Esse flag resolve.
+  const [gallerySelectionChosen, setGallerySelectionChosen] = useState(false)
 
   // ── upload flow
   const [uploadCatId, setUploadCatId] = useState<string | null>(null)
@@ -1179,25 +1226,36 @@ function GalleryPhotoPicker({
     clientPhotos.some((p: any) => p.category_id === cat.id)
   )
 
-  // Fotos da categoria selecionada com pelo menos uma origem válida
-  const photosInCat = selectedCatId
-    ? clientPhotos.filter((p: any) =>
-        p.category_id === selectedCatId &&
-        !!(p.drive_file_id || p.storage_path || p.url)
-      )
-    : []
+  // Fotos sem categoria (uploads feitos via "Enviar sem categoria" ou
+  // direto na aba Fotos do cliente sem selecionar categoria) — precisam
+  // aparecer aqui também, não só sumir da galeria.
+  const uncategorizedPhotos = clientPhotos.filter((p: any) =>
+    !p.category_id && !!(p.drive_file_id || p.storage_path || p.url)
+  )
+
+  // Fotos da categoria selecionada com pelo menos uma origem válida.
+  // selectedCatId===null + gallerySelectionChosen=true → "Sem categoria".
+  const photosInCat = !gallerySelectionChosen
+    ? []
+    : selectedCatId
+      ? clientPhotos.filter((p: any) =>
+          p.category_id === selectedCatId &&
+          !!(p.drive_file_id || p.storage_path || p.url)
+        )
+      : uncategorizedPhotos
 
   const selectedCat = photoCategories.find(c => c.id === selectedCatId)
   const uploadCat = photoCategories.find(c => c.id === uploadCatId)
 
   // ── upload handler
   const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file || !uploadCatChosen) return
+    const rawFile = e.target.files?.[0]
+    if (!rawFile || !uploadCatChosen) return
     e.target.value = ''
     setUploading(true)
     setUploadError(null)
     try {
+      const file = await compressImageFile(rawFile)
       const result = await driveStorage.adminUploadPhoto({
         clientId,
         file,
@@ -1218,7 +1276,7 @@ function GalleryPhotoPicker({
   const headerTitle = () => {
     if (mode === null) return 'Adicionar foto de referência'
     if (mode === 'gallery') {
-      if (selectedCatId) return <span>Escolher foto — <span className="text-violet-600">{catName(selectedCat)}</span></span>
+      if (gallerySelectionChosen) return <span>Escolher foto — <span className="text-violet-600">{selectedCatId ? catName(selectedCat) : 'Sem categoria'}</span></span>
       return 'Escolher da galeria'
     }
     if (mode === 'upload') {
@@ -1230,7 +1288,7 @@ function GalleryPhotoPicker({
   }
   const headerSub = () => {
     if (mode === null) return `Referência para: ${typeName}`
-    if (mode === 'gallery' && selectedCatId) return 'Toque na foto para usar como referência'
+    if (mode === 'gallery' && gallerySelectionChosen) return 'Toque na foto para usar como referência'
     if (mode === 'gallery') return 'De qual categoria você quer buscar a foto?'
     if (mode === 'upload' && uploadCatChosen) return 'Escolha o arquivo para enviar'
     if (mode === 'upload') return 'Selecione a categoria de destino'
@@ -1239,10 +1297,11 @@ function GalleryPhotoPicker({
 
   // ── back button
   const handleBack = () => {
-    if (mode === 'gallery' && selectedCatId) { setSelectedCatId(null); return }
+    if (mode === 'gallery' && gallerySelectionChosen) { setSelectedCatId(null); setGallerySelectionChosen(false); return }
     if (mode === 'upload' && uploadCatChosen) { setUploadCatId(null); setUploadCatChosen(false); setUploadError(null); return }
     setMode(null)
     setSelectedCatId(null)
+    setGallerySelectionChosen(false)
     setUploadCatId(null)
     setUploadCatChosen(false)
     setUploadError(null)
@@ -1322,12 +1381,12 @@ function GalleryPhotoPicker({
           {mode === 'gallery' && (
             <>
               {/* Etapa 1: tiles de categoria */}
-              {!selectedCatId && (
+              {!gallerySelectionChosen && (
                 <div className="p-4 space-y-3">
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1">
                     Categoria de fotos:
                   </p>
-                  {catsWithPhotos.length === 0 ? (
+                  {catsWithPhotos.length === 0 && uncategorizedPhotos.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-12 text-gray-400">
                       <FolderOpen className="h-10 w-10 mb-2 opacity-30" />
                       <p className="text-sm">Nenhuma foto cadastrada para esta cliente</p>
@@ -1339,7 +1398,7 @@ function GalleryPhotoPicker({
                         return (
                           <button
                             key={cat.id}
-                            onClick={() => setSelectedCatId(cat.id)}
+                            onClick={() => { setSelectedCatId(cat.id); setGallerySelectionChosen(true) }}
                             className="flex items-center gap-3 p-3.5 rounded-xl border border-gray-200 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
                           >
                             <div className="w-9 h-9 rounded-lg bg-pink-50 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
@@ -1353,13 +1412,31 @@ function GalleryPhotoPicker({
                           </button>
                         )
                       })}
+                      {/* "Sem categoria" — fotos enviadas sem categoria (via "Enviar sem
+                          categoria" ou upload direto na aba Fotos do cliente) não têm
+                          um card de categoria pra aparecer, então ganham um fixo aqui. */}
+                      {uncategorizedPhotos.length > 0 && (
+                        <button
+                          onClick={() => { setSelectedCatId(null); setGallerySelectionChosen(true) }}
+                          className="flex items-center gap-3 p-3.5 rounded-xl border border-dashed border-gray-300 hover:border-pink-300 hover:bg-pink-50 transition-all text-left group"
+                        >
+                          <div className="w-9 h-9 rounded-lg bg-gray-100 group-hover:bg-pink-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                            <FolderOpen className="h-4 w-4 text-gray-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-800 leading-snug truncate">Sem categoria</p>
+                            <p className="text-xs text-gray-400 mt-0.5">{uncategorizedPhotos.length} foto{uncategorizedPhotos.length !== 1 ? 's' : ''}</p>
+                          </div>
+                          <span className="text-gray-300 group-hover:text-pink-400 transition-colors flex-shrink-0">→</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Etapa 2: grid de fotos da categoria */}
-              {selectedCatId && (
+              {/* Etapa 2: grid de fotos da categoria (ou sem categoria) */}
+              {gallerySelectionChosen && (
                 <div className="p-4">
                   {photosInCat.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-12 text-gray-400">
@@ -1477,7 +1554,7 @@ function GalleryPhotoPicker({
                       </div>
                       <div className="text-center">
                         <p className="text-sm font-semibold text-gray-700 group-hover:text-gray-900">Clique para escolher a foto</p>
-                        <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP — a foto será salva na galeria da cliente</p>
+                        <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP — fotos grandes são otimizadas automaticamente</p>
                       </div>
                     </button>
                   )}

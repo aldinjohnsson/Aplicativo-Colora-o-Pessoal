@@ -284,6 +284,54 @@ async function loadDriveImageSrc(driveFileId: string): Promise<string> {
 }
 
 /**
+ * Comprime uma foto no navegador ANTES do upload: redimensiona pro maior
+ * lado não passar de `maxDim` e reencoda como JPEG na qualidade informada.
+ * 100% client-side via Canvas API — sem dependência nova, sem round-trip
+ * ao servidor. Ideia: foto de celular moderno (12MP+, 4-15MB) normalmente
+ * não precisa de mais que ~2000px de lado pra IA ou visualização — isso
+ * já reduz o arquivo em 70-90% na prática, sem perda visível de qualidade.
+ *
+ * Se o arquivo já for pequeno (abaixo de `skipBelowBytes`) devolve como
+ * está — não vale a pena gastar CPU comprimindo o que já é leve. Se não
+ * for uma imagem rasterizável pelo navegador (ex: HEIC, que Chrome/Firefox
+ * não decodificam nativamente) ou a compressão falhar por qualquer motivo,
+ * devolve o arquivo ORIGINAL sem quebrar o fluxo de upload — o backend
+ * ainda tem suas próprias travas de tamanho como rede de segurança.
+ */
+async function compressImageFile(
+  file: File,
+  opts: { maxDim?: number; quality?: number; skipBelowBytes?: number } = {}
+): Promise<File> {
+  const { maxDim = 2000, quality = 0.85, skipBelowBytes = 1.5 * 1024 * 1024 } = opts
+  if (file.size <= skipBelowBytes) return file
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') return file
+
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close?.()
+
+    const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality))
+    if (!blob || blob.size >= file.size) return file // não ajudou — mantém original
+
+    const newName = (file.name.replace(/\.[a-zA-Z0-9]+$/, '') || 'foto') + '.jpg'
+    return new File([blob], newName, { type: 'image/jpeg' })
+  } catch (e) {
+    console.warn('[compressImageFile] falhou, usando arquivo original:', e)
+    return file
+  }
+}
+
+/**
  * Resolve a URL de exibição de uma foto:
  *  - blob:/data: → usa direto (ex.: já convertido/rotacionado localmente)
  *  - drive_file_id → baixa pelo proxy (confiável no mobile) + HEIC se preciso
@@ -3770,7 +3818,11 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, clientName
       }
 
       const driveErrors: string[] = []
-      for (const file of Array.from(files)) {
+      for (const rawFile of Array.from(files)) {
+        // Comprime antes de enviar — reduz drasticamente foto de celular
+        // (12MP+/4-15MB) sem perda visível, e sem esperar o backend recusar
+        // por tamanho. Se falhar por qualquer motivo, usa o arquivo original.
+        const file = await compressImageFile(rawFile)
         if (driveConnected) {
           try {
             const result = await driveStorage.adminUploadPhoto({ clientId, file, categoryId })
@@ -3969,7 +4021,7 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, clientName
             </div>
             <div>
               <p className="text-sm font-semibold text-violet-900">Adicionar fotos complementares</p>
-              <p className="text-xs text-violet-600 mt-0.5">Faça upload de fotos adicionais pelo admin</p>
+              <p className="text-xs text-violet-600 mt-0.5">Faça upload de fotos adicionais pelo admin — fotos grandes são otimizadas automaticamente</p>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -4313,24 +4365,60 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     // o conteúdo ao final — evita pisca-pisca quando outras abas chamam load().
     const initialLoad = data === null
     if (initialLoad) setLoading(true)
-    const [detail, foldersRes, templatesRes, adminRes, irisTemplatesRes] = await Promise.all([
-      adminService.getClientDetail(clientId),
-      supabase.from('ai_folders').select('id, name, config').order('name'),
-      supabase.from('ai_info_templates').select('id, name, type, options').order('sort_order'),
-      adminService.getCurrentAdmin(),
-      adminService.listIrisTextTemplates().catch(() => []),
-    ])
+
+    // ── Ficha da cliente (inclui as fotos — fonte da contagem da aba
+    // "Fotos") é CRÍTICA e busca separada. Antes ia tudo num Promise.all
+    // só: se QUALQUER uma das 4 consultas falhasse (rede instável,
+    // timeout), a função inteira rejeitava sem try/catch nenhum — nenhum
+    // setState rodava, e a contagem da aba ficava travada no valor de
+    // quando a tela abriu, mesmo com uploads novos acontecendo depois
+    // (a aba Fotos em si mostra o valor certo porque faz sua própria
+    // consulta isolada, sem depender desse load()).
+    let detail: Awaited<ReturnType<typeof adminService.getClientDetail>>
+    try {
+      detail = await adminService.getClientDetail(clientId)
+    } catch (e) {
+      console.error('[ClientsManager] Falha ao carregar dados da cliente:', e)
+      if (initialLoad) setLoading(false)
+      return
+    }
     setData(detail)
-    setIsSuperAdmin(adminRes?.role === 'super_admin')
     setNotes(detail.client.notes || '')
     if (detail.result) setResultForm({
       observations: detail.result.observations || '',
       custom_link_url: (detail.result as any).custom_link_url || '',
     })
     if (detail.result) setChatEnabled(detail.result.chat_enabled ?? false)
-    const folders = foldersRes.data || []
+    // carrega estado da ferramenta de contraste (gravado em clients.contrast_layout)
+    const cl = (detail.client as any).contrast_layout
+    setContrastLayout(cl && typeof cl === 'object' ? cl as ContrastLayoutData : null)
+    // carrega estado da análise da íris (gravado em clients.iris_analysis)
+    const ia = (detail.client as any).iris_analysis
+    setIrisAnalysis(ia && typeof ia === 'object' ? ia as IrisAnalysisRecord : null)
+
+    // ── Dados auxiliares (pastas de IA, templates de tags/íris, role do
+    // admin) — secundários. Usa allSettled: uma falha isolada aqui não
+    // pode mais travar a atualização acima (fotos, contrato, resultado).
+    const [foldersRes, templatesRes, adminRes, irisTemplatesRes] = await Promise.allSettled([
+      supabase.from('ai_folders').select('id, name, config').order('name'),
+      supabase.from('ai_info_templates').select('id, name, type, options').order('sort_order'),
+      adminService.getCurrentAdmin(),
+      adminService.listIrisTextTemplates(),
+    ])
+
+    const warnFail = (label: string, r: PromiseSettledResult<unknown>) => {
+      if (r.status === 'rejected') console.warn(`[ClientsManager] load(): falha ao buscar ${label}:`, r.reason)
+    }
+    warnFail('ai_folders', foldersRes)
+    warnFail('ai_info_templates', templatesRes)
+    warnFail('admin atual', adminRes)
+    warnFail('templates de íris', irisTemplatesRes)
+
+    setIsSuperAdmin(adminRes.status === 'fulfilled' && (adminRes.value as any)?.role === 'super_admin')
+
+    const folders = foldersRes.status === 'fulfilled' ? (foldersRes.value.data || []) : []
     setAiFolders(folders)
-    const tpls = (templatesRes.data || []).map((t: any) => ({
+    const tpls = (templatesRes.status === 'fulfilled' ? (templatesRes.value.data || []) : []).map((t: any) => ({
       ...t,
       type: t.type === 'image' ? 'image' : 'text',
       options: Array.isArray(t.options) ? t.options : []
@@ -4341,15 +4429,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
     if (folderId) { const fc = folders.find((f: any) => f.id === folderId); setLinkedFolderConfig(fc ? (typeof fc.config === 'string' ? JSON.parse(fc.config) : fc.config) : null) }
     const savedTags: any[] = detail.client.ai_info_tags || []
     setClientTags(tpls.map((t: any) => { const saved = savedTags.find((s: any) => s.templateId === t.id); return { templateId: t.id, name: t.name, value: saved?.value || '' } }))
-    // carrega estado da ferramenta de contraste (gravado em clients.contrast_layout)
-    const cl = (detail.client as any).contrast_layout
-    setContrastLayout(cl && typeof cl === 'object' ? cl as ContrastLayoutData : null)
 
-    // carrega estado da análise da íris (gravado em clients.iris_analysis)
-    const ia = (detail.client as any).iris_analysis
-    setIrisAnalysis(ia && typeof ia === 'object' ? ia as IrisAnalysisRecord : null)
     setIrisTemplates(
-      (irisTemplatesRes as any[]).map((r: any) => ({
+      (irisTemplatesRes.status === 'fulfilled' ? (irisTemplatesRes.value as any[]) : []).map((r: any) => ({
         id: r.id,
         name: r.name,
         title: r.title,

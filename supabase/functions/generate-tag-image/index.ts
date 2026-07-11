@@ -200,11 +200,26 @@ function sniffImageFormat(bytes: Uint8Array): ImgFmt {
  * (a OpenAI só aceita RGB), perfis de cor incomuns, ou arquivo com header
  * válido mas conteúdo corrompido no meio. Devolve null se não conseguir
  * decodificar de jeito nenhum (arquivo realmente inválido/corrompido).
+ *
+ * MAX_DIM: limita o maior lado a 2048px antes de reencodar. Fotos de
+ * celular modernas (12MP+) decodificadas em RGBA cru já usam ~50-190MB só
+ * no decode — isso é inevitável (depende do tamanho do arquivo original,
+ * não dá pra evitar sem decode progressivo, que o imagescript não tem).
+ * Mas o RE-ENCODE em cima de uma imagem redimensionada evita DOBRAR esse
+ * custo, e 2048px é mais que suficiente pra o gpt-image-1 (que gera na
+ * prática em 1024x1024/1536x1024) — resolução maior que isso é banda
+ * larga jogada fora, não qualidade a mais.
  */
+const MAX_IMAGE_DIM = 2048
+
 async function normalizeToPng(bytes: Uint8Array): Promise<Uint8Array | null> {
   try {
     const { Image } = await import('https://deno.land/x/imagescript@1.2.15/mod.ts')
     const img = await Image.decode(bytes)
+    if (img.width > MAX_IMAGE_DIM || img.height > MAX_IMAGE_DIM) {
+      const ratio = MAX_IMAGE_DIM / Math.max(img.width, img.height)
+      img.resize(Math.round(img.width * ratio), Math.round(img.height * ratio))
+    }
     return await img.encode() // PNG por padrão — sempre RGB(A) válido
   } catch (err) {
     console.warn('normalizeToPng: falha ao decodificar/reencodar imagem:', err)
@@ -338,6 +353,18 @@ serve(async (req) => {
       return jsonRes({ error: 'Não foi possível obter a foto.' }, 500)
     }
 
+    // ── 4a-bis. Trava de tamanho — aviso amigável ANTES de gastar
+    // processamento. HARD_MAX_MB é o teto absoluto (nem tenta); acima
+    // dele o arquivo quase certamente vai estourar memória de qualquer
+    // jeito, mesmo no caminho "cru" (sem decode).
+    const HARD_MAX_MB = 20
+    const photoSizeMB = photoBlob.size / (1024 * 1024)
+    if (photoSizeMB > HARD_MAX_MB) {
+      return jsonRes({
+        error: `Essa foto é muito grande (${photoSizeMB.toFixed(1)}MB) para gerar a imagem. O limite é ${HARD_MAX_MB}MB. Baixe a foto, reduza o tamanho (recomendado até 10MB) e envie novamente na galeria da cliente antes de gerar.`,
+      }, 400)
+    }
+
     // ── 4b. Imagem de referência do prompt (se houver) ──────────────
     let refBlob: Blob | null = null
     if (prompt.reference_image_path) {
@@ -350,37 +377,29 @@ serve(async (req) => {
       }
     }
 
-    // ── 4c. Normaliza formato de verdade (decode + reencode) ─────────
-    // O sniff de magic bytes só pega HEIC/lixo no header. JPEG em CMYK
-    // (comum em fotos de câmera profissional/estúdio — a OpenAI só aceita
-    // RGB) ou corrupção no meio do arquivo passam pelo sniff mas ainda
-    // quebram na OpenAI com "invalid_image_file". Por isso decodificamos
-    // de verdade e reencodamos como PNG antes de enviar.
+    // ── 4c. Sniff barato (só 16 bytes) — decide se vale a pena tentar
+    // enviar CRU antes de gastar memória decodificando ────────────────
     const photoSniffBytes = new Uint8Array(await photoBlob.slice(0, 16).arrayBuffer())
     const photoFmt = sniffImageFormat(photoSniffBytes)
     console.log(`[generate-tag-image] foto principal — mime declarado=${photoMime} formato real=${photoFmt} tamanho=${photoBlob.size}`)
 
-    const photoRawBytes = new Uint8Array(await photoBlob.arrayBuffer())
-    let photoPngBytes: Uint8Array | null = photoFmt === 'heic' ? null : await normalizeToPng(photoRawBytes)
-    console.log(`[generate-tag-image] foto principal — normalização ${photoPngBytes ? 'OK' : 'FALHOU'}${photoFmt === 'heic' ? ' (HEIC, nem tentou)' : ''}`)
-    if (!photoPngBytes) {
+    if (photoFmt === 'heic') {
       return jsonRes({
-        error: photoFmt === 'heic'
-          ? 'Esta foto está em formato HEIC (comum em fotos de iPhone) e a IA não consegue processá-la. Converta a foto para JPEG ou PNG e tente novamente.'
-          : 'Não foi possível processar esta foto (o arquivo pode estar corrompido, incompleto, ou em um modo de cor não suportado como CMYK). Tente reenviar a foto em JPEG ou PNG comum (RGB).',
+        error: 'Esta foto está em formato HEIC (comum em fotos de iPhone) e a IA não consegue processá-la. Converta a foto para JPEG ou PNG e tente novamente.',
       }, 400)
     }
 
-    let refPngBytes: Uint8Array | null = null
+    const photoRawBytes = new Uint8Array(await photoBlob.arrayBuffer())
+
+    let refRawBytes: Uint8Array | null = null
     if (refBlob) {
       const refSniffBytes = new Uint8Array(await refBlob.slice(0, 16).arrayBuffer())
       const refFmt = sniffImageFormat(refSniffBytes)
-      const refRawBytes = new Uint8Array(await refBlob.arrayBuffer())
-      refPngBytes = refFmt === 'heic' ? null : await normalizeToPng(refRawBytes)
-      console.log(`[generate-tag-image] imagem de referência — path=${prompt.reference_image_path} formato real=${refFmt} normalização ${refPngBytes ? 'OK' : 'FALHOU'}`)
-      if (!refPngBytes) {
-        console.warn(`Ref do prompt (${prompt.reference_image_path}) inválida/não decodificável. Gerando sem ela.`)
+      if (refFmt === 'heic') {
+        console.warn(`Ref do prompt (${prompt.reference_image_path}) está em HEIC. Gerando sem ela.`)
         refBlob = null
+      } else {
+        refRawBytes = new Uint8Array(await refBlob.arrayBuffer())
       }
     }
 
@@ -438,34 +457,96 @@ serve(async (req) => {
       .split('\n').filter(line => !line.includes('{{Logo}}')).join('\n').trim()
 
     // ── 6. Chama OpenAI images/edits ────────────────────────────────
-    // photoPngBytes/refPngBytes já são PNG normalizado (decode+reencode
-    // feito no passo 4c) — sempre RGB(A) válido, sem risco de CMYK/HEIC.
+    //
+    // Estratégia de memória: a 1ª tentativa sempre manda os bytes CRUS
+    // (sem decode/reencode via imagescript) — é o caminho barato e cobre
+    // a grande maioria das fotos, que já são JPEG/PNG RGB válidos. Só
+    // decodificamos de verdade (caro em memória — foto de 12MP em RGBA
+    // cru facilmente passa de 50-100MB) se a OpenAI rejeitar por causa
+    // do formato (CMYK, perfil de cor estranho, corrupção no meio do
+    // arquivo) — nesse caso sim vale pagar o custo, uma vez só, como
+    // fallback, e refazemos a chamada.
     const photoNameFinal = (photoFileName.replace(/\.[a-zA-Z0-9]+$/, '') || 'client') + '.png'
-    const photoFile = new Blob([photoPngBytes], { type: 'image/png' })
+    const photoMimeForSend = photoFmt === 'jpeg' ? 'image/jpeg' : photoFmt === 'webp' ? 'image/webp' : (photoMime || 'image/png')
 
-    const form = new FormData()
-    form.append('model',   prompt.model   || 'gpt-image-1')
-    form.append('prompt',  finalPromptText)
-    form.append('size',    prompt.size    || '1024x1024')
-    form.append('quality', prompt.quality || 'medium')
-    form.append('n',       '1')
-
-    if (refBlob && refPngBytes) {
-      form.append('image[]', new Blob([refPngBytes], { type: 'image/png' }), 'reference.png')
-      form.append('image[]', photoFile, photoNameFinal)
-    } else {
-      form.append('image', photoFile, photoNameFinal)
+    const buildForm = (photoBytes: Uint8Array, photoType: string, refBytes: Uint8Array | null) => {
+      const f = new FormData()
+      f.append('model',   prompt.model   || 'gpt-image-1')
+      f.append('prompt',  finalPromptText)
+      f.append('size',    prompt.size    || '1024x1024')
+      f.append('quality', prompt.quality || 'medium')
+      f.append('n',       '1')
+      const photoFile = new Blob([photoBytes], { type: photoType })
+      if (refBlob && refBytes) {
+        f.append('image[]', new Blob([refBytes], { type: 'image/png' }), 'reference.png')
+        f.append('image[]', photoFile, photoNameFinal)
+      } else {
+        f.append('image', photoFile, photoNameFinal)
+      }
+      return f
     }
 
-    const openaiRes = await fetch('https://api.openai.com/v1/images/edits', {
+    const callOpenAi = (form: FormData) => fetch('https://api.openai.com/v1/images/edits', {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${openaiKey}` },
       body:    form,
     })
 
+    // Detecta se o erro da OpenAI é especificamente sobre o FORMATO da
+    // imagem (o único caso em que vale a pena pagar o custo do fallback
+    // com decode). Erros de prompt/policy/rate-limit não se beneficiam
+    // de reenviar a mesma imagem normalizada.
+    const isImageFormatError = (status: number, text: string) =>
+      status === 400 && /invalid_image|unsupported.*(format|color|image)|image.*(format|invalid)/i.test(text)
+
+    let openaiRes = await callOpenAi(buildForm(photoRawBytes, photoMimeForSend, refRawBytes))
+
+    if (!openaiRes.ok) {
+      const firstErrText = await openaiRes.text()
+
+      if (isImageFormatError(openaiRes.status, firstErrText)) {
+        console.warn('[generate-tag-image] OpenAI rejeitou a imagem crua por formato — tentando fallback com decode/normalize (imagescript)')
+
+        // O decode via imagescript é o ponto realmente caro em memória
+        // (carrega a imagem inteira em RGBA cru antes de reencodar).
+        // Acima desse teto, mesmo dentro do limite geral de 20MB lá em
+        // cima, o risco de estourar memória no decode é alto — melhor
+        // avisar com uma mensagem clara do que arriscar o Edge Function
+        // cair sem explicação nenhuma pro usuário.
+        const DECODE_MAX_MB = 10
+        const photoSizeMB = photoRawBytes.length / (1024 * 1024)
+        if (photoSizeMB > DECODE_MAX_MB) {
+          return await bail({
+            error: `Essa foto (${photoSizeMB.toFixed(1)}MB) está em um formato que precisa de conversão antes de gerar (ex: perfil de cor CMYK), e é grande demais pra converter com segurança. Baixe a foto, converta pra JPEG ou PNG comum (RGB) reduzindo pra até ${DECODE_MAX_MB}MB, e envie novamente na galeria da cliente antes de gerar.`,
+          }, 400)
+        }
+
+        const photoPngBytes = await normalizeToPng(photoRawBytes)
+        if (!photoPngBytes) {
+          return await bail({
+            error: 'Não foi possível processar esta foto (o arquivo pode estar corrompido, incompleto, ou em um modo de cor não suportado como CMYK). Tente reenviar a foto em JPEG ou PNG comum (RGB).',
+          }, 400)
+        }
+
+        let refPngBytesFallback: Uint8Array | null = null
+        if (refBlob && refRawBytes) {
+          refPngBytesFallback = await normalizeToPng(refRawBytes)
+          if (!refPngBytesFallback) {
+            console.warn(`Ref do prompt (${prompt.reference_image_path}) inválida/não decodificável mesmo no fallback. Gerando sem ela.`)
+            refBlob = null
+          }
+        }
+
+        openaiRes = await callOpenAi(buildForm(photoPngBytes, 'image/png', refPngBytesFallback))
+      } else {
+        console.error('OpenAI error', openaiRes.status, firstErrText)
+        return await bail({ error: `OpenAI API error (${openaiRes.status}): ${firstErrText.slice(0, 400)}` }, 502)
+      }
+    }
+
     if (!openaiRes.ok) {
       const errText = await openaiRes.text()
-      console.error('OpenAI error', openaiRes.status, errText)
+      console.error('OpenAI error (após fallback)', openaiRes.status, errText)
       return await bail({ error: `OpenAI API error (${openaiRes.status}): ${errText.slice(0, 400)}` }, 502)
     }
 
@@ -590,6 +671,11 @@ serve(async (req) => {
     console.error('Edge function error:', err)
     if (onErrorRefund) { try { await onErrorRefund() } catch { /* ignore */ } }
     const msg = err instanceof Error ? err.message : 'Unknown error'
-    return jsonRes({ error: msg }, 500)
+    const isMemoryError = /memory|allocation|out of memory|heap/i.test(msg)
+    return jsonRes({
+      error: isMemoryError
+        ? 'A foto usada é grande demais para processar e o servidor ficou sem memória durante a geração. Tente reduzir o tamanho da foto (recomendado até 10MB) e gerar novamente.'
+        : msg,
+    }, 500)
   }
 })

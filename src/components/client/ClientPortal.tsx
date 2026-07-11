@@ -1022,7 +1022,9 @@ function getYouTubeEmbed(url: string): string | null {
 }
 
 async function processImage(file: File): Promise<File> {
-  const MAX = 8 * 1024 * 1024
+  // 10MB: acima disso comprime (redimensiona pro maior lado não passar de
+  // 3000px + reencoda JPEG 85%) antes de enviar. Abaixo disso, envia como está.
+  const MAX = 10 * 1024 * 1024
   if (file.size < MAX) return file
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
