@@ -2309,67 +2309,25 @@ export const clientService = {
     if (error) throw error
     if (data?.error) throw new Error(data.error)
 
-    // Pós-processamento: limpar rejeição e ajustar status se necessário
+    // Pós-processamento: decide o status seguinte (photos_submitted vs
+    // awaiting_photos, conforme o plano ter ou não etapa de fotos, e se há
+    // rejeição de fotos pendente) e limpa a rejeição do formulário.
+    //
+    // Roda via RPC (SECURITY DEFINER) em vez de select/update direto na
+    // tabela `clients`: o portal roda anônimo, e `clients` só tem policy de
+    // leitura para `authenticated` (dono do registro) — um select direto
+    // aqui sempre retornava 0 linhas (406) e falhava silenciosamente.
     try {
-      const { data: client } = await supabase
-        .from('clients')
-        .select('id, plan_id, photos_rejection_reason')
-        .eq('token', token)
-        .single()
-
-      if (client) {
-        const hasPendingPhotosRejection = !!client.photos_rejection_reason
-
-        // Plano sem nenhuma categoria de foto cadastrada → não existe etapa de
-        // fotos pra essa cliente; o formulário é a última etapa dela.
-        // Usa RPC (SECURITY DEFINER) em vez de select direto: o portal roda
-        // anônimo e plan_photo_categories só libera SELECT pra admin dono
-        // do plano (policy plan_photo_categories_admin_own).
-        let planHasPhotoStep = true
-        if (client.plan_id) {
-          const { data: hasCats, error: catErr } = await supabase.rpc(
-            'plan_has_photo_categories',
-            { p_plan_id: client.plan_id }
-          )
-          if (catErr) {
-            console.warn('[submitForm] erro consultando plan_has_photo_categories:', catErr.message)
-          } else {
-            planHasPhotoStep = !!hasCats
-          }
-        }
-
-        const { data: photoRows } = await supabase
-          .from('client_photos')
-          .select('id')
-          .eq('client_id', client.id)
-          .limit(1)
-        const hasPhotos = (photoRows?.length ?? 0) > 0
-
-        // Regra de status pós-submit do formulário:
-        // 0. Plano sem etapa de fotos configurada → pula direto pra revisão da admin (photos_submitted)
-        // 1. Há rejeição de fotos pendente → cliente precisa ajustar as fotos (awaiting_photos)
-        // 2. Já tem fotos e nenhuma rejeição pendente → vai pra revisão da admin (photos_submitted)
-        // 3. Sem fotos → fluxo normal, o RPC já colocou awaiting_photos
-        const newStatus = !planHasPhotoStep
-          ? 'photos_submitted'
-          : hasPendingPhotosRejection
-            ? 'awaiting_photos'
-            : hasPhotos
-              ? 'photos_submitted'
-              : undefined   // mantém o que o RPC definiu
-
-        await supabase
-          .from('clients')
-          .update({
-            ...(newStatus ? { status: newStatus } : {}),
-            form_rejection_reason: null,
-            form_rejected_at: null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('token', token)
+      const { data: post, error: postErr } = await supabase.rpc(
+        'finalize_client_form_status',
+        { p_token: token }
+      )
+      if (postErr) throw postErr
+      if (post?.error) {
+        console.warn('finalize_client_form_status retornou erro:', post.error)
       }
     } catch (e) {
-      console.warn('Erro ao limpar rejeição/ajustar status pós-submitForm:', e)
+      console.warn('Erro ao ajustar status pós-submitForm:', e)
     }
   },
 
