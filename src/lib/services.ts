@@ -1190,7 +1190,7 @@ export const adminService = {
   async advanceStep(clientId: string): Promise<void> {
     const { data: client, error } = await supabase
       .from('clients')
-      .select('status, plan:plans(deadline_days)')
+      .select('status, plan_id, plan:plans(deadline_days)')
       .eq('id', clientId)
       .single()
     if (error) throw error
@@ -1200,6 +1200,40 @@ export const adminService = {
     const currentStatus = client.status as string
 
     // Casos que delegam para ações já existentes (que calculam prazo / enviam e-mail)
+    if (currentStatus === 'awaiting_form') {
+      // Decide o próximo status baseado no plano:
+      //   - Plano com categorias de foto cadastradas → 'awaiting_photos' (fluxo normal)
+      //   - Plano sem nenhuma categoria de foto       → 'photos_submitted' (pula fotos,
+      //     formulário é a última etapa da cliente, vai direto pra aprovação da admin)
+      const planId = (client as any).plan_id
+      let planHasPhotoStep = true
+      if (planId) {
+        const { count, error: catErr } = await supabase
+          .from('plan_photo_categories')
+          .select('id', { count: 'exact', head: true })
+          .eq('plan_id', planId)
+        if (catErr) {
+          // Mesma postura do bloco de is_ai_simulation abaixo: se der erro na
+          // consulta, segue como se o plano tivesse fotos (comportamento antigo),
+          // só loga pra investigação.
+          console.warn('[advanceStep] erro consultando plan_photo_categories:', catErr.message)
+        } else {
+          planHasPhotoStep = (count ?? 0) > 0
+        }
+      }
+      const nextStatus = planHasPhotoStep ? 'awaiting_photos' : 'photos_submitted'
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          status: nextStatus,
+          form_rejection_reason: null,
+          form_rejected_at: null,
+          updated_at: now,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+      return
+    }
     if (currentStatus === 'photos_submitted') {
       const days = (client as any).plan?.deadline_days ?? 5
       return this.approvePhotos(clientId, days)
@@ -1306,7 +1340,6 @@ export const adminService = {
     // Demais transições: mudança direta de status
     const nextByCurrent: Record<string, string> = {
       awaiting_contract: 'awaiting_form',
-      awaiting_form: 'awaiting_photos',
       awaiting_photos: 'photos_submitted',
     }
     const next = nextByCurrent[currentStatus]
@@ -2280,12 +2313,27 @@ export const clientService = {
     try {
       const { data: client } = await supabase
         .from('clients')
-        .select('id, photos_rejection_reason')
+        .select('id, plan_id, photos_rejection_reason')
         .eq('token', token)
         .single()
 
       if (client) {
         const hasPendingPhotosRejection = !!client.photos_rejection_reason
+
+        // Plano sem nenhuma categoria de foto cadastrada → não existe etapa de
+        // fotos pra essa cliente; o formulário é a última etapa dela.
+        let planHasPhotoStep = true
+        if (client.plan_id) {
+          const { count, error: catErr } = await supabase
+            .from('plan_photo_categories')
+            .select('id', { count: 'exact', head: true })
+            .eq('plan_id', client.plan_id)
+          if (catErr) {
+            console.warn('[submitForm] erro consultando plan_photo_categories:', catErr.message)
+          } else {
+            planHasPhotoStep = (count ?? 0) > 0
+          }
+        }
 
         const { data: photoRows } = await supabase
           .from('client_photos')
@@ -2295,14 +2343,17 @@ export const clientService = {
         const hasPhotos = (photoRows?.length ?? 0) > 0
 
         // Regra de status pós-submit do formulário:
+        // 0. Plano sem etapa de fotos configurada → pula direto pra revisão da admin (photos_submitted)
         // 1. Há rejeição de fotos pendente → cliente precisa ajustar as fotos (awaiting_photos)
         // 2. Já tem fotos e nenhuma rejeição pendente → vai pra revisão da admin (photos_submitted)
         // 3. Sem fotos → fluxo normal, o RPC já colocou awaiting_photos
-        const newStatus = hasPendingPhotosRejection
-          ? 'awaiting_photos'
-          : hasPhotos
-            ? 'photos_submitted'
-            : undefined   // mantém o que o RPC definiu
+        const newStatus = !planHasPhotoStep
+          ? 'photos_submitted'
+          : hasPendingPhotosRejection
+            ? 'awaiting_photos'
+            : hasPhotos
+              ? 'photos_submitted'
+              : undefined   // mantém o que o RPC definiu
 
         await supabase
           .from('clients')
