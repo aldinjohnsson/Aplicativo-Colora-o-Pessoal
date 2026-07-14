@@ -2322,16 +2322,19 @@ export const clientService = {
 
         // Plano sem nenhuma categoria de foto cadastrada → não existe etapa de
         // fotos pra essa cliente; o formulário é a última etapa dela.
+        // Usa RPC (SECURITY DEFINER) em vez de select direto: o portal roda
+        // anônimo e plan_photo_categories só libera SELECT pra admin dono
+        // do plano (policy plan_photo_categories_admin_own).
         let planHasPhotoStep = true
         if (client.plan_id) {
-          const { count, error: catErr } = await supabase
-            .from('plan_photo_categories')
-            .select('id', { count: 'exact', head: true })
-            .eq('plan_id', client.plan_id)
+          const { data: hasCats, error: catErr } = await supabase.rpc(
+            'plan_has_photo_categories',
+            { p_plan_id: client.plan_id }
+          )
           if (catErr) {
-            console.warn('[submitForm] erro consultando plan_photo_categories:', catErr.message)
+            console.warn('[submitForm] erro consultando plan_has_photo_categories:', catErr.message)
           } else {
-            planHasPhotoStep = (count ?? 0) > 0
+            planHasPhotoStep = !!hasCats
           }
         }
 
