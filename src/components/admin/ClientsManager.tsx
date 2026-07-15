@@ -5147,7 +5147,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       </div>
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'none', minHeight: 0 }}>
+      <div className="flex-1 overflow-y-auto overflow-x-hidden" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'none', minHeight: 0 }}>
         <div className="space-y-4 sm:space-y-6 px-3 py-4 sm:p-6 max-w-3xl lg:max-w-5xl mx-auto w-full" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 120px)' }}>
 
           {/* Header */}
@@ -5411,7 +5411,32 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 {editingDeadline ? (
                   // Formulário de edição/inserção
                   <div className="space-y-2 min-w-0">
-                    <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full min-w-0 box-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
+                    {/* overflow-hidden aqui é uma rede de segurança: em alguns WebViews
+                        (iOS Safari/Capacitor) o input[type=date] ignora width:100% e
+                        renderiza mais largo que o container por causa do chrome nativo
+                        do seletor. appearance:none + o wrapper garantem que ele nunca
+                        "vaze" pra fora do card, mesmo se isso acontecer. */}
+                    <div className="w-full min-w-0 overflow-hidden rounded-lg" style={{ border: `1px solid ${t.border}` }}>
+                      <input
+                        type="date"
+                        value={deadlineInput}
+                        onChange={e => setDeadlineInput(e.target.value)}
+                        className="text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+                        style={{
+                          background: t.surface2,
+                          color: t.text,
+                          border: 'none',
+                          width: '100%',
+                          maxWidth: '100%',
+                          minWidth: 0,
+                          boxSizing: 'border-box',
+                          display: 'block',
+                          padding: '8px 12px',
+                          WebkitAppearance: 'none',
+                          appearance: 'none',
+                        }}
+                      />
+                    </div>
                     <div className="flex flex-col sm:flex-row gap-2 min-w-0">
                       <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline} className="w-full sm:w-auto justify-center"><Check className="h-3.5 w-3.5" /> Salvar</Btn>
                       <div className="flex gap-2 sm:contents">
