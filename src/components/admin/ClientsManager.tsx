@@ -5414,8 +5414,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                     {/* overflow-hidden aqui é uma rede de segurança: em alguns WebViews
                         (iOS Safari/Capacitor) o input[type=date] ignora width:100% e
                         renderiza mais largo que o container por causa do chrome nativo
-                        do seletor. appearance:none + o wrapper garantem que ele nunca
-                        "vaze" pra fora do card, mesmo se isso acontecer. */}
+                        do seletor. O wrapper garante que ele nunca "vaze" pra fora do
+                        card, mesmo se isso acontecer — sem mexer no appearance nativo
+                        (senão o ícone/placeholder do seletor de data some no iOS). */}
                     <div className="w-full min-w-0 overflow-hidden rounded-lg" style={{ border: `1px solid ${t.border}` }}>
                       <input
                         type="date"
@@ -5432,8 +5433,6 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                           boxSizing: 'border-box',
                           display: 'block',
                           padding: '8px 12px',
-                          WebkitAppearance: 'none',
-                          appearance: 'none',
                         }}
                       />
                     </div>
