@@ -10,6 +10,17 @@ import { billingService, type BillingProfile } from '../../lib/billingService'
 import { BillingMeter } from './billing/BillingMeter'
 import { LANGUAGES } from '../../lib/i18n'
 
+// ── Helper: clareia uma cor hex (usado na prévia do cabeçalho de e-mail) ────
+function lightenHex(hex: string, amount: number): string {
+  const clean = (hex || '').replace('#', '')
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return hex || '#ec4899'
+  const num = parseInt(clean, 16)
+  const r = Math.round(((num >> 16) & 0xff) + (255 - ((num >> 16) & 0xff)) * amount)
+  const g = Math.round(((num >> 8) & 0xff) + (255 - ((num >> 8) & 0xff)) * amount)
+  const b = Math.round((num & 0xff) + (255 - (num & 0xff)) * amount)
+  return `#${[r, g, b].map(x => Math.max(0, Math.min(255, x)).toString(16).padStart(2, '0')).join('')}`
+}
+
 // ── Modal de instrução de API Key ────────────────────────────────────────────
 
 interface ApiKeyStep { text: string; highlight?: boolean }
@@ -131,6 +142,10 @@ interface AppSettings {
   resendApiKey: string
   fromEmail: string
   emailDisplayName: string  // Nome que aparece como remetente nos e-mails enviados às clientes
+  // Cor do cabeçalho dos e-mails transacionais (contrato, aprovação, ajuste,
+  // resultado...) e do texto sobre ela. Default = rosa/branco (visual atual).
+  emailBrandColor?: string
+  emailBrandTextColor?: string
   logoStoragePath?: string
 
   // Idioma padrão do portal do cliente — usado quando a cliente ainda não
@@ -299,6 +314,8 @@ const settingsStorageService = {
       resendApiKey: '',
       fromEmail: '',
       emailDisplayName: '',
+      emailBrandColor: '#ec4899',
+      emailBrandTextColor: '#ffffff',
       logoStoragePath: '',
       defaultLanguage: 'pt-BR',
       aiCompositionCoverBase64:   '',
@@ -1129,6 +1146,8 @@ export default function SettingsEditor() {
     resendApiKey: '',
     fromEmail: '',
     emailDisplayName: '',
+    emailBrandColor: '#ec4899',
+    emailBrandTextColor: '#ffffff',
     logoStoragePath: '',
     defaultLanguage: 'pt-BR',
     aiCompositionCoverBase64:   '',
@@ -1187,6 +1206,8 @@ export default function SettingsEditor() {
         resendApiKey: '',
         fromEmail: '',
         emailDisplayName: '',
+        emailBrandColor: '#ec4899',
+        emailBrandTextColor: '#ffffff',
         logoStoragePath: '',
         defaultLanguage: 'pt-BR',
         aiCompositionCoverBase64:   '',
@@ -1828,6 +1849,84 @@ export default function SettingsEditor() {
                 </span>
               )}
             </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Cor do cabeçalho dos e-mails</label>
+            <p className="text-xs text-gray-500 mb-2">
+              Cor de fundo (e da letra) do topo dos e-mails enviados às clientes — contrato, aprovação, ajuste, resultado etc.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+                <input
+                  type="color"
+                  value={settings.emailBrandColor || '#ec4899'}
+                  onChange={e => setSettings({ ...settings, emailBrandColor: e.target.value })}
+                  className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+                  title="Cor de fundo"
+                />
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-500 leading-tight">Fundo</p>
+                  <input
+                    type="text"
+                    value={settings.emailBrandColor || '#ec4899'}
+                    onChange={e => setSettings({ ...settings, emailBrandColor: e.target.value })}
+                    className="w-24 text-sm font-mono focus:outline-none"
+                    maxLength={7}
+                  />
+                </div>
+              </div>
+              <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+                <input
+                  type="color"
+                  value={settings.emailBrandTextColor || '#ffffff'}
+                  onChange={e => setSettings({ ...settings, emailBrandTextColor: e.target.value })}
+                  className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+                  title="Cor da letra"
+                />
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-500 leading-tight">Letra</p>
+                  <input
+                    type="text"
+                    value={settings.emailBrandTextColor || '#ffffff'}
+                    onChange={e => setSettings({ ...settings, emailBrandTextColor: e.target.value })}
+                    className="w-24 text-sm font-mono focus:outline-none"
+                    maxLength={7}
+                  />
+                </div>
+              </div>
+              {(settings.emailBrandColor || settings.emailBrandTextColor) && (
+                <button
+                  onClick={() => setSettings({ ...settings, emailBrandColor: '#ec4899', emailBrandTextColor: '#ffffff' })}
+                  className="flex-shrink-0 px-3 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50"
+                >
+                  Restaurar rosa padrão
+                </button>
+              )}
+            </div>
+
+            {/* Prévia — mesmo gradiente e proporção do cabeçalho real do e-mail */}
+            <div
+              className="mt-3 rounded-t-2xl px-6 py-6 text-center"
+              style={{
+                background: `linear-gradient(135deg, ${lightenHex(settings.emailBrandColor || '#ec4899', 0.25)}, ${settings.emailBrandColor || '#ec4899'})`,
+              }}
+            >
+              {settings.emailDisplayName && (
+                <p
+                  className="m-0 mb-1 text-[10px] font-semibold uppercase tracking-widest"
+                  style={{ color: settings.emailBrandTextColor || '#ffffff', opacity: 0.85 }}
+                >
+                  {settings.emailDisplayName}
+                </p>
+              )}
+              <p className="m-0 text-lg font-bold" style={{ color: settings.emailBrandTextColor || '#ffffff' }}>
+                Nova Assinatura de Contrato
+              </p>
+            </div>
+            <div className="rounded-b-2xl border border-t-0 border-gray-200 bg-white px-6 py-3">
+              <p className="text-xs text-gray-400">Prévia do cabeçalho — o corpo do e-mail continua em fundo branco.</p>
+            </div>
           </div>
 
           <div>
