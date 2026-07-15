@@ -1133,10 +1133,39 @@ async function generateContractPDF(
 
 // ── Template base de e-mail (responsivo para mobile) ─────────────────────────
 
-function buildEmail(title: string, greeting: string, body: string, brandName?: string, lang: EmailLanguage = 'pt-BR'): string {
+// Clareia uma cor hex — usado pra gerar o 2º stop do gradiente do cabeçalho
+// a partir da cor única que o admin escolhe em Configurações. Mesma lógica
+// do helper equivalente em SettingsEditor.tsx (mantém a prévia consistente
+// com o e-mail de verdade).
+function lightenHex(hex: string, amount: number): string {
+  const clean = (hex || '').replace('#', '')
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return hex || '#ec4899'
+  const num = parseInt(clean, 16)
+  const r = Math.round(((num >> 16) & 0xff) + (255 - ((num >> 16) & 0xff)) * amount)
+  const g = Math.round(((num >> 8) & 0xff) + (255 - ((num >> 8) & 0xff)) * amount)
+  const b = Math.round((num & 0xff) + (255 - (num & 0xff)) * amount)
+  const clamp = (x: number) => Math.max(0, Math.min(255, x))
+  return `#${[r, g, b].map(x => clamp(x).toString(16).padStart(2, '0')).join('')}`
+}
+
+function buildEmail(
+  title: string,
+  greeting: string,
+  body: string,
+  brandName?: string,
+  lang: EmailLanguage = 'pt-BR',
+  brandColor?: string,
+  brandTextColor?: string,
+): string {
   const brand = (brandName || '').trim()
+  // Cor do cabeçalho configurável por admin (Configurações → Notificações por
+  // E-mail). Default = rosa/branco, o visual histórico do produto.
+  const color = /^#[0-9a-fA-F]{6}$/.test(brandColor || '') ? (brandColor as string) : '#ec4899'
+  const textColor = /^#[0-9a-fA-F]{6}$/.test(brandTextColor || '') ? (brandTextColor as string) : '#ffffff'
+  const colorLight = lightenHex(color, 0.25)
+  const headerGradient = `linear-gradient(135deg, ${colorLight}, ${color})`
   const headerBrandHtml = brand
-    ? `<p class="header-brand" style="margin: 0 0 4px; font-size: 11px; color: #ffe4e6; letter-spacing: 2px; text-transform: uppercase;">${brand}</p>`
+    ? `<p class="header-brand" style="margin: 0 0 4px; font-size: 11px; color: ${textColor}; opacity: 0.85; letter-spacing: 2px; text-transform: uppercase;">${brand}</p>`
     : ''
   const footerBrandHtml = brand
     ? `<p class="footer-brand" style="margin: 28px 0 0; color: #9ca3af; font-size: 11px; text-align: center;">${brand}</p>`
@@ -1152,9 +1181,9 @@ function buildEmail(title: string, greeting: string, body: string, brandName?: s
     body { margin: 0; padding: 0; background: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; -webkit-text-size-adjust: 100%; }
     .wrapper { background: #f3f4f6; padding: 24px 12px; }
     .container { max-width: 600px; width: 100%; margin: 0 auto; }
-    .header { background: #ec4899; background: linear-gradient(135deg, #fb7185, #ec4899); border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center; }
-    .header-brand { margin: 0 0 4px; font-size: 11px; color: #ffe4e6; letter-spacing: 2px; text-transform: uppercase; }
-    .header-title { margin: 0; font-size: 20px; color: #ffffff; font-weight: 700; line-height: 1.3; }
+    .header { background: ${color}; background: ${headerGradient}; border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center; }
+    .header-brand { margin: 0 0 4px; font-size: 11px; color: ${textColor}; opacity: 0.85; letter-spacing: 2px; text-transform: uppercase; }
+    .header-title { margin: 0; font-size: 20px; color: ${textColor}; font-weight: 700; line-height: 1.3; }
     .body { background: #ffffff; padding: 28px 24px; border-radius: 0 0 16px 16px; }
     .greeting { margin: 0 0 20px; color: #374151; font-size: 15px; line-height: 1.6; }
     .footer-brand { margin: 28px 0 0; color: #9ca3af; font-size: 11px; text-align: center; }
@@ -1163,7 +1192,7 @@ function buildEmail(title: string, greeting: string, body: string, brandName?: s
     .info-label { color: #6b7280; min-width: 100px; flex-shrink: 0; }
     .info-value { color: #374151; font-weight: 600; }
     .btn-wrap { text-align: center; margin: 24px 0; }
-    .btn { display: inline-block; background: #ec4899; background: linear-gradient(135deg, #fb7185, #ec4899); color: #ffffff !important; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 15px; }
+    .btn { display: inline-block; background: ${color}; background: ${headerGradient}; color: ${textColor} !important; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 15px; }
     .alert-green { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     .alert-green-title { margin: 0 0 4px; font-size: 14px; color: #166534; font-weight: 600; }
     .alert-green-text { margin: 0; font-size: 13px; color: #15803d; }
@@ -1204,9 +1233,9 @@ function buildEmail(title: string, greeting: string, body: string, brandName?: s
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
       <tr><td align="center">
         <table class="container" cellpadding="0" cellspacing="0" role="presentation">
-          <tr><td class="header" bgcolor="#ec4899" style="background-color: #ec4899; background: linear-gradient(135deg, #fb7185, #ec4899); border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center;">
+          <tr><td class="header" bgcolor="${color}" style="background-color: ${color}; background: ${headerGradient}; border-radius: 16px 16px 0 0; padding: 28px 24px; text-align: center;">
             ${headerBrandHtml}
-            <h1 class="header-title" style="margin: 0; font-size: 20px; color: #ffffff; font-weight: 700; line-height: 1.3;">${title}</h1>
+            <h1 class="header-title" style="margin: 0; font-size: 20px; color: ${textColor}; font-weight: 700; line-height: 1.3;">${title}</h1>
           </td></tr>
           <tr><td class="body">
             <p class="greeting">${greeting}</p>
@@ -1402,10 +1431,15 @@ serve(async (req) => {
     const BRAND_SUFFIX = BRAND ? ` - ${BRAND}` : ''
     const BRAND_PREFIX = BRAND ? `[${BRAND}] ` : ''
 
+    // Cor do cabeçalho/botão dos e-mails — configurável em Configurações →
+    // Notificações por E-mail. Sem valor salvo, buildEmail já cai no rosa padrão.
+    const BRAND_COLOR = (cfg?.emailBrandColor || '').trim() || undefined
+    const BRAND_TEXT_COLOR = (cfg?.emailBrandTextColor || '').trim() || undefined
+
     // Wrapper que injeta o BRAND automaticamente em todas as chamadas de buildEmail.
     // Evita repetir BRAND como último argumento em cada uma das ~12 chamadas.
     const renderEmail = (title: string, greeting: string, body: string, lang: EmailLanguage = 'pt-BR') =>
-      buildEmail(title, greeting, body, BRAND, lang)
+      buildEmail(title, greeting, body, BRAND, lang, BRAND_COLOR, BRAND_TEXT_COLOR)
 
     // Atalho para os e-mails de CLIENTE: ja injeta o idioma dela automaticamente.
     const renderClientEmail = (title: string, greeting: string, body: string) =>
