@@ -14,6 +14,7 @@ import { downloadContractPDF } from '../../lib/contractPDFGenerator'
 import { LanguageProvider, useTranslation, useLanguage, writeStoredLanguage } from '../../lib/i18n'
 import { getCountryOptions } from '../../lib/i18n/countries'
 import { LanguageSwitcher } from './LanguageSwitcher'
+import { clientThemeVars } from '../../lib/clientTheme'
 
 interface PlanData {
   id: string
@@ -26,6 +27,9 @@ interface PlanData {
    *  Precisa vir junto do plano porque, nesta tela, ainda não existe cliente
    *  cadastrada — não há como buscar isso por outro caminho. */
   admin_default_language?: string | null
+  /** Tema visual do portal (mesma origem do admin_default_language acima).
+   *  NULL/ausente = tema rosa padrão. Ver src/lib/clientTheme.ts. */
+  admin_theme?: { accentColor?: string | null; bgColor?: string | null } | null
 }
 
 // Fluxo completo: welcome → info (dados) → contract (assinatura) → done (confirmação)
@@ -303,10 +307,10 @@ function ClientSignupInner({
 
   // ── Loading / Error ────────────────────────────────────────
   if (loading) return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-purple-50 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-[var(--client-accent-soft)] via-[var(--client-accent-soft)] to-purple-50 flex items-center justify-center" style={clientThemeVars(plan?.admin_theme) as React.CSSProperties}>
       <div className="text-center">
-        <div className="w-14 h-14 bg-white rounded-2xl shadow-sm border border-rose-100 flex items-center justify-center mx-auto mb-4">
-          <Loader2 className="h-6 w-6 animate-spin text-rose-400" />
+        <div className="w-14 h-14 bg-white rounded-2xl shadow-sm border border-[var(--client-accent-soft2)] flex items-center justify-center mx-auto mb-4">
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--client-accent-light)]" />
         </div>
         <p className="text-sm text-gray-500">{t('signup.loading')}</p>
       </div>
@@ -314,7 +318,7 @@ function ClientSignupInner({
   )
 
   if (pageError || !plan) return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 to-pink-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-[var(--client-accent-soft)] to-[var(--client-accent-soft)] flex items-center justify-center p-4" style={clientThemeVars(plan?.admin_theme) as React.CSSProperties}>
       <div className="bg-white rounded-2xl p-8 text-center max-w-md w-full shadow-sm border border-gray-100">
         <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
         <h2 className="text-lg font-semibold text-gray-900 mb-2">{t('signup.linkNotFoundTitle')}</h2>
@@ -323,14 +327,14 @@ function ClientSignupInner({
             : pageError === 'load-error' ? t('signup.loadPlanError')
             : pageError || t('signup.linkInvalid')}
         </p>
-        <button onClick={onRetry} className="inline-flex items-center gap-2 text-sm text-rose-500 hover:text-rose-600 font-medium">
+        <button onClick={onRetry} className="inline-flex items-center gap-2 text-sm text-[var(--client-accent)] hover:text-[var(--client-accent-dark)] font-medium">
           <RefreshCw className="h-4 w-4" /> {t('signup.retry')}
         </button>
       </div>
     </div>
   )
 
-  const inp = "w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white transition-all"
+  const inp = "w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)] focus:border-transparent bg-white transition-all"
 
   // Etapas do progresso (excluindo 'welcome')
   const steps = [
@@ -351,12 +355,12 @@ function ClientSignupInner({
 
   // ── Render ─────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-purple-50">
+    <div className="min-h-screen bg-gradient-to-br from-[var(--client-accent-soft)] via-[var(--client-accent-soft)] to-purple-50" style={clientThemeVars(plan?.admin_theme) as React.CSSProperties}>
 
       {/* Header */}
       <div className="bg-white/80 backdrop-blur-sm border-b border-gray-100 sticky top-0 z-20">
         <div className="max-w-lg mx-auto px-4 h-14 flex items-center gap-3">
-          <div className="w-8 h-8 bg-gradient-to-br from-rose-400 to-pink-500 rounded-xl flex items-center justify-center shadow-sm">
+          <div className="w-8 h-8 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-xl flex items-center justify-center shadow-sm">
             <Palette className="h-4 w-4 text-white" />
           </div>
           <div className="flex-1 min-w-0">
@@ -374,13 +378,13 @@ function ClientSignupInner({
         {step === 'welcome' && (
           <div className="space-y-5">
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="h-2 bg-gradient-to-r from-rose-400 via-pink-400 to-purple-400" />
+              <div className="h-2 bg-gradient-to-r from-[var(--client-accent-light)] via-[var(--client-accent-light)] to-purple-400" />
               <div className="px-8 py-10 text-center space-y-6">
                 <div className="relative inline-flex">
-                  <div className="w-20 h-20 bg-gradient-to-br from-rose-100 to-pink-100 rounded-full flex items-center justify-center">
-                    <Sparkles className="h-9 w-9 text-rose-400" />
+                  <div className="w-20 h-20 bg-gradient-to-br from-[var(--client-accent-soft2)] to-[var(--client-accent-soft2)] rounded-full flex items-center justify-center">
+                    <Sparkles className="h-9 w-9 text-[var(--client-accent-light)]" />
                   </div>
-                  <div className="absolute -top-1 -right-1 w-6 h-6 bg-gradient-to-br from-pink-400 to-rose-500 rounded-full flex items-center justify-center shadow-sm">
+                  <div className="absolute -top-1 -right-1 w-6 h-6 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-full flex items-center justify-center shadow-sm">
                     <Heart className="h-3 w-3 text-white fill-white" />
                   </div>
                 </div>
@@ -389,7 +393,7 @@ function ClientSignupInner({
                   <h1 className="text-2xl font-bold text-gray-900 leading-snug">{t('signup.welcomeTitle')}</h1>
                   <p className="text-gray-600 leading-relaxed text-base">
                     {t('signup.welcomeBodyPre')}{' '}
-                    <span className="text-rose-500 font-semibold">{t('signup.welcomeBodyHighlight')}</span>{' '}
+                    <span className="text-[var(--client-accent)] font-semibold">{t('signup.welcomeBodyHighlight')}</span>{' '}
                     {t('signup.welcomeBodyPost')}
                   </p>
                   <p className="text-gray-500 text-sm leading-relaxed">
@@ -397,16 +401,16 @@ function ClientSignupInner({
                   </p>
                 </div>
 
-                <div className="bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 rounded-xl px-4 py-3 text-left">
-                  <p className="text-xs text-rose-400 font-semibold uppercase tracking-wider mb-0.5">{t('signup.yourPlan')}</p>
+                <div className="bg-gradient-to-br from-[var(--client-accent-soft)] to-[var(--client-accent-soft)] border border-[var(--client-accent-soft2)] rounded-xl px-4 py-3 text-left">
+                  <p className="text-xs text-[var(--client-accent-light)] font-semibold uppercase tracking-wider mb-0.5">{t('signup.yourPlan')}</p>
                   <p className="text-sm font-semibold text-gray-900">{plan.name}</p>
                   {plan.description && <p className="text-xs text-gray-500 mt-0.5">{plan.description}</p>}
                 </div>
 
                 <button
                   onClick={() => setStep('info')}
-                  className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
-                    hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2 text-base"
+                  className="w-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-3.5 rounded-xl font-semibold
+                    hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all shadow-sm flex items-center justify-center gap-2 text-base"
                 >
                   {t('signup.startNow')} <ChevronRight className="h-5 w-5" />
                 </button>
@@ -422,8 +426,8 @@ function ClientSignupInner({
                   { icon: Sparkles,     label: t('signup.portalLabel'),       desc: t('signup.portalDesc') },
                 ].map(({ icon: Icon, label, desc }, i) => (
                   <div key={i} className="flex items-start gap-3">
-                    <div className="w-8 h-8 bg-rose-100 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Icon className="h-4 w-4 text-rose-400" />
+                    <div className="w-8 h-8 bg-[var(--client-accent-soft2)] rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Icon className="h-4 w-4 text-[var(--client-accent-light)]" />
                     </div>
                     <div>
                       <p className="text-sm font-medium text-gray-800">{label}</p>
@@ -443,10 +447,10 @@ function ClientSignupInner({
               <React.Fragment key={s.key}>
                 <div className="flex items-center gap-1.5">
                   <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all
-                    ${i < stepIndex ? 'bg-green-400 text-white' : i === stepIndex ? 'bg-rose-400 text-white' : 'bg-gray-200 text-gray-400'}`}>
+                    ${i < stepIndex ? 'bg-green-400 text-white' : i === stepIndex ? 'bg-[var(--client-accent-light)] text-white' : 'bg-gray-200 text-gray-400'}`}>
                     {i < stepIndex ? <Check className="h-3.5 w-3.5" /> : i + 1}
                   </div>
-                  <span className={`text-xs font-medium hidden sm:block ${i === stepIndex ? 'text-rose-500' : 'text-gray-400'}`}>
+                  <span className={`text-xs font-medium hidden sm:block ${i === stepIndex ? 'text-[var(--client-accent)]' : 'text-gray-400'}`}>
                     {s.label}
                   </span>
                 </div>
@@ -461,7 +465,7 @@ function ClientSignupInner({
         {/* ── Step 1: Info ─────────────────────────────────── */}
         {step === 'info' && (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="h-1.5 bg-gradient-to-r from-rose-400 to-pink-500" />
+            <div className="h-1.5 bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)]" />
             <div className="p-6 space-y-5">
               <div>
                 <h2 className="text-lg font-bold text-gray-900">{t('signup.infoTitle')}</h2>
@@ -511,7 +515,7 @@ function ClientSignupInner({
                       type="checkbox"
                       checked={whatsappOptIn}
                       onChange={e => setWhatsappOptIn(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 accent-rose-500 flex-shrink-0"
+                      className="mt-0.5 h-4 w-4 accent-[var(--client-accent)] flex-shrink-0"
                     />
                     <span className="text-xs text-gray-500 leading-relaxed">
                       {t('signup.whatsappOptIn')}
@@ -555,8 +559,8 @@ function ClientSignupInner({
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
-                    hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2
+                  className="w-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-3.5 rounded-xl font-semibold
+                    hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all shadow-sm flex items-center justify-center gap-2
                     disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {submitting
@@ -571,7 +575,7 @@ function ClientSignupInner({
         {/* ── Step 2: Contrato ──────────────────────────────── */}
         {step === 'contract' && (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="h-1.5 bg-gradient-to-r from-rose-400 to-pink-500" />
+            <div className="h-1.5 bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)]" />
 
             <div className="p-4 sm:p-6 border-b border-gray-100">
               <h2 className="text-lg font-bold text-gray-900">
@@ -640,7 +644,7 @@ function ClientSignupInner({
                 <select
                   value={contractCountryCode}
                   onChange={e => setContractCountryCode(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)] focus:border-transparent bg-white"
                 >
                   {countryOptions.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
                 </select>
@@ -656,7 +660,7 @@ function ClientSignupInner({
                   checked={contractAgreed}
                   onChange={e => contractRead && setContractAgreed(e.target.checked)}
                   disabled={!contractRead}
-                  className="mt-0.5 w-4 h-4 accent-rose-500"
+                  className="mt-0.5 w-4 h-4 accent-[var(--client-accent)]"
                 />
                 <span className="text-sm text-gray-700">{t('portal.contract.agreeLabel')}</span>
               </label>
@@ -676,8 +680,8 @@ function ClientSignupInner({
                 <button
                   onClick={handleContractSign}
                   disabled={!contractAgreed || !signatureDataUrl || contractSigning}
-                  className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-rose-400 to-pink-500
-                    text-white py-3.5 rounded-xl font-semibold hover:from-rose-500 hover:to-pink-600
+                  className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)]
+                    text-white py-3.5 rounded-xl font-semibold hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)]
                     transition-all shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {contractSigning
@@ -722,14 +726,14 @@ function ClientSignupInner({
                 </div>
 
                 {/* Dados de acesso */}
-                <div className="bg-gradient-to-br from-gray-50 to-rose-50/30 rounded-2xl p-5 text-left space-y-3 border border-gray-100">
+                <div className="bg-gradient-to-br from-gray-50 to-[var(--client-accent-soft)]/30 rounded-2xl p-5 text-left space-y-3 border border-gray-100">
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{t('signup.accessDataTitle')}</p>
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs text-gray-400">{t('signup.loginLabel')}</p>
                       <p className="font-semibold text-gray-900 text-sm mt-0.5">{email}</p>
                     </div>
-                    <Mail className="h-5 w-5 text-rose-300" />
+                    <Mail className="h-5 w-5 text-[var(--client-accent-light)]" />
                   </div>
                   <div className="border-t border-gray-100 pt-3 flex items-center justify-between">
                     <div>
@@ -739,7 +743,7 @@ function ClientSignupInner({
                       </p>
                       <p className="text-xs text-gray-400">{t('signup.passwordNote')}</p>
                     </div>
-                    <Calendar className="h-5 w-5 text-rose-300" />
+                    <Calendar className="h-5 w-5 text-[var(--client-accent-light)]" />
                   </div>
                 </div>
 
@@ -747,8 +751,8 @@ function ClientSignupInner({
                 <button
                   onClick={handleDownloadPdf}
                   disabled={downloadingPdf}
-                  className="w-full border border-rose-300 text-rose-500 py-3.5 rounded-xl font-semibold
-                    hover:bg-rose-50 transition-all flex items-center justify-center gap-2
+                  className="w-full border border-[var(--client-accent-light)] text-[var(--client-accent)] py-3.5 rounded-xl font-semibold
+                    hover:bg-[var(--client-accent-soft)] transition-all flex items-center justify-center gap-2
                     disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {downloadingPdf
@@ -759,8 +763,8 @@ function ClientSignupInner({
                 {/* Prosseguir para o portal */}
                 <button
                   onClick={() => navigate(`/c/${resultToken}`)}
-                  className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-3.5 rounded-xl font-semibold
-                    hover:from-rose-500 hover:to-pink-600 transition-all shadow-sm flex items-center justify-center gap-2"
+                  className="w-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-3.5 rounded-xl font-semibold
+                    hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all shadow-sm flex items-center justify-center gap-2"
                 >
                   {t('signup.proceedToNextSteps')} <ChevronRight className="h-4 w-4" />
                 </button>
@@ -777,8 +781,8 @@ function ClientSignupInner({
                   { label: t('signup.nextStepResultLabel'), desc: t('signup.nextStepResultDesc') },
                 ].map((item, i) => (
                   <div key={i} className="flex items-start gap-3">
-                    <div className="w-6 h-6 bg-rose-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <span className="text-xs font-bold text-rose-500">{i + 1}</span>
+                    <div className="w-6 h-6 bg-[var(--client-accent-soft2)] rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <span className="text-xs font-bold text-[var(--client-accent)]">{i + 1}</span>
                     </div>
                     <div>
                       <p className="text-sm font-medium text-gray-800">{item.label}</p>

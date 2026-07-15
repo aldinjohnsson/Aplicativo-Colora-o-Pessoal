@@ -5,6 +5,7 @@ import { Palette, Mail, Calendar, LogIn, AlertCircle } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { LanguageProvider, useTranslation } from '../../lib/i18n'
 import { LanguageSwitcher } from './LanguageSwitcher'
+import { clientThemeVars } from '../../lib/clientTheme'
 
 // A tela de login é acessada ANTES de existir qualquer token de cliente —
 // por isso o LanguageProvider aqui não recebe persistKey (usa uma chave
@@ -63,7 +64,10 @@ function ClientLoginInner() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 to-pink-50 flex items-center justify-center p-4">
+    <div
+      className="min-h-screen bg-gradient-to-br from-[var(--client-bg)] to-white flex items-center justify-center p-4"
+      style={clientThemeVars() as React.CSSProperties}
+    >
       <div className="w-full max-w-md">
         {/* Seletor de idioma — antes do login o cliente ainda não tem token nem
             preferência salva no banco, então o LanguageProvider aqui de cima usa
@@ -74,7 +78,7 @@ function ClientLoginInner() {
 
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-rose-400 to-pink-500 rounded-2xl mb-4 shadow-lg">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-2xl mb-4 shadow-lg">
             <Palette className="h-8 w-8 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-gray-900">{t('login.title')}</h1>
@@ -99,7 +103,7 @@ function ClientLoginInner() {
                   required
                   autoFocus
                   placeholder={t('login.emailPlaceholder')}
-                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--client-accent)] focus:border-transparent"
                 />
               </div>
             </div>
@@ -115,7 +119,7 @@ function ClientLoginInner() {
                   value={birthDate}
                   onChange={e => setBirthDate(e.target.value)}
                   required
-                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--client-accent)] focus:border-transparent"
                 />
               </div>
               {/* O placeholder nativo do <input type="date"> segue o idioma do
@@ -134,7 +138,7 @@ function ClientLoginInner() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-gradient-to-r from-rose-400 to-pink-500 text-white py-2.5 rounded-xl font-medium hover:from-rose-500 hover:to-pink-600 transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="w-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-2.5 rounded-xl font-medium hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {loading
                 ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />

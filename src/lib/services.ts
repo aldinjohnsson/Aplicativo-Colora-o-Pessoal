@@ -147,6 +147,9 @@ export interface ClientPortalData {
   // Idioma padrão configurado pelo admin em Settings — usado como fallback
   // quando client.language ainda é NULL.
   admin_default_language?: string | null
+  // Tema visual do portal (Configurações → Portal do Cliente). NULL/ausente
+  // = tema rosa padrão (visual histórico). Ver src/lib/clientTheme.ts.
+  admin_theme?: { accentColor?: string | null; bgColor?: string | null } | null
   plan: { id: string; name: string; deadline_days: number } | null
   contract: PlanContract | null
   form: PlanForm | null

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield, Globe } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield, Globe, Palette } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -156,6 +156,13 @@ interface AppSettings {
   aiCompositionCoverFileName?: string
   aiCompositionFinalBase64?:   string
   aiCompositionFinalFileName?: string
+
+  // Tema visual do Portal do Cliente (Login / Cadastro / Portal) — cor de
+  // destaque (ícone, botões, barra de progresso) e cor de fundo. Ver
+  // src/lib/clientTheme.ts, que deriva todos os tons intermediários a
+  // partir dessas duas.
+  clientAccentColor?: string
+  clientBgColor?: string
 }
 
 // ── Helpers de admin_content ────────────────────────────────────────────────
@@ -322,6 +329,8 @@ const settingsStorageService = {
       aiCompositionCoverFileName: '',
       aiCompositionFinalBase64:   '',
       aiCompositionFinalFileName: '',
+      clientAccentColor: '#ec4899',
+      clientBgColor: '#fff1f2',
     }
 
     try {
@@ -1154,6 +1163,8 @@ export default function SettingsEditor() {
     aiCompositionCoverFileName: '',
     aiCompositionFinalBase64:   '',
     aiCompositionFinalFileName: '',
+    clientAccentColor: '#ec4899',
+    clientBgColor: '#fff1f2',
   })
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -1214,6 +1225,8 @@ export default function SettingsEditor() {
         aiCompositionCoverFileName: '',
         aiCompositionFinalBase64:   '',
         aiCompositionFinalFileName: '',
+        clientAccentColor: '#ec4899',
+        clientBgColor: '#fff1f2',
       }
 
       // 4 queries em paralelo — blobs (pdf_template, ai_composition_cover/final)
@@ -1959,6 +1972,107 @@ export default function SettingsEditor() {
               <p className="text-sm text-amber-700">⚠️ Preencha seu e-mail para receber a cópia dos contratos assinados.</p>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ── Tema do Portal do Cliente ─────────────────────────────────────
+        *
+        * Cor de destaque (ícone, botões, barra de progresso) e cor de fundo
+        * usadas em Login / Cadastro / Portal do cliente (ClientLogin,
+        * ClientSignup, ClientPortal). Tons intermediários (hover, fundos
+        * suaves, bordas) são derivados automaticamente dessas duas —
+        * ver src/lib/clientTheme.ts.
+        *
+        * OBS: a tela de Login (antes da cliente ter um token) ainda não
+        * sabe qual admin é — ela sempre usa o tema padrão. O tema
+        * personalizado vale a partir do Cadastro/Portal, que já têm o
+        * vínculo com o admin.
+        */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-pink-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-pink-500 rounded-xl flex items-center justify-center">
+              <Palette className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Tema do Portal do Cliente</h2>
+              <p className="text-sm text-gray-500">Cor de destaque e de fundo do Cadastro e do Portal da cliente</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+              <input
+                type="color"
+                value={settings.clientAccentColor || '#ec4899'}
+                onChange={e => setSettings({ ...settings, clientAccentColor: e.target.value })}
+                className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+                title="Cor de destaque"
+              />
+              <div className="min-w-0">
+                <p className="text-xs text-gray-500 leading-tight">Destaque (ícone, botões, barra de progresso)</p>
+                <input
+                  type="text"
+                  value={settings.clientAccentColor || '#ec4899'}
+                  onChange={e => setSettings({ ...settings, clientAccentColor: e.target.value })}
+                  className="w-24 text-sm font-mono focus:outline-none"
+                  maxLength={7}
+                />
+              </div>
+            </div>
+            <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+              <input
+                type="color"
+                value={settings.clientBgColor || '#fff1f2'}
+                onChange={e => setSettings({ ...settings, clientBgColor: e.target.value })}
+                className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+                title="Cor de fundo"
+              />
+              <div className="min-w-0">
+                <p className="text-xs text-gray-500 leading-tight">Fundo da página</p>
+                <input
+                  type="text"
+                  value={settings.clientBgColor || '#fff1f2'}
+                  onChange={e => setSettings({ ...settings, clientBgColor: e.target.value })}
+                  className="w-24 text-sm font-mono focus:outline-none"
+                  maxLength={7}
+                />
+              </div>
+            </div>
+            {(settings.clientAccentColor || settings.clientBgColor) && (
+              <button
+                onClick={() => setSettings({ ...settings, clientAccentColor: '#ec4899', clientBgColor: '#fff1f2' })}
+                className="flex-shrink-0 px-3 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50"
+              >
+                Restaurar rosa padrão
+              </button>
+            )}
+          </div>
+
+          {/* Prévia — cabeçalho do portal + botão primário, mesmas cores do tema real */}
+          <div
+            className="rounded-2xl p-5 border border-gray-200"
+            style={{ background: `linear-gradient(135deg, ${settings.clientBgColor || '#fff1f2'}, #ffffff)` }}
+          >
+            <div className="flex items-center gap-2.5 mb-4">
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center"
+                style={{ background: settings.clientAccentColor || '#ec4899' }}
+              >
+                <Palette className="h-4 w-4 text-white" />
+              </div>
+              <span className="font-semibold text-gray-800 text-sm">IA Color</span>
+            </div>
+            <button
+              type="button"
+              className="px-5 py-2 rounded-xl text-sm font-medium text-white pointer-events-none"
+              style={{ background: settings.clientAccentColor || '#ec4899' }}
+            >
+              Continuar
+            </button>
+          </div>
         </div>
       </div>
 

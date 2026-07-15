@@ -16,6 +16,7 @@ import { GeminiChat } from './GeminiChat'
 import { LanguageProvider, useTranslation, useLanguage } from '../../lib/i18n'
 import { getCountryOptions } from '../../lib/i18n/countries'
 import { LanguageSwitcher } from './LanguageSwitcher'
+import { clientThemeVars } from '../../lib/clientTheme'
 
 // ── Tiny UI ──────────────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ const Btn = ({
   loading = false, disabled = false, className = '',
 }: any) => {
   const v: any = {
-    primary: 'bg-rose-500 text-white hover:bg-rose-600',
+    primary: 'bg-[var(--client-accent)] text-white hover:bg-[var(--client-accent-dark)]',
     outline: 'border border-gray-300 text-gray-700 hover:bg-gray-50',
     ghost: 'text-gray-600 hover:bg-gray-100',
   }
@@ -105,10 +106,10 @@ function ClientPortalInner({
   // um efeito duplicado aqui.
 
   if (loading) return (
-    <div className="min-h-screen bg-rose-50 flex items-center justify-center">
+    <div className="min-h-screen bg-[var(--client-accent-soft)] flex items-center justify-center">
       <div className="text-center">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-rose-500 mx-auto mb-3" />
-        <p className="text-rose-600 text-sm">{t('portal.root.loading')}</p>
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[var(--client-accent)] mx-auto mb-3" />
+        <p className="text-[var(--client-accent-dark)] text-sm">{t('portal.root.loading')}</p>
       </div>
     </div>
   )
@@ -120,7 +121,7 @@ function ClientPortalInner({
       : t('portal.root.invalidLinkFallback')
 
     return (
-      <div className="min-h-screen bg-rose-50 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[var(--client-accent-soft)] flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-sm p-8 max-w-sm w-full text-center">
           <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
           <h2 className="font-semibold text-gray-900 mb-2">{t('portal.root.accessNotFoundTitle')}</h2>
@@ -131,12 +132,12 @@ function ClientPortalInner({
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-white">
+    <div className="min-h-screen bg-gradient-to-br from-[var(--client-bg)] via-[var(--client-bg-soft)] to-white" style={clientThemeVars(data.admin_theme) as React.CSSProperties}>
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-rose-100 sticky top-0 z-30">
+      <header className="bg-white/80 backdrop-blur-sm border-b border-[var(--client-accent-border)] sticky top-0 z-30">
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 bg-gradient-to-br from-rose-400 to-pink-500 rounded-lg flex items-center justify-center">
+            <div className="w-7 h-7 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-lg flex items-center justify-center">
               <Palette className="h-4 w-4 text-white" />
             </div>
             <span className="font-semibold text-gray-800">IA Color</span>
@@ -313,7 +314,7 @@ function StepHeader({ current, total, label }: { current: number; total: number;
           <div
             key={i}
             className={`h-1.5 flex-1 rounded-full transition-colors ${
-              i < current ? 'bg-rose-400' : i === current - 1 ? 'bg-rose-300' : 'bg-gray-200'
+              i < current ? 'bg-[var(--client-accent-light)]' : i === current - 1 ? 'bg-[var(--client-accent-light)]' : 'bg-gray-200'
             }`}
           />
         ))}
@@ -404,15 +405,15 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs text-gray-700">
           <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--client-accent-light)] flex-shrink-0" />
             <span><strong>{t('portal.contract.ip')}:</strong> {clientIp}</span>
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--client-accent-light)] flex-shrink-0" />
             <span><strong>{t('portal.contract.date')}:</strong> {formattedDate}</span>
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--client-accent-light)] flex-shrink-0" />
             <span><strong>{t('portal.contract.time')}:</strong> {formattedTime}</span>
           </span>
         </div>
@@ -506,7 +507,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
             <select
               value={countryCode}
               onChange={e => setCountryCode(e.target.value)}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:border-transparent bg-white"
+              className="w-full px-3 py-2.5 border border-gray-300 rounded-xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)] focus:border-transparent bg-white"
             >
               {countryOptions.map(c => (
                 <option key={c.code} value={c.code}>{c.name}</option>
@@ -521,7 +522,7 @@ function ContractStep({ token, data, onDone }: { token: string; data: ClientPort
               checked={agreed}
               onChange={e => read && setAgreed(e.target.checked)}
               disabled={!read}
-              className="mt-0.5 w-4 h-4 accent-rose-500"
+              className="mt-0.5 w-4 h-4 accent-[var(--client-accent)]"
             />
             <span className="text-sm text-gray-700">{t('portal.contract.agreeLabel')}</span>
           </label>
@@ -607,7 +608,7 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
             onClick={() => setActiveTab('form')}
             className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
               activeTab === 'form'
-                ? 'text-rose-600 border-b-2 border-rose-500 bg-rose-50/40'
+                ? 'text-[var(--client-accent-dark)] border-b-2 border-[var(--client-accent)] bg-[var(--client-accent-soft)]/40'
                 : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
             }`}
           >
@@ -621,7 +622,7 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
             onClick={() => setActiveTab('photos')}
             className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
               activeTab === 'photos'
-                ? 'text-rose-600 border-b-2 border-rose-500 bg-rose-50/40'
+                ? 'text-[var(--client-accent-dark)] border-b-2 border-[var(--client-accent)] bg-[var(--client-accent-soft)]/40'
                 : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
             }`}
           >
@@ -731,13 +732,13 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                 {f.label} {f.required && <span className="text-red-500">*</span>}
               </label>
               {f.type === 'text' && (
-                <input value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} placeholder={f.placeholder} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
+                <input value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} placeholder={f.placeholder} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)]" />
               )}
               {f.type === 'textarea' && (
-                <textarea value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} placeholder={f.placeholder} rows={4} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none" />
+                <textarea value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} placeholder={f.placeholder} rows={4} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)] resize-none" />
               )}
               {f.type === 'select' && (
-                <select value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400">
+                <select value={formData[f.id] || ''} onChange={e => handleChange(f.id, e.target.value)} className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)]">
                   <option value="">{t('portal.form.selectPlaceholder')}</option>
                   {(f.options || []).map((opt, i) => <option key={i} value={opt}>{opt}</option>)}
                 </select>
@@ -746,13 +747,13 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                 <div className="space-y-2">
                   {(f.options || []).map((opt, i) => (
                     <label key={i} className="flex items-center gap-2 cursor-pointer">
-                      <input type="radio" name={f.id} value={opt} checked={formData[f.id] === opt} onChange={e => handleChange(f.id, e.target.value)} className="w-4 h-4 accent-rose-500" />
+                      <input type="radio" name={f.id} value={opt} checked={formData[f.id] === opt} onChange={e => handleChange(f.id, e.target.value)} className="w-4 h-4 accent-[var(--client-accent)]" />
                       <span className="text-sm text-gray-700">{opt}</span>
                     </label>
                   ))}
                   {/* Campo condicional de observação */}
                   {(f as any).conditionalTrigger && formData[f.id] === (f as any).conditionalTrigger && (
-                    <div className="mt-2 pl-5 border-l-2 border-rose-300">
+                    <div className="mt-2 pl-5 border-l-2 border-[var(--client-accent-light)]">
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {(f as any).conditionalLabel || t('portal.form.observationLabel')}
                         {(f as any).conditionalRequired && <span className="text-red-500 ml-1">*</span>}
@@ -762,7 +763,7 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                         onChange={e => handleChange(`${f.id}__obs`, e.target.value)}
                         placeholder={t('portal.form.observationPlaceholder')}
                         rows={3}
-                        className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 resize-none"
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)] resize-none"
                       />
                     </div>
                   )}
@@ -775,7 +776,7 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                       <input type="checkbox" checked={(formData[f.id] || []).includes(opt)} onChange={e => {
                         const arr = formData[f.id] || []
                         handleChange(f.id, e.target.checked ? [...arr, opt] : arr.filter((x: string) => x !== opt))
-                      }} className="w-4 h-4 accent-rose-500" />
+                      }} className="w-4 h-4 accent-[var(--client-accent)]" />
                       <span className="text-sm text-gray-700">{opt}</span>
                     </label>
                   ))}
@@ -903,7 +904,7 @@ function ImageUploadFormField({
 
           {/* Slot para adicionar mais fotos */}
           {!isFull && !uploading && (
-            <label className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1">
+            <label className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)] hover:bg-[var(--client-accent-soft)]/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1">
               <input
                 type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
                 onChange={e => handleAdd(e.target.files)}
@@ -917,8 +918,8 @@ function ImageUploadFormField({
 
           {/* Spinner inline quando está enviando e já tem fotos */}
           {uploading && (
-            <div className="aspect-square rounded-xl border-2 border-dashed border-rose-200 bg-rose-50/60 flex items-center justify-center">
-              <div className="animate-spin h-5 w-5 border-2 border-rose-300 border-t-transparent rounded-full" />
+            <div className="aspect-square rounded-xl border-2 border-dashed border-[var(--client-accent-soft2)] bg-[var(--client-accent-soft)]/60 flex items-center justify-center">
+              <div className="animate-spin h-5 w-5 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full" />
             </div>
           )}
         </div>
@@ -928,8 +929,8 @@ function ImageUploadFormField({
       {value.length === 0 && (
         <label className={`block rounded-2xl cursor-pointer transition-all ${
           uploading
-            ? 'bg-rose-50/60 border-2 border-rose-200 pointer-events-none'
-            : 'border-2 border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/40 active:scale-[0.99]'
+            ? 'bg-[var(--client-accent-soft)]/60 border-2 border-[var(--client-accent-soft2)] pointer-events-none'
+            : 'border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)] hover:bg-[var(--client-accent-soft)]/40 active:scale-[0.99]'
         }`}>
           <input
             type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
@@ -937,11 +938,11 @@ function ImageUploadFormField({
           />
           <div className="px-6 py-8 text-center">
             {uploading ? (
-              <div className="animate-spin h-8 w-8 border-2 border-rose-300 border-t-transparent rounded-full mx-auto" />
+              <div className="animate-spin h-8 w-8 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full mx-auto" />
             ) : (
               <>
-                <div className="w-10 h-10 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-2">
-                  <Camera className="h-5 w-5 text-rose-400" />
+                <div className="w-10 h-10 bg-[var(--client-accent-soft)] rounded-full flex items-center justify-center mx-auto mb-2">
+                  <Camera className="h-5 w-5 text-[var(--client-accent-light)]" />
                 </div>
                 <p className="text-sm font-medium text-gray-700 mb-0.5">{t('portal.imageUpload.tapToAddPhotos')}</p>
                 <p className="text-xs text-gray-400">
@@ -1071,8 +1072,8 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
 
   return (
     <>
-      <div className="rounded-xl overflow-hidden border border-rose-200 shadow-sm bg-white">
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-rose-500 to-pink-500">
+      <div className="rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] shadow-sm bg-white">
+        <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-[var(--client-accent)] to-[var(--client-accent)]">
           <FileText className="h-4 w-4 text-white flex-shrink-0" />
           <span className="text-sm font-semibold text-white flex-1 truncate">{label}</span>
         </div>
@@ -1086,18 +1087,18 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
         >
           <iframe src={viewerUrl} className="w-full pointer-events-none bg-gray-50" style={{ height: 260 }} title={label} />
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors flex items-end justify-center pb-3">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/95 rounded-full shadow text-xs font-medium text-rose-700">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/95 rounded-full shadow text-xs font-medium text-[var(--client-accent-dark)]">
               <ZoomIn className="h-3.5 w-3.5" /> {t('portal.pdfInstruction.tapToEnlarge')}
             </span>
           </div>
         </button>
 
         {/* Ações claras */}
-        <div className="flex items-stretch border-t border-rose-100">
+        <div className="flex items-stretch border-t border-[var(--client-accent-soft2)]">
           <button
             type="button"
             onClick={() => setFullscreen(true)}
-            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-rose-700 hover:bg-rose-50 transition-colors"
+            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-[var(--client-accent-dark)] hover:bg-[var(--client-accent-soft)] transition-colors"
           >
             <ZoomIn className="h-4 w-4" /> {t('portal.pdfInstruction.viewFullscreen')}
           </button>
@@ -1105,7 +1106,7 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
             href={src}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors border-l border-rose-100"
+            className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors border-l border-[var(--client-accent-soft2)]"
           >
             <Download className="h-4 w-4" /> {t('portal.pdfInstruction.downloadOpen')}
           </a>
@@ -1117,7 +1118,7 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
         <div className="fixed inset-0 z-[60] bg-black/80 flex flex-col" onClick={() => setFullscreen(false)}>
           <div className="flex items-center justify-between px-4 py-3 bg-white shadow" onClick={e => e.stopPropagation()}>
             <span className="text-sm font-semibold text-gray-800 flex items-center gap-2 min-w-0">
-              <FileText className="h-4 w-4 text-rose-500 flex-shrink-0" />
+              <FileText className="h-4 w-4 text-[var(--client-accent)] flex-shrink-0" />
               <span className="truncate">{label}</span>
             </span>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -1146,7 +1147,7 @@ function MediaItem({ item }: { item: InstructionItem }) {
 
   if (item.type === 'video' && embedUrl) {
     return (
-      <div className="rounded-xl overflow-hidden border border-rose-100 shadow-sm bg-black" style={{ aspectRatio: '16/9' }}>
+      <div className="rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] shadow-sm bg-black" style={{ aspectRatio: '16/9' }}>
         <iframe
           src={embedUrl}
           className="w-full h-full"
@@ -1162,7 +1163,7 @@ function MediaItem({ item }: { item: InstructionItem }) {
     const src = item.imageUrl || item.content
     if (!src) return null
     return (
-      <div className="rounded-xl overflow-hidden border border-rose-100 shadow-sm">
+      <div className="rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] shadow-sm">
         <img src={src} alt={t('portal.instructions.imageAlt')} className="w-full object-contain max-h-80 bg-gray-50" />
       </div>
     )
@@ -1198,18 +1199,18 @@ function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionIt
   if (items.length === 0) return null
 
   return (
-    <div className="rounded-xl border border-rose-100 bg-rose-50/50 overflow-hidden">
+    <div className="rounded-xl border border-[var(--client-accent-soft2)] bg-[var(--client-accent-soft)]/50 overflow-hidden">
       <button
         onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-rose-50/80 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-[var(--client-accent-soft)]/80 transition-colors"
       >
-        <span className="text-xs font-semibold text-rose-700 uppercase tracking-wide flex items-center gap-2">
+        <span className="text-xs font-semibold text-[var(--client-accent-dark)] uppercase tracking-wide flex items-center gap-2">
           <FileText className="h-3.5 w-3.5" />
           {t('portal.instructions.panelTitle')}
         </span>
         {open
-          ? <ChevronUp className="h-4 w-4 text-rose-400 flex-shrink-0" />
-          : <ChevronDown className="h-4 w-4 text-rose-400 flex-shrink-0" />
+          ? <ChevronUp className="h-4 w-4 text-[var(--client-accent-light)] flex-shrink-0" />
+          : <ChevronDown className="h-4 w-4 text-[var(--client-accent-light)] flex-shrink-0" />
         }
       </button>
 
@@ -1221,7 +1222,7 @@ function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionIt
             <ol className="space-y-2.5">
               {textItems.map((item, i) => (
                 <li key={item.id} className="flex items-start gap-2.5">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-[10px] font-bold mt-0.5">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-[var(--client-accent)] text-white flex items-center justify-center text-[10px] font-bold mt-0.5">
                     {i + 1}
                   </span>
                   <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{item.content}</p>
@@ -1321,7 +1322,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
             {uploads.map((file, idx) => {
               const url = URL.createObjectURL(file)
               return (
-                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border-2 border-rose-300 bg-rose-50">
+                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border-2 border-[var(--client-accent-light)] bg-[var(--client-accent-soft)]">
                   <img src={url} alt={file.name} className="w-full h-full object-cover" />
                   <button
                     onClick={() => onRemove(idx)}
@@ -1329,7 +1330,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
                   >
                     <X className="h-3 w-3" />
                   </button>
-                  <div className="absolute bottom-1 left-1 bg-rose-500 text-white text-[9px] px-1.5 py-0.5 rounded font-medium">
+                  <div className="absolute bottom-1 left-1 bg-[var(--client-accent)] text-white text-[9px] px-1.5 py-0.5 rounded font-medium">
                     {t('portal.categoryCard.newBadge')}
                   </div>
                 </div>
@@ -1338,8 +1339,8 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
 
             {/* Add-more slot inline with photos */}
             {!isFull && !processing && (
-              <label className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-rose-300
-                hover:bg-rose-50/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1">
+              <label className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)]
+                hover:bg-[var(--client-accent-soft)]/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1">
                 <input
                   type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
                   onChange={e => e.target.files && onAdd(Array.from(e.target.files))}
@@ -1357,17 +1358,17 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
         {existingPhotos.length === 0 && uploads.length === 0 && (
           <label className={`block relative rounded-2xl cursor-pointer transition-all ${
             processing
-              ? 'bg-rose-50/60 border-2 border-rose-200 pointer-events-none'
-              : 'border-2 border-dashed border-gray-200 hover:border-rose-300 hover:bg-rose-50/40 active:scale-[0.99]'
+              ? 'bg-[var(--client-accent-soft)]/60 border-2 border-[var(--client-accent-soft2)] pointer-events-none'
+              : 'border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)] hover:bg-[var(--client-accent-soft)]/40 active:scale-[0.99]'
           }`}>
             <input type="file" multiple accept="image/*,image/heic,image/heif" className="hidden" onChange={e => e.target.files && onAdd(Array.from(e.target.files))} disabled={processing} />
             <div className="px-6 py-10 text-center">
               {processing ? (
-                <div className="animate-spin h-8 w-8 border-3 border-rose-300 border-t-transparent rounded-full mx-auto" />
+                <div className="animate-spin h-8 w-8 border-3 border-[var(--client-accent-light)] border-t-transparent rounded-full mx-auto" />
               ) : (
                 <>
-                  <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <Camera className="h-6 w-6 text-rose-400" />
+                  <div className="w-12 h-12 bg-[var(--client-accent-soft)] rounded-full flex items-center justify-center mx-auto mb-3">
+                    <Camera className="h-6 w-6 text-[var(--client-accent-light)]" />
                   </div>
                   <div>
                     <p className="text-sm font-medium text-gray-700 mb-0.5">
@@ -1547,7 +1548,7 @@ function PhotoStepContent({
         <div className="flex items-center gap-3 mb-2.5">
           <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-rose-400 to-pink-500 rounded-full transition-all duration-500"
+              className="h-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-full transition-all duration-500"
               style={{ width: `${(doneCount / categories.length) * 100}%` }}
             />
           </div>
@@ -1571,7 +1572,7 @@ function PhotoStepContent({
                   className={`flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
                     done
                       ? 'bg-green-50 text-green-700 border border-green-200'
-                      : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-rose-200 hover:text-rose-600'
+                      : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-[var(--client-accent-soft2)] hover:text-[var(--client-accent-dark)]'
                   }`}
                 >
                   {done
@@ -2421,7 +2422,7 @@ function ResultScreen({
           })()}
         </>
       ) : (
-        <div className="bg-gradient-to-br from-rose-500 via-pink-500 to-rose-600 rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
+        <div className="bg-gradient-to-br from-[var(--client-accent)] via-[var(--client-accent)] to-[var(--client-accent-dark)] rounded-2xl p-7 text-white text-center relative overflow-hidden shadow-lg">
           <div
             className="absolute inset-0 opacity-10"
             style={{ backgroundImage: 'radial-gradient(circle at 20% 80%, white 0%, transparent 50%), radial-gradient(circle at 80% 20%, white 0%, transparent 50%)' }}
@@ -2431,7 +2432,7 @@ function ResultScreen({
               <CheckCircle className="h-9 w-9 text-white" />
             </div>
             <h2 className="text-2xl font-bold tracking-tight">{t('portal.result.readyTitle')}</h2>
-            <p className="text-rose-100 text-sm mt-1.5">{t('portal.result.readySubtitle')}</p>
+            <p className="text-[var(--client-accent-soft2)] text-sm mt-1.5">{t('portal.result.readySubtitle')}</p>
           </div>
         </div>
       )}
@@ -2452,7 +2453,7 @@ function ResultScreen({
         return (
           <div className={`bg-white rounded-2xl border shadow-sm p-5 ${expired ? 'border-red-200' : 'border-amber-200'}`}>
             <div className="flex items-start gap-4">
-              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${expired ? 'from-red-400 to-rose-500' : 'from-amber-400 to-orange-500'}`}>
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${expired ? 'from-red-400 to-[var(--client-accent)]' : 'from-amber-400 to-orange-500'}`}>
                 <Clock className="h-6 w-6 text-white" />
               </div>
               <div className="flex-1">
@@ -2489,23 +2490,23 @@ function ResultScreen({
       {folderUrl && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <ExternalLink className="h-5 w-5 text-rose-400" /> {t('portal.result.folderTitle')}
+            <ExternalLink className="h-5 w-5 text-[var(--client-accent-light)]" /> {t('portal.result.folderTitle')}
           </h3>
           <a
             href={folderUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-3 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100 hover:from-rose-100 hover:to-pink-100 transition-all group"
+            className="flex items-center gap-3 p-4 bg-gradient-to-r from-[var(--client-accent-soft)] to-[var(--client-accent-soft)] rounded-xl border border-[var(--client-accent-soft2)] hover:from-[var(--client-accent-soft2)] hover:to-[var(--client-accent-soft2)] transition-all group"
           >
-            <div className="w-11 h-11 bg-gradient-to-br from-rose-400 to-pink-500 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0">
+            <div className="w-11 h-11 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-xl flex items-center justify-center shadow-sm flex-shrink-0">
               <ExternalLink className="h-5 w-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-rose-700">{t('portal.result.folderCta')}</p>
-              <p className="text-xs text-rose-400 mt-0.5">{t('portal.result.folderCtaNote')}</p>
+              <p className="text-sm font-semibold text-[var(--client-accent-dark)]">{t('portal.result.folderCta')}</p>
+              <p className="text-xs text-[var(--client-accent-light)] mt-0.5">{t('portal.result.folderCtaNote')}</p>
             </div>
-            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
-              <ExternalLink className="h-3.5 w-3.5 text-rose-500" />
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[var(--client-accent-soft2)] group-hover:bg-[var(--client-accent-soft2)] flex items-center justify-center transition-colors">
+              <ExternalLink className="h-3.5 w-3.5 text-[var(--client-accent)]" />
             </div>
           </a>
         </div>
@@ -2518,23 +2519,23 @@ function ResultScreen({
       {customLinkUrl && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <ExternalLink className="h-5 w-5 text-rose-400" /> {t('portal.result.linkTitle')}
+            <ExternalLink className="h-5 w-5 text-[var(--client-accent-light)]" /> {t('portal.result.linkTitle')}
           </h3>
           <a
             href={customLinkUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-3 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100 hover:from-rose-100 hover:to-pink-100 transition-all group"
+            className="flex items-center gap-3 p-4 bg-gradient-to-r from-[var(--client-accent-soft)] to-[var(--client-accent-soft)] rounded-xl border border-[var(--client-accent-soft2)] hover:from-[var(--client-accent-soft2)] hover:to-[var(--client-accent-soft2)] transition-all group"
           >
-            <div className="w-11 h-11 bg-gradient-to-br from-rose-400 to-pink-500 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0">
+            <div className="w-11 h-11 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-xl flex items-center justify-center shadow-sm flex-shrink-0">
               <ExternalLink className="h-5 w-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-rose-700">{t('portal.result.linkCta')}</p>
-              <p className="text-xs text-rose-400 mt-0.5">{t('portal.result.linkCtaNote')}</p>
+              <p className="text-sm font-semibold text-[var(--client-accent-dark)]">{t('portal.result.linkCta')}</p>
+              <p className="text-xs text-[var(--client-accent-light)] mt-0.5">{t('portal.result.linkCtaNote')}</p>
             </div>
-            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-rose-100 group-hover:bg-rose-200 flex items-center justify-center transition-colors">
-              <ExternalLink className="h-3.5 w-3.5 text-rose-500" />
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[var(--client-accent-soft2)] group-hover:bg-[var(--client-accent-soft2)] flex items-center justify-center transition-colors">
+              <ExternalLink className="h-3.5 w-3.5 text-[var(--client-accent)]" />
             </div>
           </a>
         </div>
@@ -2543,7 +2544,7 @@ function ResultScreen({
       {(pdfs.length > 0 || others.length > 0) && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <FileText className="h-5 w-5 text-rose-400" /> {t('portal.result.documentsTitle')}
+            <FileText className="h-5 w-5 text-[var(--client-accent-light)]" /> {t('portal.result.documentsTitle')}
           </h3>
           <div className="space-y-2">
             {[...pdfs, ...others].map((file: any) => (
@@ -2551,9 +2552,9 @@ function ResultScreen({
                 key={file.id}
                 onClick={() => handleDownload(file)}
                 disabled={downloadingId === file.id}
-                className="w-full flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-100 transition-all group disabled:opacity-60 disabled:cursor-not-allowed"
+                className="w-full flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-[var(--client-accent-soft)] rounded-xl border border-transparent hover:border-[var(--client-accent-soft2)] transition-all group disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <div className="w-10 h-10 bg-gradient-to-br from-red-400 to-rose-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+                <div className="w-10 h-10 bg-gradient-to-br from-red-400 to-[var(--client-accent)] rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
                   <FileText className="h-4 w-4 text-white" />
                 </div>
                 <div className="flex-1 min-w-0 text-left">
@@ -2561,8 +2562,8 @@ function ResultScreen({
                   <p className="text-xs text-gray-400 mt-0.5">{(file.file_size / 1024).toFixed(0)} KB</p>
                 </div>
                 {downloadingId === file.id
-                  ? <div className="animate-spin h-4 w-4 border-2 border-rose-400 border-t-transparent rounded-full flex-shrink-0" />
-                  : <Download className="h-4 w-4 text-gray-300 group-hover:text-rose-400 transition-colors flex-shrink-0" />
+                  ? <div className="animate-spin h-4 w-4 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full flex-shrink-0" />
+                  : <Download className="h-4 w-4 text-gray-300 group-hover:text-[var(--client-accent-light)] transition-colors flex-shrink-0" />
                 }
               </button>
             ))}
@@ -2577,7 +2578,7 @@ function ResultScreen({
       {audios.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Mic className="h-5 w-5 text-rose-400" />
+            <Mic className="h-5 w-5 text-[var(--client-accent-light)]" />
             {t('portal.result.audioMessage', { count: audios.length })}
           </h3>
           <div className="space-y-4">
@@ -2591,7 +2592,7 @@ function ResultScreen({
               return (
                 <div
                   key={file.id}
-                  className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-50 via-purple-50 to-pink-50 border border-violet-100 p-4"
+                  className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-50 via-purple-50 to-[var(--client-accent-soft)] border border-violet-100 p-4"
                 >
                   {/* Detalhe decorativo de fundo */}
                   <div className="absolute -top-4 -right-4 w-24 h-24 bg-gradient-to-br from-violet-200/40 to-purple-200/40 rounded-full pointer-events-none" />
@@ -2635,7 +2636,7 @@ function ResultScreen({
       {images.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <ImageIcon className="h-5 w-5 text-rose-400" /> {t('portal.result.photosTitle')}
+            <ImageIcon className="h-5 w-5 text-[var(--client-accent-light)]" /> {t('portal.result.photosTitle')}
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
             {images.map((file: any, idx: number) => {
@@ -2656,7 +2657,7 @@ function ResultScreen({
                 <button
                   key={file.id}
                   onClick={() => setPhotoLightbox({ photos: lightboxPhotos, index: idx })}
-                  className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group focus:outline-none focus:ring-2 focus:ring-rose-400"
+                  className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group focus:outline-none focus:ring-2 focus:ring-[var(--client-accent-light)]"
                   title={file.file_name}
                 >
                   <img
@@ -2678,9 +2679,9 @@ function ResultScreen({
       {result.observations && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
           <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <span className="text-rose-400">✦</span> {t('portal.result.observationsTitle')}
+            <span className="text-[var(--client-accent-light)]">✦</span> {t('portal.result.observationsTitle')}
           </h3>
-          <div className="bg-gradient-to-br from-rose-50 to-pink-50 rounded-xl p-4 border border-rose-100">
+          <div className="bg-gradient-to-br from-[var(--client-accent-soft)] to-[var(--client-accent-soft)] rounded-xl p-4 border border-[var(--client-accent-soft2)]">
             <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{result.observations}</p>
           </div>
         </div>
