@@ -3387,6 +3387,10 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
   const dragRef = useRef<{ panX: number; panY: number; startX: number; startY: number } | null>(null)
   const pinchRef = useRef<{ startDist: number; startZoom: number; startPanX: number; startPanY: number; anchorX: number; anchorY: number } | null>(null)
+  // Swipe horizontal (1 dedo, sem zoom) pra navegar entre fotos/categorias.
+  // Só é considerado swipe se o gesto nunca virou pinch (2 dedos).
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null)
+  const gestureWasPinchRef = useRef(false)
   const panRef = useRef(pan)
   useEffect(() => { panRef.current = pan }, [pan])
   const imgContainerRef = useRef<HTMLDivElement>(null)
@@ -3454,9 +3458,15 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
     if (count === 1) {
       // Inicia drag — só pan'ará no move se zoom > 1
       dragRef.current = { panX: panRef.current.x, panY: panRef.current.y, startX: e.clientX, startY: e.clientY }
+      // Candidato a swipe (navegação entre fotos) — só se confirma no pointerup
+      // se o zoom continuar <= 1 e o gesto nunca virou pinch.
+      swipeStartRef.current = { x: e.clientX, y: e.clientY }
+      gestureWasPinchRef.current = false
     } else if (count === 2) {
-      // Inicia pinch — cancela qualquer drag em andamento
+      // Inicia pinch — cancela qualquer drag/swipe em andamento
       dragRef.current = null
+      swipeStartRef.current = null
+      gestureWasPinchRef.current = true
       const pts = Array.from(pointersRef.current.values())
       const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
       const midX = (pts[0].x + pts[1].x) / 2
@@ -3515,6 +3525,16 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
       }
     }
     if (count === 0) {
+      // Resolve swipe: só navega se foi um arrasto de 1 dedo, sem zoom ativo
+      // e sem ter virado pinch em algum momento do gesto.
+      if (swipeStartRef.current && zoom <= 1 && !gestureWasPinchRef.current && photos.length > 1) {
+        const dx = e.clientX - swipeStartRef.current.x
+        const dy = e.clientY - swipeStartRef.current.y
+        if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          if (dx > 0) prev(); else next()
+        }
+      }
+      swipeStartRef.current = null
       dragRef.current = null
       setDragging(false)
     }
@@ -3608,7 +3628,12 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
   return createPortal(
     <div className="fixed inset-0 bg-black/95 flex flex-col" style={{ zIndex: 2147483647 }} onClick={onClose}>
       <div className="flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-3 bg-black/40 flex-shrink-0" onClick={e => e.stopPropagation()}>
-        <p className="text-white text-xs sm:text-sm font-medium truncate flex-1 min-w-0">{photo.photo_name}</p>
+        <div className="flex-1 min-w-0">
+          {photo._categoryLabel && (
+            <p className="text-pink-300 text-[10px] sm:text-xs font-semibold uppercase tracking-wide truncate">{photo._categoryLabel}</p>
+          )}
+          <p className="text-white text-xs sm:text-sm font-medium truncate">{photo.photo_name}</p>
+        </div>
 
         {/* Grupo de ações: pode encolher e rolar na horizontal em telas estreitas,
             assim o botão de fechar (fora deste grupo) nunca é cortado no mobile. */}
@@ -3761,10 +3786,11 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, clientName
   const { theme: t } = useTheme()
   const [photosWithUrls, setPhotosWithUrls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  // Guarda categoryId (ou null = sem categoria) em vez de um snapshot de fotos.
-  // Assim ao fechar e reabrir, sempre deriva do photosWithUrls atual — inclui
-  // qualquer blob URL atualizado pela rotação.
-  const [lightbox, setLightbox] = useState<{ categoryId: string | null; index: number } | null>(null)
+  // Guarda apenas o índice GLOBAL (na lista combinada de todas as categorias),
+  // não um snapshot de fotos. Assim ao fechar e reabrir, sempre deriva do
+  // photosWithUrls atual — inclui qualquer blob URL atualizado pela rotação —
+  // e a navegação no carrossel passa naturalmente de uma categoria pra outra.
+  const [lightbox, setLightbox] = useState<{ index: number } | null>(null)
   const [uploadingToCategory, setUploadingToCategory] = useState<string | null>(null)
   const [downloadingAll, setDownloadingAll] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
@@ -3975,6 +4001,19 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, clientName
   const downloadAll = (catPhotos: any[], label: string) =>
     downloadZip([{ label, photos: catPhotos }], label, label)
 
+  // Lista combinada de TODAS as fotos, na ordem das categorias (+ sem categoria
+  // por último), com _categoryLabel marcado em cada foto. Usada pro lightbox
+  // navegar em carrossel único, passando de uma categoria pra outra.
+  const allPhotosOrdered = (): any[] => {
+    const combined: any[] = []
+    photoCategories.forEach(cat => {
+      const catPhotos = photosByCat[cat.id] || []
+      catPhotos.forEach(p => combined.push({ ...p, _categoryLabel: cat.title }))
+    })
+    uncategorized.forEach(p => combined.push({ ...p, _categoryLabel: 'Sem categoria' }))
+    return combined
+  }
+
   const downloadAllCategories = () => {
     const groups: { label: string; photos: any[] }[] = []
     photoCategories.forEach(cat => {
@@ -4003,7 +4042,12 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, clientName
         <Btn variant="outline" size="sm" onClick={() => downloadAll(catPhotos, label)} loading={downloadingAll === label} disabled={downloadingAll !== null}>
           <Download className="h-3.5 w-3.5" /> ZIP
         </Btn>
-        <Btn variant="primary" size="sm" onClick={() => setLightbox({ categoryId, index: 0 })}>
+        <Btn variant="primary" size="sm" onClick={() => {
+          if (catPhotos.length === 0) return
+          const combined = allPhotosOrdered()
+          const startIdx = combined.findIndex(p => p.id === catPhotos[0].id)
+          setLightbox({ index: startIdx >= 0 ? startIdx : 0 })
+        }}>
           <Eye className="h-3.5 w-3.5" /> Ver Fotos
         </Btn>
       </div>
@@ -4083,13 +4127,14 @@ function PhotosView({ clientId, photos, photoCategories, clientToken, clientName
       {lightbox && (() => {
         // Deriva as fotos SEMPRE do photosWithUrls atual (nunca de um snapshot).
         // Assim ao fechar e reabrir, a foto já aparece girada sem recarregar do Drive.
-        const liveCatPhotos = lightbox.categoryId !== null
-          ? (photosByCat[lightbox.categoryId] ?? [])
-          : uncategorized
+        // Combina TODAS as categorias num único carrossel — a navegação passa
+        // de uma categoria pra outra automaticamente.
+        const liveAllPhotos = allPhotosOrdered()
+        if (liveAllPhotos.length === 0) return null
         return (
           <PhotoLightbox
-            photos={liveCatPhotos}
-            initialIndex={lightbox.index}
+            photos={liveAllPhotos}
+            initialIndex={Math.min(lightbox.index, liveAllPhotos.length - 1)}
             onClose={() => setLightbox(null)}
             onDelete={handleDeletePhoto}
             onPhotoRotated={(photoId, blobUrl, newDriveFileId) => {
@@ -5055,7 +5100,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
           {/* Approve buttons — desktop inline */}
           {client.status === 'photos_submitted' && (
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexShrink: 0 }} className="hidden sm:flex">
+            <div style={{ marginLeft: 'auto', gap: 8, flexShrink: 0 }} className="hidden sm:flex">
               <Btn variant="outline" size="sm" onClick={() => setShowRejection(true)} className="border-amber-300 text-amber-700 hover:bg-amber-50">
                 <AlertTriangle className="h-3.5 w-3.5" /> Solicitar Ajustes
               </Btn>
@@ -5066,7 +5111,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           )}
           {/* Botões Foto IA — desktop */}
           {hasAiPhotoToReview && (
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexShrink: 0 }} className="hidden sm:flex">
+            <div style={{ marginLeft: 'auto', gap: 8, flexShrink: 0 }} className="hidden sm:flex">
               <Btn variant="outline" size="sm" onClick={() => setShowAiPhotoRejectionModal(true)} className="border-amber-300 text-amber-700 hover:bg-amber-50">
                 <AlertTriangle className="h-3.5 w-3.5" /> Solicitar Nova Foto
               </Btn>
@@ -5344,13 +5389,13 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               />
 
               {/* Prazo */}
-              <div className="rounded-xl p-5" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
-                <div className="flex items-center justify-between mb-4">
+              <div className="rounded-xl p-4 sm:p-5 min-w-0" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+                <div className="flex items-center justify-between mb-4 gap-2">
                   <h3 className="font-semibold" style={{ color: t.text }}>Prazo</h3>
                   {!editingDeadline && (
-                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline?.no_deadline ? '' : (deadline?.deadline_date ?? '')); setEditingDeadline(true) }}>
+                    <Btn variant="outline" size="sm" onClick={() => { setDeadlineInput(deadline?.no_deadline ? '' : (deadline?.deadline_date ?? '')); setEditingDeadline(true) }} className="flex-shrink-0">
                       <Calendar className="h-3.5 w-3.5" />
-                      {deadline?.deadline_date && !deadline?.no_deadline ? 'Editar' : 'Definir prazo'}
+                      <span className="whitespace-nowrap">{deadline?.deadline_date && !deadline?.no_deadline ? 'Editar' : 'Definir prazo'}</span>
                     </Btn>
                   )}
                 </div>
@@ -5365,12 +5410,14 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
 
                 {editingDeadline ? (
                   // Formulário de edição/inserção
-                  <div className="space-y-2">
-                    <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
-                    <div className="flex gap-2">
-                      <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline}><Check className="h-3.5 w-3.5" /> Salvar</Btn>
-                      <Btn variant="outline" size="sm" onClick={handleSetNoDeadline} loading={savingDeadline}>Sem prazo</Btn>
-                      <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)}>Cancelar</Btn>
+                  <div className="space-y-2 min-w-0">
+                    <input type="date" value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)} className="w-full min-w-0 box-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
+                    <div className="flex flex-col sm:flex-row gap-2 min-w-0">
+                      <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline} className="w-full sm:w-auto justify-center"><Check className="h-3.5 w-3.5" /> Salvar</Btn>
+                      <div className="flex gap-2 sm:contents">
+                        <Btn variant="outline" size="sm" onClick={handleSetNoDeadline} loading={savingDeadline} className="flex-1 sm:flex-none justify-center">Sem prazo</Btn>
+                        <Btn variant="outline" size="sm" onClick={() => setEditingDeadline(false)} className="flex-1 sm:flex-none justify-center">Cancelar</Btn>
+                      </div>
                     </div>
                   </div>
                 ) : deadline?.no_deadline ? (

@@ -586,6 +586,46 @@ export function PhotoGallery({ photos, onDownloadAll, onRotate }: PhotoGalleryPr
     if (dragImageRef.current) dragImageRef.current.style.transition = 'transform 0.2s ease-out'
   }
 
+  // ─── TOUCH: swipe pra navegar (zoom<=1) + pan de 1 dedo (zoom>1) ─────────
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null)
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return
+    const t = e.touches[0]
+    touchStartRef.current = { x: t.clientX, y: t.clientY }
+    if (zoom > 1) {
+      isDraggingRef.current = true
+      dragStartRef.current = { x: t.clientX - positionRef.current.x, y: t.clientY - positionRef.current.y }
+      if (dragImageRef.current) dragImageRef.current.style.transition = 'none'
+    }
+  }
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1 || !isDraggingRef.current || zoom <= 1) return
+    const t = e.touches[0]
+    positionRef.current = {
+      x: t.clientX - dragStartRef.current.x,
+      y: t.clientY - dragStartRef.current.y,
+    }
+    applyDragTransform(zoom)
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    const start = touchStartRef.current
+    touchStartRef.current = null
+    if (isDraggingRef.current) {
+      isDraggingRef.current = false
+      if (dragImageRef.current) dragImageRef.current.style.transition = 'transform 0.2s ease-out'
+    }
+    if (!start || zoom > 1 || photos.length <= 1) return
+    const t = e.changedTouches[0]
+    const dx = t.clientX - start.x
+    const dy = t.clientY - start.y
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      if (dx > 0) handlePrevious(); else handleNext()
+    }
+  }
+
   // ─── THUMBNAILS VISÍVEIS NO CARROSSEL ─────────────────────────────────────
   const visibleThumbnailIndices = useMemo(() => {
     if (selectedIndex === null) return []
@@ -645,11 +685,11 @@ export function PhotoGallery({ photos, onDownloadAll, onRotate }: PhotoGalleryPr
     <>
       {/* ── Header com estatísticas ── */}
       <div className="sticky top-0 z-10 bg-white border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">Galeria de Fotos</h2>
-              <p className="text-sm text-gray-600 mt-1">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
+            <div className="min-w-0">
+              <h2 className="text-lg sm:text-2xl font-bold text-gray-900 truncate">Galeria de Fotos</h2>
+              <p className="text-xs sm:text-sm text-gray-600 mt-0.5 sm:mt-1">
                 {photos.length} {photos.length === 1 ? 'foto' : 'fotos'} · {formatFileSize(totalSize)}
                 {heicCount > 0 && ` · ${heicCount} HEIC`}
               </p>
@@ -657,9 +697,9 @@ export function PhotoGallery({ photos, onDownloadAll, onRotate }: PhotoGalleryPr
             {onDownloadAll && photos.length > 0 && (
               <button
                 onClick={onDownloadAll}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex-shrink-0 text-sm sm:text-base whitespace-nowrap"
               >
-                <Package className="h-5 w-5" />
+                <Package className="h-4 w-4 sm:h-5 sm:w-5" />
                 <span>Baixar Todas</span>
               </button>
             )}
@@ -668,7 +708,7 @@ export function PhotoGallery({ photos, onDownloadAll, onRotate }: PhotoGalleryPr
       </div>
 
       {/* ── Grid de fotos ── */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-8">
         {photos.length === 0 ? (
           <div className="text-center py-16">
             <Camera className="h-16 w-16 text-gray-300 mx-auto mb-4" />
@@ -762,6 +802,9 @@ export function PhotoGallery({ photos, onDownloadAll, onRotate }: PhotoGalleryPr
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
               style={{
                 position: 'absolute',
                 top: 56,   // reserva espaço da top bar
