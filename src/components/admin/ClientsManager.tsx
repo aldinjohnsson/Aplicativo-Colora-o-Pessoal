@@ -5417,7 +5417,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                         do seletor. O wrapper garante que ele nunca "vaze" pra fora do
                         card, mesmo se isso acontecer — sem mexer no appearance nativo
                         (senão o ícone/placeholder do seletor de data some no iOS). */}
-                    <div className="w-full min-w-0 overflow-hidden rounded-lg" style={{ border: `1px solid ${t.border}` }}>
+                    <div className="relative w-full min-w-0 overflow-hidden rounded-lg" style={{ border: `1px solid ${t.border}` }}>
                       <input
                         type="date"
                         value={deadlineInput}
@@ -5433,8 +5433,23 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                           boxSizing: 'border-box',
                           display: 'block',
                           padding: '8px 12px',
+                          position: 'relative',
+                          zIndex: 0,
                         }}
                       />
+                      {/* Placeholder visual: iOS/WebKit não mostra ícone nem texto no
+                          input[type=date] vazio, então sem isso o campo parece em
+                          branco/quebrado. pointer-events:none deixa o toque passar
+                          direto pro input abaixo, que abre o seletor nativo. */}
+                      {!deadlineInput && (
+                        <div
+                          className="absolute inset-0 flex items-center gap-2 text-sm pointer-events-none"
+                          style={{ padding: '8px 12px', color: t.text3, zIndex: 1 }}
+                        >
+                          <Calendar className="h-3.5 w-3.5 flex-shrink-0" />
+                          <span>Toque para escolher a data</span>
+                        </div>
+                      )}
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2 min-w-0">
                       <Btn size="sm" onClick={handleSaveDeadline} loading={savingDeadline} className="w-full sm:w-auto justify-center"><Check className="h-3.5 w-3.5" /> Salvar</Btn>
