@@ -53,11 +53,25 @@ export function ClientPortal() {
 
   useEffect(() => {
     if (!token) { setError('invalid-token'); setLoading(false); return }
-    clientService.getPortalData(token).then(d => {
+    let cancelled = false
+    ;(async () => {
+      // Checa o prazo ANTES de carregar o resto do portal — se venceu, nem
+      // vale a pena buscar contrato/formulário/fotos. Se a checagem falhar
+      // por qualquer motivo, segue o fluxo normal (não trava a cliente).
+      const expiration = await clientService.checkExpiration(token)
+      if (cancelled) return
+      if (expiration?.expired) {
+        setError('expired')
+        setLoading(false)
+        return
+      }
+      const d = await clientService.getPortalData(token)
+      if (cancelled) return
       if (!d) setError('invalid-link')
       else setData(d)
       setLoading(false)
-    })
+    })()
+    return () => { cancelled = true }
   }, [token])
 
   const reload = async () => {
@@ -113,6 +127,21 @@ function ClientPortalInner({
       </div>
     </div>
   )
+
+  if (error === 'expired') {
+    return (
+      <div className="min-h-screen bg-[var(--client-accent-soft)] flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-8 max-w-sm w-full text-center">
+          <Clock className="h-12 w-12 text-amber-400 mx-auto mb-4" />
+          <h2 className="font-semibold text-gray-900 mb-2">Prazo expirado</h2>
+          <p className="text-sm text-gray-500">
+            O prazo para realizar a análise expirou conforme o contrato.
+            Entre em contato com a consultora para adquirir novamente a análise.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   if (error || !data) {
     const errorMessage =

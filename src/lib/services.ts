@@ -50,6 +50,12 @@ export interface Plan {
   name: string
   description: string | null
   deadline_days: number
+  /**
+   * Prazo (em dias corridos) que a cliente tem, a partir da assinatura do
+   * contrato, para concluir a análise antes do link expirar. NULL = sem
+   * expiração (comportamento antigo, padrão pra planos já existentes).
+   */
+  analysis_expiration_days: number | null
   is_active: boolean
   created_at: string
 }
@@ -107,6 +113,19 @@ export interface Client {
   photos_rejected_at?: string | null
   // ── Arquivamento ──
   is_archived: boolean
+  /**
+   * Por que a cliente está arquivada: 'manual' (admin arquivou manualmente)
+   * ou 'expired' (prazo de análise do plano venceu). NULL = nunca foi
+   * arquivada. O painel só oferece "Reativar com mais prazo" pro caso 'expired'.
+   */
+  archived_reason?: 'manual' | 'expired' | null
+  /**
+   * Data-limite calculada pra ESTA cliente (assinatura do contrato + prazo
+   * do plano no momento da assinatura). NULL enquanto o contrato não foi
+   * assinado, se o plano não tem prazo de expiração, ou pra clientes antigas
+   * ainda não recalculadas (ver check_client_expiration no backend).
+   */
+  analysis_expires_at?: string | null
 }
 
 
@@ -529,8 +548,8 @@ export const adminService = {
         'ai_info_tags, step_contract, step_form, step_photos, ai_reference_photos, ' +
         'form_rejection_reason, form_rejected_at, photos_rejection_reason, photos_rejected_at, ' +
         'admin_id, stage_timestamps, drive_folder_id, drive_purged_at, contrast_layout, ' +
-        'is_archived, whatsapp_opt_in, whatsapp_opt_in_at, ' +
-        'plan:plans(id, name, deadline_days, is_active, description, created_at)'
+        'is_archived, archived_reason, analysis_expires_at, whatsapp_opt_in, whatsapp_opt_in_at, ' +
+        'plan:plans(id, name, deadline_days, analysis_expiration_days, is_active, description, created_at)'
       )
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -602,10 +621,15 @@ export const adminService = {
     if (error) throw error
   },
 
+  /**
+   * Arquivamento manual (pelo admin, sem relação com prazo). `archived_reason`
+   * fica 'manual' pra o painel diferenciar de arquivamento automático por
+   * expiração — só o segundo mostra a opção "Reativar com mais prazo".
+   */
   async archiveClient(id: string): Promise<void> {
     const { error } = await supabase
       .from('clients')
-      .update({ is_archived: true })
+      .update({ is_archived: true, archived_reason: 'manual' })
       .eq('id', id)
     if (error) throw error
   },
@@ -613,7 +637,23 @@ export const adminService = {
   async restoreClient(id: string): Promise<void> {
     const { error } = await supabase
       .from('clients')
-      .update({ is_archived: false })
+      .update({ is_archived: false, archived_reason: null })
+      .eq('id', id)
+    if (error) throw error
+  },
+
+  /**
+   * Reativa uma cliente arquivada por expiração de prazo, concedendo
+   * `extraDays` dias corridos a partir de agora. Difere de `restoreClient`:
+   * além de desarquivar, empurra `analysis_expires_at` pra frente — sem
+   * isso a cliente seria re-arquivada no próximo acesso ao portal (o prazo
+   * antigo continuaria vencido).
+   */
+  async reactivateClient(id: string, extraDays: number): Promise<void> {
+    const newExpiresAt = new Date(Date.now() + extraDays * 24 * 60 * 60 * 1000).toISOString()
+    const { error } = await supabase
+      .from('clients')
+      .update({ is_archived: false, archived_reason: null, analysis_expires_at: newExpiresAt })
       .eq('id', id)
     if (error) throw error
   },
@@ -2039,6 +2079,35 @@ export const adminService = {
 
 export const clientService = {
   /**
+   * Checa se o prazo pra concluir a análise (contrato assinado + prazo do
+   * plano) já venceu. Chamada ANTES de `getPortalData`, pra poder mostrar a
+   * tela de "prazo expirado" sem nem carregar o resto do portal.
+   *
+   * Cobre também clientes antigas (assinadas antes desta feature existir):
+   * a RPC `check_client_expiration` calcula `analysis_expires_at` na hora,
+   * usando `client_contracts.signed_at` + o `analysis_expiration_days`
+   * atual do plano, caso ainda não tenha sido calculado antes.
+   *
+   * Quando expira, a própria RPC já marca `is_archived = true` e
+   * `archived_reason = 'expired'` no banco (side-effect intencional —
+   * assim a cliente aparece arquivada no painel automaticamente).
+   *
+   * Retorna `null` em caso de erro/RPC ausente — nesse caso o portal segue
+   * o fluxo normal (não trava a cliente por causa de uma falha aqui).
+   */
+  async checkExpiration(token: string): Promise<{ expired: boolean; expires_at?: string | null } | null> {
+    try {
+      const { data, error } = await supabase.rpc('check_client_expiration', { p_token: token })
+      if (error) throw error
+      if (!data || data.error) return null
+      return { expired: !!data.expired, expires_at: data.expires_at ?? null }
+    } catch (e) {
+      console.warn('Erro ao checar expiração do prazo (não crítico):', e)
+      return null
+    }
+  },
+
+  /**
    * Carrega dados do portal.
    *
    * Além do RPC principal, chama `get_client_portal_extras` para trazer:
@@ -2207,6 +2276,16 @@ export const clientService = {
     const { data, error } = await supabase.rpc('sign_client_contract', { p_token: token })
     if (error) throw error
     if (data?.error) throw new Error(data.error)
+
+    // Calcula (uma única vez) o prazo-limite pra concluir a análise, com base
+    // no `analysis_expiration_days` do plano no momento da assinatura. Não
+    // bloqueia o fluxo se a função ainda não existir no banco ou falhar —
+    // mesmo padrão "não crítico" usado no resto deste arquivo.
+    try {
+      await supabase.rpc('set_client_analysis_deadline', { p_token: token })
+    } catch (e) {
+      console.warn('Erro ao calcular prazo de expiração da análise (não crítico):', e)
+    }
 
     const signedAt = meta?.signedAt ?? new Date().toISOString()
 

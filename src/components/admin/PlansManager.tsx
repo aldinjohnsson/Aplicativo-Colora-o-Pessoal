@@ -85,13 +85,42 @@ const AutoTextarea = React.forwardRef<HTMLTextAreaElement, AutoTextareaProps>(
 )
 AutoTextarea.displayName = 'AutoTextarea'
 
+// ── Campo de prazo de expiração da análise ─────────────────────────────
+//
+// Controla `plans.analysis_expiration_days`: quantos dias corridos, a
+// partir da assinatura do contrato, a cliente tem pra concluir a análise
+// antes do link expirar. NULL = sem expiração (padrão, comportamento antigo).
+function ExpirationField({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
+  const enabled = value !== null
+  return (
+    <div className="border border-gray-200 rounded-lg p-3 space-y-2">
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" checked={enabled}
+          onChange={e => onChange(e.target.checked ? 90 : null)}
+          className="h-4 w-4 text-rose-500 rounded focus:ring-rose-400" />
+        <span className="text-sm font-medium text-gray-700">Link expira após um prazo</span>
+      </label>
+      {enabled ? (
+        <div className="flex items-center gap-2 pl-6">
+          <input type="number" min={1} max={730} value={value}
+            onChange={e => onChange(parseInt(e.target.value) || 1)}
+            className="w-24 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
+          <span className="text-sm text-gray-500">dias corridos após o cliente assinar o contrato</span>
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400 pl-6">Cliente pode concluir a análise a qualquer momento, sem prazo final.</p>
+      )}
+    </div>
+  )
+}
+
 
 
 function PlansList() {
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
-  const [newPlan, setNewPlan] = useState({ name: '', description: '', deadline_days: 5 })
+  const [newPlan, setNewPlan] = useState<{ name: string; description: string; deadline_days: number; analysis_expiration_days: number | null }>({ name: '', description: '', deadline_days: 5, analysis_expiration_days: null })
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [cloningId, setCloningId] = useState<string | null>(null)
   const navigate = useNavigate()
@@ -124,7 +153,7 @@ function PlansList() {
     try {
       const plan = await adminService.createPlan({ ...newPlan, is_active: true })
       setCreating(false)
-      setNewPlan({ name: '', description: '', deadline_days: 5 })
+      setNewPlan({ name: '', description: '', deadline_days: 5, analysis_expiration_days: null })
       navigate(`/admin/plans/${plan.id}`)
     } catch (e: any) { alert(e.message) }
   }
@@ -188,6 +217,10 @@ function PlansList() {
               placeholder="Breve descrição do plano"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
           </div>
+          <ExpirationField
+            value={newPlan.analysis_expiration_days}
+            onChange={v => setNewPlan({ ...newPlan, analysis_expiration_days: v })}
+          />
           <div className="flex gap-2">
             <Btn onClick={handleCreate}>Criar Plano</Btn>
             <Btn variant="outline" onClick={() => setCreating(false)}>Cancelar</Btn>
@@ -214,6 +247,11 @@ function PlansList() {
                     <span className={`text-xs px-2 py-0.5 rounded-full ${plan.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                       {plan.is_active ? 'Ativo' : 'Inativo'}
                     </span>
+                    {plan.analysis_expiration_days != null && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                        Link expira em {plan.analysis_expiration_days}d
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-gray-500">{plan.deadline_days} dias úteis{plan.description ? ` · ${plan.description}` : ''}</p>
                 </div>
@@ -309,7 +347,13 @@ function PlanEditor() {
 // ── General Tab ──────────────────────────────────────────────
 
 function GeneralTab({ plan, onUpdate }: { plan: Plan; onUpdate: (p: Plan) => void }) {
-  const [form, setForm] = useState({ name: plan.name, description: plan.description || '', deadline_days: plan.deadline_days, is_active: plan.is_active })
+  const [form, setForm] = useState({
+    name: plan.name,
+    description: plan.description || '',
+    deadline_days: plan.deadline_days,
+    analysis_expiration_days: plan.analysis_expiration_days ?? null,
+    is_active: plan.is_active,
+  })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
@@ -344,6 +388,10 @@ function GeneralTab({ plan, onUpdate }: { plan: Plan; onUpdate: (p: Plan) => voi
           placeholder="Breve descrição"
           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
       </div>
+      <ExpirationField
+        value={form.analysis_expiration_days}
+        onChange={v => setForm({ ...form, analysis_expiration_days: v })}
+      />
       <label className="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })}
           className="h-4 w-4 text-rose-500 rounded focus:ring-rose-400" />

@@ -1600,8 +1600,9 @@ function KanbanSidebar({
 }
 
 // ─── Archive View ─────────────────────────────────────────────────────────
-function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
-  clients: Client[]; theme: Theme; onRestore: (id: string) => void; onDelete: (id: string) => void
+function ArchiveView({ clients, theme: t, onRestore, onReactivate, onDelete }: {
+  clients: Client[]; theme: Theme; onRestore: (id: string) => void
+  onReactivate: (client: Client) => void; onDelete: (id: string) => void
 }) {
   if (clients.length === 0) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, color: t.text3 }}>
@@ -1621,8 +1622,9 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
         {clients.map(client => {
           const [bg, fg] = getAvatarColor(client.full_name)
           const cfg = STATUSES[client.status]
+          const isExpired = client.archived_reason === 'expired'
           return (
-            <div key={client.id} style={{ background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: 12, padding: '14px 16px', opacity: 0.8 }}>
+            <div key={client.id} style={{ background: t.cardBg, border: `1px solid ${isExpired ? '#fcd34d' : t.border}`, borderRadius: 12, padding: '14px 16px', opacity: 0.9 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: '50%', background: bg, color: fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700 }}>
                   {getInitials(client.full_name)}
@@ -1633,12 +1635,23 @@ function ArchiveView({ clients, theme: t, onRestore, onDelete }: {
                 </div>
                 <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 20, background: cfg?.bg, color: cfg?.textColor, fontWeight: 600 }}>{cfg?.short}</span>
               </div>
+              {isExpired && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 10, fontSize: 11, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '4px 8px' }}>
+                  <Clock size={11} /> Prazo expirado — link bloqueado pro cliente
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => onRestore(client.id)}
-                  style={{ flex: 1, padding: 6, borderRadius: 8, border: `1px solid ${t.border}`, background: 'none', cursor: 'pointer', fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
-                  onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
-                  onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
-                ><ArchiveRestore size={13} /> Restaurar</button>
+                {isExpired ? (
+                  <button onClick={() => onReactivate(client)}
+                    style={{ flex: 1, padding: 6, borderRadius: 8, border: '1px solid #fcd34d', background: '#fffbeb', cursor: 'pointer', fontSize: 12, color: '#b45309', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                  ><ArchiveRestore size={13} /> Reativar</button>
+                ) : (
+                  <button onClick={() => onRestore(client.id)}
+                    style={{ flex: 1, padding: 6, borderRadius: 8, border: `1px solid ${t.border}`, background: 'none', cursor: 'pointer', fontSize: 12, color: t.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                    onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = t.surface2}
+                    onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'none'}
+                  ><ArchiveRestore size={13} /> Restaurar</button>
+                )}
                 <button onClick={() => onDelete(client.id)}
                   style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #fca5a5', background: 'none', cursor: 'pointer', fontSize: 12, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 6 }}
                   onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = '#fee2e2'}
@@ -1755,6 +1768,114 @@ function DragConfirmModal({
               }} />
             )}
             {state.infoOnly ? 'Entendido' : state.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Reactivate Modal (prazo expirado → concede mais dias) ────────────────
+//
+// Só aparece pra clientes com archived_reason='expired'. Diferente do botão
+// "Restaurar" simples (que só desarquiva), este pede quantos dias a mais
+// conceder — necessário porque o `analysis_expires_at` antigo continua no
+// passado, e sem empurrá-lo pra frente a cliente seria re-arquivada no
+// próximo acesso ao portal.
+function ReactivateModal({
+  client, onClose, onConfirm, theme: t,
+}: {
+  client: Client; onClose: () => void; onConfirm: (id: string, extraDays: number) => Promise<void>; theme: Theme
+}) {
+  const [extraDays, setExtraDays] = useState(30)
+  const [loading, setLoading] = useState(false)
+
+  const handleConfirm = async () => {
+    if (extraDays < 1) return
+    setLoading(true)
+    try { await onConfirm(client.id, extraDays) } finally { setLoading(false); onClose() }
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+      onClick={e => { if (e.target === e.currentTarget && !loading) onClose() }}
+    >
+      <div style={{
+        background: t.surface, borderRadius: 18,
+        border: `1px solid ${t.border}`,
+        boxShadow: '0 24px 64px rgba(0,0,0,0.35)',
+        width: '100%', maxWidth: 420, padding: '28px 28px 24px',
+        display: 'flex', flexDirection: 'column', gap: 20,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+            background: '#fef3c7', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <ArchiveRestore size={22} color="#b45309" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: t.text, lineHeight: 1.3 }}>
+              Reativar {client.full_name}
+            </p>
+            <p style={{ margin: '8px 0 0', fontSize: 13, color: t.text2, lineHeight: 1.6 }}>
+              O prazo do plano venceu e o link foi arquivado automaticamente.
+              Quantos dias a mais você quer conceder, a partir de hoje, pra ela concluir a análise?
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: t.text3, marginBottom: 6 }}>
+            Dias adicionais
+          </label>
+          <input
+            type="number" min={1} max={730} value={extraDays} autoFocus
+            onChange={e => setExtraDays(parseInt(e.target.value) || 1)}
+            style={{
+              width: '100%', padding: '10px 12px', borderRadius: 10,
+              border: `1px solid ${t.border}`, background: t.surface2, color: t.text,
+              fontSize: 14,
+            }}
+          />
+          <p style={{ margin: '6px 0 0', fontSize: 11, color: t.text3 }}>
+            Novo prazo final: {new Date(Date.now() + extraDays * 86400000).toLocaleDateString('pt-BR')}
+          </p>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onClose} disabled={loading}
+            style={{
+              padding: '10px 20px', borderRadius: 10,
+              border: `1px solid ${t.border}`, background: 'none',
+              cursor: 'pointer', fontSize: 13, fontWeight: 500, color: t.text2,
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleConfirm} disabled={loading || extraDays < 1}
+            style={{
+              padding: '10px 22px', borderRadius: 10, border: 'none',
+              background: '#b45309', color: 'white', cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
+              opacity: loading ? 0.75 : 1,
+            }}
+          >
+            {loading && (
+              <div className="animate-spin" style={{
+                width: 14, height: 14,
+                border: '2px solid rgba(255,255,255,0.35)',
+                borderTopColor: 'white', borderRadius: '50%',
+              }} />
+            )}
+            Reativar
           </button>
         </div>
       </div>
@@ -2175,6 +2296,25 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
       alert('Erro ao restaurar cliente. Tente novamente.')
     }
   }, [])
+
+  // Reativação de cliente arquivada por expiração de prazo — diferente de
+  // handleRestore: além de desarquivar, empurra `analysis_expires_at` pra
+  // frente (senão a próxima abertura do portal a arquivaria de novo).
+  const [reactivatingClient, setReactivatingClient] = useState<Client | null>(null)
+  const handleReactivate = useCallback(async (id: string, extraDays: number) => {
+    const newExpiresAt = new Date(Date.now() + extraDays * 86400000).toISOString()
+    setClients(prev => prev.map(c => c.id === id
+      ? { ...c, is_archived: false, archived_reason: null, analysis_expires_at: newExpiresAt }
+      : c))
+    try {
+      await adminService.reactivateClient(id, extraDays)
+    } catch (e) {
+      setClients(prev => prev.map(c => c.id === id
+        ? { ...c, is_archived: true, archived_reason: 'expired' }
+        : c))
+      alert('Erro ao reativar cliente. Tente novamente.')
+    }
+  }, [])
   const handleStar = useCallback((id: string) => setStarredIds(prev => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s }), [])
   const handleDelete = async (id: string) => {
     const client = clients.find(c => c.id === id)
@@ -2414,6 +2554,14 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         <DragConfirmModal
           state={confirmState}
           onClose={() => setConfirmState(null)}
+          theme={t}
+        />
+      )}
+      {reactivatingClient && (
+        <ReactivateModal
+          client={reactivatingClient}
+          onClose={() => setReactivatingClient(null)}
+          onConfirm={handleReactivate}
           theme={t}
         />
       )}
@@ -2672,7 +2820,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {isArchiveView && (
             <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', paddingBottom: 'calc(env(safe-area-inset-bottom) + 80px)' } as React.CSSProperties}>
-              <ArchiveView clients={archivedClients} theme={t} onRestore={handleRestore} onDelete={handleDelete} />
+              <ArchiveView clients={archivedClients} theme={t} onRestore={handleRestore} onReactivate={setReactivatingClient} onDelete={handleDelete} />
             </div>
           )}
 
