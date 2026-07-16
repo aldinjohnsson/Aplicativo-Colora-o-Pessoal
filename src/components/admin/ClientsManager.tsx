@@ -5903,6 +5903,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   initial={contrastLayout}
                   onClose={() => setContrastDialogOpen(false)}
                   onSave={handleSaveContrastLayout}
+                  onSaveToResults={file => handleUploadResultFile(file, 'photo')}
                 />
               )}
 
@@ -5921,6 +5922,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   initial={irisAnalysis}
                   onClose={() => setIrisDialogOpen(false)}
                   onSave={handleSaveIrisAnalysis}
+                  onSaveToResults={file => handleUploadResultFile(file, 'photo')}
                   templates={irisTemplates}
                   onSaveTemplate={async (payload) => {
                     const created = await adminService.createIrisTextTemplate({

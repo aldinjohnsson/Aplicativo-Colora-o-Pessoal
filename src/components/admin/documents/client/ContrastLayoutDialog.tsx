@@ -42,6 +42,8 @@ interface Props {
   onClose:    () => void
   /** Recebe o estado novo + a string formatada ("Alto (8 a 10)"). */
   onSave:     (data: ContrastLayoutData, formatted: string) => Promise<void>
+  /** Opcional: envia o PNG gerado direto pra aba Resultado (client_result_files). */
+  onSaveToResults?: (file: File) => Promise<void>
 }
 
 const LABEL_OPTIONS = ['baixo', 'médio baixo', 'médio', 'médio alto', 'alto'] as const
@@ -192,13 +194,14 @@ function drawLayout(
     ctx.restore()
   }
 
-  drawPhoto(lx, photoY, photoW, photoH, true)
-  drawPhoto(rx, photoY, photoW, photoH, false)
+  // Colorida à esquerda, preto e branco à direita.
+  drawPhoto(lx, photoY, photoW, photoH, false)
+  drawPhoto(rx, photoY, photoW, photoH, true)
 
   // Labels — fonte um pouco maior (24 vs 22) pra equilibrar com fotos maiores
   ctx.fillStyle = '#777'; ctx.font = '400 24px Helvetica,Arial,sans-serif'; ctx.textAlign = 'center'
-  ctx.fillText('Preto e branco', lx + photoW / 2, photoY + photoH + 32)
-  ctx.fillText('Colorida',       rx + photoW / 2, photoY + photoH + 32)
+  ctx.fillText('Colorida',       lx + photoW / 2, photoY + photoH + 32)
+  ctx.fillText('Preto e branco', rx + photoW / 2, photoY + photoH + 32)
 }
 
 // ── Btn ────────────────────────────────────────────────────────────────
@@ -218,7 +221,7 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 // ── Component ──────────────────────────────────────────────────────────
 
 export function ContrastLayoutDialog({
-  clientId, clientName, initial = null, onClose, onSave,
+  clientId, clientName, initial = null, onClose, onSave, onSaveToResults,
 }: Props) {
   const [step, setStep]                 = useState<'category' | 'pick' | 'edit'>(initial?.photoId ? 'edit' : 'category')
   const [photos, setPhotos]             = useState<ClientPhoto[]>([])
@@ -241,6 +244,10 @@ export function ContrastLayoutDialog({
   const [saving, setSaving]         = useState(false)
   const [saveError, setSaveError]   = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
+
+  const [savingToResults, setSavingToResults] = useState(false)
+  const [resultsError, setResultsError]       = useState<string | null>(null)
+  const [savedToResults, setSavedToResults]   = useState(false)
 
   // Ref para o objectURL da foto — evita taint de canvas por CORS
   const objectUrlRef = useRef<string | null>(null)
@@ -398,6 +405,38 @@ export function ContrastLayoutDialog({
     a.download = `layout-contraste-${clientName.toLowerCase().replace(/\s+/g, '-')}.png`
     a.href = canvasRef.current.toDataURL('image/png')
     a.click()
+  }
+
+  // ── Salvar em Resultados (client_result_files) ────────────────────
+  //
+  // Gera o PNG do canvas e manda pro caller (que faz upload via
+  // adminService.uploadResultFile) — o arquivo aparece direto na aba
+  // Resultado, junto das outras fotos.
+
+  const handleSaveToResults = async () => {
+    if (!canvasRef.current || !onSaveToResults) return
+    setSavingToResults(true)
+    setResultsError(null)
+    try {
+      const blob: Blob = await new Promise((resolve, reject) => {
+        canvasRef.current!.toBlob(
+          b => (b ? resolve(b) : reject(new Error('Falha ao gerar imagem'))),
+          'image/png',
+        )
+      })
+      const file = new File(
+        [blob],
+        `layout-contraste-${clientName.toLowerCase().replace(/\s+/g, '-')}.png`,
+        { type: 'image/png' },
+      )
+      await onSaveToResults(file)
+      setSavedToResults(true)
+      setTimeout(() => setSavedToResults(false), 2500)
+    } catch (e: any) {
+      setResultsError(e?.message || 'Erro ao salvar em Resultados.')
+    } finally {
+      setSavingToResults(false)
+    }
   }
 
   // ── Salvar (devolve ao caller) ───────────────────────────────────
@@ -622,6 +661,20 @@ export function ContrastLayoutDialog({
             <p className="text-sm text-green-700">Salvo! Fechando…</p>
           </div>
         )}
+
+        {resultsError && (
+          <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-red-700">{resultsError}</p>
+          </div>
+        )}
+
+        {savedToResults && (
+          <div className="mt-3 bg-green-50 border border-green-200 rounded-xl px-4 py-2 flex items-center gap-2">
+            <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+            <p className="text-sm text-green-700">Imagem enviada para a aba Resultado.</p>
+          </div>
+        )}
       </div>
     </>
   )
@@ -631,6 +684,11 @@ export function ContrastLayoutDialog({
       <Btn variant="outline" onClick={handleDownload} disabled={saving}>
         <Download className="h-3.5 w-3.5" /> Baixar PNG
       </Btn>
+      {onSaveToResults && (
+        <Btn variant="outline" onClick={handleSaveToResults} loading={savingToResults} disabled={savingToResults}>
+          <ImageIcon className="h-3.5 w-3.5" /> {savedToResults ? 'Enviado' : 'Salvar em Resultados'}
+        </Btn>
+      )}
       <Btn variant="primary" onClick={handleSave} loading={saving} disabled={saving || saved}>
         <Save className="h-3.5 w-3.5" /> {saved ? 'Salvo' : 'Salvar'}
       </Btn>

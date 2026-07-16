@@ -16,6 +16,9 @@ import {
   AVAILABLE_FONTS,
   CARD_HEIGHT,
   CARD_WIDTH,
+  CIRCLE_CENTER_X,
+  CIRCLE_CENTER_Y,
+  CIRCLE_RADIUS,
   DEFAULT_CARD_STATE,
   FontFamily,
   IrisAnalysisRecord,
@@ -47,6 +50,8 @@ interface Props {
   initial: IrisAnalysisRecord | null
   onClose: () => void
   onSave: (record: IrisAnalysisRecord) => Promise<void> | void
+  /** Opcional: envia o PNG gerado direto pra aba Resultado (client_result_files). */
+  onSaveToResults?: (file: File) => Promise<void>
   templates?: IrisTextTemplate[]
   onSaveTemplate?: (data: {
     name: string; title: string; body: string
@@ -56,6 +61,18 @@ interface Props {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v))
+}
+
+/** Estado do gesto ativo sobre a foto (arrastar / pinça). */
+interface PhotoDragState {
+  pointers: Map<number, { x: number; y: number }>
+  panStart?: { x: number; y: number; offsetX: number; offsetY: number }
+  pinchStartDist?: number
+  pinchStartZoom?: number
+}
 
 function recordToState(r: IrisAnalysisRecord | null): IrisCardState {
   if (!r) return DEFAULT_CARD_STATE
@@ -137,7 +154,7 @@ function ColorRow(props: { t: any; label: string; value: string; onChange: (v: s
 // ── Componente principal ───────────────────────────────────────────────────
 
 export function IrisAnalysisDialog({
-  clientId, clientName, initial, onClose, onSave,
+  clientId, clientName, initial, onClose, onSave, onSaveToResults,
   templates = [], onSaveTemplate,
 }: Props) {
   const { theme: t } = useTheme()
@@ -168,6 +185,18 @@ export function IrisAnalysisDialog({
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const objectUrlRef     = useRef<string | null>(null)
+
+  const [savingToResults, setSavingToResults] = useState(false)
+  const [resultsError, setResultsError]       = useState<string | null>(null)
+  const [savedToResults, setSavedToResults]   = useState(false)
+
+  // ── Overlay de arrastar/pinçar em cima da foto ──────────────────────
+  const photoOverlayRef = useRef<HTMLDivElement | null>(null)
+  const dragRef = useRef<PhotoDragState>({ pointers: new Map() })
+  // Ref sempre atualizada com o state mais recente — necessária porque os
+  // handlers de pointer/wheel ficam presos ao closure do primeiro render.
+  const stateRef = useRef(state)
+  useEffect(() => { stateRef.current = state }, [state])
 
   // Revoga objectURL ao desmontar
   useEffect(() => () => {
@@ -253,6 +282,88 @@ export function IrisAnalysisDialog({
   }, [state, step])
 
   const patch = useCallback((p: Partial<IrisCardState>) => setState(prev => ({ ...prev, ...p })), [])
+
+  // ── Arrastar (pan) e pinçar/scroll (zoom) direto em cima da foto ────
+  //
+  // A área interativa é um overlay circular posicionado por cima do círculo
+  // desenhado no canvas (mesma geometria de CIRCLE_CENTER_X/Y/RADIUS).
+  // 1 dedo/mouse = arrasta (offsetX/offsetY); 2 dedos = pinça pro zoom.
+  // Zoom fica ancorado no centro do círculo (mesmo comportamento do slider).
+
+  const getScaleFactor = () => {
+    const canvas = previewCanvasRef.current
+    if (!canvas) return 1
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width) return 1
+    return CARD_WIDTH / rect.width
+  }
+
+  const handlePhotoPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const el = photoOverlayRef.current
+    if (el) { try { el.setPointerCapture(e.pointerId) } catch { /* ignore */ } }
+    const d = dragRef.current
+    d.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (d.pointers.size === 1) {
+      d.panStart = { x: e.clientX, y: e.clientY, offsetX: stateRef.current.offsetX, offsetY: stateRef.current.offsetY }
+    } else if (d.pointers.size === 2) {
+      const [a, b] = Array.from(d.pointers.values())
+      d.pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y)
+      d.pinchStartZoom = stateRef.current.zoom
+      d.panStart = undefined
+    }
+  }, [])
+
+  const handlePhotoPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (!d.pointers.has(e.pointerId)) return
+    d.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (d.pointers.size === 1 && d.panStart) {
+      const scaleFactor = getScaleFactor()
+      const dx = (e.clientX - d.panStart.x) * scaleFactor
+      const dy = (e.clientY - d.panStart.y) * scaleFactor
+      patch({
+        offsetX: clamp(d.panStart.offsetX + dx, -250, 250),
+        offsetY: clamp(d.panStart.offsetY + dy, -250, 250),
+      })
+    } else if (d.pointers.size === 2 && d.pinchStartDist) {
+      const [a, b] = Array.from(d.pointers.values())
+      const dist = Math.hypot(a.x - b.x, a.y - b.y)
+      const ratio = dist / d.pinchStartDist
+      patch({ zoom: clamp((d.pinchStartZoom ?? stateRef.current.zoom) * ratio, 0.5, 3) })
+    }
+  }, [patch])
+
+  const handlePhotoPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    d.pointers.delete(e.pointerId)
+    if (d.pointers.size < 2) d.pinchStartDist = undefined
+    if (d.pointers.size === 1) {
+      // Voltou de pinça pra 1 dedo só: reinicia o pan a partir da posição
+      // atual pra não dar salto.
+      const [remaining] = Array.from(d.pointers.values())
+      d.panStart = { x: remaining.x, y: remaining.y, offsetX: stateRef.current.offsetX, offsetY: stateRef.current.offsetY }
+    } else if (d.pointers.size === 0) {
+      d.panStart = undefined
+    }
+  }, [])
+
+  // Wheel/scroll pra zoom — precisa de listener nativo (não-passivo) porque
+  // o React registra onWheel como passive por padrão e preventDefault()
+  // não funcionaria pra bloquear o scroll da página por trás do modal.
+  useEffect(() => {
+    const el = photoOverlayRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const factor = Math.exp(-e.deltaY * 0.0015)
+      patch({ zoom: clamp(stateRef.current.zoom * factor, 0.5, 3) })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [patch, step])
 
   // ── Seleciona foto da galeria ──────────────────────────────────────
   const selectPhoto = async (photo: ClientPhoto) => {
@@ -349,6 +460,33 @@ export function IrisAnalysisDialog({
       setSaveError(e?.message || 'Erro ao salvar.')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // ── Salvar em Resultados (client_result_files) ───────────────────────
+  //
+  // Renderiza o card em PNG e manda pro caller (que faz upload via
+  // adminService.uploadResultFile) — aparece direto na aba Resultado.
+  const handleSaveToResults = async () => {
+    if (!onSaveToResults) return
+    setSavingToResults(true)
+    setResultsError(null)
+    try {
+      const dataUrl = await renderIrisCardToPng(state)
+      const res = await fetch(dataUrl)
+      const blob = await res.blob()
+      const file = new File(
+        [blob],
+        `analise-iris-${clientName.toLowerCase().replace(/\s+/g, '-')}.png`,
+        { type: 'image/png' },
+      )
+      await onSaveToResults(file)
+      setSavedToResults(true)
+      setTimeout(() => setSavedToResults(false), 2500)
+    } catch (e: any) {
+      setResultsError(e?.message || 'Erro ao salvar em Resultados.')
+    } finally {
+      setSavingToResults(false)
     }
   }
 
@@ -462,19 +600,8 @@ export function IrisAnalysisDialog({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-          {/* Coluna esquerda — controles da foto */}
-          <section className="space-y-4">
-            <SliderRow t={t} label="Zoom" value={state.zoom} min={0.5} max={3} step={0.01}
-              onChange={v => patch({ zoom: v })} format={v => `${Math.round(v * 100)}%`} />
-            <SliderRow t={t} label="Posição horizontal" value={state.offsetX} min={-250} max={250} step={1}
-              onChange={v => patch({ offsetX: v })} format={v => `${v}`} />
-            <SliderRow t={t} label="Posição vertical" value={state.offsetY} min={-250} max={250} step={1}
-              onChange={v => patch({ offsetY: v })} format={v => `${v}`} />
-          </section>
-
-          {/* Coluna direita — texto */}
-          <section className="space-y-4">
+        {/* Texto */}
+        <section className="space-y-4">
             {/* ── Setlist de templates ─────────────────────────────── */}
             <div>
               <div className="mb-1.5 flex items-center justify-between">
@@ -563,15 +690,51 @@ export function IrisAnalysisDialog({
               <SliderRow t={t} label="Tamanho do corpo" value={state.bodySize} min={12} max={28} step={1}
                 onChange={v => patch({ bodySize: v })} format={v => `${v}px`} />
             </div>
-          </section>
-        </div>
+        </section>
 
         {/* Preview do canvas */}
-        <div className="rounded-lg overflow-hidden shadow-sm" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+        <div className="relative rounded-lg overflow-hidden shadow-sm" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
           <canvas ref={previewCanvasRef} width={CARD_WIDTH} height={CARD_HEIGHT}
             className="block h-auto w-full" style={{ aspectRatio: `${CARD_WIDTH} / ${CARD_HEIGHT}` }} />
+          {/* Área interativa: arrastar (pan) e pinçar/scroll (zoom), sobreposta
+              exatamente ao círculo da foto desenhado no canvas. */}
+          <div
+            ref={photoOverlayRef}
+            onPointerDown={handlePhotoPointerDown}
+            onPointerMove={handlePhotoPointerMove}
+            onPointerUp={handlePhotoPointerUp}
+            onPointerCancel={handlePhotoPointerUp}
+            className="absolute rounded-full cursor-grab active:cursor-grabbing"
+            style={{
+              left: `${((CIRCLE_CENTER_X - CIRCLE_RADIUS) / CARD_WIDTH) * 100}%`,
+              top: `${((CIRCLE_CENTER_Y - CIRCLE_RADIUS) / CARD_HEIGHT) * 100}%`,
+              width: `${((CIRCLE_RADIUS * 2) / CARD_WIDTH) * 100}%`,
+              height: `${((CIRCLE_RADIUS * 2) / CARD_HEIGHT) * 100}%`,
+              touchAction: 'none',
+            }}
+            title="Arraste para mover · scroll ou pinça para zoom"
+          />
         </div>
+
+        {/* Ajuste fino — colado na foto, pra correções pequenas sem precisar
+            rolar até o topo. Arrastar/pinçar/scroll no preview acima cobre o
+            ajuste grosso; estes sliders cobrem o milimétrico. */}
+        <div className="rounded-lg p-3 space-y-2.5" style={{ background: t.surface2, border: `1px solid ${t.border}` }}>
+          <p className="text-[11px] leading-snug" style={{ color: t.text3 }}>
+            💡 Arraste a foto acima pra mover, scroll/pinça pra zoom. Aqui embaixo é pro ajuste fino.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-2.5">
+            <SliderRow t={t} label="Zoom" value={state.zoom} min={0.5} max={3} step={0.01}
+              onChange={v => patch({ zoom: v })} format={v => `${Math.round(v * 100)}%`} />
+            <SliderRow t={t} label="Posição horizontal" value={state.offsetX} min={-250} max={250} step={1}
+              onChange={v => patch({ offsetX: v })} format={v => `${v}`} />
+            <SliderRow t={t} label="Posição vertical" value={state.offsetY} min={-250} max={250} step={1}
+              onChange={v => patch({ offsetY: v })} format={v => `${v}`} />
+          </div>
+        </div>
+
         <p className="text-[11px] text-right" style={{ color: t.text3 }}>{CARD_WIDTH}×{CARD_HEIGHT}px · PNG</p>
+
 
         {saveError && (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 flex items-start gap-2">
@@ -583,6 +746,19 @@ export function IrisAnalysisDialog({
           <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-2 flex items-center gap-2">
             <Save className="h-4 w-4 text-green-600 flex-shrink-0" />
             <p className="text-sm text-green-700">Salvo! Fechando…</p>
+          </div>
+        )}
+
+        {resultsError && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-red-700">{resultsError}</p>
+          </div>
+        )}
+        {savedToResults && (
+          <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-2 flex items-center gap-2">
+            <Save className="h-4 w-4 text-green-600 flex-shrink-0" />
+            <p className="text-sm text-green-700">Imagem enviada para a aba Resultado.</p>
           </div>
         )}
       </div>
@@ -624,6 +800,11 @@ export function IrisAnalysisDialog({
             <Btn variant="outline" onClick={handleDownload} disabled={saving}>
               <Download className="h-3.5 w-3.5" /> Baixar PNG
             </Btn>
+            {onSaveToResults && (
+              <Btn variant="outline" onClick={handleSaveToResults} loading={savingToResults} disabled={savingToResults}>
+                <ImageIcon className="h-3.5 w-3.5" /> {savedToResults ? 'Enviado' : 'Salvar em Resultados'}
+              </Btn>
+            )}
             <Btn variant="primary" onClick={handleSave} loading={saving} disabled={saving || saved}>
               <Save className="h-3.5 w-3.5" /> {saved ? 'Salvo' : 'Salvar'}
             </Btn>
