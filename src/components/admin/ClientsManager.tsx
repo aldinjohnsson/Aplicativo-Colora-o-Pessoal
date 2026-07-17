@@ -15,7 +15,7 @@ import {
   Lock, Unlock,
   MoreHorizontal, Archive, ArchiveRestore, Star, Layers,
   SlidersHorizontal, ChevronDown, Palette, Pencil,
-  Loader2, AlertCircle, Bell, Wand2, Mic, Square, Music, RotateCcw,
+  Loader2, AlertCircle, Bell, Wand2, Mic, Square, Music, RotateCcw, Hourglass,
 } from 'lucide-react'
 import { adminService, Client, Plan } from '../../lib/services'
 import { notifyClientCompleted } from '../../lib/whatsappService'
@@ -663,6 +663,63 @@ function getDeadlineInfo(client: Client, deadline?: DeadlineData | null): Deadli
   return { label: `${days}d restantes`, dateFormatted, urgency: 'ok', color: '#6b7280', bgColor: '#f3f4f6', textColor: '#4b5563' }
 }
 
+/**
+ * Prazo de expiração do LINK da análise (feature de plano com
+ * `analysis_expiration_days`) — diferente de getDeadlineInfo, que é sobre o
+ * prazo de ENVIO DE FOTOS.
+ *
+ * `client.analysis_expires_at` só fica preenchido em 2 momentos: assinatura
+ * de contrato NOVA (dali pra frente), ou quando a PRÓPRIA cliente abre o
+ * portal (cálculo retroativo lazy, ver check_client_expiration no banco).
+ * O painel admin nunca dispara nenhum dos dois — então pra clientes
+ * vigentes que assinaram antes do plano ganhar prazo, essa coluna fica NULL
+ * até elas acessarem o link. Pra não deixar o card "cego" até lá, calculamos
+ * aqui também: contrato assinado (`client_contracts.signed_at`, embutido no
+ * getClients()) + `plan.analysis_expiration_days`. É só uma prévia pra
+ * exibição — quem decide de verdade (e arquiva) continua sendo a RPC.
+ */
+/**
+ * Prazo de expiração do LINK da análise (feature de plano com
+ * `analysis_expiration_days`) — diferente de getDeadlineInfo, que é sobre o
+ * prazo de ENVIO DE FOTOS.
+ *
+ * Só faz sentido mostrar enquanto a AÇÃO pendente é da cliente: depois que
+ * ela envia as fotos (`photos_submitted` em diante), a bola passa pro
+ * estúdio — a contagem não tem mais relação com o que falta fazer, então
+ * o badge some a partir daí (mesmo que `analysis_expires_at` continue no
+ * futuro; simplesmente deixa de ser relevante mostrar).
+ *
+ * `client.analysis_expires_at` só fica preenchido em 2 momentos: assinatura
+ * de contrato NOVA (dali pra frente), ou quando a PRÓPRIA cliente abre o
+ * portal (cálculo retroativo lazy, ver check_client_expiration no banco).
+ * O painel admin nunca dispara nenhum dos dois — então pra clientes
+ * vigentes que assinaram antes do plano ganhar prazo, essa coluna fica NULL
+ * até elas acessarem o link. Pra não deixar o card "cego" até lá, calculamos
+ * aqui também: contrato assinado (`signedAt`, vindo de
+ * getContractSignedDates()) + `plan.analysis_expiration_days`. É só uma
+ * prévia pra exibição — quem decide de verdade (e arquiva) continua sendo
+ * a RPC.
+ */
+function getExpirationInfo(client: Client, signedAt?: string | null): { label: string; bgColor: string; textColor: string; urgent: boolean } | null {
+  if (client.status !== 'awaiting_form' && client.status !== 'awaiting_photos') return null
+
+  let expiresAtRaw: string | null = client.analysis_expires_at ?? null
+
+  if (!expiresAtRaw) {
+    const plan = (client as any).plan as Plan | undefined
+    const days = plan?.analysis_expiration_days
+    if (!days || !signedAt) return null // plano sem prazo, ou contrato ainda não assinado
+    expiresAtRaw = new Date(new Date(signedAt).getTime() + days * 86400000).toISOString()
+  }
+
+  const diffMs = new Date(expiresAtRaw).getTime() - Date.now()
+  const days = Math.ceil(diffMs / 86400000)
+  if (days < 0) return { label: 'Prazo expirado', bgColor: '#fee2e2', textColor: '#991b1b', urgent: true }
+  if (days === 0) return { label: 'Expira hoje', bgColor: '#fee2e2', textColor: '#991b1b', urgent: true }
+  if (days <= 3) return { label: `Expira em ${days}d`, bgColor: '#fef3c7', textColor: '#92400e', urgent: true }
+  return { label: `Expira em ${days}d`, bgColor: '#f3f4f6', textColor: '#4b5563', urgent: false }
+}
+
 // ─── Tiny UI ──────────────────────────────────────────────────────────────
 const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = false, disabled = false, className = '' }: any) => {
   const v: any = {
@@ -863,7 +920,7 @@ function QuickMoveButton({ currentStatus, theme: t, onMove, columnLabels = {} }:
 function KanbanCard({
   client, deadline, theme: t, onView, onArchive, onDelete, onStar, compact, starred,
   onDragStart, isDragging, onQuickMove, columnLabels = {}, hasConditionalObs,
-  hasAiPhotoPending,
+  hasAiPhotoPending, contractSignedAt,
 }: {
   client: Client; deadline?: DeadlineData | null; theme: Theme
   onView: () => void; onArchive: () => void; onDelete: () => void; onStar: () => void
@@ -874,6 +931,8 @@ function KanbanCard({
   columnLabels?: Record<string, string>
   hasConditionalObs?: boolean
   hasAiPhotoPending?: boolean
+  /** signed_at do contrato desta cliente — usado só pro fallback do badge de expiração. */
+  contractSignedAt?: string | null
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
@@ -884,6 +943,7 @@ function KanbanCard({
   // some no dark, então no escuro usamos violeta forte com leve fundo.
   const { isDark } = useTheme()
   const dl = getDeadlineInfo(client, deadline)
+  const expInfo = getExpirationInfo(client, contractSignedAt)
   const [bgColor, fgColor] = getAvatarColor(client.full_name)
   const needsReview = client.status === 'photos_submitted'
   const aiTags: { templateId: string; name: string; value: string }[] = (client as any).ai_info_tags || []
@@ -1062,15 +1122,25 @@ function KanbanCard({
         </div>
       )}
 
-      {/* ── Row 4: Quick-move button ── */}
-      {onQuickMove && (
-        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
-          <QuickMoveButton
-            currentStatus={client.status}
-            theme={t}
-            onMove={onQuickMove}
-            columnLabels={columnLabels}
-          />
+      {/* ── Row 4: Expiration (sutil, início da linha) + Quick-move button (fim da linha) ── */}
+      {(expInfo || onQuickMove) && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }} onClick={e => e.stopPropagation()}>
+          {expInfo ? (
+            <span title="Prazo pra concluir a análise, conforme o contrato" style={{
+              fontSize: 10, color: expInfo.urgent ? '#b45309' : t.text3, fontWeight: expInfo.urgent ? 600 : 500,
+              display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0,
+            }}>
+              <Hourglass size={9} strokeWidth={2} /> {expInfo.label}
+            </span>
+          ) : <span />}
+          {onQuickMove && (
+            <QuickMoveButton
+              currentStatus={client.status}
+              theme={t}
+              onMove={onQuickMove}
+              columnLabels={columnLabels}
+            />
+          )}
         </div>
       )}
     </div>
@@ -1091,6 +1161,7 @@ function KanbanColumn({
   sortOrder = 'recent',
   onSortChange,
   forceCompact,
+  contractSignedAt,
 }: {
   statusKey: string; clients: Client[]; deadlines: Record<string, DeadlineData>
   starredIds: Set<string>; theme: Theme
@@ -1109,6 +1180,7 @@ function KanbanColumn({
   sortOrder?: string
   onSortChange?: (sort: string) => void
   forceCompact?: boolean
+  contractSignedAt?: Record<string, string>
 }) {
   const obsIds: Set<string> = formObsIds ?? new Set<string>()
   const cfg = STATUSES[statusKey]
@@ -1411,6 +1483,7 @@ function KanbanColumn({
               columnLabels={columnLabels}
               hasConditionalObs={formObsIds.has(client.id)}
               hasAiPhotoPending={!!aiPhotoPendingIds?.has(client.id) && client.status === 'awaiting_ai_photo'}
+              contractSignedAt={contractSignedAt?.[client.id] || null}
             />
           ))
         )}
@@ -1888,6 +1961,11 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
   const [clients, setClients] = useState<Client[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [deadlines, setDeadlines] = useState<Record<string, DeadlineData>>({})
+  // client_id → signed_at do contrato. Usado só pra calcular o badge de
+  // "Expira em Xd" de clientes cujo analysis_expires_at ainda não foi
+  // calculado (ver getExpirationInfo). Consulta separada e simples, no
+  // mesmo padrão de `deadlines` acima.
+  const [contractSignedAt, setContractSignedAt] = useState<Record<string, string>>({})
   const [formObsIds, setFormObsIds] = useState<Set<string>>(new Set())
   // IDs de clientes em `awaiting_ai_photo` que JÁ enviaram a foto IA — pendentes
   // de revisão pela consultora. Usado para mostrar badge no card e contador
@@ -2201,16 +2279,18 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) return // sem sessão: mantém a lista atual na tela
-      const [c, p, dl, fs, aiPending] = await Promise.all([
+      const [c, p, dl, fs, aiPending, signedDates] = await Promise.all([
         adminService.getClients(),
         adminService.getPlans(),
         supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at, no_deadline'),
         supabase.from('client_form_submissions').select('client_id, form_data'),
         fetchAiPhotoSenders(),
+        adminService.getContractSignedDates(),
       ])
       if (seq !== loadSeqRef.current) return // resposta antiga: descarta
       setClients(c)
       setPlans(p.filter((pl: any) => pl.is_active))
+      setContractSignedAt(signedDates)
       const dlMap: Record<string, DeadlineData> = {}
       ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at, no_deadline: d.no_deadline } })
       setDeadlines(dlMap)
@@ -2237,14 +2317,16 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) return // sem sessão (token renovando no mobile): não toca na lista
-      const [c, dl, fs, aiPending] = await Promise.all([
+      const [c, dl, fs, aiPending, signedDates] = await Promise.all([
         adminService.getClients(),
         supabase.from('client_deadlines').select('client_id, deadline_date, photos_sent_at, no_deadline'),
         supabase.from('client_form_submissions').select('client_id, form_data'),
         fetchAiPhotoSenders(),
+        adminService.getContractSignedDates(),
       ])
       if (seq !== loadSeqRef.current) return // resposta antiga: descarta
       setClients(c)
+      setContractSignedAt(signedDates)
       const dlMap: Record<string, DeadlineData> = {}
       ;(dl.data || []).forEach((d: any) => { dlMap[d.client_id] = { deadline_date: d.deadline_date, photos_sent_at: d.photos_sent_at, no_deadline: d.no_deadline } })
       setDeadlines(dlMap)
@@ -2881,6 +2963,7 @@ function ClientsList({ onOpenNav }: { onOpenNav?: () => void }) {
                       formObsIds={formObsIds}
                       aiPhotoPendingIds={aiPhotoPendingIds}
                       forceCompact={viewMode === 'board-compact' ? true : undefined}
+                      contractSignedAt={contractSignedAt}
                       {...(key === 'completed' ? {
                         sortOrder: completedSort,
                         onSortChange: handleCompletedSortChange,

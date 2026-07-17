@@ -556,6 +556,25 @@ export const adminService = {
     return (data || []) as Client[]
   },
 
+  /**
+   * Data de assinatura do contrato, pra TODAS as clientes do admin de uma
+   * vez (client_id → signed_at). Usado no Kanban pra calcular o prazo de
+   * expiração de clientes cujo `analysis_expires_at` ainda não foi
+   * calculado (ver getExpirationInfo em ClientsManager.tsx). Consulta
+   * separada e simples — mesmo padrão de getDeadlines() — em vez de embed
+   * aninhado no select de getClients(), que não é confiável de prever com
+   * RLS em relação sem FK direta por admin_id.
+   */
+  async getContractSignedDates(): Promise<Record<string, string>> {
+    const { data, error } = await supabase
+      .from('client_contracts')
+      .select('client_id, signed_at')
+    if (error) throw error
+    const map: Record<string, string> = {}
+    ;(data || []).forEach((row: any) => { if (row.signed_at) map[row.client_id] = row.signed_at })
+    return map
+  },
+
   async getClientDetail(clientId: string) {
     const { data: client, error } = await supabase
       .from('clients')
