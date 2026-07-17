@@ -40,12 +40,40 @@ interface WhatsAppSettings {
   planMessages?: Record<string, string>
 }
 
-/** Normaliza o telefone pro formato E.164 esperado pela Cloud API (Brasil). */
+/**
+ * Normaliza o telefone pro formato E.164 esperado pela Cloud API — cobrindo
+ * os 2 formatos que existem no banco:
+ *
+ *  - NOVO (a partir da melhoria de telefone internacional no cadastro):
+ *    sempre salvo com "+" e código do país já embutido (ex: "+5511999998888",
+ *    "+15551234567"). Só remove os caracteres não-numéricos; o país já vem
+ *    correto, seja ele qual for — nada de assumir Brasil aqui.
+ *
+ *  - ANTIGO (cadastros feitos antes dessa melhoria): sem "+", sempre
+ *    DDD+número brasileiro (ex: "11999998888", 10-11 dígitos). Mantém a
+ *    suposição de Brasil que já existia.
+ *
+ *    Antes, a checagem "já tem 55 na frente?" olhava só o CONTEÚDO dos
+ *    dígitos — o que dava falso positivo pra DDD 55 (Santa Maria/RS): uma
+ *    cliente desse DDD teria o número tratado como "já tem código de país"
+ *    e NUNCA recebia o prefixo 55, saindo com 2 dígitos a menos. Agora a
+ *    checagem é pelo COMPRIMENTO: número BR sem código de país tem 10-11
+ *    dígitos (DDD + fone); com código de país vira 12-13 — não depende do
+ *    conteúdo do DDD.
+ */
 function normalizePhone(raw: string): string {
-  const digits = (raw || '').replace(/\D/g, '')
+  if (!raw) return ''
+  const trimmed = raw.trim()
+  const digits = trimmed.replace(/\D/g, '')
   if (!digits) return ''
-  // Já tem código do país (55...) → usa direto. Senão, prefixa 55.
-  return digits.startsWith('55') ? digits : `55${digits}`
+
+  // Formato novo: já veio com "+" do cadastro internacional → código do
+  // país já embutido, seja qual for. Não mexe.
+  if (trimmed.startsWith('+')) return digits
+
+  // Formato antigo: sempre Brasil. Decide pelo comprimento, não pelo
+  // conteúdo (evita o falso positivo do DDD 55).
+  return digits.length >= 12 ? digits : `55${digits}`
 }
 
 /** Pega só o primeiro nome pra personalizar a saudação. */

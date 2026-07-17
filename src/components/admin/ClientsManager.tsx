@@ -741,6 +741,22 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 }
 
 // ─── Kanban Card ──────────────────────────────────────────────────────────
+/**
+ * Monta o link do wa.me a partir do telefone salvo — cobrindo os 2 formatos
+ * que existem no banco:
+ *  - NOVO (a partir da melhoria de telefone internacional): sempre E.164,
+ *    já com "+" e código do país (ex: "+5511999998888"). Só remove os
+ *    caracteres não-numéricos, o código do país já vem embutido.
+ *  - ANTIGO (cadastros feitos antes dessa melhoria): sem "+", só DDD+número
+ *    (ex: "11999998888"). Mantém a suposição de Brasil que o link já fazia
+ *    — sem isso, essas clientes antigas ficariam com o link quebrado.
+ */
+function whatsappHref(phone: string): string {
+  const digits = phone.replace(/\D/g, '')
+  const isE164 = phone.trim().startsWith('+')
+  return `https://wa.me/${isE164 ? digits : `55${digits}`}`
+}
+
 // ─── Coloração Pessoal tag style ─────────────────────────────────────────────
 function getSeasonTagStyle(value: string): { bg: string; color: string; border: string } {
   const v = value.toLowerCase()
@@ -5449,7 +5465,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                       <Phone className="h-3 w-3 sm:h-3.5 sm:w-3.5 flex-shrink-0" />
                       {client.phone}
                       <a 
-                        href={`https://wa.me/55${client.phone.replace(/\D/g, '')}`} 
+                        href={whatsappHref(client.phone)} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="ml-0.5 text-green-600 hover:text-green-700"

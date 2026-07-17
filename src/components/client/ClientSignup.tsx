@@ -13,6 +13,7 @@ import { SignatureCanvas } from './SignatureCanvas'
 import { downloadContractPDF } from '../../lib/contractPDFGenerator'
 import { LanguageProvider, useTranslation, useLanguage, writeStoredLanguage } from '../../lib/i18n'
 import { getCountryOptions } from '../../lib/i18n/countries'
+import { PhoneInput } from './PhoneInput'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { clientThemeVars } from '../../lib/clientTheme'
 
@@ -120,6 +121,7 @@ function ClientSignupInner({
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
+  const [phoneValid, setPhoneValid] = useState(true)
   const [birthDate, setBirthDate] = useState('')
   const [countryCode, setCountryCode] = useState(countryOptions[0]?.code || 'BR')
   const [whatsappOptIn, setWhatsappOptIn] = useState(true)
@@ -200,6 +202,10 @@ function ClientSignupInner({
     e.preventDefault()
     if (!fullName.trim() || !email.trim() || !birthDate) {
       setFormError(t('signup.requiredFieldsError'))
+      return
+    }
+    if (!phoneValid) {
+      setFormError(t('signup.phoneInvalid'))
       return
     }
 
@@ -503,13 +509,16 @@ function ClientSignupInner({
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.phoneLabel')}</label>
-                  <input
-                    type="tel"
+                  <PhoneInput
                     value={phone}
-                    onChange={e => setPhone(e.target.value)}
+                    onChange={setPhone}
+                    language={language}
                     placeholder={t('signup.phonePlaceholder')}
-                    className={inp}
+                    onValidityChange={setPhoneValid}
                   />
+                  {!phoneValid && phone && (
+                    <p className="text-xs text-red-500 mt-1">{t('signup.phoneInvalid')}</p>
+                  )}
                   <label className="flex items-start gap-2 mt-2 cursor-pointer">
                     <input
                       type="checkbox"
