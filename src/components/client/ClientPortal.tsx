@@ -618,7 +618,7 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
             <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
             <div>
               <p className="text-sm font-semibold text-amber-800">{t('portal.formPhotoFlow.adjustmentsRequested')}</p>
-              <p className="text-sm text-amber-700 mt-0.5">
+              <p className="text-sm text-amber-700 mt-0.5 whitespace-pre-wrap">
                 {hasFormRejection && hasPhotosRejection
                   ? t('portal.formPhotoFlow.adjustmentsBoth')
                   : hasFormRejection
@@ -692,7 +692,7 @@ function FormStep({ token, data, onDone }: { token: string; data: ClientPortalDa
           <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
           <div>
             <p className="text-sm font-semibold text-amber-800">{t('portal.form.adjustmentRequested')}</p>
-            <p className="text-sm text-amber-700 mt-0.5">{data.client.form_rejection_reason}</p>
+            <p className="text-sm text-amber-700 mt-0.5 whitespace-pre-wrap">{data.client.form_rejection_reason}</p>
           </div>
         </div>
       )}
@@ -1448,7 +1448,7 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
           <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
           <div>
             <p className="text-sm font-semibold text-amber-800">{t('portal.photoStep.adjustmentRequested')}</p>
-            <p className="text-sm text-amber-700 mt-0.5">{data.client.photos_rejection_reason}</p>
+            <p className="text-sm text-amber-700 mt-0.5 whitespace-pre-wrap">{data.client.photos_rejection_reason}</p>
           </div>
         </div>
       )}
