@@ -1296,6 +1296,10 @@ export const documentsService = {
     clientId: string
     tagId:    string
     photoId:  string
+    /** Texto do prompt já com {{Placeholder}} substituídos (via substitutePromptVars).
+     *  Se ausente, a Edge Function usa o texto cru salvo no prompt — o que reintroduz
+     *  o bug de placeholder vazio sobrando na imagem (ex.: "Subtom: e"). */
+    promptOverride?: string
   }): Promise<{ storagePath: string; size: number; promptName: string }> {
     const { data, error } = await supabase.functions.invoke('generate-tag-image', { body: input })
     if ((data as any)?.error === 'QUOTA_EXCEEDED') {

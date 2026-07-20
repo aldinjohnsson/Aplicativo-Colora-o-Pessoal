@@ -14,6 +14,7 @@ import {
   X, Sparkles, Check, AlertCircle, Image as ImageIcon, ChevronDown, ChevronUp, Wand2,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
+import { substitutePromptVars, type PromptVarSource } from '../lib/promptVars'
 
 // ── Btn ───────────────────────────────────────────────────────────────
 
@@ -89,6 +90,28 @@ export function GenerateAiImageDialog({
   const [generating, setGenerating] = useState(false)
   const [genError, setGenError] = useState<string | null>(null)
 
+  // ── Variáveis de prompt da cliente (ai_info_templates) ──────────────
+  // Carregadas pra substituir `{{Label}}` no texto do prompt ANTES de
+  // enviar pra Edge Function — sem isso, placeholder sem valor preenchido
+  // (ex.: {{Subtom}}) vai cru pra OpenAI e sobra lixo tipo "Subtom: e" na
+  // imagem gerada, porque a Function só resolve o que vier em
+  // `promptOverride`; sozinha ela não sabe limpar {{Placeholder}} vazio.
+  const [promptVarSources, setPromptVarSources] = useState<PromptVarSource[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    documentsService.getTextImportSources(clientId)
+      .then((sources: any[]) => {
+        if (cancelled) return
+        const aiInfo = (sources || [])
+          .filter(s => typeof s?.key === 'string' && s.key.startsWith('ai_info:'))
+          .map(s => ({ label: s.label, value: s.value }) as PromptVarSource)
+        setPromptVarSources(aiInfo)
+      })
+      .catch(() => { if (!cancelled) setPromptVarSources([]) })
+    return () => { cancelled = true }
+  }, [clientId])
+
   // ── Load prompts ──
   useEffect(() => {
     let cancelled = false
@@ -127,14 +150,18 @@ export function GenerateAiImageDialog({
   const handleGenerate = async () => {
     if (!selectedPromptId) { setGenError('Escolha um prompt.'); return }
     if (!selectedPhotoId) { setGenError('Selecione uma foto.'); return }
+    const prompt = prompts.find(p => p.id === selectedPromptId)
+    if (!prompt) { setGenError('Prompt inválido.'); return }
     setGenerating(true)
     setGenError(null)
     try {
+      const promptOverride = substitutePromptVars(prompt.prompt, promptVarSources)
       const res = await documentsService.generateTagImageFromAI({
         promptId: selectedPromptId,
         clientId,
         tagId,
         photoId: selectedPhotoId,
+        promptOverride,
       })
       onGenerated(res.storagePath)
     } catch (e: any) {
@@ -153,6 +180,9 @@ export function GenerateAiImageDialog({
   }
 
   const selectedPrompt = prompts.find(p => p.id === selectedPromptId) || null
+  const resolvedPromptPreview = selectedPrompt
+    ? substitutePromptVars(selectedPrompt.prompt, promptVarSources)
+    : ''
 
   return (
     <div
@@ -234,7 +264,7 @@ export function GenerateAiImageDialog({
                         Ver texto do prompt
                       </span>
                       <span className="text-[11px] text-gray-500 ml-auto">
-                        {selectedPrompt.prompt.length.toLocaleString('pt-BR')} caracteres
+                        {resolvedPromptPreview.length.toLocaleString('pt-BR')} caracteres
                       </span>
                       {promptOpen
                         ? <ChevronUp className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
@@ -242,8 +272,11 @@ export function GenerateAiImageDialog({
                     </button>
                     {promptOpen && (
                       <div className="px-3 pb-3 pt-1 border-t border-fuchsia-200 bg-white">
+                        <p className="text-[10px] text-gray-400 mb-1.5">
+                          Já com as variáveis da cliente substituídas — é este texto que vai ser enviado.
+                        </p>
                         <pre className="text-xs text-gray-700 whitespace-pre-wrap break-words font-mono leading-relaxed max-h-48 overflow-y-auto">
-                          {selectedPrompt.prompt}
+                          {resolvedPromptPreview}
                         </pre>
                       </div>
                     )}
