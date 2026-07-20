@@ -1179,6 +1179,9 @@ function PdfInstruction({ item }: { item: InstructionItem }) {
 function MediaItem({ item }: { item: InstructionItem }) {
   const { t } = useTranslation()
   const embedUrl = item.type === 'video' ? getYouTubeEmbed(item.content) : null
+  // Precisa ficar no topo (incondicional) — regra de Hooks do React, já que
+  // este componente tem vários `return` antecipados por tipo de item abaixo.
+  const [zoomOpen, setZoomOpen] = useState(false)
 
   if (item.type === 'video' && embedUrl) {
     return (
@@ -1198,9 +1201,25 @@ function MediaItem({ item }: { item: InstructionItem }) {
     const src = item.imageUrl || item.content
     if (!src) return null
     return (
-      <div className="rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] shadow-sm">
-        <img src={src} alt={t('portal.instructions.imageAlt')} className="w-full object-contain max-h-80 bg-gray-50" />
-      </div>
+      <>
+        <button
+          type="button"
+          onClick={() => setZoomOpen(true)}
+          className="relative block w-full rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] shadow-sm cursor-zoom-in group"
+        >
+          <img src={src} alt={t('portal.instructions.imageAlt')} className="w-full object-contain max-h-80 bg-gray-50" />
+          <div className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 rounded-lg bg-black/60 text-white text-[11px] font-medium opacity-90 group-hover:opacity-100 transition-opacity">
+            <ZoomIn className="h-3 w-3" /> {t('portal.pdfInstruction.tapToEnlarge')}
+          </div>
+        </button>
+        {zoomOpen && (
+          <PhotoZoomLightbox
+            photos={[{ id: 'instruction-image', url: src, file_name: t('portal.instructions.imageAlt') }]}
+            initialIndex={0}
+            onClose={() => setZoomOpen(false)}
+          />
+        )}
+      </>
     )
   }
 
@@ -1292,6 +1311,18 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
   const totalCount = existingPhotos.length + uploads.length
   const isFull = totalCount >= cat.max_photos
   const isDone = totalCount > 0
+  // Índice aberto no lightbox de zoom (dentro da lista combinada
+  // existingPhotos + uploads, nessa ordem — ver lightboxPhotos abaixo).
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+
+  // Lista unificada pro lightbox: fotos já enviadas + as que ela acabou de
+  // adicionar nesta sessão (ainda não confirmadas). Object URLs dos uploads
+  // são recriadas a cada render (mesmo padrão já usado abaixo pros
+  // thumbnails) — aceitável pro volume baixo de fotos por categoria.
+  const lightboxPhotos = [
+    ...existingPhotos.map(p => ({ id: p.id, url: p.url, file_name: p.photo_name })),
+    ...uploads.map((f, i) => ({ id: `upload-${i}`, url: URL.createObjectURL(f), file_name: f.name })),
+  ]
 
   return (
     <div
@@ -1336,11 +1367,15 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
         {(existingPhotos.length > 0 || uploads.length > 0) && (
           <div className="grid grid-cols-3 gap-2">
             {/* Existing photos */}
-            {existingPhotos.map(photo => (
-              <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+            {existingPhotos.map((photo, i) => (
+              <div
+                key={photo.id}
+                className="relative aspect-square rounded-xl overflow-hidden border border-gray-200 bg-gray-50 cursor-zoom-in"
+                onClick={() => setLightboxIndex(i)}
+              >
                 <img src={photo.url} alt={photo.photo_name} className="w-full h-full object-cover" />
                 <button
-                  onClick={() => onRemoveExisting(photo.id)}
+                  onClick={e => { e.stopPropagation(); onRemoveExisting(photo.id) }}
                   disabled={removingExisting.has(photo.id)}
                   className="absolute top-1 right-1 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-sm transition-colors disabled:opacity-50"
                 >
@@ -1357,10 +1392,14 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
             {uploads.map((file, idx) => {
               const url = URL.createObjectURL(file)
               return (
-                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border-2 border-[var(--client-accent-light)] bg-[var(--client-accent-soft)]">
+                <div
+                  key={idx}
+                  className="relative aspect-square rounded-xl overflow-hidden border-2 border-[var(--client-accent-light)] bg-[var(--client-accent-soft)] cursor-zoom-in"
+                  onClick={() => setLightboxIndex(existingPhotos.length + idx)}
+                >
                   <img src={url} alt={file.name} className="w-full h-full object-cover" />
                   <button
-                    onClick={() => onRemove(idx)}
+                    onClick={e => { e.stopPropagation(); onRemove(idx) }}
                     className="absolute top-1 right-1 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-sm transition-colors"
                   >
                     <X className="h-3 w-3" />
@@ -1437,6 +1476,15 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
           </div>
         )}
       </div>
+
+      {/* Zoom com pinça/pan/+−, mesmo componente usado nas fotos de Resultado */}
+      {lightboxIndex !== null && (
+        <PhotoZoomLightbox
+          photos={lightboxPhotos}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
+      )}
     </div>
   )
 }
@@ -2231,10 +2279,10 @@ interface RefPhoto {
   url: string
 }
 
-// ── Lightbox para fotos do Resultado ─────────────────────────────────────────
+// ── Lightbox de zoom pra fotos (Resultado + Etapa de Fotos) ──────────────────
 //
-// Modal fullscreen com zoom + pan + download. Usado quando a cliente clica
-// numa miniatura na seção "Fotos" da tela de Resultado.
+// Modal fullscreen com zoom + pan + download. Usado tanto nas fotos da tela
+// de Resultado quanto nas fotos já enviadas/adicionadas na etapa de Fotos.
 //
 //  • Zoom: botões +/− no canto superior + pinch nativo no mobile (browser
 //    cuida do scaling em <img> com touch-action: pinch-zoom no container).
@@ -2242,7 +2290,7 @@ interface RefPhoto {
 //  • Download: usa fetch + blob URL pra forçar download (em vez de window.open).
 //    Drive precisa estar com permission anyone:reader (patch da Edge Function).
 //  • Navegação: setas ← →, ChevronLeft/Right quando há múltiplas fotos.
-function ResultPhotoLightbox({ photos, initialIndex, onClose }: {
+function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
   photos: Array<{ id: string; url: string; file_name: string; drive_file_id?: string | null }>
   initialIndex: number
   onClose: () => void
@@ -2966,7 +3014,7 @@ function ResultScreen({
       {/* Lightbox de foto — abre quando a cliente clica numa miniatura na
           seção Fotos acima. Renderiza no fim do JSX pra ficar acima de tudo. */}
       {photoLightbox && (
-        <ResultPhotoLightbox
+        <PhotoZoomLightbox
           photos={photoLightbox.photos}
           initialIndex={photoLightbox.index}
           onClose={() => setPhotoLightbox(null)}
