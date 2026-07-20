@@ -337,7 +337,7 @@ async function compressImageFile(
  *  - drive_file_id → baixa pelo proxy (confiável no mobile) + HEIC se preciso
  *  - senão (legado storage_path) → cai no comportamento antigo (URL pública)
  */
-function useDrivePhotoSrc(photo?: { url?: string; photo_name?: string; drive_file_id?: string; _blobUrl?: string }) {
+export function useDrivePhotoSrc(photo?: { url?: string; photo_name?: string; drive_file_id?: string | null; _blobUrl?: string }) {
   const directLocal =
     photo?._blobUrl ||
     (photo?.url && (photo.url.startsWith('blob:') || photo.url.startsWith('data:')) ? photo.url : undefined)
@@ -381,11 +381,17 @@ function useDrivePhotoSrc(photo?: { url?: string; photo_name?: string; drive_fil
 /**
  * <img> resiliente para fotos do Drive. Substitui SafeImage/URL pública nas
  * miniaturas que têm drive_file_id, garantindo carregamento no mobile.
+ *
+ * Exportado pra ser reaproveitado fora deste arquivo (ex: AddPageDialog.tsx,
+ * AiCompositionsManager.tsx) — baixa a foto ORIGINAL via proxy em vez de
+ * confiar na miniatura que o próprio Drive gera, que às vezes não reaplica
+ * a orientação EXIF corretamente (foto aparece girada só na miniatura,
+ * nunca no arquivo original).
  */
-function DrivePhotoImg({
+export function DrivePhotoImg({
   photo, className, style, alt, onLoad, onError, decoding,
 }: {
-  photo: { url?: string; photo_name?: string; drive_file_id?: string; _blobUrl?: string }
+  photo: { url?: string; photo_name?: string; drive_file_id?: string | null; _blobUrl?: string }
   className?: string
   style?: React.CSSProperties
   alt?: string

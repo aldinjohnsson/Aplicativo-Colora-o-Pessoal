@@ -40,6 +40,7 @@ import { adminService } from '../../../../lib/services'
 import { billingService } from '../../../../lib/billingService'
 import { supabase } from '../../../../lib/supabase'
 import { AddPageDialog, AddPageResult } from './AddPageDialog'
+import { DrivePhotoImg } from '../../ClientsManager'
 import {
   generateCompositionPdf,
   fetchAllByDriveId,
@@ -1274,12 +1275,25 @@ function PageRow({
 
           {/* Thumbnail */}
           <div className="relative w-14 h-14 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0 group">
-            <img
-              src={page.status === 'done' && page.generatedImageUrl ? page.generatedImageUrl : page.photoUrl}
-              alt={page.photoName}
-              loading="lazy"
-              className="w-full h-full object-cover"
-            />
+            {page.status === 'done' && page.generatedImageUrl ? (
+              <img
+                src={page.generatedImageUrl}
+                alt={page.photoName}
+                loading="lazy"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              // Foto BASE (a da cliente, com EXIF de câmera) — usa
+              // DrivePhotoImg em vez de <img src={page.photoUrl}> direto: a
+              // miniatura que o Drive gera às vezes não reaplica a
+              // orientação EXIF certo, mesmo a foto original estando correta
+              // (mesmo bug já corrigido no PhotoGallery).
+              <DrivePhotoImg
+                photo={{ url: page.photoUrl, drive_file_id: page.driveFileId, photo_name: page.photoName }}
+                alt={page.photoName}
+                className="w-full h-full object-cover"
+              />
+            )}
             {page.status === 'done' && page.generatedImageUrl && (
               <button
                 type="button"

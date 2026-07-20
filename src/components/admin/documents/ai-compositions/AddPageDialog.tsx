@@ -24,6 +24,7 @@ import { documentsService } from '../lib/documentsService'
 import { substitutePromptVars, type PromptVarSource } from '../lib/promptVars'
 import { AI_IMAGE_LANGUAGES, applyLanguageInstruction } from '../lib/promptLanguage'
 import type { AiPromptPart } from '../prompts/AiImagePromptsManager'
+import { DrivePhotoImg } from '../../ClientsManager'
 
 // ── Btn ───────────────────────────────────────────────────────────────
 
@@ -405,7 +406,7 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
                             selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-transparent hover:border-gray-300'
                           }`}
                         >
-                          <img src={p.url} alt={p.photo_name} loading="lazy" className="w-full h-full object-cover" />
+                          <DrivePhotoImg photo={p} alt={p.photo_name} className="w-full h-full object-cover" />
                           {selected && (
                             <div className="absolute top-1 right-1 h-6 w-6 rounded-full bg-fuchsia-500 text-white flex items-center justify-center shadow-lg">
                               <Check className="h-3.5 w-3.5" />
