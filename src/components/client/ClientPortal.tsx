@@ -6,7 +6,7 @@ import {
   Camera, AlertCircle, FileText, ExternalLink, Download,
   ChevronLeft, ChevronRight, Play, Image as ImageIcon,
   CheckCircle2, ArrowRight, Loader2, ChevronDown, ChevronUp,
-  Package, Sparkles, ZoomIn, ZoomOut, Mic,
+  Package, Sparkles, ZoomIn, ZoomOut, Mic, Pencil,
 } from 'lucide-react'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { businessDaysUntil } from '../../lib/deadlineCalculator'
@@ -192,7 +192,7 @@ function ClientPortalInner({
           <PhotoStep token={token!} data={data} onDone={reload} />
         )}
         {data.client.status === 'photos_submitted' && (
-          <ReviewScreen />
+          <ReviewScreen token={token!} data={data} onDone={reload} />
         )}
         {data.client.status === 'in_analysis' && (
           <AnalysisScreen data={data} />
@@ -712,7 +712,7 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
   const [formData, setFormData] = useState<Record<string, any>>(savedData)
   const [submitting, setSubmitting] = useState(false)
 
-  const handleChange = (id: string, value: any) => setFormData({ ...formData, [id]: value })
+  const handleChange = (id: string, value: any) => setFormData(prev => ({ ...prev, [id]: value }))
 
   const handleSubmit = async () => {
     const missing = fields.filter(f => {
@@ -817,7 +817,10 @@ function FormStepContent({ token, data, onDone }: { token: string; data: ClientP
                   token={token}
                   clientId={data.client.id}
                   value={formData[f.id] || []}
-                  onChange={imgs => handleChange(f.id, imgs)}
+                  onChange={imgs => setFormData(prev => ({
+                    ...prev,
+                    [f.id]: typeof imgs === 'function' ? imgs(prev[f.id] || []) : imgs,
+                  }))}
                 />
               )}
             </div>
@@ -852,7 +855,10 @@ function ImageUploadFormField({
   token: string
   clientId: string
   value: FormImage[]
-  onChange: (imgs: FormImage[]) => void
+  // Aceita updater funcional (prev => next) além do valor direto — necessário
+  // pra que remover + adicionar em sequência não sofra com closure stale
+  // (a segunda ação enxergar o `value` antigo e desfazer a primeira).
+  onChange: (imgs: FormImage[] | ((prev: FormImage[]) => FormImage[])) => void
 }) {
   const { t } = useTranslation()
   const maxImages: number = field.maxImages ?? 1
@@ -886,7 +892,7 @@ function ImageUploadFormField({
         // (mantém o tipo intacto e o resto do código continua funcionando)
         uploaded.push({ storagePath: result.driveFileId, url: result.url })
       }
-      onChange([...value, ...uploaded])
+      onChange(prev => [...prev, ...uploaded])
     } catch (e: any) {
       setError(t('portal.imageUpload.uploadError', { error: e.message }))
     } finally {
@@ -903,7 +909,7 @@ function ImageUploadFormField({
     if (img.storagePath.includes('/')) {
       try { await supabase.storage.from('client-photos').remove([img.storagePath]) } catch {}
     }
-    onChange(value.filter((_, i) => i !== idx))
+    onChange(prev => prev.filter((_, i) => i !== idx))
     setRemoving(s => { const n = new Set(s); n.delete(img.storagePath); return n })
   }
 
@@ -1439,6 +1445,32 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
 
 function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
   const { t } = useTranslation()
+  // Fluxo: mostra as FOTOS por padrão. Se a cliente quiser mexer no
+  // formulário, um botão a leva pra uma tela SEPARADA do formulário
+  // (regride) — ao enviar o formulário lá, ela volta automaticamente pras
+  // fotos. Sem abas / navegação livre entre os dois ao mesmo tempo (isso
+  // causava perda de estado e confusão de "qual versão está valendo").
+  const [view, setView] = useState<'photos' | 'form'>('photos')
+
+  if (view === 'form') {
+    return (
+      <div className="space-y-4">
+        <StepHeader current={2} total={3} label={t('portal.form.stepLabel')} />
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          {/* onDone aqui = formulário enviado → volta pras fotos */}
+          <FormStepContent token={token} data={data} onDone={() => setView('photos')} />
+        </div>
+        <button
+          type="button"
+          onClick={() => setView('photos')}
+          className="w-full text-center text-sm font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2 py-1 transition-colors"
+        >
+          {t('portal.photoStep.backToPhotosLink')}
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
       <StepHeader current={3} total={3} label={t('portal.photoStep.stepLabel')} />
@@ -1453,7 +1485,14 @@ function PhotoStep({ token, data, onDone }: { token: string; data: ClientPortalD
         </div>
       )}
 
-      <PhotoStepContent token={token} data={data} onDone={onDone} />
+      <PhotoStepContent
+        token={token}
+        data={data}
+        onDone={onDone}
+        showBackButton
+        onBack={() => setView('form')}
+        secondaryLabel={t('portal.photoStep.adjustFormShort')}
+      />
     </div>
   )
 }
@@ -1463,13 +1502,16 @@ function PhotoStepContent({
   data, 
   onDone, 
   showBackButton = false, 
-  onBack 
+  onBack,
+  secondaryLabel,
 }: { 
   token: string
   data: ClientPortalData
   onDone: () => void
   showBackButton?: boolean
   onBack?: () => void
+  /** Texto do botão secundário. Se omitido, usa "Voltar" (portal.photoStep.backButton). */
+  secondaryLabel?: string
 }) {
   const { t } = useTranslation()
   // Filtra a categoria de Foto IA — ela é enviada em outra etapa do fluxo
@@ -1678,18 +1720,22 @@ function PhotoStepContent({
           </div>
         )}
 
-        {/* Buttons */}
+        {/* Buttons — enviar é o principal (maior); ajustar é secundário (menor) */}
         <div className="flex gap-2">
           {showBackButton && onBack && (
             <Btn onClick={onBack} variant="outline" className="flex-1">
-              <ChevronLeft className="h-4 w-4" /> {t('portal.photoStep.backButton')}
+              {secondaryLabel ? (
+                <><FileText className="h-4 w-4" /> {secondaryLabel}</>
+              ) : (
+                <><ChevronLeft className="h-4 w-4" /> {t('portal.photoStep.backButton')}</>
+              )}
             </Btn>
           )}
           <Btn
             onClick={handleFinalize}
             disabled={!allFilled}
             loading={finalizing}
-            className={showBackButton ? "flex-1" : "w-full"}
+            className={showBackButton ? "flex-[2]" : "w-full"}
           >
             {finalizing ? (
               <>
@@ -1715,8 +1761,132 @@ function PhotoStepContent({
 
 // ── Review screen ────────────────────────────────────────────────────────────
 
-function ReviewScreen() {
+function ReviewScreen({ token, data, onDone }: { token: string; data: ClientPortalData; onDone: () => void }) {
   const { t } = useTranslation()
+  // Estados de ajuste:
+  //  - null      → tela de espera (revisão)
+  //  - 'choose'  → perguntando o que ajustar
+  //  - 'photos'  → ajustando só as fotos (sem acesso ao formulário)
+  //  - 'both'    → ajustando formulário; dali também dá pra ir pras fotos
+  // Nada muda no banco até a cliente enviar de fato em alguma sub-tela — se
+  // ela só abre e fecha sem alterar, volta pra espera sem efeito nenhum.
+  const [mode, setMode] = useState<null | 'choose' | 'photos' | 'both'>(null)
+  // Dentro de 'both': em qual das duas sub-telas ela está.
+  const [bothView, setBothView] = useState<'form' | 'photos'>('form')
+
+  // ── Passo 1: escolher o que ajustar ────────────────────────────────
+  if (mode === 'choose') {
+    return (
+      <div className="space-y-4">
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 sm:p-8">
+          <h2 className="text-lg font-semibold text-gray-900 mb-1 text-center">{t('portal.review.adjustChooseTitle')}</h2>
+          <p className="text-sm text-gray-500 text-center mb-6">{t('portal.review.adjustChooseBody')}</p>
+          <div className="space-y-3 max-w-sm mx-auto">
+            <button
+              type="button"
+              onClick={() => setMode('photos')}
+              className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border border-gray-200 hover:border-[var(--client-accent-light)] hover:bg-[var(--client-accent-soft)]/40 transition-colors text-left"
+            >
+              <div className="w-9 h-9 rounded-lg bg-[var(--client-accent-soft)] flex items-center justify-center flex-shrink-0">
+                <Camera className="h-4 w-4 text-[var(--client-accent)]" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">{t('portal.review.adjustPhotosOnly')}</p>
+                <p className="text-xs text-gray-500">{t('portal.review.adjustPhotosOnlyHint')}</p>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setBothView('form'); setMode('both') }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border border-gray-200 hover:border-[var(--client-accent-light)] hover:bg-[var(--client-accent-soft)]/40 transition-colors text-left"
+            >
+              <div className="w-9 h-9 rounded-lg bg-[var(--client-accent-soft)] flex items-center justify-center flex-shrink-0">
+                <FileText className="h-4 w-4 text-[var(--client-accent)]" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">{t('portal.review.adjustFormAndPhotos')}</p>
+                <p className="text-xs text-gray-500">{t('portal.review.adjustFormAndPhotosHint')}</p>
+              </div>
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMode(null)}
+            className="w-full text-center text-sm font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2 py-1 mt-5 transition-colors"
+          >
+            {t('portal.review.cancelAdjustLink')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Ajuste: SÓ fotos ───────────────────────────────────────────────
+  if (mode === 'photos') {
+    return (
+      <div className="space-y-4">
+        <StepHeader current={3} total={3} label={t('portal.review.adjustingLabel')} />
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <PhotoStepContent token={token} data={data} onDone={() => { setMode(null); onDone() }} />
+        </div>
+        <button
+          type="button"
+          onClick={() => setMode(null)}
+          className="w-full text-center text-sm font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2 py-1 transition-colors"
+        >
+          {t('portal.review.cancelAdjustLink')}
+        </button>
+      </div>
+    )
+  }
+
+  // ── Ajuste: formulário + fotos ─────────────────────────────────────
+  if (mode === 'both') {
+    return (
+      <div className="space-y-4">
+        <StepHeader current={3} total={3} label={t('portal.review.adjustingLabel')} />
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          {bothView === 'form' ? (
+            // Enviar o formulário → passa pras fotos (não fecha o ajuste ainda)
+            <FormStepContent token={token} data={data} onDone={() => setBothView('photos')} />
+          ) : (
+            <PhotoStepContent token={token} data={data} onDone={() => { setMode(null); onDone() }} />
+          )}
+        </div>
+        {/* Navegação entre as duas sub-telas do modo 'both' */}
+        <div className="flex items-center justify-center gap-4">
+          <button
+            type="button"
+            onClick={() => setBothView('form')}
+            className={`text-sm font-medium underline underline-offset-2 transition-colors ${
+              bothView === 'form' ? 'text-[var(--client-accent)]' : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {t('portal.formPhotoFlow.formTab')}
+          </button>
+          <span className="text-gray-300">·</span>
+          <button
+            type="button"
+            onClick={() => setBothView('photos')}
+            className={`text-sm font-medium underline underline-offset-2 transition-colors ${
+              bothView === 'photos' ? 'text-[var(--client-accent)]' : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {t('portal.formPhotoFlow.photosTab')}
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => setMode(null)}
+          className="w-full text-center text-sm font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2 py-1 transition-colors"
+        >
+          {t('portal.review.cancelAdjustLink')}
+        </button>
+      </div>
+    )
+  }
+
+  // ── Tela de espera (padrão) ────────────────────────────────────────
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10 text-center">
@@ -1743,6 +1913,16 @@ function ReviewScreen() {
           </div>
         </div>
       </div>
+
+      {/* Enviou algo errado? Abre o passo de escolha do que ajustar. */}
+      <button
+        type="button"
+        onClick={() => setMode('choose')}
+        className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-[var(--client-accent-soft2)] bg-[var(--client-accent-soft)]/50 text-[var(--client-accent-dark)] text-sm font-semibold hover:bg-[var(--client-accent-soft)] transition-colors"
+      >
+        <Pencil className="h-4 w-4" />
+        {t('portal.review.wantToAdjustLink')}
+      </button>
     </div>
   )
 }
@@ -1858,6 +2038,12 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
   const [processing, setProcessing] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  // Enviou a foto errada / quer trocar antes da consultora revisar? Mesma
+  // ideia do ReviewScreen: reabre o formulário de upload por cima do estado
+  // "verificando" — a foto antiga só é substituída de fato quando ela
+  // reenviar (o próprio submitAiPhoto já limpa a anterior no 1º arquivo do
+  // lote). É um toggle só local, sem custo até ela realmente reenviar.
+  const [adjusting, setAdjusting] = useState(false)
 
   // Defesa: o plano da cliente NÃO tem categoria de Foto IA, mas a admin
   // mandou pra esta etapa (provavelmente via "Mover para…"). Sem categoria
@@ -1901,6 +2087,12 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
 
   const removeFile = (idx: number) => setUploads(u => u.filter((_, i) => i !== idx))
 
+  // Enquanto ela clicou "ajustar", trata como se a foto ainda não tivesse
+  // sido enviada pra fins de EXIBIÇÃO — mas addFiles acima continua usando
+  // `aiPhotoSent` puro (dado real do banco) pro cálculo de vagas restantes,
+  // já que a foto antiga só é substituída de fato no reenvio.
+  const effectiveSent = aiPhotoSent && !adjusting
+
   const handleSubmit = async () => {
     if (uploads.length === 0) return
     setSubmitting(true)
@@ -1918,6 +2110,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
       // subiram. Antes o e-mail saía por foto (5 fotos = 5 e-mails).
       await clientService.notifyAiPhotosSubmitted(token)
       setUploads([])
+      setAdjusting(false)
       onDone()
     } catch (e: any) {
       setError(e?.message || t('portal.aiPhoto.genericSendError'))
@@ -1931,7 +2124,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
       {/* 1. Resultado parcial com banner adaptado para esta etapa.
             Quando a foto JÁ FOI enviada, troca o banner para "verificando". */}
       {data.result ? (
-        aiPhotoSent
+        effectiveSent
           ? <ResultScreen token={token} data={data} simulatingMode />
           : <ResultScreen token={token} data={data} aiPhotoMode />
       ) : (
@@ -1948,7 +2141,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
       )}
 
       {/* 2. Card da etapa de foto IA */}
-      {aiPhotoSent ? (
+      {effectiveSent ? (
         // ── Foto já enviada — aguardando validação da consultora ──────────
         <div className="bg-white rounded-2xl border border-violet-200 shadow-sm overflow-hidden">
           <div className="bg-gradient-to-r from-violet-50 to-purple-50 px-5 py-4 border-b border-violet-100">
@@ -1965,6 +2158,15 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
           <div className="px-5 py-4 flex items-center gap-3 text-sm text-gray-700">
             <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
             <span>{t('portal.aiPhoto.nothingElseToDo')}</span>
+          </div>
+          <div className="px-5 pb-4">
+            <button
+              type="button"
+              onClick={() => setAdjusting(true)}
+              className="text-sm font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2 transition-colors"
+            >
+              {t('portal.aiPhoto.wantToAdjustLink')}
+            </button>
           </div>
         </div>
       ) : (
@@ -2001,6 +2203,19 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
               </>
             )}
           </button>
+
+          {/* Só faz sentido "cancelar" se já existia uma foto enviada antes —
+              no primeiro envio (aiPhotoSent=false) não há pra onde voltar. */}
+          {aiPhotoSent && adjusting && (
+            <button
+              type="button"
+              onClick={() => { setAdjusting(false); setUploads([]); setError('') }}
+              disabled={submitting}
+              className="w-full text-center text-sm font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2 py-1 transition-colors disabled:opacity-50"
+            >
+              {t('portal.aiPhoto.cancelAdjustLink')}
+            </button>
+          )}
         </>
       )}
     </div>
