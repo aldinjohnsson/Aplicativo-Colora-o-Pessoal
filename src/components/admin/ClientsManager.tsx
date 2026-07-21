@@ -3647,6 +3647,19 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
   const panRef = useRef(pan)
   useEffect(() => { panRef.current = pan }, [pan])
   const imgContainerRef = useRef<HTMLDivElement>(null)
+  // Container de rolagem do filminho de miniaturas (embaixo do lightbox) —
+  // usado como `root` do IntersectionObserver pra carregar sob demanda só
+  // as miniaturas próximas da área visível (ver FilmstripThumb abaixo).
+  const filmstripRef = useRef<HTMLDivElement>(null)
+  // Registro das miniaturas do filminho por índice — usado pra rolar a
+  // miniatura ativa até a área visível quando o índice muda por seta/swipe
+  // (não só por clique no próprio filminho). Isso também é o que dispara o
+  // IntersectionObserver de cada FilmstripThumb a carregar a foto na hora
+  // certa ao entrar numa nova categoria.
+  const thumbRefsMap = useRef<Map<number, HTMLButtonElement>>(new Map())
+  useEffect(() => {
+    thumbRefsMap.current.get(index)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+  }, [index])
   const [deleting, setDeleting] = useState(false)
   const [rotating, setRotating] = useState(false)
 
@@ -3697,6 +3710,20 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
   }, [prev, next, onClose])
   const photo = photos[index]
   const mainImage = useDrivePhotoSrc(photo)
+
+  // ── Filminho ESCOPADO à categoria atual ──────────────────────────────────
+  // `photos` é a lista combinada de TODAS as categorias (necessária pra
+  // navegação em carrossel único passar de uma categoria pra outra). Só que o
+  // filminho não deve renderizar/baixar as fotos de categorias que o usuário
+  // nem está vendo — então aqui recalculamos, a cada slide, só o subconjunto
+  // que pertence à MESMA categoria da foto atual. Ao avançar (next/swipe) até
+  // sair da categoria, `photo` passa a ser de outra categoria e este array
+  // muda sozinho pro próximo grupo — sem nunca montar tudo de uma vez.
+  const categoryPhotos = useMemo(() => {
+    if (!photo) return []
+    const key = photo.category_id ?? '__uncat__'
+    return photos.filter(p => (p.category_id ?? '__uncat__') === key)
+  }, [photos, photo?.category_id, photo?.id])
 
   // ── Drag (1 dedo / mouse) + Pinch (2 dedos) via Pointer Events ──
   // Handlers ficam no container — não na <img> — porque o 2º dedo do pinch
@@ -3969,17 +3996,83 @@ function PhotoLightbox({ photos: initialPhotos, initialIndex, onClose, onDelete,
       </div>
       {photos.length > 1 && (
         <div className="flex-shrink-0 bg-black/60 py-2 sm:py-3 px-4" onClick={e => e.stopPropagation()}>
-          <div className="flex gap-1.5 sm:gap-2 justify-center overflow-x-auto pb-1">
-            {photos.map((p, i) => (
-              <button key={p.id} onClick={() => { setIndex(i); setZoom(1) }} className={`flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden transition-all touch-manipulation ${i === index ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}>
-                <DrivePhotoImg photo={p} alt={p.photo_name} className="w-full h-full object-cover" />
-              </button>
-            ))}
+          <div ref={filmstripRef} className="flex gap-1.5 sm:gap-2 justify-center overflow-x-auto pb-1">
+            {categoryPhotos.map((p) => {
+              // `index` (estado) é GLOBAL, na lista combinada de todas as categorias
+              // (necessário pro carrossel avançar de categoria em categoria). O
+              // filminho só mostra a categoria atual, então aqui traduzimos de volta
+              // pro índice global — tanto pra saber se É o slide ativo quanto pra
+              // navegar corretamente ao clicar numa miniatura.
+              const globalIdx = photos.findIndex(pp => pp.id === p.id)
+              return (
+                <FilmstripThumb
+                  key={p.id}
+                  photo={p}
+                  active={globalIdx === index}
+                  scrollRootRef={filmstripRef}
+                  onClick={() => { setIndex(globalIdx); setZoom(1) }}
+                  registerRef={(el) => {
+                    if (el) thumbRefsMap.current.set(globalIdx, el)
+                    else thumbRefsMap.current.delete(globalIdx)
+                  }}
+                />
+              )
+            })}
           </div>
         </div>
       )}
     </div>,
     document.body
+  )
+}
+
+// ─── Miniatura do filminho (lightbox) — lazy por categoria ─────────────────
+// O filminho combina TODAS as categorias num único array (pra navegação em
+// carrossel funcionar suavemente entre categorias). Só que cada miniatura usa
+// DrivePhotoImg, que baixa a foto ORIGINAL via proxy autenticado (não uma
+// miniatura leve) — se renderizássemos todas de uma vez, abrir o lightbox em
+// QUALQUER categoria dispararia o download de TODAS as fotos do material.
+//
+// Aqui cada miniatura só baixa sua imagem quando entra (ou está prestes a
+// entrar) na área visível do PRÓPRIO filminho — root do IntersectionObserver
+// é o contêiner de rolagem do filminho, não a janela. Resultado prático:
+// abrir a categoria 1 carrega as miniaturas da categoria 1; ao rolar/deslizar
+// até a categoria 2, só então as fotos da categoria 2 começam a baixar.
+function FilmstripThumb({
+  photo, active, onClick, scrollRootRef, registerRef,
+}: {
+  photo: any
+  active: boolean
+  onClick: () => void
+  scrollRootRef: React.RefObject<HTMLDivElement>
+  registerRef?: (el: HTMLButtonElement | null) => void
+}) {
+  const [visible, setVisible] = useState(false)
+  const ref = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // rootMargin horizontal generoso: começa a carregar um pouco antes da
+    // miniatura entrar na tela, pra não haver espera perceptível ao deslizar.
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect() } },
+      { root: scrollRootRef.current, rootMargin: '0px 300px', threshold: 0.01 }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [scrollRootRef])
+
+  return (
+    <button
+      ref={(el) => { (ref as React.MutableRefObject<HTMLButtonElement | null>).current = el; registerRef?.(el) }}
+      onClick={onClick}
+      className={`flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden transition-all touch-manipulation ${active ? 'ring-2 ring-rose-400 opacity-100' : 'opacity-50 hover:opacity-80'}`}
+    >
+      {visible
+        ? <DrivePhotoImg photo={photo} alt={photo.photo_name} className="w-full h-full object-cover" />
+        : <div className="w-full h-full bg-white/10 animate-pulse" />}
+    </button>
   )
 }
 
