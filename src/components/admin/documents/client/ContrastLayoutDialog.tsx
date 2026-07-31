@@ -92,6 +92,25 @@ function strokeRR(ctx: CanvasRenderingContext2D, x: number, y: number, w: number
   ctx.beginPath(); roundRectPath(ctx, x, y, w, h, r); ctx.stroke()
 }
 
+/**
+ * Gera uma versão em preto e branco da imagem, uma única vez (ao carregar
+ * a foto) — em vez de refazer o loop de pixels a cada redraw do canvas
+ * (o que travava o frame durante o arrasto/zoom).
+ */
+function buildGrayscaleCanvas(img: HTMLImageElement): HTMLCanvasElement {
+  const oc = document.createElement('canvas')
+  oc.width = img.naturalWidth; oc.height = img.naturalHeight
+  const oc2 = oc.getContext('2d')!
+  oc2.drawImage(img, 0, 0)
+  const id = oc2.getImageData(0, 0, oc.width, oc.height), d = id.data
+  for (let i = 0; i < d.length; i += 4) {
+    const g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114
+    d[i] = d[i + 1] = d[i + 2] = g
+  }
+  oc2.putImageData(id, 0, 0)
+  return oc
+}
+
 // ── Draw layout ────────────────────────────────────────────────────────
 //
 // Distribuição vertical do canvas (W=1340, H=950):
@@ -113,6 +132,7 @@ function strokeRR(ctx: CanvasRenderingContext2D, x: number, y: number, w: number
 function drawLayout(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
+  grayImg: CanvasImageSource,
   opts: { cMin: number; cMax: number; zoom: number; xOff: number; yOff: number; label: string },
 ) {
   const ctx = canvas.getContext('2d')
@@ -198,13 +218,10 @@ function drawLayout(
     const dx = ix + (iw - drawW) / 2 + xOff * 4, dy = iy + (ih - drawH) / 2 + yOff * 4
 
     if (bw) {
-      // grayscale via filtro do canvas (acelerado pelo navegador) em vez de
-      // getImageData/putImageData pixel a pixel — o loop manual rodava a
-      // cada pointermove do arrasto e travava o frame, causando o tremor.
-      ctx.save()
-      ctx.filter = 'grayscale(1)'
-      ctx.drawImage(img, dx, dy, drawW, drawH)
-      ctx.restore()
+      // Preto e branco pré-calculado uma vez em selectPhoto (buildGrayscaleCanvas)
+      // — evita depender de ctx.filter, que alguns navegadores mobile (Safari
+      // iOS/WebView) ignoram silenciosamente e desenham a foto colorida.
+      ctx.drawImage(grayImg, dx, dy, drawW, drawH)
     } else {
       ctx.drawImage(img, dx, dy, drawW, drawH)
     }
@@ -249,6 +266,7 @@ export function ContrastLayoutDialog({
   const [blobLoading, setBlobLoading]   = useState(false)
   const [photoError, setPhotoError]     = useState<string | null>(null)
   const [loadedImg, setLoadedImg]       = useState<HTMLImageElement | null>(null)
+  const [grayCanvas, setGrayCanvas]     = useState<HTMLCanvasElement | null>(null)
   const [loadingImg, setLoadingImg]     = useState(false)
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(initial?.photoId ?? null)
 
@@ -375,9 +393,9 @@ export function ContrastLayoutDialog({
   // ── Redesenha ao mudar controles ─────────────────────────────────
 
   const redraw = useCallback(() => {
-    if (!canvasRef.current || !loadedImg) return
-    drawLayout(canvasRef.current, loadedImg, { cMin, cMax, zoom, xOff, yOff, label })
-  }, [loadedImg, cMin, cMax, zoom, xOff, yOff, label])
+    if (!canvasRef.current || !loadedImg || !grayCanvas) return
+    drawLayout(canvasRef.current, loadedImg, grayCanvas, { cMin, cMax, zoom, xOff, yOff, label })
+  }, [loadedImg, grayCanvas, cMin, cMax, zoom, xOff, yOff, label])
 
   useEffect(() => { redraw() }, [redraw])
 
@@ -498,7 +516,11 @@ export function ContrastLayoutDialog({
       objectUrlRef.current = objectUrl
 
       const i = new Image()
-      i.onload  = () => { setLoadedImg(i); setLoadingImg(false); setSelectedPhotoId(photoId); setStep('edit') }
+      i.onload  = () => {
+        setLoadedImg(i)
+        setGrayCanvas(buildGrayscaleCanvas(i))
+        setLoadingImg(false); setSelectedPhotoId(photoId); setStep('edit')
+      }
       i.onerror = () => { setLoadingImg(false); setPhotoError('Não foi possível carregar a foto.') }
       i.src = objectUrl
     } catch (e: any) {
@@ -509,12 +531,43 @@ export function ContrastLayoutDialog({
 
   // ── Download PNG ─────────────────────────────────────────────────
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!canvasRef.current) return
+    const filename = `layout-contraste-${clientName.toLowerCase().replace(/\s+/g, '-')}.png`
+
+    // toDataURL gera uma data URI enorme (~1-2MB em base64) e o atributo
+    // `download` com isso estoura o limite de tamanho de URL em vários
+    // navegadores mobile (Safari iOS principalmente) — o clique falhava
+    // silenciosamente. toBlob + Object URL não tem esse limite.
+    const blob: Blob | null = await new Promise(resolve =>
+      canvasRef.current!.toBlob(b => resolve(b), 'image/png')
+    )
+    if (!blob) { setSaveError('Erro ao gerar a imagem.'); return }
+
+    const file = new File([blob], filename, { type: 'image/png' })
+
+    // Mobile (iOS/Android): usa o menu de compartilhamento nativo, que tem
+    // "Salvar imagem" — muito mais confiável no celular do que o atributo
+    // `download`, que o Safari iOS ignora ou trata de forma inconsistente.
+    if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename })
+        return
+      } catch (e: any) {
+        if (e?.name === 'AbortError') return // usuário cancelou o share sheet
+        // outros erros: cai pro fallback abaixo
+      }
+    }
+
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.download = `layout-contraste-${clientName.toLowerCase().replace(/\s+/g, '-')}.png`
-    a.href = canvasRef.current.toDataURL('image/png')
+    a.download = filename
+    a.href = url
+    a.rel = 'noopener'
+    document.body.appendChild(a)
     a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
   }
 
   // ── Salvar em Resultados (client_result_files) ────────────────────
