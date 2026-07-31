@@ -29,6 +29,14 @@ export type { ContrastLayoutData }
 const W = 1340
 const H = 950
 
+// Bounding box das duas fotos dentro do canvas — mesma geometria calculada
+// em drawLayout (scaleY=150 → photoY=217; photoW=530, gap=50 → startX=115).
+// Usado só pra posicionar o overlay de arrastar/pinçar por cima do canvas.
+const PHOTO_BOX_X = 115
+const PHOTO_BOX_Y = 217
+const PHOTO_BOX_W = 1110
+const PHOTO_BOX_H = 660
+
 // ── Types ──────────────────────────────────────────────────────────────
 
 interface ClientPhoto { id: string; url: string; thumb?: string; driveFileId?: string | null; categoryId?: string | null; categoryTitle?: string | null }
@@ -51,6 +59,18 @@ const LABEL_OPTIONS = ['baixo', 'médio baixo', 'médio', 'médio alto', 'alto']
 /** "médio alto" → "Médio Alto" — usado só no <select> de label (UI). */
 function titleCase(s: string): string {
   return s.split(/\s+/).map(w => w ? w[0].toUpperCase() + w.slice(1) : '').join(' ')
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v))
+}
+
+/** Estado do gesto ativo sobre a foto (arrastar / pinça) — mesmo padrão do IrisAnalysisDialog. */
+interface PhotoDragState {
+  pointers: Map<number, { x: number; y: number }>
+  panStart?: { x: number; y: number; xOff: number; yOff: number }
+  pinchStartDist?: number
+  pinchStartZoom?: number
 }
 
 // ── Canvas helpers ─────────────────────────────────────────────────────
@@ -93,13 +113,13 @@ function strokeRR(ctx: CanvasRenderingContext2D, x: number, y: number, w: number
 function drawLayout(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
-  opts: { cMin: number; cMax: number; zoom: number; yOff: number; label: string },
+  opts: { cMin: number; cMax: number; zoom: number; xOff: number; yOff: number; label: string },
 ) {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   canvas.width = W; canvas.height = H
 
-  const { cMin, cMax, zoom: zoomPct, yOff, label } = opts
+  const { cMin, cMax, zoom: zoomPct, xOff, yOff, label } = opts
   const scale = zoomPct / 100
 
   ctx.fillStyle = '#F7F5F0'; ctx.fillRect(0, 0, W, H)
@@ -175,19 +195,16 @@ function drawLayout(
     let drawW: number, drawH: number
     if (imgAsp > frameAsp) { drawH = ih * scale; drawW = drawH * imgAsp }
     else { drawW = iw * scale; drawH = drawW / imgAsp }
-    const dx = ix + (iw - drawW) / 2, dy = iy + (ih - drawH) / 2 + yOff * 4
+    const dx = ix + (iw - drawW) / 2 + xOff * 4, dy = iy + (ih - drawH) / 2 + yOff * 4
 
     if (bw) {
-      const oc = document.createElement('canvas')
-      oc.width = Math.round(drawW); oc.height = Math.round(drawH)
-      const oc2 = oc.getContext('2d')!
-      oc2.drawImage(img, 0, 0, oc.width, oc.height)
-      const id = oc2.getImageData(0, 0, oc.width, oc.height), d = id.data
-      for (let i = 0; i < d.length; i += 4) {
-        const g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114
-        d[i] = d[i + 1] = d[i + 2] = g
-      }
-      oc2.putImageData(id, 0, 0); ctx.drawImage(oc, dx, dy, drawW, drawH)
+      // grayscale via filtro do canvas (acelerado pelo navegador) em vez de
+      // getImageData/putImageData pixel a pixel — o loop manual rodava a
+      // cada pointermove do arrasto e travava o frame, causando o tremor.
+      ctx.save()
+      ctx.filter = 'grayscale(1)'
+      ctx.drawImage(img, dx, dy, drawW, drawH)
+      ctx.restore()
     } else {
       ctx.drawImage(img, dx, dy, drawW, drawH)
     }
@@ -238,6 +255,7 @@ export function ContrastLayoutDialog({
   const [cMin, setCMin]   = useState(initial?.cMin   ?? 2)
   const [cMax, setCMax]   = useState(initial?.cMax   ?? 9)
   const [zoom, setZoom]   = useState(initial?.zoom   ?? 108)
+  const [xOff, setXOff]   = useState((initial as any)?.xOff ?? 0)
   const [yOff, setYOff]   = useState(initial?.yOff   ?? 0)
   const [label, setLabel] = useState(initial?.label  ?? 'médio alto')
 
@@ -252,6 +270,16 @@ export function ContrastLayoutDialog({
   // Ref para o objectURL da foto — evita taint de canvas por CORS
   const objectUrlRef = useRef<string | null>(null)
   const canvasRef    = useRef<HTMLCanvasElement>(null)
+
+  // ── Overlay de arrastar/pinçar em cima da foto (mesmo padrão do
+  // IrisAnalysisDialog) ────────────────────────────────────────────
+  const photoOverlayRef = useRef<HTMLDivElement | null>(null)
+  const dragRef = useRef<PhotoDragState>({ pointers: new Map() })
+  // Ref sempre atualizada com zoom/xOff/yOff mais recentes — necessária
+  // porque os handlers de pointer/wheel ficam presos ao closure do
+  // primeiro render.
+  const posRef = useRef({ zoom, xOff, yOff })
+  useEffect(() => { posRef.current = { zoom, xOff, yOff } }, [zoom, xOff, yOff])
 
   // Revoga objectURL ao desmontar
   useEffect(() => () => {
@@ -348,10 +376,92 @@ export function ContrastLayoutDialog({
 
   const redraw = useCallback(() => {
     if (!canvasRef.current || !loadedImg) return
-    drawLayout(canvasRef.current, loadedImg, { cMin, cMax, zoom, yOff, label })
-  }, [loadedImg, cMin, cMax, zoom, yOff, label])
+    drawLayout(canvasRef.current, loadedImg, { cMin, cMax, zoom, xOff, yOff, label })
+  }, [loadedImg, cMin, cMax, zoom, xOff, yOff, label])
 
   useEffect(() => { redraw() }, [redraw])
+
+  // ── Arrastar (pan) e pinçar/scroll (zoom) direto em cima da foto ────
+  //
+  // A área interativa é um overlay retangular posicionado por cima da
+  // caixa das duas fotos desenhadas no canvas (PHOTO_BOX_X/Y/W/H).
+  // 1 dedo/mouse = arrasta (xOff/yOff); 2 dedos = pinça pro zoom.
+  // Zoom fica ancorado no centro (mesmo comportamento do slider).
+
+  const getScaleFactor = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return 1
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width) return 1
+    return W / rect.width
+  }
+
+  const handlePhotoPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const el = photoOverlayRef.current
+    if (el) { try { el.setPointerCapture(e.pointerId) } catch { /* ignore */ } }
+    const d = dragRef.current
+    d.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (d.pointers.size === 1) {
+      d.panStart = { x: e.clientX, y: e.clientY, xOff: posRef.current.xOff, yOff: posRef.current.yOff }
+    } else if (d.pointers.size === 2) {
+      const [a, b] = Array.from(d.pointers.values())
+      d.pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y)
+      d.pinchStartZoom = posRef.current.zoom
+      d.panStart = undefined
+    }
+  }, [])
+
+  const handlePhotoPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (!d.pointers.has(e.pointerId)) return
+    d.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (d.pointers.size === 1 && d.panStart) {
+      const scaleFactor = getScaleFactor()
+      // xOff/yOff são multiplicados por 4 em drawPhoto, então convertemos
+      // o delta de pixels do canvas de volta pra unidade do slider.
+      const dx = Math.round(((e.clientX - d.panStart.x) * scaleFactor) / 4)
+      const dy = Math.round(((e.clientY - d.panStart.y) * scaleFactor) / 4)
+      setXOff(clamp(d.panStart.xOff + dx, -50, 50))
+      setYOff(clamp(d.panStart.yOff + dy, -50, 50))
+    } else if (d.pointers.size === 2 && d.pinchStartDist) {
+      const [a, b] = Array.from(d.pointers.values())
+      const dist = Math.hypot(a.x - b.x, a.y - b.y)
+      const ratio = dist / d.pinchStartDist
+      setZoom(clamp(Math.round((d.pinchStartZoom ?? posRef.current.zoom) * ratio), 80, 160))
+    }
+  }, [])
+
+  const handlePhotoPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    d.pointers.delete(e.pointerId)
+    if (d.pointers.size < 2) d.pinchStartDist = undefined
+    if (d.pointers.size === 1) {
+      // Voltou de pinça pra 1 dedo só: reinicia o pan a partir da posição
+      // atual pra não dar salto.
+      const [remaining] = Array.from(d.pointers.values())
+      d.panStart = { x: remaining.x, y: remaining.y, xOff: posRef.current.xOff, yOff: posRef.current.yOff }
+    } else if (d.pointers.size === 0) {
+      d.panStart = undefined
+    }
+  }, [])
+
+  // Wheel/scroll pra zoom — precisa de listener nativo (não-passivo) porque
+  // o React registra onWheel como passive por padrão e preventDefault()
+  // não funcionaria pra bloquear o scroll da página por trás do modal.
+  useEffect(() => {
+    const el = photoOverlayRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const factor = Math.exp(-e.deltaY * 0.0015)
+      setZoom(clamp(Math.round(posRef.current.zoom * factor), 80, 160))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [step])
 
   // ── Esc fecha ────────────────────────────────────────────────────
 
@@ -451,9 +561,9 @@ export function ContrastLayoutDialog({
     try {
       const data: ContrastLayoutData = {
         photoId: selectedPhotoId,
-        cMin, cMax, zoom, yOff, label,
+        cMin, cMax, zoom, xOff, yOff, label,
         savedAt: new Date().toISOString(),
-      }
+      } as ContrastLayoutData
       const formatted = formatContrastValue(label, cMin, cMax)
       await onSave(data, formatted)
       setSaved(true)
@@ -617,10 +727,19 @@ export function ContrastLayoutDialog({
             onChange={e => setZoom(Number(e.target.value))} className="w-28 accent-rose-500" />
         </div>
 
-        {/* Posição */}
+        {/* Posição horizontal */}
         <div className="flex flex-col gap-1">
           <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">
-            Posição <span className="font-normal text-gray-400">{yOff > 0 ? `+${yOff}` : yOff}</span>
+            Posição horizontal <span className="font-normal text-gray-400">{xOff > 0 ? `+${xOff}` : xOff}</span>
+          </label>
+          <input type="range" min={-50} max={50} step={1} value={xOff}
+            onChange={e => setXOff(Number(e.target.value))} className="w-28 accent-rose-500" />
+        </div>
+
+        {/* Posição vertical */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">
+            Posição vertical <span className="font-normal text-gray-400">{yOff > 0 ? `+${yOff}` : yOff}</span>
           </label>
           <input type="range" min={-50} max={50} step={1} value={yOff}
             onChange={e => setYOff(Number(e.target.value))} className="w-28 accent-rose-500" />
@@ -633,11 +752,32 @@ export function ContrastLayoutDialog({
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-4">
-        <div className="rounded-xl overflow-hidden border border-gray-200 bg-[#F7F5F0]"
+        <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-[#F7F5F0]"
           style={{ aspectRatio: `${W}/${H}` }}>
           <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: 'auto' }} />
+          {/* Área interativa: arrastar (pan) e pinçar/scroll (zoom), sobreposta
+              exatamente à caixa das duas fotos desenhadas no canvas. */}
+          <div
+            ref={photoOverlayRef}
+            onPointerDown={handlePhotoPointerDown}
+            onPointerMove={handlePhotoPointerMove}
+            onPointerUp={handlePhotoPointerUp}
+            onPointerCancel={handlePhotoPointerUp}
+            className="absolute cursor-grab active:cursor-grabbing"
+            style={{
+              left: `${(PHOTO_BOX_X / W) * 100}%`,
+              top: `${(PHOTO_BOX_Y / H) * 100}%`,
+              width: `${(PHOTO_BOX_W / W) * 100}%`,
+              height: `${(PHOTO_BOX_H / H) * 100}%`,
+              touchAction: 'none',
+            }}
+            title="Arraste para mover · scroll ou pinça para zoom"
+          />
         </div>
-        <p className="text-[11px] text-gray-400 mt-1.5 text-right">{W}×{H}px · PNG</p>
+        <p className="text-[11px] text-gray-400 mt-1.5">
+          💡 Arraste a foto acima pra mover, scroll/pinça pra zoom. Os controles no topo são pro ajuste fino.
+        </p>
+        <p className="text-[11px] text-gray-400 text-right">{W}×{H}px · PNG</p>
 
         {/* Preview do valor que será gravado na tag "Contraste" */}
         <div className="mt-3 bg-violet-50 border border-violet-200 rounded-xl px-4 py-2.5 flex items-center gap-2">
