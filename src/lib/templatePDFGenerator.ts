@@ -39,6 +39,13 @@ export interface PdfStyleConfig {
   bodySize?:    number
   bodyColor?:   string
   accentColor?: string
+  /**
+   * Cor de fundo PADRÃO dos cards (variant 'soft'/'card') quando o bloco
+   * não tem uma cor customizada própria (block.blockBgColor). Configurável
+   * em Configurações → PDF Modelo de Estilo. Sem isso, o antigo fallback
+   * fixo '#F5F0EC' (bege) era usado sempre.
+   */
+  boxColor?: string
 }
 
 export interface EditorBlock {
@@ -189,6 +196,8 @@ interface ResolvedStyle {
   colorHeader:    ReturnType<typeof rgb>
   colorBody:      ReturnType<typeof rgb>
   colorAccent:    ReturnType<typeof rgb>
+  /** Cor de fundo padrão dos cards, quando o bloco não tem cor própria. */
+  colorBox:       ReturnType<typeof rgb>
 }
 
 async function resolveStyle(pdf: PDFDocument, cfg?: PdfStyleConfig): Promise<ResolvedStyle> {
@@ -205,6 +214,7 @@ async function resolveStyle(pdf: PDFDocument, cfg?: PdfStyleConfig): Promise<Res
     colorHeader: hexToRgb(cfg?.headerColor, DEFAULT_HEADER_COLOR),
     colorBody:   hexToRgb(cfg?.bodyColor,   DEFAULT_BODY_COLOR),
     colorAccent: hexToRgb(cfg?.accentColor, DEFAULT_ACCENT_COLOR),
+    colorBox:    hexToRgb(cfg?.boxColor,    '#F5F0EC'),
   }
 }
 
@@ -1132,12 +1142,13 @@ function drawBlockBackground(
   const topY = byPdf + bh
   const path = roundedRectSvgPath(bw, bh, BLOCK_CORNER_RADIUS)
 
-  // Cor de fundo resolvida: customizada (se presente) > default do variant
+  // Cor de fundo resolvida: customizada do bloco (se presente) > padrão
+  // configurado em Configurações (style.colorBox) > bege fixo (compat).
   const customBg = bgColor ? hexToRgb(bgColor, '#F5F0EC') : null
 
   if (variant === 'soft') {
     // Minimalista: fundo sutil, SEM borda, SEM sombra
-    const fill = customBg ?? hexToRgb('#F5F0EC', '#F5F0EC')  // bege claro default
+    const fill = customBg ?? style.colorBox
     page.drawSvgPath(path, {
       x: bx, y: topY,
       color: fill, opacity: 1,

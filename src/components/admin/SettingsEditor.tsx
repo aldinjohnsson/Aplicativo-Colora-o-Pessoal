@@ -163,6 +163,15 @@ interface AppSettings {
   // partir dessas duas.
   clientAccentColor?: string
   clientBgColor?: string
+
+  // Cores do Mini Dossiê Capilar (PDF gerado por IA) — cor de texto/título
+  // dos cards e cor de fundo padrão dos cards. Cada admin define a sua.
+  // Ver src/lib/templatePDFGenerator.ts (PdfStyleConfig.accentColor/boxColor).
+  pdfStyle?: {
+    accentColor?: string
+    boxColor?: string
+    bodyColor?: string
+  }
 }
 
 // ── Helpers de admin_content ────────────────────────────────────────────────
@@ -912,6 +921,120 @@ function PdfTemplateSection({
   )
 }
 
+// ── Cores do Mini Dossiê Capilar (texto + caixa dos cards) ─────────────────
+//
+// Cada admin define as suas — salvo em admin_content(type='settings').pdfStyle,
+// lido por templatePDFGenerator.ts (resolveStyle → colorAccent/colorBox) na
+// hora de gerar o PDF de cada cliente. Mesmo padrão visual da seção "Tema do
+// Portal do Cliente" (cor + hex + prévia), só que aplicado aos cards do
+// dossiê em vez do portal.
+const DOSSIE_DEFAULT_ACCENT = '#87485E'
+const DOSSIE_DEFAULT_BOX    = '#F5F0EC'
+const DOSSIE_DEFAULT_BODY   = '#000000'
+
+function PdfDossieColorsSection({
+  value, onChange,
+}: {
+  value?: { accentColor?: string; boxColor?: string; bodyColor?: string }
+  onChange: (next: { accentColor?: string; boxColor?: string; bodyColor?: string }) => void
+}) {
+  const accentColor = value?.accentColor || DOSSIE_DEFAULT_ACCENT
+  const boxColor     = value?.boxColor    || DOSSIE_DEFAULT_BOX
+  const bodyColor    = value?.bodyColor   || DOSSIE_DEFAULT_BODY
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-fuchsia-50 to-pink-50">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-gradient-to-br from-fuchsia-500 to-pink-500 rounded-xl flex items-center justify-center">
+            <Palette className="h-5 w-5 text-white" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Cores do Mini Dossiê Capilar</h2>
+            <p className="text-sm text-gray-500">Cor do título, do corpo do texto e da caixa dos cards (Base, Nuances, Cores, Técnica...)</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+            <input
+              type="color"
+              value={accentColor}
+              onChange={e => onChange({ ...value, accentColor: e.target.value })}
+              className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+              title="Cor do título"
+            />
+            <div className="min-w-0">
+              <p className="text-xs text-gray-500 leading-tight">Título (ex: "BASE")</p>
+              <input
+                type="text"
+                value={accentColor}
+                onChange={e => onChange({ ...value, accentColor: e.target.value })}
+                className="w-24 text-sm font-mono focus:outline-none"
+                maxLength={7}
+              />
+            </div>
+          </div>
+          <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+            <input
+              type="color"
+              value={bodyColor}
+              onChange={e => onChange({ ...value, bodyColor: e.target.value })}
+              className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+              title="Cor do corpo do texto"
+            />
+            <div className="min-w-0">
+              <p className="text-xs text-gray-500 leading-tight">Corpo (ex: "Altura: 9-10")</p>
+              <input
+                type="text"
+                value={bodyColor}
+                onChange={e => onChange({ ...value, bodyColor: e.target.value })}
+                className="w-24 text-sm font-mono focus:outline-none"
+                maxLength={7}
+              />
+            </div>
+          </div>
+          <div className="flex-1 flex items-center gap-2 border border-gray-300 rounded-xl px-3 py-2">
+            <input
+              type="color"
+              value={boxColor}
+              onChange={e => onChange({ ...value, boxColor: e.target.value })}
+              className="w-9 h-9 rounded-lg border border-gray-200 cursor-pointer flex-shrink-0"
+              title="Cor da caixa"
+            />
+            <div className="min-w-0">
+              <p className="text-xs text-gray-500 leading-tight">Caixa (fundo dos cards)</p>
+              <input
+                type="text"
+                value={boxColor}
+                onChange={e => onChange({ ...value, boxColor: e.target.value })}
+                className="w-24 text-sm font-mono focus:outline-none"
+                maxLength={7}
+              />
+            </div>
+          </div>
+          {(value?.accentColor || value?.boxColor || value?.bodyColor) && (
+            <button
+              onClick={() => onChange({ accentColor: DOSSIE_DEFAULT_ACCENT, boxColor: DOSSIE_DEFAULT_BOX, bodyColor: DOSSIE_DEFAULT_BODY })}
+              className="flex-shrink-0 px-3 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50"
+            >
+              Restaurar padrão
+            </button>
+          )}
+        </div>
+
+        {/* Prévia — um card "soft" igual ao usado no dossiê */}
+        <div className="rounded-xl p-4" style={{ background: boxColor }}>
+          <p className="text-xs font-bold uppercase tracking-wide mb-1" style={{ color: accentColor }}>Base</p>
+          <p className="text-xs" style={{ color: bodyColor }}>Altura: 9-10 · Base: 9.0 • 10.0</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Branding das Composições IA ─────────────────────────────────────────────
 
 const AI_BRANDING_ACCENT = '#06b6d4'
@@ -1453,6 +1576,21 @@ export default function SettingsEditor() {
           }}
         />
 
+        <PdfDossieColorsSection
+          value={settings.pdfStyle}
+          onChange={async (pdfStyle) => {
+            const updated = { ...settings, pdfStyle }
+            setSettings(updated)
+            try {
+              const { data: { user } } = await supabase.auth.getUser()
+              if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+              await settingsStorageService.saveSettings(updated, user.id)
+            } catch (e: any) {
+              alert('Erro ao salvar cores do dossiê: ' + e.message)
+            }
+          }}
+        />
+
         {showGeminiHelp && (
           <ApiKeyHelpModal
             title="Como obter a chave Gemini"
@@ -1646,6 +1784,21 @@ export default function SettingsEditor() {
           onSelectBlankPageIndex={async (index) => {
             await settingsStorageService.updatePdfTemplateBlankPageIndex(index)
             setSettings(prev => ({ ...prev, pdfTemplateBlankPageIndex: index }))
+          }}
+        />
+
+        <PdfDossieColorsSection
+          value={settings.pdfStyle}
+          onChange={async (pdfStyle) => {
+            const updated = { ...settings, pdfStyle }
+            setSettings(updated)
+            try {
+              const { data: { user } } = await supabase.auth.getUser()
+              if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+              await settingsStorageService.saveSettings(updated, user.id)
+            } catch (e: any) {
+              alert('Erro ao salvar cores do dossiê: ' + e.message)
+            }
           }}
         />
 
@@ -2236,6 +2389,21 @@ export default function SettingsEditor() {
         onSelectBlankPageIndex={async (index) => {
           await settingsStorageService.updatePdfTemplateBlankPageIndex(index)
           setSettings(prev => ({ ...prev, pdfTemplateBlankPageIndex: index }))
+        }}
+      />
+
+      <PdfDossieColorsSection
+        value={settings.pdfStyle}
+        onChange={async (pdfStyle) => {
+          const updated = { ...settings, pdfStyle }
+          setSettings(updated)
+          try {
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) throw new Error('Sessão expirada. Faça login novamente.')
+            await settingsStorageService.saveSettings(updated, user.id)
+          } catch (e: any) {
+            alert('Erro ao salvar cores do dossiê: ' + e.message)
+          }
         }}
       />
 
