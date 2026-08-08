@@ -472,38 +472,66 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   useEffect(() => {
     if (!storageKey || messages.length === 0 || messages.some(m => m.loading)) return
     // localStorage.setItem pode lançar QuotaExceededError — especialmente em
-    // iOS Safari (~5MB por origem; 2.5MB em modo privado). Imagens geradas
-    // pela IA em base64 (1-3MB) somadas ao histórico estouram o limite e
-    // a exception fora de try/catch dentro de useEffect propaga durante o
-    // commit e branqueia a tela. handleDeleteSelected já faz isso desde
-    // sempre — replicado aqui pra fechar a brecha do save automático.
-    try {
-      localStorage.setItem(storageKey, serializeMessages(messages))
-    } catch (err) {
-      console.warn('[GeminiChat] localStorage cheio, tentando salvar versão sem base64:', err)
-      try {
-        // Fallback: descarta TODO o base64 (mesmo sem savedImageUrls).
-        // Se a página recarregar antes do upload pro Drive terminar, a imagem
-        // dessa msg específica somem do histórico — mas é raro e prefere-se isso
-        // a quebrar o app.
-        const lean = JSON.stringify(
-          messages.filter(m => !m.loading && !m.error).map(m => ({
-            ...m,
-            imagePreview: undefined,
-            imageBase64: undefined,
-            responseParts: m.responseParts?.map(p =>
-              p.type === 'image'
-                ? { type: 'image', imageMimeType: p.imageMimeType }
-                : p,
-            ),
-          })),
-        )
-        localStorage.setItem(storageKey, lean)
-      } catch {
-        // Ainda estourou — limpa pra não deixar dado inconsistente.
-        try { localStorage.removeItem(storageKey) } catch {}
-      }
+    // iOS Safari (~5MB por origem; 2.5MB em modo privado, e ainda menos em
+    // PWA instalado). Imagens geradas pela IA em base64 (1-3MB cada) somadas
+    // ao histórico estouram o limite fácil quando há várias gerações na
+    // mesma conversa.
+    //
+    // IMPORTANTE: NUNCA apagamos o histórico inteiro aqui. Antes, quando o
+    // fallback "lean" (sem base64) também estourava, o código fazia
+    // localStorage.removeItem(storageKey) — isso apagava TODA a conversa do
+    // usuário (mesmo mensagens de texto e imagens já salvas no Drive há
+    // muito tempo) por causa de UMA mensagem grande demais. Era esse o bug
+    // do "sumiu tudo": as imagens continuavam seguras no Drive, mas o
+    // histórico local (única fonte pro chat re-renderizar) era zerado, e ao
+    // voltar pra tela o componente recarregava do zero (WELCOME message).
+    //
+    // A estratégia agora é degradar progressivamente e sempre manter o
+    // máximo de histórico possível:
+    //   1) tenta salvar tudo
+    //   2) tenta salvar sem base64 nas imagens já com backup no Drive (lean)
+    //   3) se ainda estourar, remove o base64 de TODAS as imagens (mesmo as
+    //      sem savedImageUrls ainda — só essa imagem específica pode não
+    //      aparecer até recarregar depois do upload terminar)
+    //   4) se ainda estourar, começa a descartar as mensagens mais ANTIGAS
+    //      (uma a uma) até caber — nunca zera tudo de uma vez
+    //   5) só em último caso (nem a mensagem mais recente cabe sozinha)
+    //      desiste de persistir essa rodada, mas não apaga o que já estava
+    //      salvo anteriormente no localStorage
+    const tryStore = (value: string): boolean => {
+      try { localStorage.setItem(storageKey, value); return true }
+      catch { return false }
     }
+
+    if (tryStore(serializeMessages(messages))) return
+
+    console.warn('[GeminiChat] localStorage cheio, degradando histórico progressivamente')
+
+    const stripAllBase64 = (msgs: ChatMsg[]) =>
+      msgs.filter(m => !m.loading && !m.error).map(m => ({
+        ...m,
+        imagePreview: undefined,
+        imageBase64: undefined,
+        responseParts: m.responseParts?.map(p =>
+          p.type === 'image' ? { type: 'image', imageMimeType: p.imageMimeType } : p,
+        ),
+      }))
+
+    let lean = stripAllBase64(messages)
+    if (tryStore(JSON.stringify(lean))) return
+
+    // Ainda estourou: descarta mensagens mais antigas uma a uma até caber
+    // (ou sobrar só a última). Preserva o fim da conversa, que é o que o
+    // usuário acabou de ver/gerar.
+    while (lean.length > 1) {
+      lean = lean.slice(1)
+      if (tryStore(JSON.stringify(lean))) return
+    }
+
+    // Não conseguiu nem persistir a última mensagem isolada — desiste desta
+    // rodada de save, mas preserva o que já estava gravado anteriormente
+    // (não faz removeItem).
+    console.warn('[GeminiChat] não foi possível persistir o histórico nesta rodada; mantendo save anterior intacto')
   }, [messages, storageKey])
 
   // Scroll só dentro do container de mensagens, NUNCA a página inteira.
