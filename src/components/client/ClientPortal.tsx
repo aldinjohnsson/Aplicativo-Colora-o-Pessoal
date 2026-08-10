@@ -2498,7 +2498,10 @@ function ResultScreen({
   // RPC pública (token da cliente, sem auth) — mesmo padrão do
   // get_client_owner_role acima. null = limpeza automática desligada
   // pra essa consultora (não mostra aviso nenhum).
-  const [fileRetention, setFileRetention] = useState<{ enabled: boolean; days: number } | null>(null)
+  // extendedUntil: quando a admin dá prazo extra (ex: +15 dias) pra baixar
+  // depois que a cliente perdeu o prazo padrão, vira a data-limite real —
+  // sempre que for MAIOR que a data calculada por released_at + days.
+  const [fileRetention, setFileRetention] = useState<{ enabled: boolean; days: number; extendedUntil: string | null } | null>(null)
   useEffect(() => {
     if (!token) return
     let cancelled = false
@@ -2507,7 +2510,7 @@ function ResultScreen({
         const { data, error } = await supabase.rpc('get_client_file_retention', { p_token: token })
         if (cancelled) return
         if (error) { console.warn('[ClientPortal] get_client_file_retention:', error); return }
-        if (data) setFileRetention({ enabled: data.enabled ?? true, days: data.days ?? 21 })
+        if (data) setFileRetention({ enabled: data.enabled ?? true, days: data.days ?? 21, extendedUntil: data.extendedUntil ?? null })
       } catch (e) {
         if (!cancelled) console.warn('[ClientPortal] file_retention fetch falhou:', e)
       }
@@ -2735,7 +2738,10 @@ function ResultScreen({
       {!simulatingMode && !aiPhotoMode && fileRetention?.enabled && result.released_at && (() => {
         const isPt = language.startsWith('pt')
         const releasedAt = new Date(result.released_at)
-        const deleteAt = new Date(releasedAt.getTime() + fileRetention.days * 24 * 60 * 60 * 1000)
+        const computedDeleteAt = new Date(releasedAt.getTime() + fileRetention.days * 24 * 60 * 60 * 1000)
+        // Se a admin deu prazo extra e ele for depois do prazo padrão, vale o extra.
+        const extendedUntil = fileRetention.extendedUntil ? new Date(fileRetention.extendedUntil) : null
+        const deleteAt = extendedUntil && extendedUntil.getTime() > computedDeleteAt.getTime() ? extendedUntil : computedDeleteAt
         const daysLeft = Math.ceil((deleteAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
         const expired = daysLeft <= 0
         const formattedDeleteDate = deleteAt.toLocaleDateString(language, {

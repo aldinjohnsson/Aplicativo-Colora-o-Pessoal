@@ -4709,6 +4709,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
   const [cleaningFiles, setCleaningFiles] = useState(false)
   const [filesCleanedUp, setFilesCleanedUp] = useState(false)
   const [showCleanupModal, setShowCleanupModal] = useState(false)
+  const [extendingRetention, setExtendingRetention] = useState(false)
+  const [retentionExtended, setRetentionExtended] = useState<string | null>(null)
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
   const [savingName, setSavingName] = useState(false)
@@ -5115,6 +5117,26 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
       alert(`Erro ao limpar arquivos: ${e.message}`)
     } finally {
       setCleaningFiles(false)
+    }
+  }
+
+  /**
+   * Dá mais 15 dias (padrão) pra cliente baixar os arquivos do resultado
+   * antes do cleanup automático apagar a pasta do Drive. Só faz sentido
+   * enquanto client.drive_purged_at ainda for null — depois que o cron já
+   * rodou, a pasta já foi apagada permanentemente (a API do Drive usada no
+   * cleanup não manda pra lixeira) e não tem volta.
+   */
+  const handleExtendRetention = async (extraDays: number = 15) => {
+    setExtendingRetention(true)
+    try {
+      const newUntil = await adminService.extendClientFileRetention(clientId!, extraDays)
+      setRetentionExtended(newUntil)
+      await load()
+    } catch (e: any) {
+      alert(`Erro ao estender prazo: ${e.message}`)
+    } finally {
+      setExtendingRetention(false)
     }
   }
 
@@ -5868,6 +5890,29 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
           {tab === 'photos' && (
             <div className="space-y-4">
               <PhotosView clientId={clientId!} photos={photos} photoCategories={photoCategories} clientToken={client.token} clientName={client.full_name} onPhotosChange={load} />
+
+              {/* Prazo de download do Drive — só faz sentido enquanto o cleanup
+                  automático ainda não rodou pra essa cliente (drive_purged_at
+                  null). Depois de purgado não tem mais o que estender: a pasta
+                  já foi apagada de forma permanente pela API do Drive. */}
+              {client.status === 'completed' && result?.is_released && !(client as any).drive_purged_at && (
+                <div className="flex items-center justify-between py-3 px-4 rounded-xl gap-3" style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Clock className="h-4 w-4 text-amber-500 flex-shrink-0" />
+                    <div className="min-w-0">
+                      <span className="text-sm text-amber-800 font-medium block">Prazo de download da cliente</span>
+                      {((client as any).retention_extended_until || retentionExtended) && (
+                        <span className="text-xs text-amber-600">
+                          Estendido até {new Date(retentionExtended || (client as any).retention_extended_until).toLocaleDateString('pt-BR')}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <Btn variant="outline" size="sm" onClick={() => handleExtendRetention(15)} loading={extendingRetention} className="flex-shrink-0 border-amber-300 text-amber-700 hover:bg-amber-50">
+                    <Calendar className="h-3.5 w-3.5" /> +15 dias
+                  </Btn>
+                </div>
+              )}
 
               {/* Zona de limpeza — visível apenas para clientes concluídos */}
               {client.status === 'completed' && (

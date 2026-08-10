@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield, Globe, Palette } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCircle, X, ExternalLink, Sparkles, Loader2, Shield, Globe, Palette, Clock } from 'lucide-react'
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
@@ -172,6 +172,14 @@ interface AppSettings {
     boxColor?: string
     bodyColor?: string
   }
+
+  // Retenção de arquivos no Drive: quantos dias após liberar o resultado até
+  // o cleanup automático (cron diário) apagar a pasta da cliente no Drive.
+  // fileRetentionEnabled=false desliga a limpeza automática pra esse admin
+  // (clientes nunca são purgadas). Ver get_client_file_retention (RPC) e a
+  // view v_drive_expired_clients no backend — os dois leem esses 2 campos.
+  fileRetentionEnabled?: boolean
+  fileRetentionDays?: number
 }
 
 // ── Helpers de admin_content ────────────────────────────────────────────────
@@ -1288,6 +1296,8 @@ export default function SettingsEditor() {
     aiCompositionFinalFileName: '',
     clientAccentColor: '#ec4899',
     clientBgColor: '#fff1f2',
+    fileRetentionEnabled: true,
+    fileRetentionDays: 90,
   })
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -1350,6 +1360,8 @@ export default function SettingsEditor() {
         aiCompositionFinalFileName: '',
         clientAccentColor: '#ec4899',
         clientBgColor: '#fff1f2',
+        fileRetentionEnabled: true,
+        fileRetentionDays: 90,
       }
 
       // 4 queries em paralelo — blobs (pdf_template, ai_composition_cover/final)
@@ -2125,6 +2137,71 @@ export default function SettingsEditor() {
               <p className="text-sm text-amber-700">⚠️ Preencha seu e-mail para receber a cópia dos contratos assinados.</p>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ── Retenção de Arquivos no Drive ──────────────────────────────────
+        *
+        * Controla o cleanup automático (cron diário `drive-cleanup-diario`):
+        * quantos dias depois de liberar o resultado a pasta da cliente no
+        * Drive é apagada. Lido por get_client_file_retention (RPC pública,
+        * usada no aviso do ClientPortal) e pela view v_drive_expired_clients
+        * (usada pela Edge Function drive/cleanup pra decidir quem purgar).
+        */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gradient-to-r from-amber-50 to-orange-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-amber-500 to-orange-500 rounded-xl flex items-center justify-center">
+              <Clock className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Retenção de Arquivos no Drive</h2>
+              <p className="text-sm text-gray-500">Quando as fotos e arquivos do resultado são apagados automaticamente</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings.fileRetentionEnabled ?? true}
+              onChange={e => setSettings({ ...settings, fileRetentionEnabled: e.target.checked })}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-400"
+            />
+            <div>
+              <span className="text-sm font-medium text-gray-700">Apagar arquivos automaticamente</span>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Desligado = as fotos e arquivos das clientes ficam no Drive pra sempre (mais espaço usado, nenhum risco de exclusão indevida).
+              </p>
+            </div>
+          </label>
+
+          <div className={settings.fileRetentionEnabled === false ? 'opacity-50 pointer-events-none' : ''}>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Dias após liberar o resultado</label>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={settings.fileRetentionDays ?? 90}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10)
+                setSettings({ ...settings, fileRetentionDays: Number.isFinite(v) ? Math.min(365, Math.max(1, v)) : 90 })
+              }}
+              className="w-full sm:w-40 px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
+            />
+            <p className="text-xs text-gray-500 mt-1.5">
+              Contados a partir de quando o resultado é liberado pra cliente. Depois desse prazo, a pasta dela no Drive é apagada permanentemente pelo cleanup automático (roda todo dia às 3h) — não vai pra lixeira.
+            </p>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <p className="text-sm text-amber-800">
+              ⏱ Hoje: {settings.fileRetentionEnabled === false
+                ? 'limpeza automática desligada — nada é apagado.'
+                : <>arquivos são apagados <strong>{settings.fileRetentionDays ?? 90} dias</strong> depois da liberação do resultado.</>}
+            </p>
+          </div>
         </div>
       </div>
 
