@@ -2,7 +2,23 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+
+    <!-- Ícone da aba do navegador (antes era o vite.svg padrão) -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+
+    <!-- PWA / "Adicionar à tela inicial" -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#B76E79" />
+
+    <!-- iOS: sem isso, "Adicionar à Tela de Início" usa um print da página
+         como ícone em vez da logo, e abre como aba comum do Safari (com
+         barra de endereço) em vez de tela cheia. -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="MS Color IA" />
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Portal do Cliente - Análise de Coloração Pessoal</title>
 
