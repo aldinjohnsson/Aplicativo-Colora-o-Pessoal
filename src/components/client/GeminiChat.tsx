@@ -18,6 +18,7 @@ import {
 import { supabase } from '../../lib/supabase'
 import { billingService } from '../../lib/billingService'
 import { driveStorage } from '../../lib/driveStorage'
+import { chatStorage } from '../../lib/chatStorage'
 import { buildStylePdfBlob, ItemLayout } from '../../lib/templatePDFGenerator'
 
 // Carrega a foto pra base64 preferindo o proxy autenticado do Drive (evita
@@ -80,8 +81,9 @@ interface GeminiChatProps {
   defaultLanguage?: LanguageCode
   /** Quando true, desativa verificação e consumo de créditos (modo admin). */
   unlimited?: boolean
-  /** Chave customizada para persistência no localStorage. Útil para o admin
-   *  manter um histórico separado do chat real da cliente. */
+  /** Chave customizada para persistência do histórico no banco (tabela
+   *  ai_chat_history, via chatStorage/Edge Function chat-sync). Útil para
+   *  o admin manter um histórico separado do chat real da cliente. */
   chatStorageKey?: string
   /** Token do portal da cliente (UUID). Quando presente, as imagens geradas
    *  pela IA são salvas no Google Drive do admin via driveStorage.uploadPhoto()
@@ -119,22 +121,27 @@ const ftime = (d: Date) => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minu
 const ICONS: Record<string, any> = { scissors: Scissors, palette: Palette, shirt: Shirt, gem: Gem, folder: FolderOpen }
 const chatKey = (clientId: string) => `mscolors_chat_${clientId}`
 
-function serializeMessages(msgs: ChatMsg[]): string {
-  const lean = msgs.filter(m => !m.loading && !m.error).map(m => ({
+/**
+ * Converte as mensagens pro formato salvo (agora no banco, via chatStorage,
+ * não mais localStorage). `stripAllBase64=true` descarta o base64 de TODA
+ * imagem — usado como fallback se o payload ficar grande demais.
+ */
+function toPersistable(msgs: ChatMsg[], stripAllBase64 = false): any[] {
+  return msgs.filter(m => !m.loading && !m.error).map(m => ({
     ...m, imagePreview: undefined,
     responseParts: m.responseParts?.map(p => {
       if (p.type !== 'image') return p
-      // Só descarta o base64 se o upload pro Drive já terminou (savedImageUrls preenchido).
-      // Se ainda não terminou, mantém o base64 para não perder a imagem numa recarga
-      // enquanto o upload ainda está em andamento (race condition).
+      // Só descarta o base64 se o upload pro Drive já terminou (savedImageUrls
+      // preenchido) ou se estamos forçando o strip total por causa do tamanho.
+      // Se ainda não terminou, mantém o base64 pra não perder a imagem numa
+      // recarga enquanto o upload ainda está em andamento (race condition).
       const hasDriveBackup = m.savedImageUrls && m.savedImageUrls.length > 0
-      return hasDriveBackup ? { type: 'image', imageMimeType: p.imageMimeType } : p
+      return (hasDriveBackup || stripAllBase64) ? { type: 'image', imageMimeType: p.imageMimeType } : p
     }),
   }))
-  return JSON.stringify(lean)
 }
-function deserializeMessages(raw: string): ChatMsg[] {
-  try { return (JSON.parse(raw) as any[]).map(m => ({ ...m, timestamp: new Date(m.timestamp) })) } catch { return [] }
+function fromPersisted(raw: any[]): ChatMsg[] {
+  try { return raw.map(m => ({ ...m, timestamp: new Date(m.timestamp) })) } catch { return [] }
 }
 
 /**
@@ -473,83 +480,60 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   }
   useEffect(() => { refreshAdminGeminiQuota() }, [msColorIaMode, unlimited])
 
-  // Chave usada para persistir o histórico no localStorage. O admin passa
+  // Chave usada pra identificar o histórico no BANCO (tabela ai_chat_history,
+  // via Edge Function chat-sync) — não depende mais de localStorage, então
+  // a conversa aparece igual em qualquer aparelho/login. O admin passa
   // `chatStorageKey` para manter um histórico próprio sem misturar com o
   // chat real da cliente (que continua usando `chatKey(clientId)`).
   const storageKey = chatStorageKey || (clientId ? chatKey(clientId) : null)
 
+  // Evita que o efeito de SAVE rode com o array vazio inicial antes do LOAD
+  // do banco terminar — isso sobrescreveria o histórico salvo com nada.
+  const hydratedRef = useRef(false)
+
   useEffect(() => {
-    if (storageKey) {
-      const saved = localStorage.getItem(storageKey)
-      if (saved) { const msgs = deserializeMessages(saved); if (msgs.length > 0) { setMessages(msgs); return } }
+    hydratedRef.current = false
+    let cancelled = false
+
+    async function load() {
+      if (storageKey) {
+        try {
+          const saved = await chatStorage.load(storageKey, portalToken)
+          if (cancelled) return
+          if (saved.length > 0) { setMessages(fromPersisted(saved)); hydratedRef.current = true; return }
+        } catch (e) {
+          console.error('[GeminiChat] falha ao carregar histórico do banco:', e)
+          // Segue pro welcome message — não trava o chat se o banco falhar
+          // (ex: sem internet no momento); o próximo save tenta de novo.
+        }
+      }
+      if (cancelled) return
+      setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
+      hydratedRef.current = true
     }
-    setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }])
+    load()
+    return () => { cancelled = true }
   }, [clientName, storageKey])
 
   useEffect(() => {
-    if (!storageKey || messages.length === 0 || messages.some(m => m.loading)) return
-    // localStorage.setItem pode lançar QuotaExceededError — especialmente em
-    // iOS Safari (~5MB por origem; 2.5MB em modo privado, e ainda menos em
-    // PWA instalado). Imagens geradas pela IA em base64 (1-3MB cada) somadas
-    // ao histórico estouram o limite fácil quando há várias gerações na
-    // mesma conversa.
-    //
-    // IMPORTANTE: NUNCA apagamos o histórico inteiro aqui. Antes, quando o
-    // fallback "lean" (sem base64) também estourava, o código fazia
-    // localStorage.removeItem(storageKey) — isso apagava TODA a conversa do
-    // usuário (mesmo mensagens de texto e imagens já salvas no Drive há
-    // muito tempo) por causa de UMA mensagem grande demais. Era esse o bug
-    // do "sumiu tudo": as imagens continuavam seguras no Drive, mas o
-    // histórico local (única fonte pro chat re-renderizar) era zerado, e ao
-    // voltar pra tela o componente recarregava do zero (WELCOME message).
-    //
-    // A estratégia agora é degradar progressivamente e sempre manter o
-    // máximo de histórico possível:
-    //   1) tenta salvar tudo
-    //   2) tenta salvar sem base64 nas imagens já com backup no Drive (lean)
-    //   3) se ainda estourar, remove o base64 de TODAS as imagens (mesmo as
-    //      sem savedImageUrls ainda — só essa imagem específica pode não
-    //      aparecer até recarregar depois do upload terminar)
-    //   4) se ainda estourar, começa a descartar as mensagens mais ANTIGAS
-    //      (uma a uma) até caber — nunca zera tudo de uma vez
-    //   5) só em último caso (nem a mensagem mais recente cabe sozinha)
-    //      desiste de persistir essa rodada, mas não apaga o que já estava
-    //      salvo anteriormente no localStorage
-    const tryStore = (value: string): boolean => {
-      try { localStorage.setItem(storageKey, value); return true }
-      catch { return false }
-    }
+    if (!storageKey || !hydratedRef.current || messages.length === 0 || messages.some(m => m.loading)) return
+    // Debounce curto: evita gravar no banco a cada pequena mudança de state.
+    const t = setTimeout(() => {
+      let payload = toPersistable(messages)
+      // Salvaguarda de tamanho: se ainda sobrou muito base64 em trânsito
+      // (imagem gerada mas upload pro Drive ainda não terminou), evita
+      // mandar um payload gigante pro banco — descarta o base64 de tudo
+      // nesse caso; a imagem reaparece assim que o Drive terminar e o
+      // próximo save (já com savedImageUrls preenchido) rodar.
+      if (JSON.stringify(payload).length > 4_000_000) payload = toPersistable(messages, true)
 
-    if (tryStore(serializeMessages(messages))) return
-
-    console.warn('[GeminiChat] localStorage cheio, degradando histórico progressivamente')
-
-    const stripAllBase64 = (msgs: ChatMsg[]) =>
-      msgs.filter(m => !m.loading && !m.error).map(m => ({
-        ...m,
-        imagePreview: undefined,
-        imageBase64: undefined,
-        responseParts: m.responseParts?.map(p =>
-          p.type === 'image' ? { type: 'image', imageMimeType: p.imageMimeType } : p,
-        ),
-      }))
-
-    let lean = stripAllBase64(messages)
-    if (tryStore(JSON.stringify(lean))) return
-
-    // Ainda estourou: descarta mensagens mais antigas uma a uma até caber
-    // (ou sobrar só a última). Preserva o fim da conversa, que é o que o
-    // usuário acabou de ver/gerar.
-    while (lean.length > 1) {
-      lean = lean.slice(1)
-      if (tryStore(JSON.stringify(lean))) return
-    }
-
-    // Não conseguiu nem persistir a última mensagem isolada — desiste desta
-    // rodada de save, mas preserva o que já estava gravado anteriormente
-    // (não faz removeItem).
-    console.warn('[GeminiChat] não foi possível persistir o histórico nesta rodada; mantendo save anterior intacto')
+      chatStorage.save(storageKey, payload, portalToken).catch(err => {
+        console.error('[GeminiChat] falha ao salvar histórico no banco:', err)
+      })
+    }, 600)
+    return () => clearTimeout(t)
   }, [messages, storageKey])
+
 
   // Scroll só dentro do container de mensagens, NUNCA a página inteira.
   // scrollIntoView (mesmo com block: 'nearest') pode rolar a janela em mobile,
@@ -1096,13 +1080,13 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     if (selectedMsgs.size === 0) return
     setMessages(prev => {
       const next = prev.filter(m => !selectedMsgs.has(m.id))
-      // Persiste no localStorage se houver storageKey
+      // Persiste no banco se houver storageKey
       if (storageKey) {
-        try {
-          const toSave = serializeMessages(next)
-          if (toSave) localStorage.setItem(storageKey, toSave)
-          else        localStorage.removeItem(storageKey)
-        } catch {}
+        if (next.length > 0) {
+          chatStorage.save(storageKey, toPersistable(next), portalToken).catch(() => {})
+        } else {
+          chatStorage.clear(storageKey, portalToken).catch(() => {})
+        }
       }
       return next
     })
@@ -1595,7 +1579,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                       </button>
                       {storageKey && !selectMode && (
                         <button
-                          onClick={() => { setShowSideMenu(false); setTimeout(() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }, 200) }}
+                          onClick={() => { setShowSideMenu(false); setTimeout(() => { if (!confirm('Limpar histórico?')) return; if (storageKey) chatStorage.clear(storageKey, portalToken).catch(() => {}); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }, 200) }}
                           className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-left text-red-600 hover:bg-red-50 border-t border-gray-100 transition-colors"
                         >
                           <Trash2 className="h-4 w-4 flex-shrink-0" />
@@ -1703,7 +1687,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             </button>
           )}
           {storageKey && messages.length > 1 && !selectMode && (
-            <button onClick={() => { if (!confirm('Limpar histórico?')) return; localStorage.removeItem(storageKey); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
+            <button onClick={() => { if (!confirm('Limpar histórico?')) return; if (storageKey) chatStorage.clear(storageKey, portalToken).catch(() => {}); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs transition-colors flex-shrink-0">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
