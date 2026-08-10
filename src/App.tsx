@@ -45,8 +45,14 @@ function AppRoutes() {
   return (
     <Routes>
 
-      {/* ── Landing page de entrada ── */}
-      <Route path="/" element={<LandingPage />} />
+      {/* ── Landing page de entrada ──
+          Se já tem sessão de admin, pula a landing e vai direto pro painel
+          — é o que faz "sair e voltar" (fechar o app/ícone e reabrir)
+          cair de novo em /admin/clients (ou /admin/ms-color-ia, conforme
+          o role) em vez de mostrar a página pública de novo. */}
+      <Route path="/" element={
+        adminUser ? <Navigate to="/admin" replace /> : <LandingPage />
+      } />
 
       {/* Portal do cliente via token (link direto) */}
       <Route path="/c/:token" element={<ClientPortal />} />
