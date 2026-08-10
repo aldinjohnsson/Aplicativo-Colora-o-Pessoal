@@ -1081,6 +1081,12 @@ if (req.method === 'POST' && path === '/replace-media') {
           }).eq('id', r.client_id)
           await sb.from('client_photos').delete().eq('client_id', r.client_id)
           await sb.from('client_result_files').delete().eq('client_id', r.client_id)
+          // Histórico do GeminiChat: as imagens geradas viviam só como URL do
+          // Drive dentro de messages (jsonb) — como a pasta acabou de ser
+          // apagada acima, essas URLs já ficaram mortas. Apaga o histórico
+          // junto (mesmo client_id serve tanto pro chat feito pela cliente no
+          // portal quanto pro chat feito pelo admin no perfil dela).
+          await sb.from('ai_chat_history').delete().eq('client_id', r.client_id)
           results.push({ clientId: r.client_id, fullName: r.full_name, purged: true })
         }
 

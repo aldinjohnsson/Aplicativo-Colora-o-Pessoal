@@ -126,19 +126,6 @@ export interface Client {
    * ainda não recalculadas (ver check_client_expiration no backend).
    */
   analysis_expires_at?: string | null
-  // ── Retenção de arquivos no Drive ──
-  /**
-   * Preenchido pelo cron de limpeza (`drive-cleanup-diario`) quando a pasta
-   * do Drive já foi apagada. NULL = ainda não passou pela limpeza.
-   */
-  drive_purged_at?: string | null
-  /**
-   * Data até quando a admin concedeu prazo extra pra baixar os arquivos
-   * (ver `extendClientFileRetention`). Enquanto essa data estiver no futuro,
-   * a cliente fica de fora da view `v_drive_expired_clients` e o cron pula
-   * ela, mesmo que o prazo padrão do plano já tenha vencido.
-   */
-  retention_extended_until?: string | null
 }
 
 
@@ -224,11 +211,18 @@ export const adminService = {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
 
-    const { data: adminData } = await supabase
+    const { data: adminData, error: adminErr } = await supabase
       .from('admin_users')
       .select('id, role, license_active, license_expires_at')
       .eq('id', data.user.id)
       .single()
+
+    if (adminErr && adminErr.code !== 'PGRST116') {
+      // Erro de rede/query (não "linha não encontrada") — não é seguro
+      // concluir que o usuário não é admin. Devolve erro genérico sem
+      // derrubar a sessão que acabou de ser criada.
+      throw new Error('Não foi possível confirmar seu acesso agora. Tente novamente.')
+    }
 
     if (!adminData) {
       await supabase.auth.signOut({ scope: 'local' })
@@ -258,11 +252,29 @@ export const adminService = {
     const { data } = await supabase.auth.getSession()
     if (!data.session) return null
 
-    const { data: adminData } = await supabase
+    const { data: adminData, error: adminErr } = await supabase
       .from('admin_users')
       .select('id, role, license_active, license_expires_at')
       .eq('id', data.session.user.id)
       .single()
+
+    if (adminErr) {
+      // PGRST116 = "nenhuma linha encontrada" → não é admin de verdade,
+      // aí sim desloga. QUALQUER outro erro (rede instável, timeout, rate
+      // limit momentâneo do Supabase, RLS com hiccup) NÃO pode ser tratado
+      // como "licença inválida" — antes esse erro era descartado
+      // silenciosamente (só desestruturava `data`), e qualquer falha
+      // passageira nessa query derrubava a sessão do admin no meio do uso
+      // do painel. Falha de rede não é motivo pra deslogar ninguém: melhor
+      // manter a sessão válida (fail-open) e deixar a próxima checagem
+      // confirmar.
+      if (adminErr.code === 'PGRST116') {
+        await supabase.auth.signOut({ scope: 'local' })
+        return null
+      }
+      console.warn('[adminService.getSession] falha ao checar admin_users, mantendo sessão:', adminErr)
+      return data.session.user
+    }
 
     if (!adminData) {
       await supabase.auth.signOut({ scope: 'local' })
@@ -688,31 +700,6 @@ export const adminService = {
       .update({ is_archived: false, archived_reason: null, analysis_expires_at: newExpiresAt })
       .eq('id', id)
     if (error) throw error
-  },
-
-  /**
-   * Dá `extraDays` dias corridos extras (padrão 15) pra cliente baixar os
-   * arquivos do resultado antes do cleanup automático (cron diário
-   * `drive-cleanup-diario`) apagar a pasta do Drive + as linhas de
-   * client_photos/client_result_files.
-   *
-   * A extensão é acumulativa: se já existir uma extensão ativa, soma a
-   * partir dela (não some se a admin clicar mais de uma vez). A RPC
-   * `extend_client_file_retention` valida que a cliente pertence à admin
-   * logada (SECURITY DEFINER checando auth.uid() = admin_id).
-   *
-   * Só tem efeito se o cleanup ainda não tiver rodado pra essa cliente
-   * (clients.drive_purged_at ainda null) — depois de purgado, a pasta do
-   * Drive já foi apagada de forma permanente (DELETE da API, não vai pra
-   * lixeira) e as linhas de fotos/arquivos já não existem mais no banco.
-   */
-  async extendClientFileRetention(clientId: string, extraDays: number = 15): Promise<string> {
-    const { data, error } = await supabase.rpc('extend_client_file_retention', {
-      p_client_id: clientId,
-      p_extra_days: extraDays,
-    })
-    if (error) throw error
-    return data as string // novo retention_extended_until (ISO string)
   },
 
   async deleteClient(id: string): Promise<void> {
