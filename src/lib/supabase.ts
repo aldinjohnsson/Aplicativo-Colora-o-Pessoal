@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { idbStorage } from './idbStorage'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -7,7 +8,17 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables')
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    // IndexedDB em vez do localStorage padrão — ver comentário em
+    // idbStorage.ts (resolve o logout constante em apps instalados na
+    // tela de início no iOS).
+    storage: idbStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+})
 
 export type Database = {
   public: {

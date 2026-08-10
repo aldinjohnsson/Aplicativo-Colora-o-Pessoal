@@ -2,7 +2,7 @@
 //
 // Wrapper das chamadas pra Edge Function única `drive`.
 
-import { supabase } from './supabase'
+import { getAccessToken } from './authSession'
 import { rotateImageBlob } from './imageOrientation'
 
 const FN = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/drive`
@@ -38,9 +38,9 @@ export function isDriveScopeError(err: unknown): boolean {
 }
 
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const { data: { session } } = await supabase.auth.getSession()
+  const token = await getAccessToken()
   const headers = new Headers(init.headers || {})
-  if (session?.access_token) headers.set('Authorization', `Bearer ${session.access_token}`)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
   if (init.body && typeof init.body === 'string' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }

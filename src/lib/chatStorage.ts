@@ -8,14 +8,14 @@
 //   • Admin (painel, JWT da sessão)      → authedFetch manda Authorization.
 //   • Portal da cliente (sem sessão)     → manda portalToken no body.
 
-import { supabase } from './supabase'
+import { getAccessToken } from './authSession'
 
 const FN = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat-sync`
 
 async function callChatSync(body: Record<string, unknown>): Promise<Response> {
-  const { data: { session } } = await supabase.auth.getSession()
+  const token = await getAccessToken()
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
+  if (token) headers.Authorization = `Bearer ${token}`
   return fetch(FN, { method: 'POST', headers, body: JSON.stringify(body) })
 }
 
