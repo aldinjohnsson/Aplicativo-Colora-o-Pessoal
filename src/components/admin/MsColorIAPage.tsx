@@ -790,12 +790,16 @@ export function MsColorIAPage() {
 
       {/* ── GeminiChat ──────────────────────────────────────────────── */}
       {/*
-        key={activeFolder.id} força o GeminiChat a reiniciar o chat
-        quando a pasta muda — assim os prompts no chat refletem
-        a pasta correta sem misturar histórico de pastas diferentes.
+        SEM key={activeFolder.id}: o GeminiChat não remonta mais ao trocar
+        de pasta/estação. Antes, cada pasta tinha seu próprio
+        chatStorageKey e o `key` forçava o componente a desmontar e montar
+        de novo — o que na prática parecia "sumir" a conversa pro usuário
+        ao trocar de estação. Agora a conversa é única e contínua: trocar
+        de pasta só troca os prompts/categorias sugeridos (categories vem
+        de folderConfig, recalculado a cada render dentro do GeminiChat),
+        o histórico do chat nunca é afetado.
       */}
       <GeminiChat
-        key={activeFolder.id}
         clientName={effectiveName}
         systemPrompt={systemPrompt}
         folderConfig={folderConfig}
@@ -806,7 +810,7 @@ export function MsColorIAPage() {
         resultFileUrls={[]}
         resultObservations=""
         unlimited
-        chatStorageKey={`ms_color_ia_${adminId}_${activeFolder.id}`}
+        chatStorageKey={`ms_color_ia_${adminId}`}
         // onSavePdf NÃO informado → PDF só baixa, sem persistência
       />
 

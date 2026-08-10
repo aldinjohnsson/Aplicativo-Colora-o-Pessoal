@@ -21,11 +21,11 @@ export function DriveConnectionSection() {
   // corrigiríamos por cima outras configs (emailDisplayName, adminEmail
   // etc.) que só existem na memória do SettingsEditor, não aqui.
   //
-  // Sem row, ou sem essas chaves no JSON = limpeza LIGADA com 21 dias
-  // (comportamento legado preservado como default).
+  // Sem row, ou sem essas chaves no JSON = limpeza LIGADA com 90 dias
+  // (default alinhado com a política de retenção padrão do sistema).
   const [retentionEnabled, setRetentionEnabled] = useState(true)
-  const [retentionDays, setRetentionDays]       = useState(21)
-  const [daysInput, setDaysInput]                = useState('21')
+  const [retentionDays, setRetentionDays]       = useState(90)
+  const [daysInput, setDaysInput]                = useState('90')
   const [savingCleanup, setSavingCleanup]        = useState(false)
   const [daysDirty, setDaysDirty]                = useState(false)
 
@@ -47,7 +47,7 @@ export function DriveConnectionSection() {
 
         const cfg = (settingsRow?.content as any) ?? {}
         const enabled = cfg.fileRetentionEnabled !== false
-        const days    = Number(cfg.fileRetentionDays) > 0 ? Number(cfg.fileRetentionDays) : 21
+        const days    = Number(cfg.fileRetentionDays) > 0 ? Number(cfg.fileRetentionDays) : 90
         setRetentionEnabled(enabled)
         setRetentionDays(days)
         setDaysInput(String(days))
@@ -99,7 +99,7 @@ export function DriveConnectionSection() {
   }
 
   const handleSaveDays = async () => {
-    const parsed = Math.max(1, Math.min(365, parseInt(daysInput, 10) || 21))
+    const parsed = Math.max(1, Math.min(365, parseInt(daysInput, 10) || 90))
     setSavingCleanup(true)
     setError(null)
     try {

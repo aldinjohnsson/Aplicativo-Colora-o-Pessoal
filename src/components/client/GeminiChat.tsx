@@ -394,6 +394,23 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     ? `${systemPrompt || ''}\n\n═══ OBSERVAÇÕES DA CONSULTORA SOBRE ESTA CLIENTE ═══\n${resultObservations}\n\nUse estas observações como base para TODAS as suas respostas.`
     : systemPrompt || ''
 
+  // Quando a pasta/estação muda (folderConfig.folderName), os prompts e
+  // categorias mudam junto — se o usuário estava no meio de uma seleção
+  // (ex: categoria escolhida, escolhendo comprimento/textura) numa pasta
+  // antiga, essa seleção fica "orfã" da pasta nova. Resetamos só a
+  // navegação de categorias/prompts pra voltar ao menu inicial — o
+  // HISTÓRICO DA CONVERSA (messages) não é tocado aqui.
+  const prevFolderName = useRef(folderConfig?.folderName)
+  useEffect(() => {
+    if (prevFolderName.current !== folderConfig?.folderName) {
+      prevFolderName.current = folderConfig?.folderName
+      setNavState('categories')
+      setSelectedCat(null)
+      setSelectedPrompt(null)
+      setSelectedLength(null)
+    }
+  }, [folderConfig?.folderName])
+
   useEffect(() => {
     if (!referencePhotoUrl && !referencePhotoDriveFileId) return
     setLoadingRef(true)
