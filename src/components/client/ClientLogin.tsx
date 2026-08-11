@@ -1,11 +1,19 @@
 // src/components/client/ClientLogin.tsx
 import React, { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Palette, Mail, Calendar, LogIn, AlertCircle } from 'lucide-react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { Palette, Mail, Calendar, LogIn, AlertCircle, CheckCircle2, Clock, ChevronRight } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { LanguageProvider, useTranslation } from '../../lib/i18n'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { clientThemeVars } from '../../lib/clientTheme'
+
+interface ClientCandidate {
+  token: string
+  name: string
+  status: string
+  plan_name: string | null
+  created_at: string
+}
 
 // A tela de login é acessada ANTES de existir qualquer token de cliente —
 // por isso o LanguageProvider aqui não recebe persistKey (usa uma chave
@@ -26,11 +34,23 @@ export function ClientLogin() {
 
 function ClientLoginInner() {
   const { t } = useTranslation()
-  const [email, setEmail] = useState('')
+  const location = useLocation()
+  const navState = location.state as { email?: string; adminId?: string | null } | null
+  const prefilledEmail = navState?.email || ''
+  const scopedAdminId = navState?.adminId || null
+  const [email, setEmail] = useState(prefilledEmail)
   const [birthDate, setBirthDate] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [candidates, setCandidates] = useState<ClientCandidate[] | null>(null)
   const navigate = useNavigate()
+  const birthDateRef = React.useRef<HTMLInputElement>(null)
+
+  // Veio do "Fazer login" no cadastro (e-mail já preenchido) — só falta a
+  // "senha" (data de nascimento), então já foca direto nela.
+  React.useEffect(() => {
+    if (prefilledEmail) birthDateRef.current?.focus()
+  }, [prefilledEmail])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -46,6 +66,7 @@ function ClientLoginInner() {
       const { data, error: rpcError } = await supabase.rpc('get_client_token_by_credentials', {
         p_email: email.trim().toLowerCase(),
         p_birth_date: birthDate, // formato YYYY-MM-DD (input type="date")
+        p_admin_id: scopedAdminId,
       })
 
       if (rpcError) throw rpcError
@@ -55,12 +76,88 @@ function ClientLoginInner() {
         return
       }
 
-      navigate(`/c/${data.token}`)
+      const list: ClientCandidate[] = data?.clients || []
+      if (list.length === 0) {
+        setError(t('login.errorGeneric'))
+        return
+      }
+
+      // Só uma análise pra esse e-mail+nascimento — entra direto, como sempre foi.
+      if (list.length === 1) {
+        navigate(`/c/${list[0].token}`)
+        return
+      }
+
+      // Mais de uma análise (cliente repetiu com o mesmo e-mail) — mostra a
+      // tela de escolha em vez de entrar automaticamente em qualquer uma.
+      setCandidates(list)
     } catch (err: any) {
       setError(t('login.errorGeneric'))
     } finally {
       setLoading(false)
     }
+  }
+
+  // ── Tela de escolha: mais de uma análise encontrada ────────────────
+  if (candidates) {
+    return (
+      <div
+        className="min-h-screen bg-gradient-to-br from-[var(--client-bg)] to-white flex items-center justify-center p-4"
+        style={clientThemeVars() as React.CSSProperties}
+      >
+        <div className="w-full max-w-md">
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-[var(--client-accent-light)] to-[var(--client-accent)] rounded-2xl mb-4 shadow-lg">
+              <Palette className="h-8 w-8 text-white" />
+            </div>
+            <h1 className="text-xl font-bold text-gray-900">Suas análises</h1>
+            <p className="text-gray-500 mt-1 text-sm">
+              Encontramos mais de uma análise com esse e-mail. Escolha qual quer acessar.
+            </p>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100 overflow-hidden">
+            {candidates.map(c => {
+              const isCompleted = c.status === 'completed'
+              return (
+                <button
+                  key={c.token}
+                  type="button"
+                  onClick={() => navigate(`/c/${c.token}`)}
+                  className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-gray-50 transition-colors"
+                >
+                  <div className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${
+                    isCompleted ? 'bg-green-100' : 'bg-amber-100'
+                  }`}>
+                    {isCompleted
+                      ? <CheckCircle2 className="h-4.5 w-4.5 text-green-600" />
+                      : <Clock className="h-4.5 w-4.5 text-amber-600" />
+                    }
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-900 truncate">
+                      {c.plan_name || 'Análise de coloração'}
+                    </p>
+                    <p className={`text-xs mt-0.5 ${isCompleted ? 'text-green-600' : 'text-amber-600'}`}>
+                      {isCompleted ? 'Concluída — ver resultado' : 'Em andamento'}
+                    </p>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-gray-300 flex-shrink-0" />
+                </button>
+              )
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => { setCandidates(null); setError('') }}
+            className="w-full text-center text-sm text-gray-400 hover:text-gray-600 mt-4 transition-colors"
+          >
+            ← Voltar
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -115,6 +212,7 @@ function ClientLoginInner() {
               <div className="relative">
                 <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
+                  ref={birthDateRef}
                   type="date"
                   value={birthDate}
                   onChange={e => setBirthDate(e.target.value)}

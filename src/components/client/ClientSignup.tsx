@@ -5,7 +5,7 @@ import {
   Palette, User, Mail, Phone, Calendar, CheckCircle,
   AlertCircle, Loader2, ChevronRight, ArrowLeft,
   RefreshCw, Lock, Sparkles, Heart, Globe,
-  Check, ChevronDown, ChevronUp, Download,
+  Check, ChevronDown, ChevronUp, Download, LogIn,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { clientService } from '../../lib/services'
@@ -129,6 +129,128 @@ function ClientSignupInner({
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
   const [resultToken, setResultTokenLocal] = useState('')
+
+  // ── E-mail já cadastrado? ──────────────────────────────────
+  // Aviso NÃO bloqueia o cadastro (a cliente pode mesmo querer uma análise
+  // nova) — só avisa, com atalho pra login, pro caso comum de ela ter
+  // digitado o e-mail achando que ia "entrar" e não "cadastrar de novo".
+  const [emailExists, setEmailExists] = useState(false)
+  const [emailExistsAdminId, setEmailExistsAdminId] = useState<string | null>(null)
+  const emailCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    setEmailExists(false)
+    setEmailExistsAdminId(null)
+    if (emailCheckTimer.current) clearTimeout(emailCheckTimer.current)
+
+    const trimmed = email.trim()
+    if (!shareToken || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return
+
+    emailCheckTimer.current = setTimeout(async () => {
+      try {
+        const { data } = await supabase.rpc('client_email_exists', {
+          p_share_token: shareToken,
+          p_email: trimmed,
+        })
+        setEmailExists(data?.exists === true)
+        setEmailExistsAdminId(data?.admin_id || null)
+      } catch {
+        // Falha na checagem não deve travar o cadastro — só não mostra o aviso.
+      }
+    }, 600)
+
+    return () => { if (emailCheckTimer.current) clearTimeout(emailCheckTimer.current) }
+  }, [email, shareToken])
+
+  // ── Análises existentes (mesmo e-mail, plano diferente) ────────────
+  // Verificada com email+nascimento que ela já está preenchendo no
+  // cadastro — sem sair da tela. Some/reresetada se ela editar qualquer
+  // um dos dois campos, pra nunca mostrar resultado desatualizado.
+  interface ExistingAnalysis {
+    token: string
+    name: string
+    phone: string | null
+    status: string
+    plan_name: string | null
+    created_at: string
+  }
+  const [existingAnalyses, setExistingAnalyses] = useState<ExistingAnalysis[] | null>(null)
+  const [checkingExisting, setCheckingExisting] = useState(false)
+  const [checkExistingError, setCheckExistingError] = useState('')
+
+  useEffect(() => {
+    setExistingAnalyses(null)
+    setCheckExistingError('')
+  }, [email, birthDate])
+
+  const handleCheckExisting = async () => {
+    if (!birthDate) {
+      setCheckExistingError('Digite sua data de nascimento.')
+      return
+    }
+    setCheckingExisting(true)
+    setCheckExistingError('')
+    try {
+      const { data, error } = await supabase.rpc('get_client_token_by_credentials', {
+        p_email: email.trim().toLowerCase(),
+        p_birth_date: birthDate,
+        p_admin_id: emailExistsAdminId,
+      })
+      if (error) throw error
+      if (data?.error) { setCheckExistingError(data.error); return }
+      setExistingAnalyses(data?.clients || [])
+    } catch {
+      setCheckExistingError('Não foi possível verificar agora. Tente de novo.')
+    } finally {
+      setCheckingExisting(false)
+    }
+  }
+
+  // ── Prosseguir com plano novo, reaproveitando nome/telefone do cadastro
+  //    anterior mais recente — sem pedir pra digitar tudo de novo. Pula
+  //    direto pro contrato, igual o cadastro normal faz no final.
+  const handleProceedNewPlan = async () => {
+    if (!existingAnalyses || existingAnalyses.length === 0) return
+    const reuse = existingAnalyses[0] // mais recente
+    setSubmitting(true)
+    setFormError('')
+    try {
+      const reusedFullName = reuse.name
+      const reusedPhone = reuse.phone || ''
+      const country = countryName(countryCode)
+      const contractData = {
+        clientInfo: { fullName: reusedFullName, email, phone: reusedPhone, birthDate, country, ip: clientIp },
+        registeredAt: new Date().toISOString(),
+        planName: plan?.name,
+        whatsappOptIn,
+        whatsappOptInAt: whatsappOptIn ? new Date().toISOString() : null,
+      }
+
+      const { data, error } = await supabase.rpc('register_client_from_plan', {
+        p_share_token: shareToken,
+        p_full_name: reusedFullName,
+        p_email: email.trim().toLowerCase(),
+        p_phone: reusedPhone,
+        p_birth_date: birthDate,
+        p_contract_data: contractData,
+      })
+
+      if (error) throw error
+      if (data?.error) { setFormError(data.error); return }
+
+      setFullName(reusedFullName)
+      setPhone(reusedPhone)
+      setResultTokenLocal(data.token)
+      onClientCreated(data.token)
+      setContractCountryCode(countryCode)
+      setContractSignTime(new Date())
+      setStep('contract')
+    } catch (e: any) {
+      setFormError(e.message || t('signup.genericSaveError'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   // ── Step: Contrato ────────────────────────────────────────
   const [contractRead, setContractRead] = useState(false)
@@ -479,20 +601,9 @@ function ClientSignupInner({
               </div>
 
               <form onSubmit={handleInfoSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    {t('signup.fullNameLabel')} <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={fullName}
-                    onChange={e => setFullName(e.target.value)}
-                    placeholder={t('signup.fullNamePlaceholder')}
-                    className={inp}
-                    required
-                  />
-                </div>
-
+                {/* E-mail — sempre o primeiro campo. É a partir dele que
+                    decidimos se mostramos o cadastro completo (e-mail novo)
+                    ou só o campo de senha (e-mail já cadastrado). */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
                     {t('login.emailLabel')} <span className="text-red-500">*</span>
@@ -504,78 +615,209 @@ function ClientSignupInner({
                     placeholder={t('login.emailPlaceholder')}
                     className={inp}
                     required
+                    autoFocus
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.phoneLabel')}</label>
-                  <PhoneInput
-                    value={phone}
-                    onChange={setPhone}
-                    language={language}
-                    placeholder={t('signup.phonePlaceholder')}
-                    onValidityChange={setPhoneValid}
-                  />
-                  {!phoneValid && phone && (
-                    <p className="text-xs text-red-500 mt-1">{t('signup.phoneInvalid')}</p>
-                  )}
-                  <label className="flex items-start gap-2 mt-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={whatsappOptIn}
-                      onChange={e => setWhatsappOptIn(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 accent-[var(--client-accent)] flex-shrink-0"
-                    />
-                    <span className="text-xs text-gray-500 leading-relaxed">
-                      {t('signup.whatsappOptIn')}
-                    </span>
-                  </label>
-                </div>
+                {emailExists ? (
+                  <>
+                    {/* ═══ E-mail já cadastrado: só pede a senha ═══════════ */}
+                    {!existingAnalyses && (
+                      <div>
+                        <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-3">
+                          <AlertCircle className="h-4 w-4 text-blue-500 mt-0.5 flex-shrink-0" />
+                          <p className="text-sm text-blue-800">
+                            Você já tem cadastro com esse e-mail. Digite sua senha de acesso
+                            — <strong>sua data de nascimento</strong> — pra continuar.
+                          </p>
+                        </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    {t('signup.birthDateLabel')} <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="date"
-                    value={birthDate}
-                    onChange={e => setBirthDate(e.target.value)}
-                    className={inp}
-                    required
-                  />
-                  <p className="text-xs text-gray-400 mt-1">{t('signup.birthDateNote')}</p>
-                  {/* O placeholder nativo do <input type="date"> (ex: "dd/mm/aaaa")
-                      segue o idioma do SISTEMA OPERACIONAL em alguns navegadores
-                      (Chrome/Linux, por exemplo) — não dá pra forçar via código.
-                      Esta legenda garante que o formato esperado sempre apareça
-                      certo, independente do que o navegador decidir mostrar. */}
-                  <p className="text-xs text-gray-400">{t('signup.birthDateFormatHint')}</p>
-                </div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                          Senha (data de nascimento) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="date"
+                          value={birthDate}
+                          onChange={e => setBirthDate(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCheckExisting() } }}
+                          className={inp}
+                          required
+                        />
+                        {checkExistingError && (
+                          <p className="text-xs text-red-600 mt-1">{checkExistingError}</p>
+                        )}
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.countryLabel')}</label>
-                  <select
-                    value={countryCode}
-                    onChange={e => setCountryCode(e.target.value)}
-                    className={inp}
-                  >
-                    {countryOptions.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
-                  </select>
-                </div>
+                        <button
+                          type="button"
+                          onClick={handleCheckExisting}
+                          disabled={checkingExisting || !birthDate}
+                          className="w-full mt-3 bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-3 rounded-xl font-semibold
+                            hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all shadow-sm flex items-center justify-center gap-2
+                            disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {checkingExisting
+                            ? <><Loader2 className="h-4 w-4 animate-spin" /> Verificando...</>
+                            : <><LogIn className="h-4 w-4" /> Entrar</>
+                          }
+                        </button>
+                      </div>
+                    )}
 
-                {formError && <ErrorBox message={formError} />}
+                    {/* ═══ Senha confirmada: escolher o que fazer ══════════ */}
+                    {existingAnalyses && existingAnalyses.length > 0 && (
+                      <div>
+                        <p className="text-sm font-medium text-gray-700 mb-2">
+                          Encontramos suas análises. Toque em uma pra acessar:
+                        </p>
+                        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-3">
+                          <div className="divide-y divide-gray-100">
+                            {existingAnalyses.map(a => {
+                              const isCompleted = a.status === 'completed'
+                              return (
+                                <button
+                                  key={a.token}
+                                  type="button"
+                                  onClick={() => navigate(`/c/${a.token}`)}
+                                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
+                                >
+                                  <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                                    isCompleted ? 'bg-green-100' : 'bg-amber-100'
+                                  }`}>
+                                    {isCompleted
+                                      ? <CheckCircle className="h-4 w-4 text-green-600" />
+                                      : <Loader2 className="h-4 w-4 text-amber-600" />
+                                    }
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-semibold text-gray-900 truncate">
+                                      {a.plan_name || 'Análise de coloração'}
+                                    </p>
+                                    <p className={`text-xs mt-0.5 ${isCompleted ? 'text-green-600' : 'text-amber-600'}`}>
+                                      {isCompleted ? 'Concluída — ver resultado' : 'Em andamento — continuar'}
+                                    </p>
+                                  </div>
+                                  <ChevronRight className="h-4 w-4 text-gray-300 flex-shrink-0" />
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
 
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="w-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-3.5 rounded-xl font-semibold
-                    hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all shadow-sm flex items-center justify-center gap-2
-                    disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {submitting
-                    ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('signup.saving')}</>
-                    : <>{t('signup.continueToContract')} <ChevronRight className="h-4 w-4" /></>}
-                </button>
+                        <div className="flex items-center gap-3 mb-3">
+                          <div className="flex-1 h-px bg-gray-200" />
+                          <span className="text-xs text-gray-400">ou</span>
+                          <div className="flex-1 h-px bg-gray-200" />
+                        </div>
+
+                        {formError && <ErrorBox message={formError} />}
+
+                        <button
+                          type="button"
+                          onClick={handleProceedNewPlan}
+                          disabled={submitting}
+                          className="w-full border-2 border-[var(--client-accent)] text-[var(--client-accent-dark)] py-3 rounded-xl font-semibold
+                            hover:bg-[var(--client-accent-soft)] transition-all flex items-center justify-center gap-2
+                            disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {submitting
+                            ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('signup.saving')}</>
+                            : <>Prosseguir com esta análise nova ({plan.name}) <ChevronRight className="h-4 w-4" /></>
+                          }
+                        </button>
+                        <p className="text-xs text-gray-400 text-center mt-2">
+                          Vamos usar seu nome e telefone já cadastrados — só falta assinar o contrato.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {/* ═══ E-mail novo: cadastro completo, como sempre foi ═ */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {t('signup.fullNameLabel')} <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={fullName}
+                        onChange={e => setFullName(e.target.value)}
+                        placeholder={t('signup.fullNamePlaceholder')}
+                        className={inp}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.phoneLabel')}</label>
+                      <PhoneInput
+                        value={phone}
+                        onChange={setPhone}
+                        language={language}
+                        placeholder={t('signup.phonePlaceholder')}
+                        onValidityChange={setPhoneValid}
+                      />
+                      {!phoneValid && phone && (
+                        <p className="text-xs text-red-500 mt-1">{t('signup.phoneInvalid')}</p>
+                      )}
+                      <label className="flex items-start gap-2 mt-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={whatsappOptIn}
+                          onChange={e => setWhatsappOptIn(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 accent-[var(--client-accent)] flex-shrink-0"
+                        />
+                        <span className="text-xs text-gray-500 leading-relaxed">
+                          {t('signup.whatsappOptIn')}
+                        </span>
+                      </label>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {t('signup.birthDateLabel')} <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        value={birthDate}
+                        onChange={e => setBirthDate(e.target.value)}
+                        className={inp}
+                        required
+                      />
+                      <p className="text-xs text-gray-400 mt-1">{t('signup.birthDateNote')}</p>
+                      {/* O placeholder nativo do <input type="date"> (ex: "dd/mm/aaaa")
+                          segue o idioma do SISTEMA OPERACIONAL em alguns navegadores
+                          (Chrome/Linux, por exemplo) — não dá pra forçar via código.
+                          Esta legenda garante que o formato esperado sempre apareça
+                          certo, independente do que o navegador decidir mostrar. */}
+                      <p className="text-xs text-gray-400">{t('signup.birthDateFormatHint')}</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">{t('signup.countryLabel')}</label>
+                      <select
+                        value={countryCode}
+                        onChange={e => setCountryCode(e.target.value)}
+                        className={inp}
+                      >
+                        {countryOptions.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                      </select>
+                    </div>
+
+                    {formError && <ErrorBox message={formError} />}
+
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="w-full bg-gradient-to-r from-[var(--client-accent-light)] to-[var(--client-accent)] text-white py-3.5 rounded-xl font-semibold
+                        hover:from-[var(--client-accent)] hover:to-[var(--client-accent-dark)] transition-all shadow-sm flex items-center justify-center gap-2
+                        disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {submitting
+                        ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('signup.saving')}</>
+                        : <>{t('signup.continueToContract')} <ChevronRight className="h-4 w-4" /></>}
+                    </button>
+                  </>
+                )}
               </form>
             </div>
           </div>
