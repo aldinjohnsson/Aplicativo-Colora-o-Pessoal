@@ -235,6 +235,35 @@ export const driveStorage = {
   },
 
   /**
+   * Upload de imagem de REFERÊNCIA de prompt (FoldersManager — as fotos que
+   * ensinam a IA como é cada categoria/comprimento/textura de cabelo).
+   * Salva em Drive > "MS Color IA" > "Referências de Prompts".
+   *
+   * `replaceFileId` só deve ser passado quando o usuário EXPLICITAMENTE troca
+   * uma imagem por outra — nunca ao simplesmente remover uma imagem de um
+   * prompt (remover só tira a referência do JSON, não apaga do Drive; ver
+   * comentário no kind='ai_folder_ref' da Edge Function pra entender o
+   * porquê — foi exatamente o oposto disso que apagou essas fotos sem
+   * querer quando elas viviam no Supabase Storage).
+   */
+  async uploadFolderReferenceImage(opts: {
+    file: File
+    replaceFileId?: string | null
+  }): Promise<DriveUploadResult> {
+    const fd = new FormData()
+    fd.append('kind', 'ai_folder_ref')
+    fd.append('file', opts.file)
+    if (opts.replaceFileId) fd.append('replace_file_id', opts.replaceFileId)
+
+    const r = await authedFetch('/upload', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Upload falhou: HTTP ${r.status}`)
+    }
+    return r.json()
+  },
+
+  /**
    * Baixa uma foto do Drive via /photo-proxy e retorna como base64 data-URL.
    * Usado pelos consumidores que precisam mandar a foto pra IA (EnhancePhotoModal,
    * GeminiChat) sem fazer fetch() direto (CORS).

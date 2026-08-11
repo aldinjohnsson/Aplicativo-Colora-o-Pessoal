@@ -226,6 +226,22 @@ async function deleteFromDrive(token: string, fileId: string): Promise<void> {
   if (!r.ok && r.status !== 404) throw new Error(`Drive delete: ${r.status} ${await r.text()}`)
 }
 
+// Confere se uma pasta/arquivo do Drive ainda existe de verdade (e não está
+// na lixeira) antes de confiar num ID salvo no banco (ex: clients.drive_folder_id).
+// Sem essa checagem, se alguém apaga a pasta manualmente direto no Drive
+// (fora do app), o próximo upload dessa cliente quebra com "File not
+// found" pra sempre — o código continuava usando o ID antigo achando que
+// a pasta ainda existia.
+async function folderStillExists(token: string, folderId: string): Promise<boolean> {
+  const r = await fetch(`${DRIVE_API}/files/${folderId}?fields=id,trashed`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (r.status === 404) return false
+  if (!r.ok) return true // erro diferente de 404 (rede, etc.) — não assume que sumiu, evita recriar pasta à toa por uma falha passageira
+  const j = await r.json().catch(() => ({} as { trashed?: boolean }))
+  return !j.trashed
+}
+
 // ─── HTML do popup OAuth ────────────────────────────────────────────────────
 
 function popupCloser(result: { ok: boolean; error?: string; googleEmail?: string }) {
@@ -656,6 +672,66 @@ Deno.serve(async (req: Request) => {
         })
       }
 
+      // ── Caminho referências de prompts/pastas de IA (kind='ai_folder_ref') ─
+      // Imagens de referência usadas nos prompts do FoldersManager (as fotos
+      // que ensinam a IA como é cada categoria/comprimento/textura de cabelo).
+      // Salva numa subpasta fixa "Referências de Prompts" dentro de "MS Color
+      // IA". Suporta replace_file_id pra trocar uma imagem existente sem
+      // acumular lixo no Drive.
+      //
+      // IMPORTANTE: essas imagens NÃO ficam mais no Supabase Storage — antes
+      // ficavam no bucket client-photos (path ai-materials/folders/...), sem
+      // nenhuma tabela referenciando o path, e por isso foram apagadas por
+      // engano numa limpeza de "arquivos órfãos" (a checagem de órfãos olhava
+      // as tabelas do banco, não o JSON de ai_folders.config). Migrar pro
+      // Drive evita esse risco de novo — e por isso o front NUNCA chama
+      // deleteFromDrive quando o usuário só remove uma imagem de um prompt
+      // (só quando EXPLICITAMENTE substitui uma imagem por outra, via
+      // replace_file_id). Remover do prompt não apaga do Drive.
+      if (kind === 'ai_folder_ref') {
+        const authUser = await getAuthUser(req)
+        if (!authUser) return json({ error: 'Não autenticado' }, 401)
+
+        let accessToken: string, rootFolderId: string | null
+        try {
+          const t = await getAdminToken(sb, authUser.id)
+          accessToken  = t.accessToken
+          rootFolderId = t.rootFolderId
+        } catch (e: any) {
+          return json({ error: e.message }, 412)
+        }
+
+        // Cria/reutiliza: Drive raiz → "MS Color IA" → "Referências de Prompts"
+        const iaFolderId  = await findOrCreateFolder(accessToken, 'MS Color IA', rootFolderId, false)
+        const refFolderId = await findOrCreateFolder(accessToken, 'Referências de Prompts', iaFolderId, false)
+
+        // Só apaga do Drive se EXPLICITAMENTE pedido via replace_file_id
+        // (troca de imagem) — nunca automaticamente.
+        const replaceFileId = form.get('replace_file_id') ? String(form.get('replace_file_id')) : null
+        if (replaceFileId) {
+          try { await deleteFromDrive(accessToken, replaceFileId) } catch {}
+        }
+
+        const safeName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const bytes    = new Uint8Array(await file.arrayBuffer())
+        const uploaded = await uploadToDrive(accessToken, {
+          name:     safeName,
+          mimeType: file.type || 'image/jpeg',
+          parents:  [refFolderId],
+          body:     bytes,
+        })
+        // Sem makeAnyoneReader — acesso via /photo-proxy autenticado (JWT do admin)
+
+        return json({
+          ok:            true,
+          driveFileId:   uploaded.id,
+          driveFolderId: refFolderId,
+          photoName:     safeName,
+          url:           `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
+          downloadUrl:   `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+        })
+      }
+
       // ── Caminho cliente (portal_token) ─────────────────────────────────
       const portalToken = String(form.get('portal_token') ?? '')
       if (!portalToken) return json({ error: 'portal_token obrigatório' }, 400)
@@ -676,8 +752,14 @@ Deno.serve(async (req: Request) => {
         return json({ error: e.message }, 412)
       }
 
-      // Pasta do cliente (com permissão pública). Se já existe, reusa.
+      // Pasta do cliente (com permissão pública). Se já existe E ainda
+      // existe de verdade no Drive, reusa. Se o ID salvo aponta pra uma
+      // pasta que foi apagada manualmente (fora do app), trata como se
+      // nunca tivesse existido: recria e atualiza o banco.
       let clientFolderId = client.drive_folder_id
+      if (clientFolderId && !(await folderStillExists(accessToken, clientFolderId))) {
+        clientFolderId = null
+      }
       if (!clientFolderId) {
         const folderName = sanitizeFolderName(client.full_name || `cliente-${client.id}`)
         clientFolderId = await findOrCreateFolder(accessToken, folderName, rootFolderId, /* makePublic */ true)

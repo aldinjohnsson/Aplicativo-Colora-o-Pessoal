@@ -18,10 +18,30 @@ function AppRoutes() {
   const [checkingAuth, setCheckingAuth] = useState(true)
 
   useEffect(() => {
+    let settled = false
+
+    // Watchdog: se getSession() não resolver em 8s, é sinal de que o
+    // supabase-js entrou no loop de "refresh token inválido → 429 → tenta
+    // de novo → 429..." (bug interno da lib, fora do nosso controle — ver
+    // stack trace desse bug: _refreshAccessToken/_callRefreshToken em
+    // loop). Sem essa trava, a tela de loading fica girando pra sempre e
+    // o usuário fica travado fora do sistema até limpar o storage na mão.
+    const watchdog = setTimeout(() => {
+      if (settled) return
+      console.warn('[App] getSession travou (provável loop de refresh de token) — limpando sessão local e recarregando.')
+      try { indexedDB.deleteDatabase('supabase-auth') } catch {}
+      try { localStorage.clear() } catch {}
+      window.location.reload()
+    }, 8000)
+
     adminService.getSession().then(user => {
+      settled = true
+      clearTimeout(watchdog)
       setAdminUser(user)
       setCheckingAuth(false)
     })
+
+    return () => clearTimeout(watchdog)
   }, [])
 
   // Fecha o popup após redirect do OAuth do Google Drive.

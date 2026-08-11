@@ -7,6 +7,7 @@ import {
   ArrowUp, ArrowDown
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 import { CategoryTypeModal, usePhotoTypes } from './CategoryTypeModal'
 import { PDFLayoutEditor, ItemLayout } from '../PDFLayoutEditor'
 
@@ -1007,27 +1008,35 @@ export function FoldersManager() {
   }
 
   // ── Uploads ────────────────────────────────────────────────
+  //
+  // Essas imagens vivem no Google Drive do admin (Drive > "MS Color IA" >
+  // "Referências de Prompts"), não mais no Supabase Storage — evita o risco
+  // de serem apagadas por engano numa limpeza de "arquivos órfãos" do banco
+  // (foi exatamente isso que aconteceu quando ficavam no bucket
+  // client-photos: nenhuma tabela referenciava o path, só o JSON de
+  // ai_folders.config, então uma checagem de órfãos baseada em tabelas
+  // nunca via essa referência). `storagePath` (do tipo PromptImage) agora
+  // guarda o driveFileId — o nome do campo ficou por compatibilidade com o
+  // resto do arquivo, mas não é mais um path do Supabase.
 
-  const uploadFile = async (file: File, prefix: string): Promise<{ storagePath: string; url: string }> => {
-    const path = `ai-materials/folders/${prefix}_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    await supabase.storage.from('client-photos').upload(path, file, { contentType: file.type, upsert: true })
-    return { storagePath: path, url: supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl }
+  const uploadFile = async (file: File, _prefix: string): Promise<{ storagePath: string; url: string }> => {
+    const result = await driveStorage.uploadFolderReferenceImage({ file })
+    return { storagePath: result.driveFileId, url: result.url }
   }
 
   // ── Helpers de clonagem de imagens ────────────────────────
-  // Ao copiar um prompt, cada imagem é re-enviada para um novo
-  // storagePath independente, evitando que a remoção de uma
-  // referência quebre outras cópias que usam o mesmo arquivo.
+  // Ao copiar um prompt, cada imagem é re-enviada como um novo arquivo no
+  // Drive (novo driveFileId), evitando que a remoção de uma referência
+  // afete outras cópias que "usavam" o mesmo arquivo.
 
-  const cloneImage = async (img: PromptImage, prefix: string): Promise<PromptImage> => {
+  const cloneImage = async (img: PromptImage, _prefix: string): Promise<PromptImage> => {
     try {
       const res = await fetch(img.url)
       const blob = await res.blob()
       const ext = img.url.split('.').pop()?.split('?')[0] || 'jpg'
-      const path = `ai-materials/folders/${prefix}_${Date.now()}_${uid()}.${ext}`
-      const { error } = await supabase.storage.from('client-photos').upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true })
-      if (error) return img
-      return { storagePath: path, url: supabase.storage.from('client-photos').getPublicUrl(path).data.publicUrl, label: img.label }
+      const file = new File([blob], `clone_${Date.now()}.${ext}`, { type: blob.type || 'image/jpeg' })
+      const result = await driveStorage.uploadFolderReferenceImage({ file })
+      return { storagePath: result.driveFileId, url: result.url, label: img.label }
     } catch {
       return img
     }
