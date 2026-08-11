@@ -1176,6 +1176,77 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     pdfUrlsRef.current = []
   }, [])
 
+  const [zipDownloading, setZipDownloading] = useState(false)
+
+  // Nome do arquivo pro ZIP: sempre o nome LIMPO do prompt (sem sufixo de
+  // comprimento/textura tipo "— LONGO — ONDULADO"). Resolve via promptId
+  // no folderConfig atual; se não achar (chat livre, sem prompt de
+  // origem), cai pro texto da mensagem cortado antes do primeiro "—".
+  const cleanPromptName = (msg: ChatMsg): string => {
+    const pid = msg.pdfMeta?.promptId
+    if (pid && folderConfig) {
+      for (const cat of folderConfig.categories) {
+        const p = cat.prompts.find(p => p.id === pid)
+        if (p) return p.name
+      }
+    }
+    const raw = msg.pdfMeta?.label || msg.text || 'Imagem'
+    return raw.split('—')[0].replace(/^[✨\s]+/, '').trim() || 'Imagem'
+  }
+
+  const sanitizeFileName = (name: string) =>
+    name.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Imagem'
+
+  const handleDownloadAllZip = async () => {
+    if (imageMsgs.length === 0 || zipDownloading) return
+    setZipDownloading(true)
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = new JSZip()
+      const usedNames = new Map<string, number>()
+
+      const addToZip = async (blob: Blob, baseName: string) => {
+        let name = sanitizeFileName(baseName)
+        const count = usedNames.get(name) || 0
+        usedNames.set(name, count + 1)
+        if (count > 0) name = `${name} (${count + 1})`
+        zip.file(`${name}.jpg`, blob)
+      }
+
+      for (const msg of imageMsgs) {
+        const baseName = cleanPromptName(msg)
+        const base64Parts = msg.responseParts?.filter(p => p.type === 'image' && p.imageBase64) || []
+        if (base64Parts.length > 0) {
+          for (const part of base64Parts) {
+            const res = await fetch(`data:${part.imageMimeType || 'image/jpeg'};base64,${part.imageBase64}`)
+            await addToZip(await res.blob(), baseName)
+          }
+        } else if (msg.savedImageUrls?.length) {
+          for (const url of msg.savedImageUrls) {
+            const driveMatch = url.match(/[?&]id=([^&]+)/)
+            if (!driveMatch) continue
+            const blob = await driveStorage.fetchPhotoBlob(driveMatch[1])
+            await addToZip(blob, baseName)
+          }
+        }
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      const objUrl = URL.createObjectURL(zipBlob)
+      const a = document.createElement('a')
+      a.href = objUrl
+      a.download = `Simulações IA - ${clientName}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
+    } catch (e: any) {
+      alert('Erro ao gerar ZIP: ' + (e?.message || 'tente novamente'))
+    } finally {
+      setZipDownloading(false)
+    }
+  }
+
   const imageMsgs = messages.filter(m => m.role === 'assistant' && !m.loading && !m.error && (m.responseParts?.some(p => p.type === 'image' && p.imageBase64) || m.savedImageUrls?.length))
 
   // ── Agrupa imagens por seção para o modal do PDF ──────────────────────────────
@@ -1707,6 +1778,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                         <ListChecks className="h-4 w-4 flex-shrink-0" />
                         <span>{selectMode ? 'Cancelar seleção' : 'Selecionar mensagens'}</span>
                       </button>
+                      {imageMsgs.length > 0 && (
+                        <button
+                          onClick={() => { setShowSideMenu(false); handleDownloadAllZip() }}
+                          disabled={zipDownloading}
+                          className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-left text-gray-700 hover:bg-gray-50 border-t border-gray-100 transition-colors disabled:opacity-60"
+                        >
+                          {zipDownloading ? <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin" /> : <Download className="h-4 w-4 flex-shrink-0" />}
+                          <span>Baixar tudo (ZIP)</span>
+                        </button>
+                      )}
                       {storageKey && !selectMode && (
                         <button
                           onClick={() => { setShowSideMenu(false); setTimeout(() => { if (!confirm('Limpar histórico?')) return; if (storageKey) chatStorage.clear(storageKey, portalToken).catch(() => {}); resultMaterialsSent.current = false; setMessages([{ id: uid(), role: 'assistant', text: WELCOME(clientName.split(' ')[0], selectedLanguage), responseParts: [{ type: 'text', text: '' }], timestamp: new Date() }]) }, 200) }}
@@ -1807,6 +1888,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           {(onSavePdf || !onSavePdf) && imageMsgs.length > 0 && (
             <button onClick={() => { setPdfSelected(new Set(imageMsgs.map(m => m.id))); setPdfBlob(null); setPdfSaveSuccess(false); setPdfSaveError(null); setShowPdfModal(true) }} className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors flex-shrink-0">
               <FileText className="h-3.5 w-3.5" /><span>PDF</span>
+            </button>
+          )}
+          {imageMsgs.length > 0 && (
+            <button onClick={handleDownloadAllZip} disabled={zipDownloading} title="Baixar todas as imagens em ZIP" className="inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2 py-1 text-xs font-medium transition-colors flex-shrink-0 disabled:opacity-60">
+              {zipDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              <span>ZIP</span>
             </button>
           )}
           {creditsImage !== null && <span className="inline-flex items-center gap-1 bg-white/20 rounded-full px-2 py-1 text-xs flex-shrink-0">📸{creditsImage} 💬{creditsText}</span>}
