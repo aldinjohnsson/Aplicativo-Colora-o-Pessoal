@@ -380,11 +380,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [promptPickerSaving, setPromptPickerSaving] = useState(false)
   const [promptPickerError, setPromptPickerError] = useState('')
   const [promptPickerDone, setPromptPickerDone] = useState(false)
-  // Além de virar referência (images[], usada pela IA pra gerar), também dá
-  // pra definir como imagem de CAPA (thumbnail — é o que aparece nos
-  // quadradinhos do seletor de categoria/prompt no chat). Marcado por
-  // padrão porque, na prática, é o campo que mais fica sem preencher.
-  const [promptPickerSetAsCover, setPromptPickerSetAsCover] = useState(true)
+  // Sempre vira imagem de CAPA (thumbnail — o que aparece nos quadradinhos
+  // do seletor de categoria/prompt no chat). Nunca vira "referência"
+  // (images[], usada pra alimentar a IA) — decisão explícita, sem pedir
+  // confirmação sobre isso.
   // Quando a imagem foi gerada a partir de um prompt já cadastrado
   // (pdfMeta.promptId), detecta automaticamente qual é — a UI mostra uma
   // tela de confirmação em vez do seletor manual completo. Só cai no
@@ -401,7 +400,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     setPromptPickerDone(false)
     setPromptPickerAutoId(autoPromptId || null)
     setPromptPickerManual(false)
-    setPromptPickerSetAsCover(true)
     if (!promptPickerFolders) {
       const { data, error } = await supabase.from('ai_folders').select('id, name, config').order('name')
       if (error) { setPromptPickerError('Erro ao carregar pastas: ' + error.message); return }
@@ -460,11 +458,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           cat.id !== targetCatId ? cat : {
             ...cat,
             prompts: (cat.prompts || []).map((p: any) =>
-              p.id !== promptId ? p : {
-                ...p,
-                images: [...(p.images || []), newImg],
-                ...(promptPickerSetAsCover ? { thumbnail: newImg } : {}),
-              }
+              p.id !== promptId ? p : { ...p, thumbnail: newImg }
             ),
           }
         ),
@@ -1987,8 +1981,6 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               : null
           }
           autoPromptId={promptPickerAutoId}
-          setAsCover={promptPickerSetAsCover}
-          onToggleSetAsCover={setPromptPickerSetAsCover}
           onChooseManually={() => setPromptPickerManual(true)}
           onSelectFolder={setPromptPickerFolderId}
           onSelectCat={setPromptPickerCatId}
@@ -2006,7 +1998,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 // de prompt" (super_admin) nas imagens geradas no chat.
 
 function PromptImagePickerModal({
-  folders, folderId, catId, saving, error, done, autoLocation, autoPromptId, setAsCover, onToggleSetAsCover,
+  folders, folderId, catId, saving, error, done, autoLocation, autoPromptId,
   onChooseManually, onSelectFolder, onSelectCat, onBack, onSave, onClose,
 }: {
   folders: { id: string; name: string; config: any }[] | null
@@ -2020,8 +2012,6 @@ function PromptImagePickerModal({
    *  do seletor manual completo. */
   autoLocation: { folderId: string; catId: string; promptName: string } | null
   autoPromptId: string | null
-  setAsCover: boolean
-  onToggleSetAsCover: (v: boolean) => void
   onChooseManually: () => void
   onSelectFolder: (id: string) => void
   onSelectCat: (id: string) => void
@@ -2051,15 +2041,7 @@ function PromptImagePickerModal({
               <p className="text-xs text-gray-400">{autoFolder?.name} → {autoCat?.name}</p>
               <p className="text-sm font-semibold text-gray-800">{autoLocation.promptName}</p>
             </div>
-            <label className="flex items-center gap-2 mt-3 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={setAsCover}
-                onChange={e => onToggleSetAsCover(e.target.checked)}
-                className="h-4 w-4 accent-violet-600"
-              />
-              <span className="text-xs text-gray-600">Também definir como imagem de capa (aparece no seletor de categorias do chat)</span>
-            </label>
+            <p className="text-xs text-gray-500 mt-3">Vai virar a imagem de capa desse prompt (aparece no seletor de categorias do chat).</p>
             {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
             <div className="flex items-center gap-2 mt-4">
               <button
@@ -2116,17 +2098,8 @@ function PromptImagePickerModal({
               </button>
             ))
           ) : (
-            prompts.length === 0 ? <p className="text-xs text-gray-400 px-3 py-4">Nenhum prompt nessa categoria.</p> : <>
-            <label className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={setAsCover}
-                onChange={e => onToggleSetAsCover(e.target.checked)}
-                className="h-4 w-4 accent-violet-600"
-              />
-              <span className="text-xs text-gray-600">Também definir como imagem de capa</span>
-            </label>
-            {prompts.map((p: any) => (
+            prompts.length === 0 ? <p className="text-xs text-gray-400 px-3 py-4">Nenhum prompt nessa categoria.</p> :
+            prompts.map((p: any) => (
               <button
                 key={p.id}
                 disabled={saving}
@@ -2136,8 +2109,7 @@ function PromptImagePickerModal({
                 {p.name || '(sem nome)'}
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" /> : <ImagePlus className="h-3.5 w-3.5 text-gray-300" />}
               </button>
-            ))}
-            </>
+            ))
           )}
           {error && <p className="text-xs text-red-600 px-3 py-2">{error}</p>}
         </div>
