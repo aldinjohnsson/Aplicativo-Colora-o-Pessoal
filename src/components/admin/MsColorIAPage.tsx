@@ -46,6 +46,9 @@ interface FolderOption {
 interface LoadedConfig {
   adminName:        string
   adminId:          string
+  /** true só quando admin_users.role === 'super_admin' — habilita o botão
+   *  "usar imagem como referência de prompt" nas imagens geradas no chat. */
+  isSuperAdmin:     boolean
   geminiKeyPresent: boolean
   geminiPrepaid:    boolean
   /** Chave OpenAI (GPT) do admin — usada client-side no aprimoramento de foto. */
@@ -230,6 +233,7 @@ export function MsColorIAPage() {
         data: {
           adminName:        admin.nome || 'Você',
           adminId:          admin.id,
+          isSuperAdmin:     admin.role === 'super_admin',
           geminiKeyPresent,
           geminiPrepaid,
           openaiApiKey:     openaiKey,
@@ -478,7 +482,7 @@ export function MsColorIAPage() {
     )
   }
 
-  const { adminName, adminId, geminiKeyPresent, geminiPrepaid, openaiKeyPresent, openaiPrepaid, folders, driveConnected } = state.data
+  const { adminName, adminId, isSuperAdmin, geminiKeyPresent, geminiPrepaid, openaiKeyPresent, openaiPrepaid, folders, driveConnected } = state.data
 
   if (!geminiKeyPresent && !geminiPrepaid) {
     return (
@@ -811,6 +815,7 @@ export function MsColorIAPage() {
         resultObservations=""
         unlimited
         chatStorageKey={`ms_color_ia_${adminId}`}
+        isSuperAdmin={isSuperAdmin}
         // onSavePdf NÃO informado → PDF só baixa, sem persistência
       />
 

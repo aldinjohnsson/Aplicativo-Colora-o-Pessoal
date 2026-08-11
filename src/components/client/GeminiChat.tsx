@@ -9,7 +9,7 @@ import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
   FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp,
-  ZoomIn, ZoomOut, Maximize2, Menu, Globe,
+  ZoomIn, ZoomOut, Maximize2, Menu, Globe, ImagePlus, ChevronRight,
 } from 'lucide-react'
 import {
   chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64, translateText, translateTexts,
@@ -103,6 +103,11 @@ interface GeminiChatProps {
    *  Usado na pré-visualização do admin: serve pra testar os prompts
    *  cadastrados, não pra bater papo livre com a IA. */
   promptsOnly?: boolean
+  /** Quando true, mostra em cada imagem gerada o botão "Usar como referência
+   *  de prompt" — abre um seletor Pasta → Categoria → Prompt e salva a
+   *  imagem ali (via Drive, mesmo caminho do FoldersManager). Só faz
+   *  sentido pra quem administra as pastas de IA (role='super_admin'). */
+  isSuperAdmin?: boolean
 }
 
 // ── Idiomas suportados ──────────────────────────────────────────────────────
@@ -308,7 +313,7 @@ function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageEleme
   return <img src={resolvedSrc} {...props} onError={() => setFailed(true)} />
 }
 
-export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR', promptsOnly = false }: GeminiChatProps) {
+export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, referencePhotoDriveFileId, referencePhotos = [], folderConfig, clientId, resultFileUrls = [], resultObservations = '', unlimited = false, chatStorageKey, portalToken, msColorIaMode = false, onSavePdf, defaultLanguage = 'pt-BR', promptsOnly = false, isSuperAdmin = false }: GeminiChatProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null)
@@ -363,6 +368,109 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [expandedMsgs, setExpandedMsgs] = useState<Set<string>>(new Set())
   // ── Lightbox — foto em tela cheia com zoom ────────────────────────────
   const [lightbox, setLightbox] = useState<{ src: string; mimeType?: string } | null>(null)
+
+  // ── "Usar como referência de prompt" (só super_admin) ──────────────
+  // A imagem pode vir em base64 (ainda não fez backup) ou já como URL do
+  // Drive (savedImageUrls) — os dois casos viram um File na hora de enviar.
+  type PromptPickerSource = { kind: 'base64'; base64: string; mime: string } | { kind: 'url'; url: string }
+  const [promptPickerSource, setPromptPickerSource] = useState<PromptPickerSource | null>(null)
+  const [promptPickerFolders, setPromptPickerFolders] = useState<{ id: string; name: string; config: any }[] | null>(null)
+  const [promptPickerFolderId, setPromptPickerFolderId] = useState<string | null>(null)
+  const [promptPickerCatId, setPromptPickerCatId] = useState<string | null>(null)
+  const [promptPickerSaving, setPromptPickerSaving] = useState(false)
+  const [promptPickerError, setPromptPickerError] = useState('')
+  const [promptPickerDone, setPromptPickerDone] = useState(false)
+  // Quando a imagem foi gerada a partir de um prompt já cadastrado
+  // (pdfMeta.promptId), detecta automaticamente qual é — a UI mostra uma
+  // tela de confirmação em vez do seletor manual completo. Só cai no
+  // seletor manual se não detectar (chat livre, sem prompt de origem) ou
+  // se o usuário pedir "escolher outro" explicitamente.
+  const [promptPickerAutoId, setPromptPickerAutoId] = useState<string | null>(null)
+  const [promptPickerManual, setPromptPickerManual] = useState(false)
+
+  const openPromptPicker = async (source: PromptPickerSource, autoPromptId?: string) => {
+    setPromptPickerSource(source)
+    setPromptPickerFolderId(null)
+    setPromptPickerCatId(null)
+    setPromptPickerError('')
+    setPromptPickerDone(false)
+    setPromptPickerAutoId(autoPromptId || null)
+    setPromptPickerManual(false)
+    if (!promptPickerFolders) {
+      const { data, error } = await supabase.from('ai_folders').select('id, name, config').order('name')
+      if (error) { setPromptPickerError('Erro ao carregar pastas: ' + error.message); return }
+      setPromptPickerFolders((data || []).map(f => ({ ...f, config: typeof f.config === 'string' ? JSON.parse(f.config) : f.config })))
+    }
+  }
+
+  // Acha em qual pasta/categoria está um promptId, varrendo todas as pastas.
+  const findPromptLocation = (
+    folders: { id: string; name: string; config: any }[], promptId: string,
+  ): { folderId: string; catId: string; promptName: string } | null => {
+    for (const f of folders) {
+      for (const c of (f.config?.categories || [])) {
+        if ((c.prompts || []).some((p: any) => p.id === promptId)) {
+          const p = c.prompts.find((p: any) => p.id === promptId)
+          return { folderId: f.id, catId: c.id, promptName: p?.name || '(sem nome)' }
+        }
+      }
+    }
+    return null
+  }
+
+  const savePromptReferenceImage = async (promptId: string, overrideFolderId?: string, overrideCatId?: string) => {
+    const targetFolderId = overrideFolderId ?? promptPickerFolderId
+    const targetCatId     = overrideCatId ?? promptPickerCatId
+    if (!promptPickerSource || !targetFolderId || !targetCatId || !promptPickerFolders) return
+    setPromptPickerSaving(true)
+    setPromptPickerError('')
+    try {
+      // Monta o File a partir da fonte (base64 em memória ou URL já no Drive)
+      let file: File
+      if (promptPickerSource.kind === 'base64') {
+        const res = await fetch(`data:${promptPickerSource.mime};base64,${promptPickerSource.base64}`)
+        const blob = await res.blob()
+        file = new File([blob], `ref_${Date.now()}.jpg`, { type: promptPickerSource.mime })
+      } else {
+        // fetch() direto na URL do Drive falha por CORS — precisa do mesmo
+        // proxy autenticado que a DriveProxyImg/downloadImage já usam.
+        const driveMatch = promptPickerSource.url.match(/[?&]id=([^&]+)/)
+        if (!driveMatch) throw new Error('URL de imagem inválida (não é do Drive).')
+        const blob = await driveStorage.fetchPhotoBlob(driveMatch[1])
+        file = new File([blob], `ref_${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' })
+      }
+
+      const uploaded = await driveStorage.uploadFolderReferenceImage({ file })
+      const newImg = { storagePath: uploaded.driveFileId, url: uploaded.url, label: '' }
+
+      // Atualiza o config da pasta: acha a categoria/prompt e acrescenta a
+      // imagem em `images` (não mexe no thumbnail, pra não trocar a capa
+      // sem querer — dá pra ajustar isso depois direto no FoldersManager).
+      const folder = promptPickerFolders.find(f => f.id === targetFolderId)
+      if (!folder) throw new Error('Pasta não encontrada')
+      const newConfig = {
+        ...folder.config,
+        categories: (folder.config.categories || []).map((cat: any) =>
+          cat.id !== targetCatId ? cat : {
+            ...cat,
+            prompts: (cat.prompts || []).map((p: any) =>
+              p.id !== promptId ? p : { ...p, images: [...(p.images || []), newImg] }
+            ),
+          }
+        ),
+      }
+      const { error } = await supabase.from('ai_folders').update({ config: newConfig, updated_at: new Date().toISOString() }).eq('id', targetFolderId)
+      if (error) throw error
+
+      // Mantém o cache local coerente pro resto da sessão do chat
+      setPromptPickerFolders(prev => prev?.map(f => f.id === targetFolderId ? { ...f, config: newConfig } : f) || null)
+      setPromptPickerDone(true)
+    } catch (e: any) {
+      setPromptPickerError(e.message || 'Erro ao salvar referência.')
+    } finally {
+      setPromptPickerSaving(false)
+    }
+  }
   // Object URLs criados pro preview do PDF. Acumulamos e revogamos no unmount
   // (revogar enquanto a aba ainda mostra o PDF pode quebrar a visualização
   // em alguns browsers).
@@ -1206,6 +1314,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                   >
                     <Download className="h-5 w-5" />
                   </button>
+                  {isSuperAdmin && (
+                    <button
+                      onClick={() => openPromptPicker({ kind: 'base64', base64: p.imageBase64!, mime: p.imageMimeType || 'image/jpeg' }, msg.pdfMeta?.promptId)}
+                      className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg transition-opacity"
+                      title="Usar como referência de prompt"
+                    >
+                      <ImagePlus className="h-5 w-5" />
+                    </button>
+                  )}
                 </div>
                 <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
               </div>
@@ -1234,6 +1351,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 >
                   <Download className="h-5 w-5" />
                 </button>
+                {isSuperAdmin && (
+                  <button
+                    onClick={() => openPromptPicker({ kind: 'url', url }, msg.pdfMeta?.promptId)}
+                    className="opacity-0 group-hover:opacity-100 active:opacity-100 bg-white text-gray-800 rounded-full p-2.5 shadow-lg transition-opacity"
+                    title="Usar como referência de prompt"
+                  >
+                    <ImagePlus className="h-5 w-5" />
+                  </button>
+                )}
               </div>
               <span className="absolute bottom-2 left-2 text-xs text-white/90 bg-black/40 backdrop-blur-sm rounded-full px-2.5 py-1">✨ IA</span>
             </div>
@@ -1837,7 +1963,153 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           onClose={() => setLightbox(null)}
         />
       )}
+      {promptPickerSource && (
+        <PromptImagePickerModal
+          folders={promptPickerFolders}
+          folderId={promptPickerFolderId}
+          catId={promptPickerCatId}
+          saving={promptPickerSaving}
+          error={promptPickerError}
+          done={promptPickerDone}
+          autoLocation={
+            promptPickerAutoId && !promptPickerManual && promptPickerFolders
+              ? findPromptLocation(promptPickerFolders, promptPickerAutoId)
+              : null
+          }
+          autoPromptId={promptPickerAutoId}
+          onChooseManually={() => setPromptPickerManual(true)}
+          onSelectFolder={setPromptPickerFolderId}
+          onSelectCat={setPromptPickerCatId}
+          onBack={() => { if (promptPickerCatId) setPromptPickerCatId(null); else setPromptPickerFolderId(null) }}
+          onSave={savePromptReferenceImage}
+          onClose={() => setPromptPickerSource(null)}
+        />
+      )}
     </>
+  )
+}
+
+// ─── PromptImagePickerModal ─────────────────────────────────────────────────
+// Seletor Pasta → Categoria → Prompt usado pelo botão "Usar como referência
+// de prompt" (super_admin) nas imagens geradas no chat.
+
+function PromptImagePickerModal({
+  folders, folderId, catId, saving, error, done, autoLocation, autoPromptId,
+  onChooseManually, onSelectFolder, onSelectCat, onBack, onSave, onClose,
+}: {
+  folders: { id: string; name: string; config: any }[] | null
+  folderId: string | null
+  catId: string | null
+  saving: boolean
+  error: string
+  done: boolean
+  /** Preenchido quando o promptId de origem da imagem foi encontrado
+   *  automaticamente numa das pastas — mostra tela de confirmação em vez
+   *  do seletor manual completo. */
+  autoLocation: { folderId: string; catId: string; promptName: string } | null
+  autoPromptId: string | null
+  onChooseManually: () => void
+  onSelectFolder: (id: string) => void
+  onSelectCat: (id: string) => void
+  onBack: () => void
+  onSave: (promptId: string, folderId?: string, catId?: string) => void
+  onClose: () => void
+}) {
+  const folder = folders?.find(f => f.id === folderId)
+  const cats = folder?.config?.categories || []
+  const cat = cats.find((c: any) => c.id === catId)
+  const prompts = cat?.prompts || []
+
+  // ── Tela de confirmação (prompt de origem detectado automaticamente) ──
+  if (autoLocation && !done) {
+    const autoFolder = folders?.find(f => f.id === autoLocation.folderId)
+    const autoCat = autoFolder?.config?.categories?.find((c: any) => c.id === autoLocation.catId)
+    return (
+      <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center gap-2 px-4 py-3 border-b">
+            <h3 className="font-semibold text-sm text-gray-800 flex-1">Usar como referência</h3>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X className="h-4 w-4" /></button>
+          </div>
+          <div className="p-5">
+            <p className="text-sm text-gray-600">Essa imagem foi gerada a partir deste prompt — salvar como referência dele?</p>
+            <div className="mt-3 bg-violet-50 border border-violet-100 rounded-xl px-3 py-2.5">
+              <p className="text-xs text-gray-400">{autoFolder?.name} → {autoCat?.name}</p>
+              <p className="text-sm font-semibold text-gray-800">{autoLocation.promptName}</p>
+            </div>
+            {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+            <div className="flex items-center gap-2 mt-4">
+              <button
+                onClick={() => onSave(autoPromptId!, autoLocation.folderId, autoLocation.catId)}
+                disabled={saving}
+                className="flex-1 bg-gradient-to-r from-violet-500 to-purple-600 text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-60 flex items-center justify-center gap-2"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                Confirmar
+              </button>
+              <button onClick={onChooseManually} disabled={saving} className="text-sm text-gray-500 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+                Escolher outro
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-2 px-4 py-3 border-b">
+          {(folderId) && (
+            <button onClick={onBack} className="text-gray-400 hover:text-gray-700"><ArrowLeft className="h-4 w-4" /></button>
+          )}
+          <h3 className="font-semibold text-sm text-gray-800 flex-1">
+            {!folderId ? 'Escolha a pasta' : !catId ? folder?.name : `${folder?.name} — ${cat?.name}`}
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X className="h-4 w-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2">
+          {done ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-10 text-center px-4">
+              <CheckCircle2 className="h-10 w-10 text-green-500" />
+              <p className="text-sm text-gray-700">Imagem salva como referência.</p>
+              <button onClick={onClose} className="mt-2 text-xs font-semibold text-violet-600">Fechar</button>
+            </div>
+          ) : !folders ? (
+            <div className="flex items-center justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-gray-400" /></div>
+          ) : !folderId ? (
+            folders.map(f => (
+              <button key={f.id} onClick={() => onSelectFolder(f.id)} className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-gray-50 text-left text-sm text-gray-700">
+                {f.name} <ChevronRight className="h-4 w-4 text-gray-300" />
+              </button>
+            ))
+          ) : !catId ? (
+            cats.length === 0 ? <p className="text-xs text-gray-400 px-3 py-4">Nenhuma categoria nessa pasta.</p> :
+            cats.map((c: any) => (
+              <button key={c.id} onClick={() => onSelectCat(c.id)} className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-gray-50 text-left text-sm text-gray-700">
+                {c.name} <ChevronRight className="h-4 w-4 text-gray-300" />
+              </button>
+            ))
+          ) : (
+            prompts.length === 0 ? <p className="text-xs text-gray-400 px-3 py-4">Nenhum prompt nessa categoria.</p> :
+            prompts.map((p: any) => (
+              <button
+                key={p.id}
+                disabled={saving}
+                onClick={() => onSave(p.id)}
+                className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-violet-50 text-left text-sm text-gray-700 disabled:opacity-50"
+              >
+                {p.name || '(sem nome)'}
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" /> : <ImagePlus className="h-3.5 w-3.5 text-gray-300" />}
+              </button>
+            ))
+          )}
+          {error && <p className="text-xs text-red-600 px-3 py-2">{error}</p>}
+        </div>
+      </div>
+    </div>
   )
 }
 
