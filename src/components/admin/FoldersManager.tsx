@@ -900,6 +900,93 @@ export function FoldersManager() {
     setSubPicker(null)
   }
 
+  // Vincula um comprimento/textura global a TODOS os prompts de TODAS as
+  // pastas do sistema — diferente de linkSubOptionsToAllPrompts (que só
+  // alcança a pasta que está aberta no editor agora). Essa aqui busca
+  // todas as pastas direto do banco, atualiza cada uma que precisar, e
+  // sincroniza o state local se a pasta aberta no momento for uma delas
+  // (senão o próximo "Salvar" nela sobrescreveria com dado desatualizado).
+  const [linkingAllFoldersId, setLinkingAllFoldersId] = useState<string | null>(null)
+
+  const linkToAllFolders = async (item: GlobalSubOpt) => {
+    if (!item.dbId) return
+    const field = item.kind === 'length' ? 'lengths' : 'textures'
+    const label = item.kind === 'length' ? 'este comprimento' : 'esta textura'
+    if (!confirm(`Vincular ${label} ("${item.name}") a TODOS os prompts de TODAS as pastas? Quem já tiver vinculado é ignorado, não duplica.`)) return
+
+    setLinkingAllFoldersId(item.dbId)
+    try {
+      const { data: allFolders, error } = await supabase.from('ai_folders').select('id, config')
+      if (error) throw error
+
+      let updatedFolders = 0
+      for (const f of (allFolders || [])) {
+        const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
+        let changed = false
+        const newCfg = {
+          ...cfg,
+          categories: (cfg.categories || []).map((cat: any) => ({
+            ...cat,
+            prompts: (cat.prompts || []).map((p: any) => {
+              const existingIds = new Set((p[field] || []).map((s: any) => s.dbId).filter(Boolean))
+              if (existingIds.has(item.dbId)) return p
+              changed = true
+              const newSub: SubOption = {
+                id: uid(), dbId: item.dbId, name: item.name,
+                instruction: item.instruction, thumbnail: item.thumbnail, images: item.images,
+              }
+              return { ...p, [field]: [...(p[field] || []), newSub] }
+            }),
+          })),
+        }
+        if (!changed) continue
+        const { error: upErr } = await supabase
+          .from('ai_folders')
+          .update({ config: newCfg, updated_at: new Date().toISOString() })
+          .eq('id', f.id)
+        if (upErr) throw upErr
+        updatedFolders++
+        // Se a pasta que acabou de ser atualizada é a que está aberta no
+        // editor agora, sincroniza o state local também.
+        if (editingFolder && editingFolder.id === f.id) setConfig(newCfg)
+      }
+      alert(updatedFolders > 0
+        ? `Vinculado em ${updatedFolders} pasta${updatedFolders === 1 ? '' : 's'}.`
+        : 'Todas as pastas já tinham isso vinculado — nada mudou.')
+    } catch (e: any) {
+      alert('Erro ao vincular a todas as pastas: ' + (e?.message || 'tente novamente'))
+    } finally {
+      setLinkingAllFoldersId(null)
+    }
+  }
+
+  // Vincula os globais selecionados a TODOS os prompts da pasta atual de
+  // uma vez (todas as categorias) — evita ter que abrir prompt por prompt
+  // e repetir a mesma vinculação manualmente. Pula quem já tem aquele
+  // dbId vinculado (não duplica). Usa setConfig funcional (não updatePrompt
+  // em loop) pra não perder atualizações por causa de estado desatualizado
+  // entre chamadas sucessivas dentro do mesmo clique.
+  const linkSubOptionsToAllPrompts = (field: 'lengths' | 'textures', globals: any[]) => {
+    if (globals.length === 0) return
+    setConfig(prev => ({
+      ...prev,
+      categories: prev.categories.map(cat => ({
+        ...cat,
+        prompts: cat.prompts.map(p => {
+          const existingIds = new Set((p[field] || []).map((s: SubOption) => s.dbId).filter(Boolean))
+          const toAdd = globals.filter(g => !existingIds.has(g.dbId))
+          if (toAdd.length === 0) return p
+          const newSubs: SubOption[] = toAdd.map(g => ({
+            id: uid(), dbId: g.dbId, name: g.name, instruction: g.instruction, thumbnail: g.thumbnail, images: g.images,
+          }))
+          return { ...p, [field]: [...(p[field] || []), ...newSubs] }
+        }),
+      })),
+    }))
+    setPickerSelected(new Set())
+    setSubPicker(null)
+  }
+
   const duplicateSubOption = async (catId: string, pId: string, field: 'lengths' | 'textures', subId: string) => {
     const cat = config.categories.find(c => c.id === catId)
     const prompt = cat?.prompts.find(p => p.id === pId)
@@ -1437,6 +1524,8 @@ export function FoldersManager() {
               onCreate={() => openCreateGlobal('length')}
               onEdit={openEditGlobal}
               onDelete={deleteGlobalItem}
+              onLinkAllFolders={linkToAllFolders}
+              linkingAllFoldersId={linkingAllFoldersId}
             />
           )}
 
@@ -1448,6 +1537,8 @@ export function FoldersManager() {
               onCreate={() => openCreateGlobal('texture')}
               onEdit={openEditGlobal}
               onDelete={deleteGlobalItem}
+              onLinkAllFolders={linkToAllFolders}
+              linkingAllFoldersId={linkingAllFoldersId}
             />
           )}
         </div>
@@ -2178,24 +2269,39 @@ export function FoldersManager() {
 
             {/* Footer actions */}
             {pickerSelected.size > 0 && (
-              <div className="px-4 py-3 border-t border-gray-100 flex gap-2">
-                <button
-                  onClick={() => setPickerSelected(new Set())}
-                  className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-500 hover:bg-gray-50"
-                >
-                  Limpar
-                </button>
+              <div className="px-4 py-3 border-t border-gray-100 flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setPickerSelected(new Set())}
+                    className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-500 hover:bg-gray-50"
+                  >
+                    Limpar
+                  </button>
+                  <button
+                    onClick={() => {
+                      const selected = globalSubOpts.filter(o => pickerSelected.has(o.dbId!))
+                      linkMultipleSubOptions(subPicker.catId, subPicker.pId, subPicker.field, selected)
+                    }}
+                    className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Adicionar {pickerSelected.size} {pickerSelected.size === 1
+                      ? (subPicker.field === 'lengths' ? 'comprimento' : 'textura')
+                      : (subPicker.field === 'lengths' ? 'comprimentos' : 'texturas')}
+                  </button>
+                </div>
                 <button
                   onClick={() => {
                     const selected = globalSubOpts.filter(o => pickerSelected.has(o.dbId!))
-                    linkMultipleSubOptions(subPicker.catId, subPicker.pId, subPicker.field, selected)
+                    const label = pickerSelected.size === 1
+                      ? (subPicker.field === 'lengths' ? 'este comprimento' : 'esta textura')
+                      : (subPicker.field === 'lengths' ? 'estes comprimentos' : 'estas texturas')
+                    if (!confirm(`Vincular ${label} a TODOS os prompts desta pasta? Quem já tiver vinculado é ignorado, não duplica.`)) return
+                    linkSubOptionsToAllPrompts(subPicker.field, selected)
                   }}
-                  className="flex-1 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                  className="py-2 text-xs font-medium text-violet-600 hover:text-violet-800 hover:bg-violet-50 rounded-xl transition-colors"
                 >
-                  <Plus className="h-4 w-4" />
-                  Adicionar {pickerSelected.size} {pickerSelected.size === 1
-                    ? (subPicker.field === 'lengths' ? 'comprimento' : 'textura')
-                    : (subPicker.field === 'lengths' ? 'comprimentos' : 'texturas')}
+                  Vincular a TODOS os prompts desta pasta
                 </button>
               </div>
             )}
@@ -2705,9 +2811,11 @@ interface SubOptionsTabViewProps {
   onCreate: () => void
   onEdit: (item: SubOption & { kind: 'length' | 'texture' }) => void
   onDelete: (item: SubOption & { kind: 'length' | 'texture' }) => void
+  onLinkAllFolders: (item: SubOption & { kind: 'length' | 'texture' }) => void
+  linkingAllFoldersId: string | null
 }
 
-function SubOptionsTabView({ kind, items, loading, onCreate, onEdit, onDelete }: SubOptionsTabViewProps) {
+function SubOptionsTabView({ kind, items, loading, onCreate, onEdit, onDelete, onLinkAllFolders, linkingAllFoldersId }: SubOptionsTabViewProps) {
   const label = kind === 'length' ? 'Comprimento' : 'Textura'
   const labelLower = kind === 'length' ? 'comprimento' : 'textura'
   const labelPlural = kind === 'length' ? 'comprimentos' : 'texturas'
@@ -2794,6 +2902,17 @@ function SubOptionsTabView({ kind, items, loading, onCreate, onEdit, onDelete }:
                     </span>
                   )}
                   <div className="flex-1" />
+                  <button
+                    onClick={() => onLinkAllFolders(item)}
+                    disabled={linkingAllFoldersId === item.dbId}
+                    title="Vincular a todos os prompts de todas as pastas"
+                    className="text-xs px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg hover:bg-violet-100 hover:text-violet-700 disabled:opacity-50 flex items-center gap-1"
+                  >
+                    {linkingAllFoldersId === item.dbId
+                      ? <span className="h-3 w-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+                      : <Link2 className="h-3 w-3" />}
+                    Todas as pastas
+                  </button>
                   <button
                     onClick={() => onEdit(item)}
                     className="text-xs px-2.5 py-1 bg-violet-100 text-violet-700 rounded-lg hover:bg-violet-200"

@@ -816,6 +816,7 @@ export function MsColorIAPage() {
         unlimited
         chatStorageKey={`ms_color_ia_${adminId}`}
         isSuperAdmin={isSuperAdmin}
+        promptsOnly
         // onSavePdf NÃO informado → PDF só baixa, sem persistência
       />
 

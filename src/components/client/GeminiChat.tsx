@@ -279,6 +279,73 @@ const WELCOME = (name: string, lang: LanguageCode = 'pt-BR') =>
  * para evitar o bloqueio de CORS ao usar drive.google.com diretamente no browser.
  * Para outras URLs, funciona como um <img> normal.
  */
+// Reescreve o parâmetro `sz` de uma URL de thumbnail do Drive. As miniaturas
+// de categoria/prompt/comprimento/textura só aparecem como cards pequenos
+// (uns 60-100px) — pedir sz=w2000 (como o upload grava por padrão) faz o
+// Drive gerar e transferir uma imagem bem maior do que precisa, o que é a
+// causa principal da demora. Aqui a gente pede um tamanho adequado direto
+// na hora de renderizar, então funciona pra imagens já salvas com sz
+// grande também (não depende de re-upload).
+function driveThumbSize(url: string, size: number): string {
+  if (!url.includes('drive.google.com')) return url
+  return url.includes('sz=') ? url.replace(/sz=w\d+/, `sz=w${size}`) : `${url}${url.includes('?') ? '&' : '?'}sz=w${size}`
+}
+
+// Cache persistente (Cache Storage API do navegador — sobrevive entre
+// sessões, diferente de estado em memória) pras miniaturas de
+// categoria/prompt/comprimento/textura. Resolve os dois problemas: tamanho
+// pedido ao Drive (via driveThumbSize) e "recarrega toda vez que sai e
+// entra no chat" — a partir da segunda vez, vem do cache local, sem
+// precisar baixar do Drive de novo.
+const THUMB_CACHE_NAME = 'ms-color-ia-thumbs-v1'
+
+function CachedThumb({ src, size = 300, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { size?: number }) {
+  const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
+    setResolvedSrc(undefined)
+    if (!src) return
+    const url = driveThumbSize(src, size)
+
+    ;(async () => {
+      try {
+        if (!('caches' in window)) { if (!cancelled) setResolvedSrc(url); return }
+        const cache = await caches.open(THUMB_CACHE_NAME)
+        let res = await cache.match(url)
+        if (!res) {
+          // IMPORTANTE: modo 'no-cors'. O drive.google.com/thumbnail não
+          // libera CORS pra leitura via JS — um fetch() normal (modo
+          // 'cors', o padrão) falha nessa URL, cai no catch, e o cache
+          // NUNCA chega a guardar nada (parece funcionar pq a imagem
+          // ainda aparece pelo fallback, mas recarrega toda vez — era
+          // esse o bug). Em modo 'no-cors' a resposta vem "opaca" (sem
+          // acesso ao conteúdo por JS), mas dá pra guardar no Cache
+          // Storage e usar .blob() pra exibir normalmente — é a técnica
+          // padrão pra cachear imagem de CDN de terceiros sem CORS.
+          const fetched = await fetch(url, { mode: 'no-cors' })
+          await cache.put(url, fetched.clone())
+          res = fetched
+        }
+        const blob = await res.blob()
+        if (blob.size > 0) {
+          objectUrl = URL.createObjectURL(blob)
+          if (!cancelled) setResolvedSrc(objectUrl)
+          return
+        }
+      } catch {
+        // Cache Storage indisponível ou falhou de verdade — cai pro <img src> direto.
+      }
+      if (!cancelled) setResolvedSrc(url)
+    })()
+
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [src, size])
+
+  if (!resolvedSrc) return <div className={props.className} style={{ background: '#f3f4f6' }} />
+  return <img src={resolvedSrc} {...props} />
+}
+
 function DriveProxyImg({ src, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
   const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(undefined)
   const [failed, setFailed] = useState(false)
@@ -1474,9 +1541,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 <div className="w-full aspect-[4/3] bg-gray-100 rounded flex items-center justify-center relative overflow-hidden">
                   <Wand2 className="h-4 w-4 text-gray-300" />
                   {(p.thumbnail?.url || p.images?.[0]?.url) && (
-                    <img src={p.thumbnail?.url || p.images[0].url} alt={p.name}
-                      className="absolute inset-0 w-full h-full object-cover"
-                      onError={e => { e.currentTarget.style.display = 'none' }} />
+                    <CachedThumb src={p.thumbnail?.url || p.images[0].url} alt={p.name} size={300}
+                      className="absolute inset-0 w-full h-full object-cover" />
                   )}
                 </div>
                 <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{p.name}</span>
@@ -1500,9 +1566,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                <div className="w-full aspect-[4/3] bg-gradient-to-br from-violet-50 to-purple-100 rounded flex items-center justify-center relative overflow-hidden">
                   <Scissors className="h-5 w-5 text-violet-300" />
                   {length.thumbnail?.url && (
-                    <img src={length.thumbnail.url} alt={length.name}
-                      className="absolute inset-0 w-full h-full object-cover"
-                      onError={e => { e.currentTarget.style.display = 'none' }} />
+                    <CachedThumb src={length.thumbnail.url} alt={length.name} size={300}
+                      className="absolute inset-0 w-full h-full object-cover" />
                   )}
                 </div>
                   <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{length.name || '—'}</span>
@@ -1528,9 +1593,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                     <path d="M3 12c0-4 3-7 6-7s6 3 6 7-3 7-6 7" /><path d="M9 12c0-2 1.5-3.5 3-3.5" />
                   </svg>
                   {texture.thumbnail?.url && (
-                    <img src={texture.thumbnail.url} alt={texture.name}
-                      className="absolute inset-0 w-full h-full object-cover"
-                      onError={e => { e.currentTarget.style.display = 'none' }} />
+                    <CachedThumb src={texture.thumbnail.url} alt={texture.name} size={300}
+                      className="absolute inset-0 w-full h-full object-cover" />
                   )}
                 </div>
                   <span className="text-[10px] font-medium text-gray-700 leading-tight line-clamp-2">{texture.name || '—'}</span>
@@ -1546,7 +1610,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               <p className="text-xs font-semibold text-gray-600 truncate">{selectedPrompt.name} — Comprimento:</p>
             </div>
             {(selectedPrompt.thumbnail?.url || selectedPrompt.images?.[0]?.url) && (
-              <div className="flex justify-center"><img src={selectedPrompt.thumbnail?.url || selectedPrompt.images[0].url} alt="" className="w-20 h-20 sm:w-24 sm:h-24 object-cover rounded-xl border" /></div>
+              <div className="flex justify-center"><CachedThumb src={selectedPrompt.thumbnail?.url || selectedPrompt.images[0].url} alt="" size={400} className="w-20 h-20 sm:w-24 sm:h-24 object-cover rounded-xl border" /></div>
             )}
             <div className="flex flex-wrap gap-2 justify-center">
               {selectedPrompt.options.map((o, i) => <button key={i} onClick={() => handleOptionClick(o)} disabled={loading} className="px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 disabled:opacity-50">{o}</button>)}
@@ -2018,7 +2082,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           <div className="px-3 sm:px-4 pb-3 sm:pb-4 pt-2 bg-white border-t border-gray-100 flex-shrink-0"
             style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom, 12px))' }}>
             <p className="text-center text-xs text-gray-400 py-1.5">
-              Modo admin: use os prompts cadastrados acima — sem caixa de texto livre aqui.
+              Modo admin: use os prompts cadastrados acima, sem caixa de texto livre aqui.
             </p>
           </div>
         ) : (
