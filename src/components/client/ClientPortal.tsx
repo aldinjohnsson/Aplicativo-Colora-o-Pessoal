@@ -2510,7 +2510,7 @@ function ResultScreen({
         const { data, error } = await supabase.rpc('get_client_file_retention', { p_token: token })
         if (cancelled) return
         if (error) { console.warn('[ClientPortal] get_client_file_retention:', error); return }
-        if (data) setFileRetention({ enabled: data.enabled ?? true, days: data.days ?? 21, extendedUntil: data.extendedUntil ?? null })
+        if (data) setFileRetention({ enabled: data.enabled ?? true, days: data.days ?? 90, extendedUntil: data.extendedUntil ?? null })
       } catch (e) {
         if (!cancelled) console.warn('[ClientPortal] file_retention fetch falhou:', e)
       }

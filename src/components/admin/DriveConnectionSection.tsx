@@ -217,29 +217,38 @@ export function DriveConnectionSection() {
               </div>
 
               {retentionEnabled && (
-                <div className="mt-3 pt-3 border-t border-amber-200 flex items-end gap-2">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Excluir após (dias)</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={365}
-                      value={daysInput}
-                      onChange={e => { setDaysInput(e.target.value); setDaysDirty(true) }}
-                      className="w-24 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
-                    />
-                  </div>
-                  <button
-                    onClick={handleSaveDays}
-                    disabled={savingCleanup || !daysDirty}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 whitespace-nowrap"
-                  >
-                    {savingCleanup ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                    Salvar
-                  </button>
-                  {!daysDirty && (
-                    <span className="text-xs text-gray-400 pb-1.5">Contado a partir de quando o resultado é liberado</span>
+                <div className="mt-3 pt-3 border-t border-amber-200">
+                  {daysDirty && (
+                    <p className="mb-2 text-xs font-medium text-amber-700 bg-amber-100 border border-amber-300 rounded-lg px-2.5 py-1.5">
+                      ⚠️ Valor ainda não salvo — clique em "Salvar" aqui embaixo (o botão "Salvar" lá em cima, no
+                      topo da página, NÃO salva este campo).
+                    </p>
                   )}
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Excluir após (dias)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={daysInput}
+                        onChange={e => { setDaysInput(e.target.value); setDaysDirty(true) }}
+                        onBlur={() => { if (daysDirty) handleSaveDays() }}
+                        className="w-24 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
+                      />
+                    </div>
+                    <button
+                      onClick={handleSaveDays}
+                      disabled={savingCleanup || !daysDirty}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 whitespace-nowrap"
+                    >
+                      {savingCleanup ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                      Salvar
+                    </button>
+                    {!daysDirty && (
+                      <span className="text-xs text-gray-400 pb-1.5">Contado a partir de quando o resultado é liberado</span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
