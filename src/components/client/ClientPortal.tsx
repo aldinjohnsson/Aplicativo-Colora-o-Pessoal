@@ -616,15 +616,24 @@ function FormAndPhotoFlow({ token, data, onDone }: { token: string; data: Client
         <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
           <div className="flex gap-3 items-start">
             <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-semibold text-amber-800">{t('portal.formPhotoFlow.adjustmentsRequested')}</p>
-              <p className="text-sm text-amber-700 mt-0.5 whitespace-pre-wrap">
-                {hasFormRejection && hasPhotosRejection
-                  ? t('portal.formPhotoFlow.adjustmentsBoth')
-                  : hasFormRejection
-                    ? data.client.form_rejection_reason
-                    : data.client.photos_rejection_reason}
-              </p>
+              {hasFormRejection && hasPhotosRejection ? (
+                <div className="mt-1 space-y-2">
+                  <p className="text-sm text-amber-700">
+                    <span className="font-medium">{t('portal.form.stepLabel')}:</span>{' '}
+                    <span className="whitespace-pre-wrap">{data.client.form_rejection_reason}</span>
+                  </p>
+                  <p className="text-sm text-amber-700">
+                    <span className="font-medium">{t('portal.photoStep.stepLabel') || 'Fotos'}:</span>{' '}
+                    <span className="whitespace-pre-wrap">{data.client.photos_rejection_reason}</span>
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-amber-700 mt-0.5 whitespace-pre-wrap">
+                  {hasFormRejection ? data.client.form_rejection_reason : data.client.photos_rejection_reason}
+                </p>
+              )}
             </div>
           </div>
         </div>

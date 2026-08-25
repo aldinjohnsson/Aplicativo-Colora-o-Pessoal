@@ -170,6 +170,7 @@ function ClientSignupInner({
     token: string
     name: string
     phone: string | null
+    whatsappOptIn: boolean | null
     status: string
     plan_name: string | null
     created_at: string
@@ -217,13 +218,18 @@ function ClientSignupInner({
     try {
       const reusedFullName = reuse.name
       const reusedPhone = reuse.phone || ''
+      // Reaproveita a preferência REAL de WhatsApp da cliente (o que ela
+      // escolheu no cadastro anterior) — não usa o `whatsappOptIn` do
+      // formulário atual, que fica escondido nesse fluxo e nunca é
+      // realmente perguntado de novo.
+      const reusedWhatsappOptIn = reuse.whatsappOptIn ?? true
       const country = countryName(countryCode)
       const contractData = {
         clientInfo: { fullName: reusedFullName, email, phone: reusedPhone, birthDate, country, ip: clientIp },
         registeredAt: new Date().toISOString(),
         planName: plan?.name,
-        whatsappOptIn,
-        whatsappOptInAt: whatsappOptIn ? new Date().toISOString() : null,
+        whatsappOptIn: reusedWhatsappOptIn,
+        whatsappOptInAt: reusedWhatsappOptIn ? new Date().toISOString() : null,
       }
 
       const { data, error } = await supabase.rpc('register_client_from_plan', {
@@ -233,6 +239,7 @@ function ClientSignupInner({
         p_phone: reusedPhone,
         p_birth_date: birthDate,
         p_contract_data: contractData,
+        p_whatsapp_opt_in: reusedWhatsappOptIn,
       })
 
       if (error) throw error
@@ -351,6 +358,7 @@ function ClientSignupInner({
         p_phone: phone.trim(),
         p_birth_date: birthDate,
         p_contract_data: contractData,
+        p_whatsapp_opt_in: whatsappOptIn,
       })
 
       if (error) throw error
