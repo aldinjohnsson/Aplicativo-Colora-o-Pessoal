@@ -149,6 +149,8 @@ export function WhatsAppSettingsSection() {
             ℹ️ Mensagem iniciada pela empresa usa <strong>template aprovado</strong> na Meta.
             O template precisa ter 2 variáveis no corpo: <span className="font-mono">Olá {'{{1}}'}! {'{{2}}'}</span>
             {' '}— onde <strong>{'{{1}}'}</strong> é o nome da cliente e <strong>{'{{2}}'}</strong> é a mensagem do plano abaixo.
+            Dentro da mensagem do plano, escreva <span className="font-mono">{'{{link}}'}</span> onde quiser que
+            entre o link do portal — cada cliente recebe o dela automaticamente.
           </p>
         </div>
 
@@ -205,11 +207,13 @@ export function WhatsAppSettingsSection() {
           <textarea
             value={cfg.defaultMessage}
             onChange={e => set({ defaultMessage: e.target.value })}
-            rows={2}
-            className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent resize-none"
+            rows={6}
+            className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
           />
           <p className="text-xs text-gray-500 mt-1.5">
             Vira a variável <span className="font-mono">{'{{2}}'}</span>. O <span className="font-mono">Olá {'{{1}}'}!</span> já vem do template.
+            Escreva <span className="font-mono bg-gray-100 px-1 rounded">{'{{link}}'}</span> em qualquer ponto do texto que o
+            sistema troca automaticamente pelo link do portal — cada cliente recebe o link dela, não precisa (nem dá) escrever um link fixo.
           </p>
         </div>
 
@@ -226,9 +230,9 @@ export function WhatsAppSettingsSection() {
                   <textarea
                     value={cfg.planMessages[p.id] ?? ''}
                     onChange={e => setPlanMsg(p.id, e.target.value)}
-                    rows={2}
-                    placeholder="Deixe em branco para usar a mensagem padrão"
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-transparent resize-none"
+                    rows={5}
+                    placeholder={`Deixe em branco para usar a mensagem padrão. Pode usar {{link}} pra inserir o link do portal.`}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-transparent"
                   />
                 </div>
               ))}

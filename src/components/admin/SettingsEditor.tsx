@@ -3,6 +3,7 @@ import { Save, CheckCircle, AlertCircle, FileText, Upload, Trash2, Mail, HelpCir
 import { TagsManager } from './TagsManager'
 import { PhotoTypesManager } from './PhotoTypesManager'
 import { DriveConnectionSection } from './DriveConnectionSection'
+import { WhatsAppSettingsSection } from './WhatsAppSettingsSection'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/theme'
 import { adminService, AdminUser } from '../../lib/services'
@@ -2363,6 +2364,7 @@ export default function SettingsEditor() {
 
       {isSuperAdmin && <PhotoTypesManager />}
       {isSuperAdmin && <TagsManager />}
+      {isSuperAdmin && <WhatsAppSettingsSection />}
 
       <PdfTemplateSection
         currentFileName={settings.pdfTemplateFileName || ''}

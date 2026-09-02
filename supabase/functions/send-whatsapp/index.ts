@@ -96,7 +96,10 @@ Deno.serve(async (req) => {
     const payload = await req.json().catch(() => ({}))
     const { clientId, to: explicitTo, name: explicitName, planId: explicitPlanId, test } = payload
 
-    // 1) Config global do WhatsApp (linha do super_admin)
+    // 1) Config do WhatsApp — fica salva na linha do super_admin (só ele
+    //    configura pela UI), mas SÓ dispara pra clientes que pertencem a
+    //    esse mesmo super_admin (ver checagem client.admin_id mais abaixo)
+    //    — não notifica clientes de outros admins da plataforma.
     const { data: superAdmin } = await supabase
       .from('admin_users')
       .select('id')
@@ -128,7 +131,7 @@ Deno.serve(async (req) => {
     if (clientId) {
       const { data: client, error: cErr } = await supabase
         .from('clients')
-        .select('full_name, phone, plan_id, whatsapp_opt_in')
+        .select('full_name, phone, plan_id, whatsapp_opt_in, admin_id')
         .eq('id', clientId)
         .maybeSingle()
 
@@ -138,6 +141,14 @@ Deno.serve(async (req) => {
         return json({ skipped: 'não foi possível verificar o consentimento (coluna whatsapp_opt_in ausente?)' })
       }
       if (!client) return json({ skipped: 'cliente não encontrada' })
+      // A config de WhatsApp é só do super_admin, mas isso NÃO deve
+      // disparar mensagem em nome dele pra clientes de OUTROS admins da
+      // plataforma (cada consultora tem seu próprio negócio/clientela —
+      // não faz sentido a cliente de outro salão receber WhatsApp vindo
+      // do número da Marília). Só notifica se a cliente for mesmo dela.
+      if (client.admin_id !== superAdmin.id) {
+        return json({ skipped: 'cliente pertence a outro admin — notificação de WhatsApp é só para as próprias clientes' })
+      }
       if (client.whatsapp_opt_in !== true) {
         return json({ skipped: 'cliente não autorizou contato por WhatsApp' })
       }
