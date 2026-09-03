@@ -415,9 +415,16 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [pdfSaving, setPdfSaving] = useState(false)
   const [pdfSaveSuccess, setPdfSaveSuccess] = useState(false)
   const [pdfSaveError, setPdfSaveError] = useState<string | null>(null)
+  // Chave do localStorage é POR CONVERSA (chatStorageKey já é único por
+  // cliente: mscolors_chat_admin_${clientId}, ms_color_ia_${adminId},
+  // etc.) — antes era uma chave fixa global ('mscolors_language'), que
+  // fazia o idioma escolhido numa cliente "grudar" em todas as outras
+  // (o admin abria o chat de qualquer cliente e sempre via o último
+  // idioma usado em QUALQUER cliente anterior, ignorando defaultLanguage).
+  const languageStorageKey = `mscolors_language_${chatStorageKey || 'default'}`
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>(() => {
     try {
-      const stored = localStorage.getItem('mscolors_language')
+      const stored = localStorage.getItem(languageStorageKey)
       if (stored && SUPPORTED_LANGUAGES.some(l => l.code === stored)) return stored as LanguageCode
     } catch {}
     return defaultLanguage
@@ -426,8 +433,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   const [showSideMenu, setShowSideMenu] = useState(false)
 
   useEffect(() => {
-    try { localStorage.setItem('mscolors_language', selectedLanguage) } catch {}
-  }, [selectedLanguage])
+    try { localStorage.setItem(languageStorageKey, selectedLanguage) } catch {}
+  }, [selectedLanguage, languageStorageKey])
   // ── Modo de seleção para apagar mensagens ────────────────────────────
   const [selectMode, setSelectMode]     = useState(false)
   const [selectedMsgs, setSelectedMsgs] = useState<Set<string>>(new Set())

@@ -111,6 +111,7 @@ interface ClientLite {
   id:        string
   full_name: string
   email:     string | null
+  language?: string | null
 }
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
@@ -170,6 +171,10 @@ function buildFileName(clientName: string): string {
 interface AiCompositionsManagerProps {
   clientId?:   string
   clientName?: string
+  /** Idioma que a cliente já usa no portal (ex: 'en-GB') — só usado no
+   *  modo embutido (clientId informado), já que nesse modo não passa
+   *  pelo documentsService.listClientsLight() que traria o idioma junto. */
+  clientLanguage?: string | null
   onGoToDocuments?: () => void
   /** Disparado depois de salvar com sucesso em client_result_files.
    *  Permite que o componente pai (ex: ClientsManager) recarregue a aba
@@ -177,7 +182,7 @@ interface AiCompositionsManagerProps {
   onSavedToResult?: () => void
 }
 
-export function AiCompositionsManager({ clientId: propClientId, clientName: propClientName, onGoToDocuments, onSavedToResult }: AiCompositionsManagerProps = {}) {
+export function AiCompositionsManager({ clientId: propClientId, clientName: propClientName, clientLanguage: propClientLanguage, onGoToDocuments, onSavedToResult }: AiCompositionsManagerProps = {}) {
   const isEmbedded = !!propClientId
 
   // ── Clientes (só no modo global) ──
@@ -230,9 +235,9 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
 
   const selectedClient = useMemo((): ClientLite | null => {
     if (isEmbedded && propClientId && propClientName)
-      return { id: propClientId, full_name: propClientName, email: null }
+      return { id: propClientId, full_name: propClientName, email: null, language: propClientLanguage ?? null }
     return clients.find(c => c.id === selectedClientId) || null
-  }, [isEmbedded, propClientId, propClientName, clients, selectedClientId])
+  }, [isEmbedded, propClientId, propClientName, propClientLanguage, clients, selectedClientId])
 
   // ── Load localStorage no modo EMBEDDED (on mount) ──
   useEffect(() => {
@@ -984,6 +989,7 @@ export function AiCompositionsManager({ clientId: propClientId, clientName: prop
         <AddPageDialog
           clientId={selectedClient.id}
           clientName={selectedClient.full_name}
+          clientLanguage={selectedClient.language}
           onClose={() => setShowAdd(false)}
           onConfirm={handleAddPages}
         />

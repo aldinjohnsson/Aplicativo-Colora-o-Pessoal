@@ -521,6 +521,52 @@ function DriveAudioPlayer({ driveFileId, className }: { driveFileId: string; cla
   return <audio src={blobUrl} controls preload="auto" className={className ?? 'w-full'} />
 }
 
+// ─── Idioma da cliente (pra saber qual usar no dossiê) ─────────────────────
+// Monta a bandeira dinamicamente a partir da região do código de idioma
+// (ex: en-GB → 🇬🇧, es-MX → 🇲🇽) — funciona pra qualquer variação regional,
+// não só as 6 combinações "principais" que o portal oferece pra escolher.
+// Componente da bandeira. NÃO usa emoji de bandeira (🇬🇧 etc.) — o Windows
+// não desenha esses emojis como imagem colorida por padrão, só mostra as
+// duas letras do país em texto (foi o que apareceu: "GB EN" em vez do
+// desenho da bandeira). Usa uma imagem de verdade do flagcdn.com (CDN
+// gratuito, sem chave de API) — funciona igual em qualquer sistema.
+function LanguageBadge({ code, style }: { code: string; style: React.CSSProperties }) {
+  const [lang, region] = code.split('-')
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 inline-flex items-center gap-1"
+      style={style}
+      title="Idioma que a cliente está usando no portal — use esse na hora de gerar o dossiê"
+    >
+      {region && (
+        <img
+          src={`https://flagcdn.com/16x12/${region.toLowerCase()}.png`}
+          srcSet={`https://flagcdn.com/32x24/${region.toLowerCase()}.png 2x`}
+          width={16}
+          height={12}
+          alt=""
+          className="rounded-[2px]"
+          onError={e => { e.currentTarget.style.display = 'none' }}
+        />
+      )}
+      {(lang || code).toUpperCase()}
+    </span>
+  )
+}
+
+// O GeminiChat só reconhece 6 códigos exatos (pt-BR, en-US, es-ES, fr-FR,
+// it-IT, de-DE) — client.language pode vir com qualquer região (en-GB,
+// es-MX, pt-PT...). Reduz pelo prefixo do idioma pro mais próximo
+// suportado, senão o seletor de idioma do chat não reconhece nenhum como
+// "selecionado".
+function normalizeToSupportedLanguage(code?: string | null): 'pt-BR' | 'en-US' | 'es-ES' | 'fr-FR' | 'it-IT' | 'de-DE' {
+  const prefix = (code || '').split('-')[0].toLowerCase()
+  const map: Record<string, 'pt-BR' | 'en-US' | 'es-ES' | 'fr-FR' | 'it-IT' | 'de-DE'> = {
+    pt: 'pt-BR', en: 'en-US', es: 'es-ES', fr: 'fr-FR', it: 'it-IT', de: 'de-DE',
+  }
+  return map[prefix] || 'pt-BR'
+}
+
 // ─── Status Config ────────────────────────────────────────────────────────
 const STATUSES: Record<string, {
   label: string; short: string; color: string; bg: string; textColor: string
@@ -5578,6 +5624,9 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   )}
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0" style={{ background: status?.bg, color: status?.textColor }}>{status?.label}</span>
                   {client.plan && <span className="text-xs px-2 py-1 rounded font-medium flex-shrink-0" style={{ background: t.surface2, color: t.text2 }}>{(client as any).plan.name}</span>}
+                  {(client as any).language && (
+                    <LanguageBadge code={(client as any).language} style={{ background: t.surface2, color: t.text2 }} />
+                  )}
                 </div>
                 <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-3 gap-y-0.5 text-xs sm:text-sm mt-1" style={{ color: t.text3 }}>
                   <span className="flex items-center gap-1 min-w-0"><Mail className="h-3 w-3 sm:h-3.5 sm:w-3.5 flex-shrink-0" /><span className="truncate">{client.email}</span></span>
@@ -6001,6 +6050,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                 <AiCompositionsManager
                   clientId={clientId!}
                   clientName={client.full_name}
+                  clientLanguage={(client as any).language}
                   onGoToDocuments={() => setDocsSubTab('docs')}
                   onSavedToResult={load}
                 />
@@ -6605,6 +6655,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
             </div>
           ) : (
             <GeminiChat
+              key={clientId}
               clientName={client.full_name}
               systemPrompt={adminAiSystemPrompt}
               referencePhotoUrl={adminAiRefPhotoUrl}
@@ -6617,6 +6668,7 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
               unlimited
               promptsOnly
               chatStorageKey={`mscolors_chat_admin_${clientId}`}
+              defaultLanguage={normalizeToSupportedLanguage((client as any).language)}
               onSavePdf={async (blob, fileName) => {
                 // Salva o PDF gerado pelo chat IA direto em
                 // client_result_files (aba Resultado → Arquivos PDF).

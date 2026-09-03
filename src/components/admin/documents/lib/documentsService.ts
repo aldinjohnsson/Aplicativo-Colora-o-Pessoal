@@ -42,6 +42,7 @@ export interface ClientLite {
   id:        string
   full_name: string
   email:     string | null
+  language?: string | null
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1279,7 +1280,7 @@ export const documentsService = {
   async listClientsLight(): Promise<ClientLite[]> {
     const { data, error } = await supabase
       .from('clients')
-      .select('id, full_name, email')
+      .select('id, full_name, email, language')
       .order('full_name', { ascending: true })
     if (error) throw error
     return (data as ClientLite[]) || []

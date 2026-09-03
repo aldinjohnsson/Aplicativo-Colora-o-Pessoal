@@ -93,13 +93,17 @@ export interface AddPageResult {
 interface Props {
   clientId:   string
   clientName: string
+  /** Idioma que a cliente está usando no portal (ex: 'pt-BR', 'en-GB') —
+   *  usado só pra pré-selecionar o "Idioma da imagem" abaixo; o admin
+   *  ainda pode trocar livremente antes de gerar. */
+  clientLanguage?: string | null
   onClose:    () => void
   onConfirm:  (results: AddPageResult[]) => void   // ← array, uma entrada por parte
 }
 
 // ─── Component ────────────────────────────────────────────────────────
 
-export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Props) {
+export function AddPageDialog({ clientId, clientName, clientLanguage, onClose, onConfirm }: Props) {
 
   // ── Prompts ──
   const [prompts, setPrompts]                   = useState<AiPromptLite[]>([])
@@ -108,8 +112,14 @@ export function AddPageDialog({ clientId, clientName, onClose, onConfirm }: Prop
   const [selectedPromptId, setSelectedPromptId] = useState<string>('')
 
   // ── Idioma da imagem gerada ──
-  // 'pt' = padrão, sem instrução extra (prompts já são cadastrados em português)
-  const [language, setLanguage] = useState<string>('pt')
+  // Pré-seleciona o idioma que a cliente já está usando no portal (reduzido
+  // pro código de 2 letras que AI_IMAGE_LANGUAGES usa — client.language vem
+  // como locale completo, ex: 'en-GB'). Se não tiver ou não bater com
+  // nenhuma opção, cai em 'pt' (padrão de sempre, sem instrução extra).
+  const [language, setLanguage] = useState<string>(() => {
+    const prefix = (clientLanguage || '').split('-')[0].toLowerCase()
+    return AI_IMAGE_LANGUAGES.some(l => l.code === prefix) ? prefix : 'pt'
+  })
 
   // ── Foto base ──
   // photoStep: 'category' = escolher categoria primeiro; 'photos' = escolher foto
