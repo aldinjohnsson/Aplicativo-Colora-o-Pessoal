@@ -46,7 +46,7 @@ export function WhatsAppSettingsSection() {
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   const [testPhone, setTestPhone] = useState('')
-  const [testPlan, setTestPlan] = useState<string>('')
+  // (testPlan removido — mensagem agora é sempre a mesma, sem variação por plano)
   const [testing, setTesting] = useState(false)
 
   useEffect(() => { load() }, [])
@@ -94,7 +94,7 @@ export function WhatsAppSettingsSection() {
     try {
       // salva antes pra garantir que o teste usa a config atual
       await handleSave()
-      await sendWhatsAppTest(testPhone, testPlan || null)
+      await sendWhatsAppTest(testPhone, null)
       setMsg({ type: 'success', text: 'Teste enviado! Confira o WhatsApp do número informado.' })
     } catch (e: any) {
       setMsg({ type: 'error', text: 'Falha no teste: ' + (e?.message || 'erro desconhecido') })
@@ -146,11 +146,12 @@ export function WhatsAppSettingsSection() {
 
         <div className="bg-green-50 border border-green-100 rounded-xl p-3">
           <p className="text-xs text-green-700 leading-relaxed">
-            ℹ️ Mensagem iniciada pela empresa usa <strong>template aprovado</strong> na Meta.
-            O template precisa ter 2 variáveis no corpo: <span className="font-mono">Olá {'{{1}}'}! {'{{2}}'}</span>
-            {' '}— onde <strong>{'{{1}}'}</strong> é o nome da cliente e <strong>{'{{2}}'}</strong> é a mensagem do plano abaixo.
-            Dentro da mensagem do plano, escreva <span className="font-mono">{'{{link}}'}</span> onde quiser que
-            entre o link do portal — cada cliente recebe o dela automaticamente.
+            ℹ️ Mensagem iniciada pela empresa usa <strong>template aprovado</strong> na Meta (analise_concluida_v2).
+            O template precisa ter 2 variáveis no corpo: <span className="font-mono">{'{{1}}'} {'{{2}}'}</span>
+            {' '}— <strong>{'{{1}}'}</strong> é o nome da cliente e <strong>{'{{2}}'}</strong> é o link do portal —
+            cada cliente recebe o dela automaticamente. O resto do texto (aviso de resultado liberado,
+            agradecimento, assinatura, rodapé de suporte) já vem fixo de dentro do próprio template aprovado —
+            é a mesma mensagem pra qualquer plano.
           </p>
         </div>
 
@@ -184,7 +185,7 @@ export function WhatsAppSettingsSection() {
             <input
               value={cfg.templateName}
               onChange={e => set({ templateName: e.target.value.trim() })}
-              placeholder="analise_concluida"
+              placeholder="analise_concluida_v2"
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
             />
           </div>
@@ -199,69 +200,24 @@ export function WhatsAppSettingsSection() {
           </div>
         </div>
 
-        {/* Mensagem padrão */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Mensagem padrão <span className="text-gray-400 font-normal">(usada quando o plano não tem mensagem própria)</span>
-          </label>
-          <textarea
-            value={cfg.defaultMessage}
-            onChange={e => set({ defaultMessage: e.target.value })}
-            rows={6}
-            className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
-          />
-          <p className="text-xs text-gray-500 mt-1.5">
-            Vira a variável <span className="font-mono">{'{{2}}'}</span>. O <span className="font-mono">Olá {'{{1}}'}!</span> já vem do template.
-            Escreva <span className="font-mono bg-gray-100 px-1 rounded">{'{{link}}'}</span> em qualquer ponto do texto que o
-            sistema troca automaticamente pelo link do portal — cada cliente recebe o link dela, não precisa (nem dá) escrever um link fixo.
-          </p>
-        </div>
-
-        {/* Mensagem por plano */}
-        <div>
-          <p className="text-sm font-medium text-gray-700 mb-2">Mensagem por plano</p>
-          {plans.length === 0 ? (
-            <p className="text-xs text-gray-400">Nenhum plano ativo encontrado.</p>
-          ) : (
-            <div className="space-y-3">
-              {plans.map(p => (
-                <div key={p.id}>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">{p.name}</label>
-                  <textarea
-                    value={cfg.planMessages[p.id] ?? ''}
-                    onChange={e => setPlanMsg(p.id, e.target.value)}
-                    rows={5}
-                    placeholder={`Deixe em branco para usar a mensagem padrão. Pode usar {{link}} pra inserir o link do portal.`}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-transparent"
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* Mensagem agora é fixa (dentro do template aprovado na Meta) — não
+            tem mais campo de "frase por plano" pra editar aqui: é a mesma
+            mensagem pra qualquer plano, só o nome e o link mudam por cliente. */}
 
         {/* Teste */}
         <div className="border-t border-gray-100 pt-4">
           <p className="text-sm font-medium text-gray-700 mb-2">Enviar teste</p>
-          <div className="flex flex-col sm:flex-row gap-2">
+          <div className="flex flex-col gap-2">
             <input
               value={testPhone}
               onChange={e => setTestPhone(e.target.value)}
               placeholder="DDD + número (ex: 41999998888)"
-              className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
             />
-            <select
-              value={testPlan}
-              onChange={e => setTestPlan(e.target.value)}
-              className="px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
-            >
-              <option value="">Mensagem padrão</option>
-              {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
             <button
               onClick={handleTest}
               disabled={testing}
-              className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full sm:w-auto self-start px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Testar

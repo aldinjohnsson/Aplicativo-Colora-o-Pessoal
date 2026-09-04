@@ -127,11 +127,12 @@ Deno.serve(async (req) => {
     let toPhone = ''
     let clientName = ''
     let planId: string | null = null
+    let clientToken: string | null = null
 
     if (clientId) {
       const { data: client, error: cErr } = await supabase
         .from('clients')
-        .select('full_name, phone, plan_id, whatsapp_opt_in, admin_id')
+        .select('full_name, phone, plan_id, whatsapp_opt_in, admin_id, token')
         .eq('id', clientId)
         .maybeSingle()
 
@@ -157,27 +158,31 @@ Deno.serve(async (req) => {
       toPhone = normalizePhone(client.phone)
       clientName = firstName(client.full_name)
       planId = client.plan_id ?? null
+      clientToken = client.token ?? null
     } else if (explicitTo) {
       // modo teste
       toPhone = normalizePhone(explicitTo)
       clientName = firstName(explicitName || 'Teste')
       planId = explicitPlanId ?? null
+      clientToken = 'TOKEN_DE_TESTE_0000' // não é um token real — só pra pré-visualizar o formato do link no teste
     } else {
       return json({ error: 'clientId ou to é obrigatório' }, 400)
     }
 
     if (!toPhone) return json({ skipped: 'telefone inválido' })
 
-    // 3) Mensagem parametrizada por plano (com fallback pro padrão)
-    const planMessage =
-      (planId && cfg.planMessages?.[planId]) ? cfg.planMessages[planId] : (cfg.defaultMessage || '')
+    // O link é uma variável própria ({{2}}) — cada cliente recebe o dela.
+    const portalLink = clientToken
+      ? `${(Deno.env.get('SITE_URL') || '').replace(/\/$/, '')}/c/${clientToken}`
+      : ''
 
-    if (!planMessage.trim()) return json({ skipped: 'sem mensagem definida para este plano' })
+    if (!portalLink) return json({ skipped: 'não foi possível montar o link do portal (SITE_URL ausente ou modo teste sem token)' })
 
     // 4) Dispara via Cloud API.
-    //    Template esperado (2 variáveis no corpo): "Olá {{1}}! {{2}}"
+    //    Template esperado (2 variáveis, analise_concluida_v2 — genérico,
+    //    igual pra qualquer plano):
     //      {{1}} = primeiro nome da cliente
-    //      {{2}} = mensagem do plano (a parte que você parametriza)
+    //      {{2}} = link do portal dessa cliente
     const url = `https://graph.facebook.com/${GRAPH_VERSION}/${cfg.phoneNumberId}/messages`
     const body = {
       messaging_product: 'whatsapp',
@@ -191,7 +196,7 @@ Deno.serve(async (req) => {
             type: 'body',
             parameters: [
               { type: 'text', text: clientName },
-              { type: 'text', text: planMessage },
+              { type: 'text', text: portalLink },
             ],
           },
         ],
