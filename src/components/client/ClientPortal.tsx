@@ -2482,20 +2482,31 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
 // cada página como um <canvas> (via pdf.js) dentro de um container comum
 // com overflow-y: auto — aí o scroll com o dedo funciona igual em qualquer
 // navegador, porque é scroll de DOM normal, não do plugin de PDF do browser.
-function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
+function PdfPageViewer({ fileBlob }: { fileBlob: Blob }) {
+  const { language } = useTranslation()
+  const isPt = language.startsWith('pt')
   const containerRef = useRef<HTMLDivElement>(null)
-  const [firstPageReady, setFirstPageReady] = useState(false)
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null)
   const [error, setError] = useState(false)
+  // Incrementado pelo botão "Tentar novamente" pra forçar o efeito a rodar de novo.
+  const [retryKey, setRetryKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
     let pdfDoc: any = null
-    setFirstPageReady(false)
+    const imgUrls: string[] = [] // object URLs das imagens já criadas — revogados no cleanup
+    setProgress(null)
     setError(false)
 
     ;(async () => {
       try {
-        const loadingTask = pdfjsLib.getDocument(blobUrl)
+        // Passa os BYTES crus (`data`) em vez de uma URL `blob:` — evita
+        // qualquer ambiguidade de como o pdf.js resolve URLs de blob (foi
+        // isso que causava "expected either data, range, or url parameter"
+        // mesmo com uma blob: URL recém-criada e válida).
+        const arrayBuffer = await fileBlob.arrayBuffer()
+        if (cancelled) return
+        const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) })
         pdfDoc = await loadingTask.promise
         if (cancelled) return
 
@@ -2503,12 +2514,15 @@ function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
         if (!container) return
         container.innerHTML = ''
 
+        const total = pdfDoc.numPages
+        setProgress({ current: 0, total })
+
         // Largura disponível determina a escala de renderização de cada
         // página — assim cada página já nasce ajustada à tela (sem precisar
         // de zoom pra ler), igual ao comportamento do PdfInstruction.
         const containerWidth = Math.max(container.clientWidth - 16, 280)
 
-        for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+        for (let pageNum = 1; pageNum <= total; pageNum++) {
           if (cancelled) break
           const page = await pdfDoc.getPage(pageNum)
           const baseViewport = page.getViewport({ scale: 1 })
@@ -2516,21 +2530,40 @@ function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
           const scale = (containerWidth / baseViewport.width)
           const viewport = page.getViewport({ scale: scale * 2 })
 
+          // Renderiza num <canvas> OFFSCREEN (nunca entra no DOM) e converte
+          // pra imagem estática logo em seguida. Manter dezenas de <canvas>
+          // "vivos" no DOM estoura o limite de memória de canvas do Safari/
+          // iOS — aí ele apaga canvases silenciosamente (sem erro nenhum),
+          // exatamente o "pisca e volta pro cinza ao rolar". Imagem estática
+          // não tem esse limite.
           const canvas = document.createElement('canvas')
           canvas.width = viewport.width
           canvas.height = viewport.height
-          canvas.style.width = `${containerWidth}px`
-          canvas.style.height = `${viewport.height / 2}px`
-          canvas.style.display = 'block'
-          canvas.style.margin = '0 auto 10px auto'
-          canvas.style.borderRadius = '4px'
-          canvas.style.boxShadow = '0 1px 6px rgba(0,0,0,0.35)'
-
           const ctx = canvas.getContext('2d')!
           await page.render({ canvasContext: ctx, viewport }).promise
           if (cancelled) break
-          container.appendChild(canvas)
-          if (pageNum === 1) setFirstPageReady(true)
+
+          const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85))
+          if (cancelled) break
+
+          const img = document.createElement('img')
+          if (blob) {
+            const imgUrl = URL.createObjectURL(blob)
+            imgUrls.push(imgUrl)
+            img.src = imgUrl
+          } else {
+            // Fallback raro (toBlob falhou) — usa data URL mesmo sendo mais pesado.
+            img.src = canvas.toDataURL('image/jpeg', 0.85)
+          }
+          img.alt = `${isPt ? 'Página' : 'Page'} ${pageNum}`
+          img.style.width = `${containerWidth}px`
+          img.style.display = 'block'
+          img.style.margin = '0 auto 10px auto'
+          img.style.borderRadius = '4px'
+          img.style.boxShadow = '0 1px 6px rgba(0,0,0,0.35)'
+
+          container.appendChild(img)
+          setProgress({ current: pageNum, total })
         }
       } catch (e) {
         console.error('Erro ao renderizar PDF:', e)
@@ -2541,10 +2574,27 @@ function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
     return () => {
       cancelled = true
       if (pdfDoc) pdfDoc.destroy?.()
+      imgUrls.forEach(u => URL.revokeObjectURL(u))
     }
-  }, [blobUrl])
+  }, [fileBlob, retryKey])
 
-  if (error) return null // o componente pai mostra o fallback de erro
+  if (error) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white text-sm px-6 text-center">
+        <AlertCircle className="h-8 w-8" />
+        <p>{isPt ? 'Não foi possível abrir a prévia deste PDF.' : 'Could not open a preview for this PDF.'}</p>
+        <button
+          onClick={() => setRetryKey(k => k + 1)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg"
+        >
+          {isPt ? 'Tentar novamente' : 'Try again'}
+        </button>
+      </div>
+    )
+  }
+
+  const firstPageReady = !!progress && progress.current >= 1
+  const pct = progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : null
 
   return (
     <div
@@ -2552,11 +2602,54 @@ function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
       style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
     >
       {!firstPageReady && (
-        <div className="flex items-center justify-center py-16">
-          <div className="animate-spin h-8 w-8 border-2 border-white border-t-transparent rounded-full" />
+        <div className="flex flex-col items-center justify-center gap-2 py-16">
+          <ProgressRing pct={pct} barColor="white" trackColor="rgba(255,255,255,0.3)" textColor="#ffffff" />
+          {progress && progress.total > 1 && (
+            <p className="text-xs text-white/80">
+              {isPt ? `Página ${progress.current} de ${progress.total}` : `Page ${progress.current} of ${progress.total}`}
+            </p>
+          )}
         </div>
       )}
       <div ref={containerRef} className="px-2 pt-3 pb-6" />
+    </div>
+  )
+}
+
+// ── Anel de progresso circular com porcentagem no meio ───────────────────────
+// Usado tanto durante o download do arquivo quanto durante a preparação
+// das páginas do PDF — substitui o spinner genérico por um número real,
+// já que os arquivos de simulação chegam a 20-30MB e demoram mesmo.
+function ProgressRing({ pct, size = 56, trackColor = '#e5e7eb', barColor, textColor = '#374151' }: {
+  pct: number | null
+  size?: number
+  trackColor?: string
+  barColor?: string
+  textColor?: string
+}) {
+  const r = 16
+  const circumference = 2 * Math.PI * r
+  const clamped = Math.max(0, Math.min(100, pct ?? 0))
+  return (
+    <div className="relative" style={{ height: size, width: size }}>
+      <svg viewBox="0 0 36 36" style={{ height: size, width: size }} className="-rotate-90">
+        <circle cx="18" cy="18" r={r} fill="none" stroke={trackColor} strokeWidth="3" />
+        <circle
+          cx="18" cy="18" r={r} fill="none"
+          stroke={barColor || 'var(--client-accent, #ec4899)'}
+          strokeWidth="3"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - clamped / 100)}
+          strokeLinecap="round"
+          style={{ transition: 'stroke-dashoffset 0.2s linear' }}
+        />
+      </svg>
+      <span
+        className="absolute inset-0 flex items-center justify-center text-xs font-semibold"
+        style={{ color: textColor }}
+      >
+        {pct !== null ? `${clamped}%` : ''}
+      </span>
     </div>
   )
 }
@@ -2568,6 +2661,10 @@ function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
 // mecanismo do PortalAudioPlayer/handleDownload, então funciona mesmo quando
 // o arquivo não é publicamente acessível. Tem botão de baixar dentro do
 // próprio visualizador, além do "Baixar" que já existe na lista de arquivos.
+//
+// O download é feito em streaming (não `res.blob()` direto) pra dar pra
+// mostrar % de bytes recebidos — essencial pros PDFs de simulação, que
+// chegam a 20-30MB e demoram mesmo pra baixar em rede móvel.
 function FilePreviewModal({
   file, token, onClose, onDownload, downloading,
 }: {
@@ -2579,35 +2676,65 @@ function FilePreviewModal({
 }) {
   const { language } = useTranslation()
   const isPt = language.startsWith('pt')
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [fileBlob, setFileBlob] = useState<Blob | null>(null)
   const [loadErr, setLoadErr] = useState(false)
+  // null = sem info de tamanho total (não dá pra calcular %); 0-100 = % real de bytes já baixados
+  const [fetchPct, setFetchPct] = useState<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    let created: string | null = null
-    setBlobUrl(null)
+    const controller = new AbortController()
+    setFileBlob(null)
     setLoadErr(false)
+    setFetchPct(null)
     ;(async () => {
       try {
         const url = file.drive_file_id && token
           ? driveStorage.filePortalProxyUrl(file.drive_file_id, token)
           : clientService.getResultFileUrl(file)
-        const res = await fetch(url)
+        const res = await fetch(url, { signal: controller.signal })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const raw = await res.blob()
+
+        const contentLength = Number(res.headers.get('content-length') || 0)
+        let raw: Blob
+
+        if (res.body && contentLength > 0) {
+          const reader = res.body.getReader()
+          const chunks: Uint8Array[] = []
+          let received = 0
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (cancelled) return
+            if (value) {
+              chunks.push(value)
+              received += value.byteLength
+              setFetchPct(Math.min(99, Math.round((received / contentLength) * 100)))
+            }
+          }
+          raw = new Blob(chunks as BlobPart[], { type: res.headers.get('content-type') || undefined })
+        } else {
+          // Proxy não devolveu content-length — sem como calcular %, fica
+          // indeterminado (o anel mostra sem número) até terminar.
+          raw = await res.blob()
+        }
+
+        if (cancelled) return
+        setFetchPct(100)
         const kind = getResultFileKind(file.file_name)
         const mime = kind === 'pdf' ? 'application/pdf' : (raw.type || undefined)
         const typed = mime && raw.type !== mime ? new Blob([raw], { type: mime }) : raw
-        if (cancelled) return
-        created = URL.createObjectURL(typed)
-        setBlobUrl(created)
-      } catch {
-        if (!cancelled) setLoadErr(true)
+        setFileBlob(typed)
+      } catch (e: any) {
+        // AbortError acontece quando o efeito é cancelado de propósito
+        // (troca de arquivo, fechou o modal, ou o duplo-mount do React em
+        // desenvolvimento) — não é uma falha real, não mostra erro pra cliente.
+        if (!cancelled && e?.name !== 'AbortError') setLoadErr(true)
       }
     })()
     return () => {
       cancelled = true
-      if (created) URL.revokeObjectURL(created)
+      controller.abort()
     }
   }, [file, token])
 
@@ -2636,9 +2763,12 @@ function FilePreviewModal({
         </div>
       </div>
       <div className="flex-1 overflow-hidden bg-gray-100" onClick={e => e.stopPropagation()}>
-        {!blobUrl && !loadErr && (
-          <div className="w-full h-full flex items-center justify-center">
-            <div className="animate-spin h-8 w-8 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full" />
+        {!fileBlob && !loadErr && (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+            <ProgressRing pct={fetchPct} />
+            <p className="text-xs text-gray-500">
+              {isPt ? 'Abrindo documento...' : 'Opening document...'}
+            </p>
           </div>
         )}
         {loadErr && (
@@ -2653,17 +2783,29 @@ function FilePreviewModal({
             </button>
           </div>
         )}
-        {/* PDF: renderiza página-a-página (scroll de DOM normal, funciona no
-            mobile). Outros tipos: cai pro <iframe>, que o browser tenta
-            exibir nativamente (funciona bem pra texto/imagem; formatos
+        {/* PDF: renderiza página-a-página com os bytes crus (scroll de DOM
+            normal, funciona no mobile). Outros tipos: cai pro <iframe> com
+            uma blob: URL local (funciona bem pra texto/imagem; formatos
             binários como .docx/.xlsx normalmente só oferecem baixar mesmo). */}
-        {blobUrl && isPdf && <PdfPageViewer blobUrl={blobUrl} />}
-        {blobUrl && !isPdf && (
-          <iframe src={blobUrl} className="w-full h-full" title={label} />
-        )}
+        {fileBlob && isPdf && <PdfPageViewer fileBlob={fileBlob} />}
+        {fileBlob && !isPdf && <IframeFileViewer fileBlob={fileBlob} label={label} />}
       </div>
     </div>
   )
+}
+
+// ── <iframe> com blob: URL local, só pra arquivos que não são PDF ───────────
+// Isolado num componente próprio pra criar/revogar a URL certinho (um único
+// URL.createObjectURL por Blob, revogado quando o Blob muda ou desmonta).
+function IframeFileViewer({ fileBlob, label }: { fileBlob: Blob; label: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const created = URL.createObjectURL(fileBlob)
+    setUrl(created)
+    return () => URL.revokeObjectURL(created)
+  }, [fileBlob])
+  if (!url) return null
+  return <iframe src={url} className="w-full h-full" title={label} />
 }
 
 function ResultScreen({
