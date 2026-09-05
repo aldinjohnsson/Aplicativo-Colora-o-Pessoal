@@ -2482,7 +2482,7 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
 // cada página como um <canvas> (via pdf.js) dentro de um container comum
 // com overflow-y: auto — aí o scroll com o dedo funciona igual em qualquer
 // navegador, porque é scroll de DOM normal, não do plugin de PDF do browser.
-function PdfPageViewer({ fileBlob }: { fileBlob: Blob }) {
+function PdfPageViewer({ fileBlob, zoom, onReady }: { fileBlob: Blob; zoom: number; onReady?: () => void }) {
   const { language } = useTranslation()
   const isPt = language.startsWith('pt')
   const containerRef = useRef<HTMLDivElement>(null)
@@ -2564,6 +2564,7 @@ function PdfPageViewer({ fileBlob }: { fileBlob: Blob }) {
 
           container.appendChild(img)
           setProgress({ current: pageNum, total })
+          if (pageNum === 1) onReady?.()
         }
       } catch (e) {
         console.error('Erro ao renderizar PDF:', e)
@@ -2598,8 +2599,8 @@ function PdfPageViewer({ fileBlob }: { fileBlob: Blob }) {
 
   return (
     <div
-      className="w-full h-full overflow-y-auto overflow-x-hidden bg-gray-300"
-      style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
+      className="w-full h-full overflow-auto bg-gray-300"
+      style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y pinch-zoom' }}
     >
       {!firstPageReady && (
         <div className="flex flex-col items-center justify-center gap-2 py-16">
@@ -2611,7 +2612,10 @@ function PdfPageViewer({ fileBlob }: { fileBlob: Blob }) {
           )}
         </div>
       )}
-      <div ref={containerRef} className="px-2 pt-3 pb-6" />
+      {/* `zoom` (não `transform: scale`) porque reflui o layout de verdade —
+          assim o overflow:auto acima consegue rolar até as bordas do
+          conteúdo ampliado, coisa que um transform sozinho não permite. */}
+      <div ref={containerRef} className="px-2 pt-3 pb-6" style={{ zoom }} />
     </div>
   )
 }
@@ -2680,6 +2684,11 @@ function FilePreviewModal({
   const [loadErr, setLoadErr] = useState(false)
   // null = sem info de tamanho total (não dá pra calcular %); 0-100 = % real de bytes já baixados
   const [fetchPct, setFetchPct] = useState<number | null>(null)
+  // Zoom do PDF fica aqui (não dentro do PdfPageViewer) pra poder mostrar os
+  // botões no CABEÇALHO — um controle flutuante sobre o conteúdo pode ficar
+  // escondido atrás da barra de endereço/abas do navegador no celular.
+  const [zoom, setZoom] = useState(1)
+  const [pdfReady, setPdfReady] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -2687,6 +2696,8 @@ function FilePreviewModal({
     setFileBlob(null)
     setLoadErr(false)
     setFetchPct(null)
+    setZoom(1)
+    setPdfReady(false)
     ;(async () => {
       try {
         const url = file.drive_file_id && token
@@ -2743,12 +2754,39 @@ function FilePreviewModal({
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/80 flex flex-col" onClick={onClose}>
-      <div className="flex items-center justify-between px-4 py-3 bg-white shadow" onClick={e => e.stopPropagation()}>
+      <div className="flex items-center justify-between gap-2 px-4 py-3 bg-white shadow" onClick={e => e.stopPropagation()}>
         <span className="text-sm font-semibold text-gray-800 flex items-center gap-2 min-w-0">
           <FileText className="h-4 w-4 text-[var(--client-accent)] flex-shrink-0" />
           <span className="truncate">{label}</span>
         </span>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {/* Zoom no cabeçalho (não flutuando sobre o conteúdo) — assim
+              nunca fica escondido atrás da barra do navegador no celular. */}
+          {isPdf && pdfReady && (
+            <div className="flex items-center gap-0.5 mr-1 border-r border-gray-200 pr-1.5">
+              <button
+                onClick={() => setZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))}
+                className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg"
+                title={isPt ? 'Diminuir' : 'Zoom out'}
+              >
+                <ZoomOut className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setZoom(1)}
+                className="px-1.5 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded-lg font-medium min-w-[3ch] text-center"
+                title={isPt ? 'Ajustar à tela' : 'Fit to screen'}
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                onClick={() => setZoom(z => Math.min(2.5, +(z + 0.25).toFixed(2)))}
+                className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg"
+                title={isPt ? 'Aumentar' : 'Zoom in'}
+              >
+                <ZoomIn className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <button
             onClick={() => onDownload(file)}
             disabled={downloading}
@@ -2787,7 +2825,9 @@ function FilePreviewModal({
             normal, funciona no mobile). Outros tipos: cai pro <iframe> com
             uma blob: URL local (funciona bem pra texto/imagem; formatos
             binários como .docx/.xlsx normalmente só oferecem baixar mesmo). */}
-        {fileBlob && isPdf && <PdfPageViewer fileBlob={fileBlob} />}
+        {fileBlob && isPdf && (
+          <PdfPageViewer fileBlob={fileBlob} zoom={zoom} onReady={() => setPdfReady(true)} />
+        )}
         {fileBlob && !isPdf && <IframeFileViewer fileBlob={fileBlob} label={label} />}
       </div>
     </div>
