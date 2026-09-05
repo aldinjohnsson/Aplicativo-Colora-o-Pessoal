@@ -9,6 +9,7 @@ import {
   Package, Sparkles, ZoomIn, ZoomOut, Mic, Pencil, Eye, FolderArchive,
 } from 'lucide-react'
 import JSZip from 'jszip'
+import * as pdfjsLib from 'pdfjs-dist'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { businessDaysUntil } from '../../lib/deadlineCalculator'
 import { supabase } from '../../lib/supabase'
@@ -18,6 +19,13 @@ import { LanguageProvider, useTranslation, useLanguage } from '../../lib/i18n'
 import { getCountryOptions } from '../../lib/i18n/countries'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { clientThemeVars } from '../../lib/clientTheme'
+
+// pdf.js precisa de um worker rodando em background pra decodificar o PDF.
+// Aponta pro worker no CDN, usando a MESMA versão instalada localmente —
+// versões diferentes de worker/lib dão erro. Se atualizar o pacote
+// `pdfjs-dist`, o worker acompanha automaticamente (pdfjsLib.version).
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
 // ── Tiny UI ──────────────────────────────────────────────────────────────────
 
@@ -2462,6 +2470,93 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
   )
 }
 
+// ── Visualizador de PDF página-a-página (mobile-friendly) ───────────────────
+//
+// A maioria dos navegadores mobile (Chrome/Safari Android e iOS) não tem
+// visualizador de PDF nativo dentro de um <iframe> — só quando o PDF é a
+// própria página. Por isso, em vez de <iframe src={blobUrl}>, renderizamos
+// cada página como um <canvas> (via pdf.js) dentro de um container comum
+// com overflow-y: auto — aí o scroll com o dedo funciona igual em qualquer
+// navegador, porque é scroll de DOM normal, não do plugin de PDF do browser.
+function PdfPageViewer({ blobUrl }: { blobUrl: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [firstPageReady, setFirstPageReady] = useState(false)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let pdfDoc: any = null
+    setFirstPageReady(false)
+    setError(false)
+
+    ;(async () => {
+      try {
+        const loadingTask = pdfjsLib.getDocument(blobUrl)
+        pdfDoc = await loadingTask.promise
+        if (cancelled) return
+
+        const container = containerRef.current
+        if (!container) return
+        container.innerHTML = ''
+
+        // Largura disponível determina a escala de renderização de cada
+        // página — assim cada página já nasce ajustada à tela (sem precisar
+        // de zoom pra ler), igual ao comportamento do PdfInstruction.
+        const containerWidth = Math.max(container.clientWidth - 16, 280)
+
+        for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+          if (cancelled) break
+          const page = await pdfDoc.getPage(pageNum)
+          const baseViewport = page.getViewport({ scale: 1 })
+          // 2x pra ficar nítido em telas retina, mesmo exibindo em containerWidth
+          const scale = (containerWidth / baseViewport.width)
+          const viewport = page.getViewport({ scale: scale * 2 })
+
+          const canvas = document.createElement('canvas')
+          canvas.width = viewport.width
+          canvas.height = viewport.height
+          canvas.style.width = `${containerWidth}px`
+          canvas.style.height = `${viewport.height / 2}px`
+          canvas.style.display = 'block'
+          canvas.style.margin = '0 auto 10px auto'
+          canvas.style.borderRadius = '4px'
+          canvas.style.boxShadow = '0 1px 6px rgba(0,0,0,0.35)'
+
+          const ctx = canvas.getContext('2d')!
+          await page.render({ canvasContext: ctx, viewport }).promise
+          if (cancelled) break
+          container.appendChild(canvas)
+          if (pageNum === 1) setFirstPageReady(true)
+        }
+      } catch (e) {
+        console.error('Erro ao renderizar PDF:', e)
+        if (!cancelled) setError(true)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      if (pdfDoc) pdfDoc.destroy?.()
+    }
+  }, [blobUrl])
+
+  if (error) return null // o componente pai mostra o fallback de erro
+
+  return (
+    <div
+      className="w-full h-full overflow-y-auto overflow-x-hidden bg-gray-300"
+      style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
+    >
+      {!firstPageReady && (
+        <div className="flex items-center justify-center py-16">
+          <div className="animate-spin h-8 w-8 border-2 border-white border-t-transparent rounded-full" />
+        </div>
+      )}
+      <div ref={containerRef} className="px-2 pt-3 pb-6" />
+    </div>
+  )
+}
+
 // ── Preview modal para documentos do Resultado (PDF / outros) ────────────────
 //
 // Busca o arquivo (via file-proxy quando é do Drive, senão a URL pública),
@@ -2513,6 +2608,7 @@ function FilePreviewModal({
   }, [file, token])
 
   const label = file.file_name || (isPt ? 'Arquivo' : 'File')
+  const isPdf = getResultFileKind(file.file_name) === 'pdf'
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/80 flex flex-col" onClick={onClose}>
@@ -2553,7 +2649,12 @@ function FilePreviewModal({
             </button>
           </div>
         )}
-        {blobUrl && (
+        {/* PDF: renderiza página-a-página (scroll de DOM normal, funciona no
+            mobile). Outros tipos: cai pro <iframe>, que o browser tenta
+            exibir nativamente (funciona bem pra texto/imagem; formatos
+            binários como .docx/.xlsx normalmente só oferecem baixar mesmo). */}
+        {blobUrl && isPdf && <PdfPageViewer blobUrl={blobUrl} />}
+        {blobUrl && !isPdf && (
           <iframe src={blobUrl} className="w-full h-full" title={label} />
         )}
       </div>
