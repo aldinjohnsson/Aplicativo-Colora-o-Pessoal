@@ -22,10 +22,14 @@ import { clientThemeVars } from '../../lib/clientTheme'
 
 // pdf.js precisa de um worker rodando em background pra decodificar o PDF.
 // Aponta pro worker no CDN, usando a MESMA versão instalada localmente —
-// versões diferentes de worker/lib dão erro. Se atualizar o pacote
-// `pdfjs-dist`, o worker acompanha automaticamente (pdfjsLib.version).
+// versões diferentes de worker/lib dão erro. A extensão do arquivo do
+// worker muda conforme a major version do pacote: v3 e anteriores usam
+// `.js`, v4+ passou a distribuir só `.mjs` (ESM). Detecta sozinho pra não
+// depender de qual versão do pdfjs-dist está instalada no projeto (o admin
+// já usa essa lib em outra feature — não force uma versão fixa aqui).
+const PDFJS_WORKER_EXT = parseInt(pdfjsLib.version.split('.')[0], 10) >= 4 ? 'mjs' : 'js'
 pdfjsLib.GlobalWorkerOptions.workerSrc =
-  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.${PDFJS_WORKER_EXT}`
 
 // ── Tiny UI ──────────────────────────────────────────────────────────────────
 
@@ -3359,7 +3363,7 @@ function ResultScreen({
       )}
 
       {/* Preview (visualizar) de documento — aberto pelo botão de olho na
-          lista de Documentos acima */}
+          lista de Documentos acima. */}
       {previewFile && (
         <FilePreviewModal
           file={previewFile}
