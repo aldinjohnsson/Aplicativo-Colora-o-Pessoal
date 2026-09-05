@@ -3359,7 +3359,7 @@ function ResultScreen({
       )}
 
       {/* Preview (visualizar) de documento — aberto pelo botão de olho na
-          lista de Documentos acima. */}
+          lista de Documentos acima */}
       {previewFile && (
         <FilePreviewModal
           file={previewFile}
