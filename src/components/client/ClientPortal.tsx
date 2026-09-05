@@ -6,8 +6,9 @@ import {
   Camera, AlertCircle, FileText, ExternalLink, Download,
   ChevronLeft, ChevronRight, Play, Image as ImageIcon,
   CheckCircle2, ArrowRight, Loader2, ChevronDown, ChevronUp,
-  Package, Sparkles, ZoomIn, ZoomOut, Mic, Pencil,
+  Package, Sparkles, ZoomIn, ZoomOut, Mic, Pencil, Eye, FolderArchive,
 } from 'lucide-react'
+import JSZip from 'jszip'
 import { clientService, ClientPortalData } from '../../lib/services'
 import { businessDaysUntil } from '../../lib/deadlineCalculator'
 import { supabase } from '../../lib/supabase'
@@ -2461,6 +2462,105 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
   )
 }
 
+// ── Preview modal para documentos do Resultado (PDF / outros) ────────────────
+//
+// Busca o arquivo (via file-proxy quando é do Drive, senão a URL pública),
+// gera um blob: URL local e renderiza num <iframe> em tela cheia — mesmo
+// mecanismo do PortalAudioPlayer/handleDownload, então funciona mesmo quando
+// o arquivo não é publicamente acessível. Tem botão de baixar dentro do
+// próprio visualizador, além do "Baixar" que já existe na lista de arquivos.
+function FilePreviewModal({
+  file, token, onClose, onDownload, downloading,
+}: {
+  file: any
+  token?: string
+  onClose: () => void
+  onDownload: (file: any) => void
+  downloading: boolean
+}) {
+  const { language } = useTranslation()
+  const isPt = language.startsWith('pt')
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loadErr, setLoadErr] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let created: string | null = null
+    setBlobUrl(null)
+    setLoadErr(false)
+    ;(async () => {
+      try {
+        const url = file.drive_file_id && token
+          ? driveStorage.filePortalProxyUrl(file.drive_file_id, token)
+          : clientService.getResultFileUrl(file)
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const raw = await res.blob()
+        const kind = getResultFileKind(file.file_name)
+        const mime = kind === 'pdf' ? 'application/pdf' : (raw.type || undefined)
+        const typed = mime && raw.type !== mime ? new Blob([raw], { type: mime }) : raw
+        if (cancelled) return
+        created = URL.createObjectURL(typed)
+        setBlobUrl(created)
+      } catch {
+        if (!cancelled) setLoadErr(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (created) URL.revokeObjectURL(created)
+    }
+  }, [file, token])
+
+  const label = file.file_name || (isPt ? 'Arquivo' : 'File')
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/80 flex flex-col" onClick={onClose}>
+      <div className="flex items-center justify-between px-4 py-3 bg-white shadow" onClick={e => e.stopPropagation()}>
+        <span className="text-sm font-semibold text-gray-800 flex items-center gap-2 min-w-0">
+          <FileText className="h-4 w-4 text-[var(--client-accent)] flex-shrink-0" />
+          <span className="truncate">{label}</span>
+        </span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => onDownload(file)}
+            disabled={downloading}
+            className="inline-flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 px-2 py-1 disabled:opacity-50"
+          >
+            {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            {isPt ? 'Baixar' : 'Download'}
+          </button>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-hidden bg-gray-100" onClick={e => e.stopPropagation()}>
+        {!blobUrl && !loadErr && (
+          <div className="w-full h-full flex items-center justify-center">
+            <div className="animate-spin h-8 w-8 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full" />
+          </div>
+        )}
+        {loadErr && (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white text-sm px-6 text-center">
+            <AlertCircle className="h-8 w-8" />
+            <p>{isPt ? 'Não foi possível carregar a prévia deste arquivo.' : 'Could not load a preview for this file.'}</p>
+            <button
+              onClick={() => onDownload(file)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg"
+            >
+              <Download className="h-4 w-4" /> {isPt ? 'Baixar arquivo' : 'Download file'}
+            </button>
+          </div>
+        )}
+        {blobUrl && (
+          <iframe src={blobUrl} className="w-full h-full" title={label} />
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ResultScreen({
   token, data,
   simulatingMode = false,
@@ -2486,6 +2586,17 @@ function ResultScreen({
   // Começa null e fica hidratado depois — default é "esconder folder_url",
   // garantindo que não pisca a pasta pra cliente de admin comum durante o load.
   const [ownerRole, setOwnerRole] = useState<string | null>(null)
+
+  // Preview (visualizar) de um arquivo da lista de Documentos — abre em
+  // modal fullscreen (FilePreviewModal). Download continua disponível ali
+  // dentro também.
+  const [previewFile, setPreviewFile] = useState<any | null>(null)
+
+  // "Baixar tudo" — empacota todos os arquivos do resultado (documentos,
+  // áudios e fotos) num .zip só, gerado no navegador da cliente (JSZip).
+  const [zipping, setZipping] = useState(false)
+  const [zipProgress, setZipProgress] = useState<{ done: number; total: number } | null>(null)
+
   useEffect(() => {
     if (!token) return
     let cancelled = false
@@ -2570,6 +2681,67 @@ function ResultScreen({
       window.open(clientService.getResultFileUrl(file), '_blank')
     } finally {
       setDownloadingId(null)
+    }
+  }
+
+  // Baixa TODOS os arquivos do resultado (documentos + áudios + fotos) e
+  // empacota num único .zip pra cliente salvar de uma vez. Usa a mesma
+  // origem de bytes que handleDownload (file-proxy do Drive, ou URL pública
+  // pra arquivos legados) — não depende de nenhum acesso público novo.
+  const handleDownloadAllZip = async (allFiles: any[]) => {
+    if (zipping || allFiles.length === 0) return
+    setZipping(true)
+    setZipProgress({ done: 0, total: allFiles.length })
+    try {
+      const zip = new JSZip()
+      const usedNames = new Set<string>()
+      const uniqueName = (name: string) => {
+        let finalName = name || 'arquivo'
+        let i = 1
+        while (usedNames.has(finalName)) {
+          const dot = name.lastIndexOf('.')
+          finalName = dot > 0 ? `${name.slice(0, dot)} (${i})${name.slice(dot)}` : `${name} (${i})`
+          i++
+        }
+        usedNames.add(finalName)
+        return finalName
+      }
+
+      for (const file of allFiles) {
+        try {
+          const url = file.drive_file_id
+            ? driveStorage.filePortalProxyUrl(file.drive_file_id, token)
+            : clientService.getResultFileUrl(file)
+          const res = await fetch(url)
+          if (res.ok) {
+            const blob = await res.blob()
+            zip.file(uniqueName(file.file_name), blob)
+          }
+        } catch {
+          // Um arquivo falhando não deve travar o zip inteiro — segue pros outros.
+        } finally {
+          setZipProgress(p => p ? { ...p, done: p.done + 1 } : p)
+        }
+      }
+
+      const content = await zip.generateAsync({ type: 'blob' })
+      const blobUrl = URL.createObjectURL(content)
+      const anchor = document.createElement('a')
+      anchor.href = blobUrl
+      const baseName = (data.client.full_name || 'arquivos').trim()
+      anchor.download = `${baseName} - Arquivos.zip`
+      document.body.appendChild(anchor)
+      anchor.click()
+      document.body.removeChild(anchor)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+    } catch (err) {
+      console.error('Erro ao gerar zip:', err)
+      alert(language.startsWith('pt')
+        ? 'Não foi possível gerar o arquivo .zip. Tente baixar os arquivos individualmente.'
+        : 'Could not generate the .zip file. Please try downloading the files individually.')
+    } finally {
+      setZipping(false)
+      setZipProgress(null)
     }
   }
 
@@ -2855,24 +3027,42 @@ function ResultScreen({
           </h3>
           <div className="space-y-2">
             {[...pdfs, ...others].map((file: any) => (
-              <button
+              <div
                 key={file.id}
-                onClick={() => handleDownload(file)}
-                disabled={downloadingId === file.id}
-                className="w-full flex items-center gap-3 p-3.5 bg-gray-50 hover:bg-[var(--client-accent-soft)] rounded-xl border border-transparent hover:border-[var(--client-accent-soft2)] transition-all group disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex items-center gap-2 p-3.5 bg-gray-50 hover:bg-[var(--client-accent-soft)] rounded-xl border border-transparent hover:border-[var(--client-accent-soft2)] transition-all group"
               >
                 <div className="w-10 h-10 bg-gradient-to-br from-red-400 to-[var(--client-accent)] rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
                   <FileText className="h-4 w-4 text-white" />
                 </div>
-                <div className="flex-1 min-w-0 text-left">
+                <button
+                  type="button"
+                  onClick={() => setPreviewFile(file)}
+                  className="flex-1 min-w-0 text-left"
+                >
                   <p className="text-sm font-medium text-gray-800 truncate">{file.file_name}</p>
                   <p className="text-xs text-gray-400 mt-0.5">{(file.file_size / 1024).toFixed(0)} KB</p>
-                </div>
-                {downloadingId === file.id
-                  ? <div className="animate-spin h-4 w-4 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full flex-shrink-0" />
-                  : <Download className="h-4 w-4 text-gray-300 group-hover:text-[var(--client-accent-light)] transition-colors flex-shrink-0" />
-                }
-              </button>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewFile(file)}
+                  className="p-2 text-gray-400 hover:text-[var(--client-accent)] hover:bg-white rounded-lg transition-colors flex-shrink-0"
+                  title={language.startsWith('pt') ? 'Visualizar' : 'View'}
+                >
+                  <Eye className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownload(file)}
+                  disabled={downloadingId === file.id}
+                  className="p-2 text-gray-400 hover:text-[var(--client-accent)] hover:bg-white rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
+                  title={t('portal.common.download')}
+                >
+                  {downloadingId === file.id
+                    ? <div className="animate-spin h-4 w-4 border-2 border-[var(--client-accent-light)] border-t-transparent rounded-full" />
+                    : <Download className="h-4 w-4" />
+                  }
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -2994,6 +3184,37 @@ function ResultScreen({
         </div>
       )}
 
+      {/* ── Baixar tudo — empacota documentos + áudios + fotos num .zip ── */}
+      {files.length > 1 && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-5">
+          <button
+            type="button"
+            onClick={() => handleDownloadAllZip(files)}
+            disabled={zipping}
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[var(--client-accent)] text-white font-semibold hover:bg-[var(--client-accent-dark)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {zipping ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {language.startsWith('pt')
+                  ? `Preparando arquivo${zipProgress ? ` (${zipProgress.done}/${zipProgress.total})` : ''}...`
+                  : `Preparing file${zipProgress ? ` (${zipProgress.done}/${zipProgress.total})` : ''}...`}
+              </>
+            ) : (
+              <>
+                <FolderArchive className="h-4 w-4" />
+                {language.startsWith('pt') ? 'Baixar tudo (.zip)' : 'Download all (.zip)'}
+              </>
+            )}
+          </button>
+          <p className="text-xs text-gray-400 text-center mt-2">
+            {language.startsWith('pt')
+              ? 'Baixa todos os documentos, áudios e fotos num único arquivo compactado.'
+              : 'Downloads all documents, audio and photos in a single compressed file.'}
+          </p>
+        </div>
+      )}
+
       <div className="rounded-2xl px-5 py-3 text-center">
         <p className="text-xs text-gray-400">
           {t('portal.result.releasedOn', {
@@ -3033,6 +3254,18 @@ function ResultScreen({
           photos={photoLightbox.photos}
           initialIndex={photoLightbox.index}
           onClose={() => setPhotoLightbox(null)}
+        />
+      )}
+
+      {/* Preview (visualizar) de documento — aberto pelo botão de olho na
+          lista de Documentos acima. */}
+      {previewFile && (
+        <FilePreviewModal
+          file={previewFile}
+          token={token}
+          downloading={downloadingId === previewFile.id}
+          onDownload={handleDownload}
+          onClose={() => setPreviewFile(null)}
         />
       )}
     </div>
