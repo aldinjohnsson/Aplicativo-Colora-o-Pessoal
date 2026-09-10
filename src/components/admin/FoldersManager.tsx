@@ -780,6 +780,52 @@ export function FoldersManager() {
     })
   }
 
+  // Propaga name/instruction/thumbnail/images pra toda cópia local (mesmo
+  // dbId) já vinculada em qualquer prompt de qualquer pasta. Sem isso, a
+  // cópia dentro de ai_folders.config fica congelada no momento em que foi
+  // vinculada — e é o que a IA de fato usa pra gerar (ver services.ts),
+  // então editar só ai_sub_options "salva" mas não muda nada onde já está
+  // em uso. Só chamar em UPDATE (item recém-criado ainda não está
+  // vinculado em lugar nenhum). Segue o mesmo padrão de linkToAllFolders.
+  const propagateSubOptionUpdate = async (
+    dbId: string,
+    field: 'lengths' | 'textures',
+    patch: { name: string; instruction: string; thumbnail: PromptImage | null; images: PromptImage[] },
+  ) => {
+    const { data: allFolders, error } = await supabase.from('ai_folders').select('id, config')
+    if (error) throw error
+
+    for (const f of (allFolders || [])) {
+      const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
+      let changed = false
+      const newCfg = {
+        ...cfg,
+        categories: (cfg.categories || []).map((cat: any) => ({
+          ...cat,
+          prompts: (cat.prompts || []).map((p: any) => {
+            const list: any[] = p[field] || []
+            if (!list.some((s: any) => s.dbId === dbId)) return p
+            changed = true
+            return {
+              ...p,
+              [field]: list.map((s: any) => (s.dbId === dbId ? { ...s, ...patch } : s)),
+            }
+          }),
+        })),
+      }
+      if (!changed) continue
+      const { error: upErr } = await supabase
+        .from('ai_folders')
+        .update({ config: newCfg, updated_at: new Date().toISOString() })
+        .eq('id', f.id)
+      if (upErr) throw upErr
+      // Se a pasta atualizada é a que está aberta no editor agora, sincroniza
+      // o state local também (senão o próximo "Salvar" nela sobrescreveria
+      // com dado desatualizado).
+      if (editingFolder && editingFolder.id === f.id) setConfig(newCfg)
+    }
+  }
+
   /** Salva (insert ou update) o item global e recarrega a lista */
   const saveGlobalEdit = async () => {
     if (!globalEdit || !globalEdit.name.trim()) return
@@ -795,6 +841,8 @@ export function FoldersManager() {
       if (globalEdit.dbId) {
         const { error } = await supabase.from('ai_sub_options').update(payload).eq('id', globalEdit.dbId)
         if (error) throw error
+        const field = globalEdit.kind === 'length' ? 'lengths' : 'textures'
+        await propagateSubOptionUpdate(globalEdit.dbId, field, payload)
       } else {
         const { error } = await supabase.from('ai_sub_options').insert(payload)
         if (error) throw error
@@ -808,19 +856,53 @@ export function FoldersManager() {
     }
   }
 
-  /** Exclui um item global — avisa que pode afetar prompts vinculados */
+  // Remove toda cópia local (mesmo dbId) de QUALQUER prompt em QUALQUER
+  // pasta — usado quando um comprimento/textura global é excluído, pra não
+  // deixar cópias órfãs "vivas" em pastas que já vinculavam o item.
+  const removeSubOptionFromAllFolders = async (dbId: string, field: 'lengths' | 'textures') => {
+    const { data: allFolders, error } = await supabase.from('ai_folders').select('id, config')
+    if (error) throw error
+
+    for (const f of (allFolders || [])) {
+      const cfg = typeof f.config === 'string' ? JSON.parse(f.config) : f.config
+      let changed = false
+      const newCfg = {
+        ...cfg,
+        categories: (cfg.categories || []).map((cat: any) => ({
+          ...cat,
+          prompts: (cat.prompts || []).map((p: any) => {
+            const list: any[] = p[field] || []
+            if (!list.some((s: any) => s.dbId === dbId)) return p
+            changed = true
+            return { ...p, [field]: list.filter((s: any) => s.dbId !== dbId) }
+          }),
+        })),
+      }
+      if (!changed) continue
+      const { error: upErr } = await supabase
+        .from('ai_folders')
+        .update({ config: newCfg, updated_at: new Date().toISOString() })
+        .eq('id', f.id)
+      if (upErr) throw upErr
+      if (editingFolder && editingFolder.id === f.id) setConfig(newCfg)
+    }
+  }
+
+  /** Exclui um item global — remove também toda cópia vinculada em pastas */
   const deleteGlobalItem = async (item: GlobalSubOpt) => {
     const label = item.kind === 'length' ? 'comprimento' : 'textura'
     const ok = await askConfirm({
       title: `Excluir ${label}`,
-      message: `"${item.name}" será removido do banco. Prompts que já usam este ${label} manterão uma cópia local, mas o item não estará mais disponível para vincular em novos prompts.`,
+      message: `"${item.name}" será removido do banco e de TODOS os prompts de TODAS as pastas que o utilizam hoje. Isso não pode ser desfeito.`,
       confirmLabel: 'Excluir',
       danger: true,
     })
     if (!ok || !item.dbId) return
     try {
+      const field = item.kind === 'length' ? 'lengths' : 'textures'
       const { error } = await supabase.from('ai_sub_options').delete().eq('id', item.dbId)
       if (error) throw error
+      await removeSubOptionFromAllFolders(item.dbId, field)
       await loadGlobalSubOpts()
     } catch (e: any) {
       alert('Erro ao excluir: ' + e.message)
@@ -1072,6 +1154,10 @@ export function FoldersManager() {
           .update(payload)
           .eq('id', dbId)
         if (error) throw error
+        // propaga pra cópias com o mesmo dbId em QUALQUER pasta (inclusive
+        // outras pastas — a cópia local desta pasta já foi atualizada via
+        // setConfig no editor, mas as demais ficariam congeladas sem isto)
+        await propagateSubOptionUpdate(dbId, field, payload)
       } else {
         // insert new row and store returned id
         const { data, error } = await supabase
