@@ -1034,8 +1034,10 @@ function ImageUploadFormField({
 
 interface InstructionItem {
   id: string
-  type: 'text' | 'video' | 'image' | 'pdf' | 'link'
+  type: 'text' | 'video' | 'image' | 'pdf' | 'link' | 'example' | 'checklist_i18n'
   content: string
+  /** Só em type 'checklist_i18n': traduções do checklist por idioma base (en, es, fr, it, de), alinhadas por posição. */
+  translations?: Record<string, string[]>
   imageUrl?: string
   storagePath?: string
   fileName?: string
@@ -1048,6 +1050,8 @@ interface PhotoCategory {
   description?: string
   max_photos: number
   instruction_items?: InstructionItem[]
+  /** Checklist do carrossel exibido ANTES da cliente escolher a foto (opcional). */
+  checklist_items?: string[] | null
   is_ai_simulation?: boolean
   // legacy fields
   video_url?: string
@@ -1268,11 +1272,47 @@ function MediaItem({ item }: { item: InstructionItem }) {
 function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionItem[]; defaultOpen?: boolean }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
+  const [exampleZoom, setExampleZoom] = useState(false)
 
-  const mediaItems = items.filter(i => i.type !== 'text')
-  const textItems  = items.filter(i => i.type === 'text')
+  // A foto de exemplo (type 'example') aparece AO LADO da imagem/PDF de instrução.
+  const exampleItem  = items.find(i => i.type === 'example') ?? null
+  const exampleSrc   = exampleItem ? (exampleItem.imageUrl || exampleItem.content) : ''
+  const mediaItems   = items.filter(i => i.type !== 'text' && i.type !== 'example' && i.type !== 'checklist_i18n')
+  const textItems    = items.filter(i => i.type === 'text')
 
-  if (items.length === 0) return null
+  if (items.every(i => i.type === 'checklist_i18n')) return null
+
+  // Lado a lado quando há instrução visual (imagem/PDF) + exemplo.
+  // Imagem: 2 colunas também no celular (tap pra ampliar). PDF: empilha no celular.
+  const visualMedia  = mediaItems.filter(i => i.type === 'image' || i.type === 'pdf')
+  const otherMedia   = mediaItems.filter(i => i.type !== 'image' && i.type !== 'pdf')
+  const sideBySide   = !!exampleSrc && visualMedia.length > 0
+  const hasPdf       = visualMedia.some(i => i.type === 'pdf')
+
+  const exampleBlock = exampleSrc ? (
+    <div className="min-w-0">
+      <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+        {t('portal.imageUpload.compareModalExampleLabel')}
+      </p>
+      <button
+        type="button"
+        onClick={() => setExampleZoom(true)}
+        className="relative block w-full rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] shadow-sm cursor-zoom-in group bg-gray-50"
+      >
+        <img src={exampleSrc} alt={t('portal.imageUpload.compareModalExampleLabel')} className="w-full object-contain max-h-80" />
+        <div className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 rounded-lg bg-black/60 text-white text-[11px] font-medium opacity-90 group-hover:opacity-100 transition-opacity">
+          <ZoomIn className="h-3 w-3" />
+        </div>
+      </button>
+      {exampleZoom && (
+        <PhotoZoomLightbox
+          photos={[{ id: 'example-photo', url: exampleSrc, file_name: t('portal.imageUpload.compareModalExampleLabel') }]}
+          initialIndex={0}
+          onClose={() => setExampleZoom(false)}
+        />
+      )}
+    </div>
+  ) : null
 
   return (
     <div className="rounded-xl border border-[var(--client-accent-soft2)] bg-[var(--client-accent-soft)]/50 overflow-hidden">
@@ -1292,7 +1332,24 @@ function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionIt
 
       {open && (
         <div className="px-4 pb-4 space-y-3">
-          {mediaItems.map(item => <MediaItem key={item.id} item={item} />)}
+          {otherMedia.map(item => <MediaItem key={item.id} item={item} />)}
+
+          {sideBySide ? (
+            <div className={`grid gap-3 items-start ${hasPdf ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2'}`}>
+              <div className="min-w-0 space-y-3">
+                <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                  {t('portal.instructions.imageAlt')}
+                </p>
+                {visualMedia.map(item => <MediaItem key={item.id} item={item} />)}
+              </div>
+              {exampleBlock}
+            </div>
+          ) : (
+            <>
+              {visualMedia.map(item => <MediaItem key={item.id} item={item} />)}
+              {exampleBlock}
+            </>
+          )}
 
           {textItems.length > 0 && (
             <ol className="space-y-2.5">
@@ -1307,6 +1364,262 @@ function InstructionsPanel({ items, defaultOpen = true }: { items: InstructionIt
             </ol>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── Carrossel simples de imagens (usado no modal de revisão) ────────────────
+//
+// Mostra uma imagem por vez; se houver mais de uma, dá pra trocar deslizando,
+// pelas setas ou pelos pontinhos. Tocar na imagem chama onZoom (se passado).
+function ImageMiniCarousel({
+  urls, onZoom,
+}: {
+  urls: string[]
+  onZoom?: (index: number) => void
+}) {
+  const [index, setIndex] = useState(0)
+  const touchStartX = useRef<number | null>(null)
+  const total = urls.length
+  const goTo = (i: number) => setIndex(Math.max(0, Math.min(total - 1, i)))
+
+  const onTouchStart = (e: React.TouchEvent) => { touchStartX.current = e.touches[0].clientX }
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return
+    const dx = e.changedTouches[0].clientX - touchStartX.current
+    touchStartX.current = null
+    if (Math.abs(dx) < 50) return
+    goTo(dx < 0 ? index + 1 : index - 1)
+  }
+
+  return (
+    <div>
+      <div
+        className="relative rounded-xl overflow-hidden border border-[var(--client-accent-soft2)] bg-gray-50"
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
+      >
+        <div
+          className="flex transition-transform duration-300 ease-out"
+          style={{ transform: `translateX(-${index * 100}%)` }}
+        >
+          {urls.map((url, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onZoom?.(i)}
+              className={`w-full flex-shrink-0 aspect-[3/4] flex items-center justify-center ${onZoom ? 'cursor-zoom-in' : 'cursor-default'}`}
+            >
+              <img src={url} alt="" className="w-full h-full object-contain" />
+            </button>
+          ))}
+        </div>
+
+        {total > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={() => goTo(index - 1)}
+              disabled={index === 0}
+              className="absolute left-1 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full bg-white/90 shadow border border-gray-200 text-gray-600 disabled:opacity-0"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => goTo(index + 1)}
+              disabled={index === total - 1}
+              className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full bg-white/90 shadow border border-gray-200 text-gray-600 disabled:opacity-0"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium">
+              {index + 1}/{total}
+            </span>
+          </>
+        )}
+      </div>
+
+      {total > 1 && (
+        <div className="flex items-center justify-center gap-1.5 pt-2">
+          {urls.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => goTo(i)}
+              aria-label={`${i + 1}/${total}`}
+              className={`h-1.5 rounded-full transition-all ${i === index ? 'w-4 bg-[var(--client-accent)]' : 'w-1.5 bg-gray-300'}`}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Modal de revisão: aparece DEPOIS que a cliente escolhe a(s) foto(s) ─────
+//
+// Lado a lado: a imagem de instrução (categoria) à ESQUERDA e a(s) foto(s)
+// que ela acabou de escolher à DIREITA (carrossel se forem várias). Abaixo,
+// o checklist da categoria (se houver) — todos os itens precisam ser
+// confirmados antes de "Confirmar e enviar". Sem checklist cadastrado, cai
+// numa única confirmação genérica. Cancelar descarta as fotos escolhidas.
+function PhotoReviewModal({
+  exampleImages, checklistItems, files, onConfirm, onCancel,
+}: {
+  exampleImages: InstructionItem[]
+  checklistItems: string[]
+  files: File[]
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const { t } = useTranslation()
+  const hasChecklist = checklistItems.length > 0
+  const hasExample = exampleImages.length > 0
+
+  const [confirmed, setConfirmed] = useState<boolean[]>(() => checklistItems.map(() => false))
+  const [singleChecked, setSingleChecked] = useState(false)
+  const doneCount = confirmed.filter(Boolean).length
+  const allDone = hasChecklist ? doneCount === checklistItems.length : singleChecked
+
+  // Zoom (exemplo ou foto da cliente). O lightbox é filho do overlay z-70,
+  // então aparece acima do modal.
+  const [zoom, setZoom] = useState<{ kind: 'example' | 'photo'; index: number } | null>(null)
+  const exampleUrls = exampleImages.map(img => img.imageUrl || img.content)
+
+  // Object URLs das fotos escolhidas. Criadas DENTRO do effect (e revogadas no
+  // cleanup do mesmo effect) pra funcionar com o React StrictMode do dev, que
+  // monta → desmonta → monta de novo: se a URL fosse criada no useState, o
+  // cleanup do 1º ciclo a revogaria e a imagem quebraria só em localhost.
+  const [previewUrls, setPreviewUrls] = useState<string[]>([])
+  useEffect(() => {
+    const urls = files.map(f => URL.createObjectURL(f))
+    setPreviewUrls(urls)
+    return () => urls.forEach(u => URL.revokeObjectURL(u))
+  }, [files])
+
+  // O modal só fecha pelo X ou pelo botão "Tirar outra" — clicar fora ou
+  // apertar Esc NÃO fecha (evita perder a foto/checklist sem querer, principalmente no celular).
+
+  const zoomPhotos = zoom?.kind === 'example'
+    ? exampleImages.map(img => ({ id: img.id, url: img.imageUrl || img.content, file_name: t('portal.instructions.imageAlt') }))
+    : files.map((f, i) => ({ id: `pick-${i}`, url: previewUrls[i], file_name: f.name }))
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-3 sm:p-4">
+      <div
+        className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[92vh] flex flex-col overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b border-gray-100 flex-shrink-0">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-gray-900">{t('portal.imageUpload.checklistModalTitle')}</h3>
+            <p className="text-xs text-gray-500 mt-0.5">{t('portal.imageUpload.reviewModalBody')}</p>
+          </div>
+          <button
+            onClick={onCancel}
+            aria-label={t('portal.imageUpload.checklistModalCancel')}
+            className="p-1.5 -mr-1.5 rounded-lg hover:bg-gray-100 text-gray-400 flex-shrink-0"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Body — rola se o conteúdo for maior que a tela */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
+          {/* Instrução (esquerda) × foto(s) da cliente (direita) */}
+          <div className={`grid gap-3 ${hasExample ? 'grid-cols-2' : 'grid-cols-1 max-w-[60%] mx-auto w-full'}`}>
+            {hasExample && (
+              <div>
+                <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+                  {t('portal.imageUpload.compareModalExampleLabel')}
+                </p>
+                <ImageMiniCarousel urls={exampleUrls} onZoom={i => setZoom({ kind: 'example', index: i })} />
+              </div>
+            )}
+            <div>
+              <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+                {t('portal.imageUpload.compareModalYourPhotoLabel', { count: files.length })}
+              </p>
+              <ImageMiniCarousel urls={previewUrls} onZoom={i => setZoom({ kind: 'photo', index: i })} />
+            </div>
+          </div>
+
+          {/* Checklist (todos os itens precisam ser confirmados) */}
+          {hasChecklist ? (
+            <div className="space-y-2">
+              {checklistItems.map((item, i) => (
+                <label
+                  key={i}
+                  className={`flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 cursor-pointer select-none transition-colors ${
+                    confirmed[i]
+                      ? 'bg-[var(--client-accent-soft)] border-[var(--client-accent-light)]'
+                      : 'bg-[var(--client-accent-soft)]/40 border-[var(--client-accent-soft2)]'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={confirmed[i] || false}
+                    onChange={() => setConfirmed(prev => prev.map((c, idx) => idx === i ? !c : c))}
+                    className="mt-0.5 h-4 w-4 flex-shrink-0 accent-[var(--client-accent)]"
+                  />
+                  <span className="text-sm text-gray-800 leading-snug">{item}</span>
+                </label>
+              ))}
+              <p className="text-[11px] text-gray-400 text-center pt-0.5">
+                {t('portal.imageUpload.checklistModalProgress', { done: doneCount, total: checklistItems.length })}
+              </p>
+            </div>
+          ) : (
+            <label className="flex items-start gap-2.5 bg-[var(--client-accent-soft)]/60 rounded-xl px-3.5 py-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={singleChecked}
+                onChange={e => setSingleChecked(e.target.checked)}
+                className="mt-0.5 h-4 w-4 flex-shrink-0 accent-[var(--client-accent)]"
+              />
+              <span className="text-xs text-gray-700 leading-relaxed">
+                {t('portal.imageUpload.compareModalConfirmLabel')}
+              </span>
+            </label>
+          )}
+        </div>
+
+        {/* Footer: botões + aviso */}
+        <div className="px-5 pt-3 pb-4 space-y-2.5 border-t border-gray-100 flex-shrink-0">
+          <div className="flex gap-2">
+            <button
+              onClick={onCancel}
+              className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              {t('portal.imageUpload.compareModalRetake')}
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={!allDone}
+              className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-[var(--client-accent)] hover:bg-[var(--client-accent-dark)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {t('portal.imageUpload.compareModalSend')}
+            </button>
+          </div>
+
+          {/* Aviso: fotos diferentes do pedido, embaçadas ou ruins podem ser refeitas */}
+          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+            <AlertCircle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-800 leading-relaxed">
+              {t('portal.imageUpload.checklistModalFooterWarning')}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {zoom && (
+        <PhotoZoomLightbox
+          photos={zoomPhotos}
+          initialIndex={zoom.index}
+          onClose={() => setZoom(null)}
+        />
       )}
     </div>
   )
@@ -1328,11 +1641,50 @@ interface CategoryCardProps {
 }
 
 function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, onAdd, onRemove, onRemoveExisting, removingExisting }: CategoryCardProps) {
-  const { t } = useTranslation()
+  const { t, language } = useTranslation()
   const instructions = normalizeInstructions(cat)
   const totalCount = existingPhotos.length + uploads.length
   const isFull = totalCount >= cat.max_photos
   const isDone = totalCount > 0
+
+  // Comparação (modal de revisão depois que a cliente escolhe a foto):
+  //   1) se a categoria tem FOTO DE EXEMPLO (instruction_items type 'example'),
+  //      é ela que vai pra comparação;
+  //   2) senão, cai nas imagens de instrução (type 'image'), como antes.
+  const exampleItem = instructions.find(i => i.type === 'example' && (i.imageUrl || i.content))
+  const exampleImages = exampleItem
+    ? [exampleItem]
+    : instructions.filter(i => i.type === 'image')
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null)
+
+  // Fluxo ao adicionar foto:
+  //   1) seletor de arquivo nativo (a cliente sobe a foto livremente)
+  //   2) se a categoria tem imagem de exemplo e/ou checklist, abre o modal
+  //      de revisão: instrução à esquerda, foto(s) escolhida(s) à direita
+  //      e, abaixo, a confirmação do checklist
+  //   3) ao confirmar, a foto entra na lista
+  // Um único <input type="file"> escondido atende os dois botões de "adicionar"
+  // (vazio e "+" ao lado das fotos).
+  // Checklist no idioma da cliente: usa a tradução (mesma posição) se o admin
+  // cadastrou; senão cai no texto base (português).
+  const baseLang = (language || 'pt-BR').split('-')[0]
+  const checklistI18n = instructions.find(i => i.type === 'checklist_i18n')?.translations?.[baseLang]
+  const checklistItems = (cat.checklist_items || [])
+    .map((s, i) => (baseLang !== 'pt' && checklistI18n?.[i]?.trim()) || s.trim())
+    .filter(Boolean)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleAddClick = () => {
+    if (processing || isFull) return
+    fileInputRef.current?.click()
+  }
+
+  const handlePick = (files: File[]) => {
+    if (files.length === 0) return
+    if (exampleImages.length > 0 || checklistItems.length > 0) setPendingFiles(files)
+    else onAdd(files)
+  }
+
   // Índice aberto no lightbox de zoom (dentro da lista combinada
   // existingPhotos + uploads, nessa ordem — ver lightboxPhotos abaixo).
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
@@ -1378,7 +1730,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
       </div>
 
       {/* Instructions */}
-      {instructions.length > 0 && (
+      {instructions.some(i => i.type !== 'checklist_i18n') && (
         <div className="px-4 sm:px-5 py-3 border-b border-gray-100">
           <InstructionsPanel items={instructions} defaultOpen={!isDone} />
         </div>
@@ -1435,29 +1787,32 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
 
             {/* Add-more slot inline with photos */}
             {!isFull && !processing && (
-              <label className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)]
-                hover:bg-[var(--client-accent-soft)]/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1">
-                <input
-                  type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
-                  onChange={e => e.target.files && onAdd(Array.from(e.target.files))}
-                />
+              <button
+                type="button"
+                onClick={handleAddClick}
+                className="aspect-square rounded-xl border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)]
+                hover:bg-[var(--client-accent-soft)]/40 flex flex-col items-center justify-center cursor-pointer transition-colors gap-1"
+              >
                 <Camera className="h-5 w-5 text-gray-300" />
                 <span className="text-[10px] text-gray-400">
                   {t('portal.imageUpload.remaining', { count: cat.max_photos - totalCount })}
                 </span>
-              </label>
+              </button>
             )}
           </div>
         )}
 
         {/* Drop zone — only when no photos yet (neither existing nor new) */}
         {existingPhotos.length === 0 && uploads.length === 0 && (
-          <label className={`block relative rounded-2xl cursor-pointer transition-all ${
+          <button
+            type="button"
+            onClick={handleAddClick}
+            disabled={processing}
+            className={`block w-full relative rounded-2xl cursor-pointer transition-all ${
             processing
               ? 'bg-[var(--client-accent-soft)]/60 border-2 border-[var(--client-accent-soft2)] pointer-events-none'
               : 'border-2 border-dashed border-gray-200 hover:border-[var(--client-accent-light)] hover:bg-[var(--client-accent-soft)]/40 active:scale-[0.99]'
           }`}>
-            <input type="file" multiple accept="image/*,image/heic,image/heif" className="hidden" onChange={e => e.target.files && onAdd(Array.from(e.target.files))} disabled={processing} />
             <div className="px-6 py-10 text-center">
               {processing ? (
                 <div className="animate-spin h-8 w-8 border-3 border-[var(--client-accent-light)] border-t-transparent rounded-full mx-auto" />
@@ -1477,7 +1832,7 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
                 </>
               )}
             </div>
-          </label>
+          </button>
         )}
 
         {/* Error message */}
@@ -1505,6 +1860,29 @@ function CategoryCard({ cat, index, uploads, existingPhotos, processing, error, 
           photos={lightboxPhotos}
           initialIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
+        />
+      )}
+
+      {/* Input único (escondido) — aberto por handleAddClick */}
+      <input
+        ref={fileInputRef}
+        type="file" multiple accept="image/*,image/heic,image/heif" className="hidden"
+        onChange={e => {
+          const picked = e.target.files ? Array.from(e.target.files) : []
+          // Zera o valor pra poder escolher o MESMO arquivo de novo depois de cancelar
+          e.target.value = ''
+          handlePick(picked)
+        }}
+      />
+
+      {/* Revisão pós-escolha: instrução × foto(s) + checklist, antes de aceitar de vez */}
+      {pendingFiles && (
+        <PhotoReviewModal
+          exampleImages={exampleImages}
+          checklistItems={checklistItems}
+          files={pendingFiles}
+          onConfirm={() => { onAdd(pendingFiles); setPendingFiles(null) }}
+          onCancel={() => setPendingFiles(null)}
         />
       )}
     </div>

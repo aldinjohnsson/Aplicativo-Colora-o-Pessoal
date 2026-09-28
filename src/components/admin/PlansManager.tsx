@@ -4,7 +4,7 @@ import { Routes, Route, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Pencil, Trash2, ChevronRight, FileText, ClipboardList,
   Camera, Save, ArrowLeft, GripVertical, X, Check, Image, User, Mail, Phone,
-  Share2, Copy, CheckCircle, ChevronUp, ChevronDown
+  Share2, Copy, CheckCircle, ChevronUp, ChevronDown, Globe
 } from 'lucide-react'
 import { adminService, Plan, PlanContract, PlanForm, PhotoCategory } from '../../lib/services'
 import { PhotoCategoryInstructionsEditor, migrateToInstructionItems, InstructionItem } from './PhotoCategoryInstructionsEditor'
@@ -849,9 +849,158 @@ function FieldEditor({ field, index, total, onUpdate, onRemove, onMoveUp, onMove
   )
 }
 
+// ── Editor genérico de lista de checklist (add/remove/reordenar) ─────
+//
+// Usado dentro do formulário de CADA categoria (CategoryForm) — o checklist
+// de confirmação de foto é por categoria, não por plano. Cada categoria
+// mostra o seu próprio carrossel de confirmação no portal, antes da cliente
+// escolher a foto. Vazio = pula o carrossel, vai direto pro seletor de arquivo.
+
+// Traduções do checklist. Ficam em `instruction_items` como um item
+// `type: 'checklist_i18n'` ({ translations: { en: string[], es: string[], ... } }),
+// com os textos alinhados por posição aos de `checklist_items` (que é o texto
+// base em português). Sem mudança de banco. Idioma sem tradução → portal mostra o texto base.
+const CHECKLIST_I18N_TYPE = 'checklist_i18n'
+const CHECKLIST_LANGS = [
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Español' },
+  { code: 'fr', label: 'Français' },
+  { code: 'it', label: 'Italiano' },
+  { code: 'de', label: 'Deutsch' },
+]
+
+/** Tira itens vazios do checklist mantendo as traduções alinhadas; remove o item i18n se ficar vazio. */
+function compactChecklist(items: string[], instructionItems: any[]) {
+  const keep = items.map((s, i) => (s.trim() ? i : -1)).filter(i => i >= 0)
+  const cleaned = keep.map(i => items[i].trim())
+  const out = (instructionItems ?? []).map(it => {
+    if (it?.type !== CHECKLIST_I18N_TYPE) return it
+    const tr: Record<string, string[]> = {}
+    Object.entries(it.translations ?? {}).forEach(([lang, arr]) => {
+      const a = keep.map(i => (((arr as string[])[i]) ?? '').trim())
+      if (a.some(Boolean)) tr[lang] = a
+    })
+    return cleaned.length > 0 && Object.keys(tr).length > 0 ? { ...it, translations: tr } : null
+  }).filter(Boolean)
+  return { checklist_items: cleaned.length > 0 ? cleaned : null, instruction_items: out }
+}
+
+function ChecklistItemsEditor({ items, translations, onChange }: {
+  items: string[]
+  translations: Record<string, string[]>
+  onChange: (items: string[], translations: Record<string, string[]>) => void
+}) {
+  const [openIdx, setOpenIdx] = useState<number | null>(null)
+  const pad = (arr: string[] | undefined) => Array.from({ length: items.length }, (_, i) => arr?.[i] ?? '')
+  const mapTr = (fn: (arr: string[]) => string[]) => {
+    const next: Record<string, string[]> = {}
+    Object.keys(translations).forEach(l => { next[l] = fn(pad(translations[l])) })
+    return next
+  }
+
+  const updateItem = (i: number, value: string) => onChange(items.map((it, idx) => idx === i ? value : it), translations)
+  const addItem = () => onChange([...items, ''], translations)
+  const removeItem = (i: number) => {
+    onChange(items.filter((_, idx) => idx !== i), mapTr(arr => arr.filter((_, idx) => idx !== i)))
+    setOpenIdx(null)
+  }
+  const moveItem = (i: number, dir: -1 | 1) => {
+    const j = i + dir
+    if (j < 0 || j >= items.length) return
+    const next = [...items]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    onChange(next, mapTr(arr => { const c = [...arr]; [c[i], c[j]] = [c[j], c[i]]; return c }))
+    setOpenIdx(o => (o === i ? j : o === j ? i : o))
+  }
+  const setTr = (lang: string, i: number, value: string) => {
+    const arr = pad(translations[lang])
+    arr[i] = value
+    onChange(items, { ...translations, [lang]: arr })
+  }
+  const trCount = (i: number) => CHECKLIST_LANGS.filter(l => (translations[l.code]?.[i] ?? '').trim()).length
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+      <div>
+        <h4 className="font-semibold text-gray-900 text-sm">Checklist de confirmação (opcional)</h4>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Aparece na tela de conferência, abaixo da instrução e da foto que a cliente acabou de escolher. Todos os itens precisam ser marcados para ela enviar. Se deixar vazio, ela só confirma que a foto está de acordo com o exemplo.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          O texto acima é o padrão (português). Toque no <Globe className="inline h-3 w-3 -mt-0.5" /> de um item para traduzir — quem usa outro idioma vê a tradução; sem tradução, vê o texto em português.
+        </p>
+      </div>
+
+      {items.length === 0 && (
+        <p className="text-xs text-gray-400 italic">Nenhum item — sem checklist nesta categoria.</p>
+      )}
+
+      {items.length > 0 && (
+        <div className="space-y-2">
+          {items.map((item, i) => (
+            <div key={i} className="space-y-2">
+              <div className="flex items-center gap-1.5">
+                <div className="flex flex-col">
+                  <button type="button" onClick={() => moveItem(i, -1)} disabled={i === 0}
+                    className="text-gray-300 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed">
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button type="button" onClick={() => moveItem(i, 1)} disabled={i === items.length - 1}
+                    className="text-gray-300 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed">
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <input
+                  value={item}
+                  onChange={e => updateItem(i, e.target.value)}
+                  placeholder="Ex: Cabelo 100% preso para trás"
+                  className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+                />
+                <button type="button" onClick={() => setOpenIdx(o => (o === i ? null : i))}
+                  title="Traduções"
+                  className={`relative p-2 flex-shrink-0 rounded-lg ${openIdx === i ? 'bg-rose-50 text-rose-500' : 'text-gray-400 hover:text-rose-500'}`}>
+                  <Globe className="h-3.5 w-3.5" />
+                  {trCount(i) > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-emerald-500 text-white text-[9px] font-bold flex items-center justify-center">
+                      {trCount(i)}
+                    </span>
+                  )}
+                </button>
+                <button type="button" onClick={() => removeItem(i)} className="p-2 text-gray-400 hover:text-red-500 flex-shrink-0">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              {openIdx === i && (
+                <div className="ml-6 rounded-lg border border-rose-100 bg-rose-50/40 p-3 space-y-2">
+                  {CHECKLIST_LANGS.map(l => (
+                    <div key={l.code} className="flex items-center gap-2">
+                      <span className="w-16 flex-shrink-0 text-[11px] font-semibold text-gray-500 uppercase">{l.label}</span>
+                      <input
+                        value={translations[l.code]?.[i] ?? ''}
+                        onChange={e => setTr(l.code, i, e.target.value)}
+                        placeholder={item || 'Tradução…'}
+                        className="flex-1 min-w-0 px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-rose-400"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Btn variant="outline" size="sm" onClick={addItem}>
+        <Plus className="h-3.5 w-3.5" /> Adicionar item
+      </Btn>
+    </div>
+  )
+}
+
 // ── Photos Tab ───────────────────────────────────────────────
 
-const EMPTY_CAT = { title: '', description: '', max_photos: 10, is_ai_simulation: false, instruction_items: [] as InstructionItem[] }
+const EMPTY_CAT = { title: '', description: '', max_photos: 10, is_ai_simulation: false, instruction_items: [] as InstructionItem[], checklist_items: [] as string[] }
 
 function PhotosTab({ planId }: { planId: string }) {
   const [categories, setCategories] = useState<PhotoCategory[]>([])
@@ -876,11 +1025,13 @@ function PhotosTab({ planId }: { planId: string }) {
       alert('Este plano já possui uma categoria de Foto para Simulação (IA). Edite a existente ou desmarque a outra antes.')
       return
     }
+    const packed = compactChecklist(newCat.checklist_items, newCat.instruction_items as any[])
     await adminService.savePhotoCategory({
       plan_id: planId,
       title: newCat.title,
       description: newCat.description || null,
-      instruction_items: newCat.instruction_items,
+      instruction_items: packed.instruction_items,
+      checklist_items: packed.checklist_items,
       max_photos: newCat.max_photos,
       is_ai_simulation: newCat.is_ai_simulation,
       order_index: categories.length
@@ -897,11 +1048,23 @@ function PhotosTab({ planId }: { planId: string }) {
       description: cat.description || '',
       max_photos: cat.max_photos,
       is_ai_simulation: !!(cat as any).is_ai_simulation,
-      instruction_items: migrateToInstructionItems(
-        (cat as any).video_url,
-        (cat as any).instructions,
-        (cat as any).instruction_items
-      )
+      checklist_items: ((cat as any).checklist_items as string[] | null) ?? [],
+      instruction_items: (() => {
+        const migrated = migrateToInstructionItems(
+          (cat as any).video_url,
+          (cat as any).instructions,
+          (cat as any).instruction_items
+        )
+        // Garante que a foto de exemplo e as traduções do checklist não se percam
+        // se o migrate filtrar tipos desconhecidos
+        const raw = ((cat as any).instruction_items ?? []) as any[]
+        const out: any[] = [...migrated]
+        ;['example', CHECKLIST_I18N_TYPE].forEach(type => {
+          const found = raw.find(i => i?.type === type)
+          if (found && !out.some(i => i?.type === type)) out.push(found)
+        })
+        return out
+      })()
     })
   }
 
@@ -912,10 +1075,12 @@ function PhotosTab({ planId }: { planId: string }) {
       alert('Este plano já possui outra categoria de Foto para Simulação (IA). Desmarque a outra antes.')
       return
     }
+    const packed = compactChecklist((editCat.checklist_items ?? []) as string[], editCat.instruction_items as any[])
     await adminService.updatePhotoCategory(editingId, {
       title: editCat.title,
       description: editCat.description || null,
-      instruction_items: editCat.instruction_items,
+      instruction_items: packed.instruction_items,
+      checklist_items: packed.checklist_items,
       max_photos: editCat.max_photos,
       is_ai_simulation: editCat.is_ai_simulation,
     } as any)
@@ -985,13 +1150,18 @@ function PhotosTab({ planId }: { planId: string }) {
                     const texts = items.filter(it => it.type === 'text')
                     const videos = items.filter(it => it.type === 'video')
                     const images = items.filter(it => it.type === 'image')
+                    const hasExample = ((cat as any).instruction_items ?? []).some((it: any) => it?.type === 'example')
                     return (
                       <>
                         <div className="flex flex-wrap gap-3 mt-2">
                           <span className="text-xs text-gray-400">📸 Máx. {cat.max_photos} foto{cat.max_photos !== 1 ? 's' : ''}</span>
                           {videos.length > 0 && <span className="text-xs text-blue-500">▶ {videos.length} vídeo{videos.length !== 1 ? 's' : ''}</span>}
                           {images.length > 0 && <span className="text-xs text-purple-500">🖼 {images.length} imagem{images.length !== 1 ? 'ns' : ''}</span>}
+                          {hasExample && <span className="text-xs text-pink-500">📷 foto de exemplo</span>}
                           {texts.length > 0 && <span className="text-xs text-gray-400">📋 {texts.length} instrução{texts.length !== 1 ? 'ões' : ''}</span>}
+                          {((cat as any).checklist_items?.length ?? 0) > 0 && (
+                            <span className="text-xs text-emerald-600">✅ {(cat as any).checklist_items.length} item{(cat as any).checklist_items.length !== 1 ? 's' : ''} no checklist</span>
+                          )}
                         </div>
                         {texts.length > 0 && (
                           <ul className="mt-2 space-y-0.5">
@@ -1029,6 +1199,83 @@ function PhotosTab({ planId }: { planId: string }) {
   )
 }
 
+// ── Foto de exemplo da categoria ─────────────────────────────
+//
+// Fica guardada em `instruction_items` como um item `type: 'example'` (sem
+// mudança de banco). No portal aparece ao lado da imagem/PDF de instrução e
+// é a foto usada na comparação depois que a cliente envia a dela.
+function ExamplePhotoField({ item, onChange, onUpload }: {
+  item: InstructionItem | null
+  onChange: (item: InstructionItem | null) => void
+  onUpload: (file: File) => Promise<{ storagePath: string; url: string }>
+}) {
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const src: string = (item as any)?.imageUrl || (item as any)?.content || ''
+
+  const handleFile = async (file: File | undefined) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) { setError('Escolha um arquivo de imagem (JPG, PNG...).'); return }
+    setError('')
+    setUploading(true)
+    try {
+      const { storagePath, url } = await onUpload(file)
+      onChange({
+        id: `example-${Date.now()}`, type: 'example', content: url, imageUrl: url, storagePath, fileName: file.name,
+      } as unknown as InstructionItem)
+    } catch (e: any) {
+      setError(e?.message || 'Falha ao enviar a imagem.')
+    } finally {
+      setUploading(false)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+      <div>
+        <h4 className="font-semibold text-gray-900 text-sm">Foto de exemplo (opcional)</h4>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Aparece ao lado da imagem/PDF de instrução para a cliente e é a foto usada na comparação depois que ela envia a dela.
+        </p>
+      </div>
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={e => handleFile(e.target.files?.[0])}
+      />
+
+      {src ? (
+        <div className="flex items-center gap-3">
+          <img src={src} alt="Exemplo" className="w-24 aspect-[3/4] object-contain rounded-lg border border-gray-200 bg-gray-50 flex-shrink-0" />
+          <div className="flex flex-col sm:flex-row gap-2 min-w-0">
+            <button type="button" onClick={() => inputRef.current?.click()} disabled={uploading}
+              className="px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              {uploading ? 'Enviando…' : 'Trocar foto'}
+            </button>
+            <button type="button" onClick={() => onChange(null)} disabled={uploading}
+              className="px-3 py-2 rounded-lg border border-red-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50">
+              Remover
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => inputRef.current?.click()} disabled={uploading}
+          className="w-full flex flex-col items-center justify-center gap-1.5 py-6 rounded-xl border-2 border-dashed border-gray-300 text-gray-500 hover:border-rose-300 hover:text-rose-500 transition-colors disabled:opacity-50">
+          <Image className="h-6 w-6" />
+          <span className="text-sm font-medium">{uploading ? 'Enviando…' : 'Adicionar foto de exemplo'}</span>
+        </button>
+      )}
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </div>
+  )
+}
+
 function CategoryForm({ title, data, onChange, onSave, onCancel }: {
   title: string
   data: any
@@ -1048,6 +1295,16 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
       .getPublicUrl(storagePath)
     return { storagePath, url: urlData.publicUrl }
   }
+
+  // A foto de exemplo vive em instruction_items (type 'example'), mas é
+  // editada num campo próprio — o editor de instruções só vê os demais itens.
+  const allItems: InstructionItem[] = data.instruction_items ?? []
+  const exampleItem = allItems.find(i => (i as any).type === 'example') ?? null
+  const i18nItem = allItems.find(i => (i as any).type === CHECKLIST_I18N_TYPE) ?? null
+  const otherItems = allItems.filter(i => (i as any).type !== 'example' && (i as any).type !== CHECKLIST_I18N_TYPE)
+  const checklistTranslations: Record<string, string[]> = (i18nItem as any)?.translations ?? {}
+  const compose = (others: InstructionItem[], ex: InstructionItem | null, i18n: InstructionItem | null): InstructionItem[] =>
+    [...others, ...(ex ? [ex] : []), ...(i18n ? [i18n] : [])]
 
   return (
     <div className="bg-white border border-rose-200 rounded-xl p-4 sm:p-6 space-y-4">
@@ -1095,9 +1352,29 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
 
       {/* ── Editor unificado: texto + vídeo YouTube + imagem ── */}
       <PhotoCategoryInstructionsEditor
-        items={data.instruction_items ?? []}
-        onChange={items => onChange({ ...data, instruction_items: items })}
+        items={otherItems}
+        onChange={items => onChange({ ...data, instruction_items: compose(items, exampleItem, i18nItem) })}
         onUpload={uploadFile}
+      />
+
+      {/* ── Foto de exemplo: ao lado da instrução e usada na comparação ── */}
+      <ExamplePhotoField
+        item={exampleItem}
+        onChange={ex => onChange({ ...data, instruction_items: compose(otherItems, ex, i18nItem) })}
+        onUpload={uploadFile}
+      />
+
+      {/* ── Checklist de confirmação: aparece na conferência, depois que a cliente escolhe a foto ── */}
+      <ChecklistItemsEditor
+        items={data.checklist_items ?? []}
+        translations={checklistTranslations}
+        onChange={(items, tr) => {
+          const hasTr = Object.values(tr).some(arr => arr.some(v => (v ?? '').trim()))
+          const nextI18n = hasTr
+            ? ({ id: 'checklist-i18n', type: CHECKLIST_I18N_TYPE, content: '', translations: tr } as unknown as InstructionItem)
+            : null
+          onChange({ ...data, checklist_items: items, instruction_items: compose(otherItems, exampleItem, nextI18n) })
+        }}
       />
 
       <div className="flex gap-2">

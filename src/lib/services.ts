@@ -92,6 +92,12 @@ export interface PhotoCategory {
   order_index: number
   /** Marca esta categoria como a etapa condicional "Foto IA" do fluxo. */
   is_ai_simulation?: boolean
+  /**
+   * Checklist opcional exibido num carrossel ANTES da cliente escolher a
+   * foto desta categoria — ela precisa confirmar cada item antes de anexar.
+   * NULL/[] = pula direto pro seletor de arquivo, sem carrossel.
+   */
+  checklist_items?: string[] | null
 }
 
 export interface Client {
@@ -459,6 +465,7 @@ export const adminService = {
           instructions: c.instructions ?? null,         // legado
           video_url: c.video_url ?? null,                // legado
           instruction_items: c.instruction_items ?? [],  // atual
+          checklist_items: c.checklist_items ?? null,    // checklist do carrossel pré-foto
           max_photos: c.max_photos,
           order_index: c.order_index,
           is_ai_simulation: !!c.is_ai_simulation,
