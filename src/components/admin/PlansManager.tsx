@@ -1095,6 +1095,22 @@ function PhotosTab({ planId }: { planId: string }) {
     load()
   }
 
+  const handleMove = async (index: number, dir: -1 | 1) => {
+    const j = index + dir
+    if (j < 0 || j >= categories.length) return
+    const prev = categories
+    const next = [...categories]
+    ;[next[index], next[j]] = [next[j], next[index]]
+    // Atualiza na tela na hora; se o save falhar, volta a ordem anterior
+    setCategories(next.map((c, i) => ({ ...c, order_index: i })))
+    try {
+      await adminService.reorderPhotoCategories(next.map(c => c.id))
+    } catch (e) {
+      setCategories(prev)
+      alert('Não foi possível salvar a nova ordem. Tente novamente.')
+    }
+  }
+
   if (loading) return <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-rose-400 border-t-transparent rounded-full" /></div>
 
   return (
@@ -1118,7 +1134,7 @@ function PhotosTab({ planId }: { planId: string }) {
       )}
 
       {/* Lista de categorias */}
-      {categories.map(cat => (
+      {categories.map((cat, index) => (
         <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
           {editingId === cat.id ? (
             <CategoryForm
@@ -1179,6 +1195,26 @@ function PhotosTab({ planId }: { planId: string }) {
                   })()}
                 </div>
                 <div className="flex items-center gap-2 sm:ml-4 self-start">
+                  <div className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => handleMove(index, -1)}
+                      disabled={index === 0}
+                      title="Mover para cima"
+                      className="p-0.5 rounded hover:bg-gray-100 disabled:opacity-20 disabled:cursor-not-allowed"
+                    >
+                      <ChevronUp className="h-4 w-4 text-gray-500" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleMove(index, 1)}
+                      disabled={index === categories.length - 1}
+                      title="Mover para baixo"
+                      className="p-0.5 rounded hover:bg-gray-100 disabled:opacity-20 disabled:cursor-not-allowed"
+                    >
+                      <ChevronDown className="h-4 w-4 text-gray-500" />
+                    </button>
+                  </div>
                   <Btn variant="outline" size="sm" onClick={() => handleEdit(cat)}>
                     <Pencil className="h-3.5 w-3.5" /><span className="hidden sm:inline"> Editar</span>
                   </Btn>

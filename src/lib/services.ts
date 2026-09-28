@@ -563,6 +563,21 @@ export const adminService = {
     if (error) throw error
   },
 
+  /**
+   * Regrava order_index de todas as categorias na ordem recebida (0..N-1).
+   * Reescrever todas (e não só as duas trocadas) também conserta planos
+   * antigos onde o order_index ficou duplicado depois de excluir categorias.
+   */
+  async reorderPhotoCategories(orderedIds: string[]): Promise<void> {
+    const results = await Promise.all(
+      orderedIds.map((id, index) =>
+        supabase.from('plan_photo_categories').update({ order_index: index }).eq('id', id)
+      )
+    )
+    const failed = results.find(r => r.error)
+    if (failed?.error) throw failed.error
+  },
+
   // ---- Clients ----
   // ⚡ PERFORMANCE: lista explícita de colunas SEM iris_analysis.
   // A iris_analysis (JSONB com imagem em base64) chegou a 28 MB somados —
@@ -2175,6 +2190,15 @@ export const clientService = {
     if (data?.error) return null
 
     const portalData = data as ClientPortalData
+
+    // Garante a ordem das categorias definida pela admin (aba Fotos do plano),
+    // independente da ordem em que o RPC devolveu. Requer order_index no JSON.
+    if (Array.isArray(portalData?.photo_categories)) {
+      portalData.photo_categories = [...portalData.photo_categories].sort(
+        (a, b) => (a.order_index ?? 0) - (b.order_index ?? 0)
+      )
+    }
+
     if (!portalData?.client?.id) return portalData
 
     // Enriquecer com dados necessários pro fluxo de rejeição
