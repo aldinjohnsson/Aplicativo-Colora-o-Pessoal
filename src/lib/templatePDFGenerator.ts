@@ -16,6 +16,7 @@ import {
   pushGraphicsState, popGraphicsState, PDFOperator, PDFNumber,
 } from 'pdf-lib'
 import { supabase } from './supabase'
+import { pdfTemplateType, PDF_TEMPLATE_BASE_TYPE } from './pdfTemplateKey'
 
 // ─── Tipos públicos ──────────────────────────────────────────────────────────
 
@@ -288,6 +289,7 @@ const EMOJI_RE_TEST = /[\u{1F000}-\u{1FAFF}\u{2300}-\u{27BF}\u{FE00}-\u{FEFF}]/u
 
 export interface PdfTemplatePageConfig {
   blankPageIndex?: number  // índice 0-based da página em branco no template
+  language?: string        // idioma do dossiê (formata a data do rodapé)
 }
 
 interface ResolvedTemplatePages {
@@ -330,7 +332,7 @@ export async function generateStylePDF(
 
   const style = await resolveStyle(pdf, styleConfig)
 
-  const dateStr = new Date().toLocaleDateString('pt-BR', {
+  const dateStr = new Date().toLocaleDateString(pageConfig?.language || 'pt-BR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
   })
 
@@ -1331,9 +1333,43 @@ async function embedImage(pdf: PDFDocument, dataUrl: string): Promise<{ image: a
 
 // ─── Carregamento do template + settings ─────────────────────────────────────
 
+/**
+ * Lançado quando o dossiê é pedido num idioma que não tem PDF modelo próprio
+ * cadastrado em Configurações. A UI captura este erro e mostra um aviso
+ * amigável (modal) em vez de gerar o dossiê com a capa do idioma errado.
+ */
+export class MissingPdfTemplateError extends Error {
+  readonly language: string
+  constructor(language: string) {
+    super(`PDF modelo não cadastrado para o idioma ${language}.`)
+    this.name = 'MissingPdfTemplateError'
+    this.language = language
+  }
+}
+
+/**
+ * Checagem leve (não baixa o base64): existe PDF modelo para este idioma?
+ * pt-BR / idioma padrão sempre retorna true — quem valida esse é o próprio
+ * loadTemplateFromSettings (mensagem de "PDF modelo não configurado").
+ */
+export async function hasPdfTemplateForLanguage(language?: string): Promise<boolean> {
+  const langType = pdfTemplateType(language)
+  if (langType === PDF_TEMPLATE_BASE_TYPE) return true
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return true // sessão expirada: deixa o fluxo normal reportar o erro
+  const { data, error } = await supabase
+    .from('admin_content')
+    .select('type, fileName:content->>fileName')
+    .eq('admin_id', user.id)
+    .eq('type', langType)
+    .maybeSingle()
+  if (error) return true // na dúvida não bloqueia; o build valida de novo
+  return !!(data as any)?.fileName
+}
+
 interface LoadedTemplate { templateBytes: ArrayBuffer; style?: PdfStyleConfig; blankPageIndex?: number }
 
-async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
+async function loadTemplateFromSettings(language?: string): Promise<LoadedTemplate> {
   // IMPORTANTE: filtrar SEMPRE por admin_id.
   // Sem esse filtro o super_admin (policy USING true) enxerga todas as linhas
   // de todos os admins e .maybeSingle() lança "multiple rows returned" (409/PGRST116).
@@ -1347,11 +1383,24 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
     .maybeSingle()
   if (settingsErr) throw new Error('Erro ao carregar configurações: ' + settingsErr.message)
 
-  const { data: tplRow } = await supabase
-    .from('admin_content').select('content')
-    .eq('type', 'pdf_template')
-    .eq('admin_id', user.id)   // ← CORRIGIDO: filtro explícito por admin
-    .maybeSingle()
+  // Template por idioma: tenta 'pdf_template:<idioma>' e, se a admin não
+  // tiver enviado uma versão pra esse idioma, cai no 'pdf_template' padrão
+  // (o de português). Uma query só, com no máximo 2 rows (unique admin_id+type).
+  const langType = pdfTemplateType(language)
+  const types = langType === PDF_TEMPLATE_BASE_TYPE ? [PDF_TEMPLATE_BASE_TYPE] : [langType, PDF_TEMPLATE_BASE_TYPE]
+  const { data: tplRows } = await supabase
+    .from('admin_content').select('type, content')
+    .in('type', types)
+    .eq('admin_id', user.id)   // ← filtro explícito por admin
+  // Idioma diferente do padrão SEM versão própria → avisa em vez de cair
+  // silenciosamente no PDF de português.
+  if (langType !== PDF_TEMPLATE_BASE_TYPE) {
+    const own = tplRows?.find(r => r.type === langType)
+    if (!(own?.content as any)?.pdfTemplateBase64) throw new MissingPdfTemplateError(language ?? langType)
+  }
+  const tplRow = types
+    .map(t => tplRows?.find(r => r.type === t))
+    .find(r => !!(r?.content as any)?.pdfTemplateBase64) ?? null
 
   const tplContent = tplRow?.content as { pdfTemplateBase64?: string; blankPageIndex?: number } | null
   const settings   = settingsRow?.content as Record<string, any> | null
@@ -1369,6 +1418,7 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
   return {
     templateBytes: bytes.buffer,
     style: settings?.pdfStyle as PdfStyleConfig | undefined,
+    // blankPageIndex é do template que foi de fato usado (o do idioma ou o padrão)
     blankPageIndex: tplContent?.blankPageIndex,
   }
 }
@@ -1381,10 +1431,12 @@ async function loadTemplateFromSettings(): Promise<LoadedTemplate> {
 // Resultado" do chat IA no ClientsManager).
 
 export async function buildStylePdfBlob({
-  clientName, items, styleOverride, collageTitle,
-}: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig; collageTitle?: string }): Promise<Blob> {
-  const { templateBytes, style, blankPageIndex } = await loadTemplateFromSettings()
-  const pageConfig: PdfTemplatePageConfig = { blankPageIndex }
+  clientName, items, styleOverride, collageTitle, language,
+}: { clientName: string; items: PdfImageItem[]; styleOverride?: PdfStyleConfig; collageTitle?: string; language?: string }): Promise<Blob> {
+  // `language` escolhe o PDF modelo (capa/contracapa) daquele idioma; sem
+  // versão própria, usa o modelo padrão (pt-BR).
+  const { templateBytes, style, blankPageIndex } = await loadTemplateFromSettings(language)
+  const pageConfig: PdfTemplatePageConfig = { blankPageIndex, language }
   const pdfBytes = await generateStylePDF(templateBytes, clientName, items, styleOverride ?? style, collageTitle, pageConfig)
   return new Blob([pdfBytes], { type: 'application/pdf' })
 }

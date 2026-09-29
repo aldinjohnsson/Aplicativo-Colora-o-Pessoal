@@ -10,6 +10,7 @@ import { adminService, AdminUser } from '../../lib/services'
 import { billingService, type BillingProfile } from '../../lib/billingService'
 import { BillingMeter } from './billing/BillingMeter'
 import { LANGUAGES } from '../../lib/i18n'
+import { PDF_TEMPLATE_LANGUAGES, PDF_TEMPLATE_LANG_PREFIX, pdfTemplateType } from '../../lib/pdfTemplateKey'
 
 // ── Helper: clareia uma cor hex (usado na prévia do cabeçalho de e-mail) ────
 function lightenHex(hex: string, amount: number): string {
@@ -282,31 +283,39 @@ const settingsStorageService = {
   // contracapa). Só é definido quando o usuário escolhe explicitamente a
   // página no seletor visual (PdfPageSelector), preservando o comportamento
   // de todo template já existente.
-  async savePdfTemplate(base64: string, fileName: string, blankPageIndex?: number) {
+  async savePdfTemplate(base64: string, fileName: string, blankPageIndex?: number, language?: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
     const content: Record<string, any> = { pdfTemplateBase64: base64, fileName }
     if (typeof blankPageIndex === 'number') content.blankPageIndex = blankPageIndex
-    await saveOrUpdate('pdf_template', content, user.id)
+    // language omitido/pt-BR → row legado 'pdf_template'; outros → 'pdf_template:<idioma>'
+    await saveOrUpdate(pdfTemplateType(language), content, user.id)
   },
 
-  async deletePdfTemplate() {
+  async deletePdfTemplate(language?: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada')
-    await deleteRow('pdf_template', user.id)
+    await deleteRow(pdfTemplateType(language), user.id)
   },
 
   // Atualiza só o índice da página em branco, sem reenviar o base64 do PDF
   // (que já está salvo). Usado quando o usuário troca a seleção no
   // PdfPageSelector sem trocar o arquivo.
-  async updatePdfTemplateBlankPageIndex(blankPageIndex: number) {
+  async updatePdfTemplateBlankPageIndex(blankPageIndex: number, language?: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
-    const { data: row } = await supabase
+    // ⚠ Antes o erro do SELECT era ignorado: se a leitura do row (com MBs de
+    // base64) falhasse/estourasse timeout, `current` virava {} e o upsert
+    // gravava só { blankPageIndex }, apagando o PDF — ou o save falhava sem
+    // ninguém perceber e a página "voltava pro padrão". Agora falha alto.
+    const type = pdfTemplateType(language)
+    const { data: row, error: readErr } = await supabase
       .from('admin_content').select('content')
-      .eq('admin_id', user.id).eq('type', 'pdf_template').maybeSingle()
-    const current = (row?.content as Record<string, any>) ?? {}
-    await saveOrUpdate('pdf_template', { ...current, blankPageIndex }, user.id)
+      .eq('admin_id', user.id).eq('type', type).maybeSingle()
+    if (readErr) throw new Error('Não foi possível ler o PDF modelo: ' + readErr.message)
+    const current = row?.content as Record<string, any> | undefined
+    if (!current?.pdfTemplateBase64) throw new Error('PDF modelo não encontrado para este idioma.')
+    await saveOrUpdate(type, { ...current, blankPageIndex }, user.id)
   },
 
   async getSettings(): Promise<AppSettings> {
@@ -762,6 +771,50 @@ function PdfTemplateSection({
   const [lastUploadedBase64, setLastUploadedBase64] = useState<string | null>(null)
   const [fetchingPreview, setFetchingPreview] = useState(false)
 
+  // ── Versões por idioma ────────────────────────────────────────────────
+  // pt-BR usa as props/handlers de sempre (row 'pdf_template'). Os demais
+  // idiomas são gerenciados aqui dentro (rows 'pdf_template:<idioma>'), então
+  // os 3 pontos de uso do componente não precisam mudar. Idioma sem versão
+  // própria cai no PDF de português na hora de gerar o dossiê.
+  const [activeLang, setActiveLang] = useState<string>('pt-BR')
+  const [extra, setExtra] = useState<Record<string, { fileName: string; blankPageIndex?: number }>>({})
+  const isDefault = activeLang === 'pt-BR'
+  const shownFileName = isDefault ? currentFileName : (extra[activeLang]?.fileName || '')
+  const shownBlankIdx = isDefault ? currentBlankPageIndex : extra[activeLang]?.blankPageIndex
+  const activeLangInfo = PDF_TEMPLATE_LANGUAGES.find(l => l.code === activeLang)
+
+  // Só metadados (fileName / blankPageIndex) — nunca baixa o base64.
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
+        const { data } = await supabase
+          .from('admin_content')
+          .select('type, fileName:content->>fileName, blankPageIndex:content->blankPageIndex')
+          .eq('admin_id', user.id)
+          .like('type', `${PDF_TEMPLATE_LANG_PREFIX}%`)
+        if (!alive || !data) return
+        const map: Record<string, { fileName: string; blankPageIndex?: number }> = {}
+        for (const r of data as any[]) {
+          if (typeof r.type !== 'string' || !r.type.startsWith(PDF_TEMPLATE_LANG_PREFIX)) continue
+          map[r.type.slice(PDF_TEMPLATE_LANG_PREFIX.length)] = {
+            fileName: r.fileName || '',
+            blankPageIndex: typeof r.blankPageIndex === 'number' ? r.blankPageIndex : undefined,
+          }
+        }
+        setExtra(map)
+      } catch (err) {
+        console.error('[PdfTemplateSection] falha ao carregar versões por idioma:', err)
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+
+  // Trocou de idioma: o base64 em memória era do idioma anterior.
+  useEffect(() => { setLastUploadedBase64(null); setStatus('idle') }, [activeLang])
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || file.type !== 'application/pdf') return
@@ -776,7 +829,12 @@ function PdfTemplateSection({
       })
       // onSave agora é async (salva no Supabase). Sem await, o spinner some
       // antes do save real terminar e erros caem em unhandled-rejection.
-      await onSave(base64, file.name)
+      if (isDefault) {
+        await onSave(base64, file.name)
+      } else {
+        await settingsStorageService.savePdfTemplate(base64, file.name, undefined, activeLang)
+        setExtra(prev => ({ ...prev, [activeLang]: { fileName: file.name } }))
+      }
       setLastUploadedBase64(base64)
       setStatus('saved')
       setTimeout(() => setStatus('idle'), 3000)
@@ -791,7 +849,12 @@ function PdfTemplateSection({
     if (!confirm('Remover o PDF modelo?')) return
     setSaving(true)
     try {
-      await onSave('', '')
+      if (isDefault) {
+        await onSave('', '')
+      } else {
+        await settingsStorageService.deletePdfTemplate(activeLang)
+        setExtra(prev => { const n = { ...prev }; delete n[activeLang]; return n })
+      }
       setLastUploadedBase64(null)
     } catch (err: any) {
       console.error('[PdfTemplateSection] delete falhou:', err)
@@ -808,9 +871,10 @@ function PdfTemplateSection({
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Sessão expirada. Faça login novamente.')
-      const { data } = await supabase
+      const { data, error: fetchErr } = await supabase
         .from('admin_content').select('content')
-        .eq('admin_id', user.id).eq('type', 'pdf_template').maybeSingle()
+        .eq('admin_id', user.id).eq('type', pdfTemplateType(activeLang)).maybeSingle()
+      if (fetchErr) throw new Error(fetchErr.message)
       const base64 = (data?.content as any)?.pdfTemplateBase64
       if (!base64) throw new Error('PDF modelo não encontrado.')
       setLastUploadedBase64(base64)
@@ -839,23 +903,54 @@ function PdfTemplateSection({
 
       <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
-          Envie um PDF com a sua capa, contracapa e (opcionalmente) quantas páginas quiser entre elas. Por padrão usamos a <strong>2ª página</strong> como "página em branco" — onde a IA insere o conteúdo do dossiê — mas você pode escolher outra qualquer depois do upload.
+          Envie um PDF com a sua capa, contracapa e (opcionalmente) quantas páginas quiser entre elas. Por padrão usamos a <strong>2ª página</strong> como "página em branco" onde a IA insere o conteúdo do dossiê — mas você pode escolher outra qualquer depois do upload.
         </p>
 
-        {currentFileName ? (
+        {/* Uma versão do PDF modelo (capa/contracapa) por idioma */}
+        <div className="flex flex-wrap gap-2">
+          {PDF_TEMPLATE_LANGUAGES.map(l => {
+            const has = l.code === 'pt-BR' ? !!currentFileName : !!extra[l.code]?.fileName
+            const active = l.code === activeLang
+            return (
+              <button
+                key={l.code}
+                type="button"
+                onClick={() => setActiveLang(l.code)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
+                style={{
+                  background: active ? `color-mix(in srgb, #d946ef 18%, ${theme.surface2})` : theme.surface,
+                  border: `1px solid ${active ? '#d946ef' : theme.border}`,
+                  color: active ? theme.text : theme.text2,
+                }}
+              >
+                <span>{l.flag}</span>{l.label}
+                {has && <CheckCircle className="h-3 w-3 text-green-600" />}
+              </button>
+            )
+          })}
+        </div>
+        <p className="text-xs" style={{ color: theme.text3 }}>
+          {isDefault
+            ? 'Este é o modelo padrão: também é usado nos idiomas que não tiverem uma versão própria.'
+            : shownFileName
+              ? `Ao gerar o dossiê em ${activeLangInfo?.label}, a capa e a contracapa vêm deste PDF.`
+              : `Sem versão em ${activeLangInfo?.label}: o dossiê nesse idioma usa o PDF de Português.`}
+        </p>
+
+        {shownFileName ? (
           <div className="flex flex-wrap items-center gap-3 rounded-xl p-4" style={{ background: `color-mix(in srgb, #d946ef 10%, ${theme.surface2})`, border: `1px solid color-mix(in srgb, #d946ef 30%, ${theme.border})` }}>
             <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `color-mix(in srgb, #d946ef 18%, ${theme.surface2})` }}>
               <FileText className="h-5 w-5" style={{ color: '#d946ef' }} />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium" style={{ color: theme.text }}>PDF modelo carregado</p>
-              <p className="text-xs truncate" style={{ color: theme.text2 }}>{currentFileName}</p>
+              <p className="text-xs truncate" style={{ color: theme.text2 }}>{shownFileName}</p>
               <p className="text-xs mt-0.5" style={{ color: theme.text3 }}>
-                Página em branco: {typeof currentBlankPageIndex === 'number' ? `página ${currentBlankPageIndex + 1}` : 'página 2 (padrão)'}
+                Página em branco: {typeof shownBlankIdx === 'number' ? `página ${shownBlankIdx + 1}` : 'página 2 (padrão)'}
               </p>
             </div>
             <div className="flex gap-2 flex-shrink-0 ml-auto">
-              {onSelectBlankPageIndex && (
+              {(onSelectBlankPageIndex || !isDefault) && (
                 <button
                   onClick={handleOpenSelector}
                   disabled={fetchingPreview}
@@ -905,12 +1000,17 @@ function PdfTemplateSection({
       {showSelector && lastUploadedBase64 && (
         <PdfPageSelector
           pdfBase64={lastUploadedBase64}
-          selectedIndex={currentBlankPageIndex}
+          selectedIndex={shownBlankIdx}
           onClose={() => setShowSelector(false)}
           onSelect={async (index) => {
             setShowSelector(false)
             try {
-              await onSelectBlankPageIndex?.(index)
+              if (isDefault) {
+                await onSelectBlankPageIndex?.(index)
+              } else {
+                await settingsStorageService.updatePdfTemplateBlankPageIndex(index, activeLang)
+                setExtra(prev => ({ ...prev, [activeLang]: { fileName: prev[activeLang]?.fileName || '', blankPageIndex: index } }))
+              }
             } catch (err: any) {
               console.error('[PdfTemplateSection] falha ao salvar página escolhida:', err)
               alert('Erro ao salvar a página escolhida: ' + (err?.message || err))

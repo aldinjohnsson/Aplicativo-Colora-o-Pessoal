@@ -19,7 +19,7 @@ import { supabase } from '../../lib/supabase'
 import { billingService } from '../../lib/billingService'
 import { driveStorage } from '../../lib/driveStorage'
 import { chatStorage } from '../../lib/chatStorage'
-import { buildStylePdfBlob, ItemLayout } from '../../lib/templatePDFGenerator'
+import { buildStylePdfBlob, hasPdfTemplateForLanguage, MissingPdfTemplateError, ItemLayout } from '../../lib/templatePDFGenerator'
 
 // Carrega a foto pra base64 preferindo o proxy autenticado do Drive (evita
 // CORS em drive.google.com/thumbnail). Cai pra fetch direto da URL quando
@@ -412,6 +412,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   // final do PDF. Valor `null` = nada em andamento (estado limpo).
   const [pdfProgress, setPdfProgress] = useState<{ done: number; total: number } | null>(null)
   const [pdfBlob, setPdfBlob] = useState<Blob | null>(null)
+  // Idioma (code) sem PDF modelo cadastrado → abre o modal de aviso.
+  const [missingTemplateLang, setMissingTemplateLang] = useState<string | null>(null)
   const [pdfSaving, setPdfSaving] = useState(false)
   const [pdfSaveSuccess, setPdfSaveSuccess] = useState(false)
   const [pdfSaveError, setPdfSaveError] = useState<string | null>(null)
@@ -1164,6 +1166,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   // Se o popup for bloqueado pelo browser, cai pra download direto (mesmo
   // efeito visual: cliente vê o arquivo no seu computador).
   const handleGeneratePdf = async () => {
+    // Antes de gastar créditos de tradução: confere se existe PDF modelo
+    // (capa/contracapa) cadastrado para o idioma escolhido.
+    if (!(await hasPdfTemplateForLanguage(selectedLanguage))) {
+      setMissingTemplateLang(selectedLanguage)
+      return
+    }
     setPdfGenerating(true)
     setPdfSaveSuccess(false)
     setPdfSaveError(null)
@@ -1184,7 +1192,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           if (apiKey) collageTitle = await translateText('Simulações', selectedLanguage, apiKey)
         } catch {}
       }
-      const blob = await buildStylePdfBlob({ clientName, items: validItems, collageTitle })
+      const blob = await buildStylePdfBlob({ clientName, items: validItems, collageTitle, language: selectedLanguage })
       // Última unidade: PDF montado.
       setPdfProgress(p => p ? { ...p, done: p.total } : p)
       setPdfBlob(blob)
@@ -1200,6 +1208,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         document.body.removeChild(a)
       }
     } catch (e: any) {
+      if (e instanceof MissingPdfTemplateError) { setMissingTemplateLang(e.language); return }
       alert('Erro ao gerar PDF: ' + e.message)
     } finally {
       setPdfGenerating(false)
@@ -2118,6 +2127,41 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       </div>
 
       {/* ── Lightbox ─────────────────────────────────────────────────── */}
+      {missingTemplateLang && (() => {
+        const langLabel = SUPPORTED_LANGUAGES.find(l => l.code === missingTemplateLang)?.label ?? missingTemplateLang
+        const isAdmin = !!onSavePdf // hoje só o ClientsManager (painel admin) passa onSavePdf
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setMissingTemplateLang(null)}>
+            <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 text-center" onClick={e => e.stopPropagation()}>
+              <div className="mx-auto mb-4 w-12 h-12 rounded-full bg-violet-100 flex items-center justify-center">
+                <AlertCircle className="h-6 w-6 text-violet-600" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">Falta o PDF modelo em {langLabel}</h3>
+              <p className="mt-2 text-sm text-gray-600">
+                Para gerar o dossiê neste idioma, cadastre um PDF modelo (capa e contracapa) em {langLabel}.
+                {isAdmin
+                  ? ' Vá em Configurações → PDF Modelo para dossiê capilar, escolha o idioma e envie o arquivo.'
+                  : ' Peça à profissional responsável para cadastrar esse modelo.'}
+              </p>
+              <div className="mt-5 flex flex-col-reverse sm:flex-row gap-2 sm:justify-center">
+                <button onClick={() => setMissingTemplateLang(null)} className="px-4 py-2 rounded-xl text-sm font-medium border border-gray-200 text-gray-600 hover:bg-gray-50">
+                  Entendi
+                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => { setMissingTemplateLang(null); window.open('/admin/settings', '_blank') }}
+                    className="px-4 py-2 rounded-xl text-sm font-medium text-white"
+                    style={{ background: 'linear-gradient(135deg, #d946ef, #ec4899)' }}
+                  >
+                    Ir para Configurações
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {lightbox && (
         <ImageLightbox
           src={lightbox.src}
