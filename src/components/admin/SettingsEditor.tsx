@@ -304,18 +304,15 @@ const settingsStorageService = {
   async updatePdfTemplateBlankPageIndex(blankPageIndex: number, language?: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Sessão expirada. Faça login novamente.')
-    // ⚠ Antes o erro do SELECT era ignorado: se a leitura do row (com MBs de
-    // base64) falhasse/estourasse timeout, `current` virava {} e o upsert
-    // gravava só { blankPageIndex }, apagando o PDF — ou o save falhava sem
-    // ninguém perceber e a página "voltava pro padrão". Agora falha alto.
-    const type = pdfTemplateType(language)
-    const { data: row, error: readErr } = await supabase
-      .from('admin_content').select('content')
-      .eq('admin_id', user.id).eq('type', type).maybeSingle()
-    if (readErr) throw new Error('Não foi possível ler o PDF modelo: ' + readErr.message)
-    const current = row?.content as Record<string, any> | undefined
-    if (!current?.pdfTemplateBase64) throw new Error('PDF modelo não encontrado para este idioma.')
-    await saveOrUpdate(type, { ...current, blankPageIndex }, user.id)
+    // Atualiza só o campo blankPageIndex DENTRO do banco (jsonb_set via RPC).
+    // Antes: baixava o row inteiro (MBs de base64) e reenviava num upsert →
+    // estourava "statement timeout". Agora nenhum base64 trafega pela rede.
+    // Requer a função SQL public.set_pdf_template_blank_page.
+    const { error } = await supabase.rpc('set_pdf_template_blank_page', {
+      p_type: pdfTemplateType(language),
+      p_index: blankPageIndex,
+    })
+    if (error) throw new Error(error.message)
   },
 
   async getSettings(): Promise<AppSettings> {
@@ -370,11 +367,11 @@ const settingsStorageService = {
           .eq('admin_id', adminId ?? '').eq('type', 'settings').maybeSingle(),
         supabase.from('admin_content').select('content')
           .eq('admin_id', adminId ?? '').eq('type', 'api_keys').maybeSingle(),
-        supabase.from('admin_content').select('content')
+        supabase.from('admin_content').select('fileName:content->>fileName, blankPageIndex:content->blankPageIndex')
           .eq('admin_id', adminId ?? '').eq('type', 'pdf_template').maybeSingle(),
-        supabase.from('admin_content').select('content')
+        supabase.from('admin_content').select('fileName:content->>fileName')
           .eq('admin_id', adminId ?? '').eq('type', 'ai_composition_cover').maybeSingle(),
-        supabase.from('admin_content').select('content')
+        supabase.from('admin_content').select('fileName:content->>fileName')
           .eq('admin_id', adminId ?? '').eq('type', 'ai_composition_final').maybeSingle(),
         supabase.from('admin_content').select('content')
           .eq('admin_id', adminId ?? '').eq('type', 'global_email_settings').maybeSingle(),
@@ -402,12 +399,12 @@ const settingsStorageService = {
         aiCompositionCoverBase64:   '',
         aiCompositionFinalBase64:   '',
         // fileName de cada PDF vem do seu row próprio, com fallback legado no row settings
-        pdfTemplateFileName:        (pdfTemplateRow?.content as any)?.fileName        ?? (s as any)?.pdfTemplateFileName        ?? '',
+        pdfTemplateFileName:        (pdfTemplateRow as any)?.fileName        ?? (s as any)?.pdfTemplateFileName        ?? '',
         // blankPageIndex só existe no row próprio (feature nova) — sem fallback legado,
         // pois sua ausência É o comportamento legado (default de 3 páginas fixas).
-        pdfTemplateBlankPageIndex:  (pdfTemplateRow?.content as any)?.blankPageIndex  ?? undefined,
-        aiCompositionCoverFileName: (coverRow?.content        as any)?.fileName        ?? (s as any)?.aiCompositionCoverFileName ?? '',
-        aiCompositionFinalFileName: (finalRow?.content        as any)?.fileName        ?? (s as any)?.aiCompositionFinalFileName ?? '',
+        pdfTemplateBlankPageIndex:  (pdfTemplateRow as any)?.blankPageIndex  ?? undefined,
+        aiCompositionCoverFileName: (coverRow as any)?.fileName        ?? (s as any)?.aiCompositionCoverFileName ?? '',
+        aiCompositionFinalFileName: (finalRow as any)?.fileName        ?? (s as any)?.aiCompositionFinalFileName ?? '',
       }
     } catch (error) {
       console.error('Erro ao carregar configurações:', error)
@@ -903,7 +900,7 @@ function PdfTemplateSection({
 
       <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
         <p className="text-sm" style={{ color: theme.text2 }}>
-          Envie um PDF com a sua capa, contracapa e (opcionalmente) quantas páginas quiser entre elas. Por padrão usamos a <strong>2ª página</strong> como "página em branco" onde a IA insere o conteúdo do dossiê — mas você pode escolher outra qualquer depois do upload.
+          Envie um PDF com a sua capa, contracapa e (opcionalmente) quantas páginas quiser entre elas. Por padrão usamos a <strong>2ª página</strong> como "página em branco" onde a IA insere o conteúdo do dossiê mas você pode escolher outra qualquer depois do upload.
         </p>
 
         {/* Uma versão do PDF modelo (capa/contracapa) por idioma */}
@@ -1473,9 +1470,9 @@ export default function SettingsEditor() {
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'settings').maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'api_keys').maybeSingle(),
         supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'global_email_settings').maybeSingle(),
-        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'pdf_template').maybeSingle(),
-        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'ai_composition_cover').maybeSingle(),
-        supabase.from('admin_content').select('content').eq('admin_id', adminId).eq('type', 'ai_composition_final').maybeSingle(),
+        supabase.from('admin_content').select('fileName:content->>fileName, blankPageIndex:content->blankPageIndex').eq('admin_id', adminId).eq('type', 'pdf_template').maybeSingle(),
+        supabase.from('admin_content').select('fileName:content->>fileName').eq('admin_id', adminId).eq('type', 'ai_composition_cover').maybeSingle(),
+        supabase.from('admin_content').select('fileName:content->>fileName').eq('admin_id', adminId).eq('type', 'ai_composition_final').maybeSingle(),
       ])
 
       const role = meRow?.role as AdminUser['role'] | undefined
@@ -1501,9 +1498,10 @@ export default function SettingsEditor() {
         aiCompositionCoverBase64:   '',
         aiCompositionFinalBase64:   '',
         // pdfTemplateFileName vem do row pdf_template (nao do row settings)
-        pdfTemplateFileName:        (pdfTemplateRow?.content as any)?.fileName ?? (s as any)?.pdfTemplateFileName ?? '',
-        aiCompositionCoverFileName: (coverRow?.content as any)?.fileName ?? (s as any)?.aiCompositionCoverFileName ?? '',
-        aiCompositionFinalFileName: (finalRow?.content as any)?.fileName ?? (s as any)?.aiCompositionFinalFileName ?? '',
+        pdfTemplateFileName:        (pdfTemplateRow as any)?.fileName ?? (s as any)?.pdfTemplateFileName ?? '',
+        pdfTemplateBlankPageIndex:  (pdfTemplateRow as any)?.blankPageIndex ?? undefined,
+        aiCompositionCoverFileName: (coverRow as any)?.fileName ?? (s as any)?.aiCompositionCoverFileName ?? '',
+        aiCompositionFinalFileName: (finalRow as any)?.fileName ?? (s as any)?.aiCompositionFinalFileName ?? '',
       })
 
       // Carrega globalEmail se o row existir — não depende do role para evitar
