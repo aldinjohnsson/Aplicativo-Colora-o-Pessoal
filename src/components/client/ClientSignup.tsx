@@ -125,6 +125,9 @@ function ClientSignupInner({
   const [birthDate, setBirthDate] = useState('')
   const [countryCode, setCountryCode] = useState(countryOptions[0]?.code || 'BR')
   const [whatsappOptIn, setWhatsappOptIn] = useState(true)
+  // Consentimento de MARKETING (ofertas/promoções) — separado do opt-in de avisos
+  // da análise e SEMPRE desmarcado por padrão: só vira true por ação da cliente.
+  const [whatsappMarketingOptIn, setWhatsappMarketingOptIn] = useState(false)
   const [clientIp, setClientIp] = useState('...')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
@@ -240,6 +243,9 @@ function ClientSignupInner({
         p_birth_date: birthDate,
         p_contract_data: contractData,
         p_whatsapp_opt_in: reusedWhatsappOptIn,
+        // Marketing NÃO é reaproveitado do cadastro anterior: aqui a cliente não
+        // vê o checkbox, então não há consentimento novo pra registrar.
+        p_whatsapp_marketing_opt_in: false,
       })
 
       if (error) throw error
@@ -349,6 +355,8 @@ function ClientSignupInner({
         planName: plan?.name,
         whatsappOptIn,
         whatsappOptInAt: whatsappOptIn ? new Date().toISOString() : null,
+        whatsappMarketingOptIn,
+        whatsappMarketingOptInAt: whatsappMarketingOptIn ? new Date().toISOString() : null,
       }
 
       const { data, error } = await supabase.rpc('register_client_from_plan', {
@@ -359,6 +367,7 @@ function ClientSignupInner({
         p_birth_date: birthDate,
         p_contract_data: contractData,
         p_whatsapp_opt_in: whatsappOptIn,
+        p_whatsapp_marketing_opt_in: whatsappMarketingOptIn,
       })
 
       if (error) throw error
@@ -776,6 +785,17 @@ function ClientSignupInner({
                         />
                         <span className="text-xs text-gray-500 leading-relaxed">
                           {t('signup.whatsappOptIn')}
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2 mt-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={whatsappMarketingOptIn}
+                          onChange={e => setWhatsappMarketingOptIn(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 accent-[var(--client-accent)] flex-shrink-0"
+                        />
+                        <span className="text-xs text-gray-500 leading-relaxed">
+                          {t('signup.whatsappMarketingOptIn')}
                         </span>
                       </label>
                     </div>
