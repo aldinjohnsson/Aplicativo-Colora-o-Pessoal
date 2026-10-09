@@ -292,27 +292,41 @@ function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string
   const { t } = useTranslation()
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState(false)
+  // Fallback: se o fetch()+blob falhar (extensão/bloqueador, cache corrompido do
+  // Chrome desktop, rede), deixamos o próprio <audio> streamar a URL do proxy.
+  const [direct, setDirect] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     let created: string | null = null
+    setBlobUrl(null); setLoadErr(false); setDirect(false)
+
+    const fetchBlob = async (attempt: number): Promise<Blob> => {
+      // 1ª tentativa ignora o cache HTTP; as seguintes ainda mudam a URL
+      // (cache-bust) pra descartar qualquer entrada ruim já gravada no Chrome.
+      const sep = audioSrc.includes('?') ? '&' : '?'
+      const url = attempt === 0 ? audioSrc : `${audioSrc}${sep}_t=${Date.now()}`
+      const res = await fetch(url, { cache: 'no-store' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.blob()
+    }
+
     ;(async () => {
-      try {
-        const res = await fetch(audioSrc)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const raw = await res.blob()
+      let raw: Blob | null = null
+      for (let attempt = 0; attempt < 2 && !raw; attempt++) {
+        try { raw = await fetchBlob(attempt) } catch { /* tenta de novo / cai no fallback */ }
         if (cancelled) return
-        // Reembrulha os bytes forçando um MIME de áudio derivado da extensão.
-        // Sem isso, quando o proxy devolve Content-Type genérico, o Chrome se
-        // recusa a tocar o blob: URL (erro de decode); o Safari toca mesmo assim.
-        const mime = fileName ? audioMimeFromName(fileName) : (raw.type || 'audio/mpeg')
-        const typed = raw.type === mime ? raw : new Blob([raw], { type: mime })
-        created = URL.createObjectURL(typed)
-        setBlobUrl(created)
-      } catch {
-        if (!cancelled) setLoadErr(true)
       }
+      if (!raw) { setDirect(true); return }
+      // Reembrulha os bytes forçando um MIME de áudio derivado da extensão.
+      // Sem isso, quando o proxy devolve Content-Type genérico, o Chrome se
+      // recusa a tocar o blob: URL (erro de decode); o Safari toca mesmo assim.
+      const mime = fileName ? audioMimeFromName(fileName) : (raw.type || 'audio/mpeg')
+      const typed = raw.type === mime ? raw : new Blob([raw], { type: mime })
+      created = URL.createObjectURL(typed)
+      setBlobUrl(created)
     })()
+
     return () => {
       cancelled = true
       if (created) URL.revokeObjectURL(created)
@@ -324,6 +338,16 @@ function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string
       <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /> {t('portal.result.audioLoadError')}
     </p>
   )
+  if (direct) return (
+    <audio
+      src={audioSrc}
+      controls
+      preload="metadata"
+      onError={() => setLoadErr(true)}
+      className={className ?? 'w-full rounded-xl'}
+      style={{ colorScheme: 'light' }}
+    />
+  )
   if (!blobUrl) return (
     <div className="flex items-center gap-2 py-2">
       <div className="animate-spin h-3.5 w-3.5 border-2 border-violet-300 border-t-transparent rounded-full flex-shrink-0" />
@@ -334,7 +358,7 @@ function PortalAudioPlayer({ audioSrc, fileName, className }: { audioSrc: string
     <audio
       src={blobUrl}
       controls
-      preload="none"
+      preload="metadata"
       className={className ?? 'w-full rounded-xl'}
       style={{ colorScheme: 'light' }}
     />

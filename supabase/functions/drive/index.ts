@@ -35,7 +35,8 @@ const SCOPES = [
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cleanup-token',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cleanup-token, range',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, DELETE',
 }
 
@@ -866,7 +867,7 @@ Deno.serve(async (req: Request) => {
       // desta cliente — evita usar o proxy como gateway aberto pro Drive.
       const { data: resultFile } = await sb
         .from('client_result_files')
-        .select('id')
+        .select('id, file_name')
         .eq('client_id', client.id)
         .eq('drive_file_id', fileId)
         .maybeSingle()
@@ -880,23 +881,55 @@ Deno.serve(async (req: Request) => {
         return json({ error: e.message }, 412)
       }
 
+      // Repassa o Range pro Drive. Antes a função anunciava "Accept-Ranges: bytes"
+      // mas sempre respondia 200 com o arquivo inteiro: o Chrome desktop, ao
+      // retomar uma entrada de cache truncada (ou num <audio> com seek), manda
+      // Range, recebe 200 e aborta com net::ERR_FAILED. No anônimo funciona
+      // porque o cache começa vazio. Agora respondemos 206 de verdade.
+      const driveHeaders: Record<string, string> = { Authorization: `Bearer ${accessToken}` }
+      const rangeHeader = req.headers.get('range')
+      if (rangeHeader) driveHeaders['Range'] = rangeHeader
+
       const driveRes = await fetch(
         `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
+        { headers: driveHeaders }
       )
-      if (!driveRes.ok) {
+      if (!driveRes.ok && driveRes.status !== 206) {
         return json({ error: `Drive: ${driveRes.status}` }, driveRes.status as number)
       }
 
-      const contentType = driveRes.headers.get('content-type') || 'audio/mpeg'
+      // MIME derivado da extensão: o Drive costuma devolver
+      // application/octet-stream, que o Chrome não aceita pra <audio>/blob.
+      const ext = ((resultFile.file_name || '').split('.').pop() || '').toLowerCase()
+      const AUDIO_MIME: Record<string, string> = {
+        webm: 'audio/webm', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac',
+        mp3: 'audio/mpeg', mpga: 'audio/mpeg', mpeg: 'audio/mpeg',
+        ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+        wav: 'audio/wav', flac: 'audio/flac',
+      }
+      const driveType   = driveRes.headers.get('content-type') || ''
+      const contentType = AUDIO_MIME[ext]
+        ?? (driveType.startsWith('audio/') ? driveType : 'audio/mpeg')
+
+      const outHeaders: Record<string, string> = {
+        ...CORS,
+        'Content-Type':                 contentType,
+        // Sem cache de browser: evita entradas truncadas/obsoletas no cache
+        // do Chrome desktop (o front já guarda o blob em memória).
+        'Cache-Control':                'private, no-store',
+        'Accept-Ranges':                'bytes',
+        'Vary':                         'Origin, Range',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+      }
+      // Só repassa Content-Length se o corpo não foi recodificado (gzip etc.)
+      const cl = driveRes.headers.get('content-length')
+      if (cl && !driveRes.headers.get('content-encoding')) outHeaders['Content-Length'] = cl
+      const cr = driveRes.headers.get('content-range')
+      if (cr) outHeaders['Content-Range'] = cr
+
       return new Response(driveRes.body, {
-        status: 200,
-        headers: {
-          ...CORS,
-          'Content-Type':  contentType,
-          'Cache-Control': 'private, max-age=3600',
-          'Accept-Ranges': 'bytes',
-        },
+        status: driveRes.status === 206 ? 206 : 200,
+        headers: outHeaders,
       })
     }
 

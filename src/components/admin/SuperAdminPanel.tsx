@@ -18,10 +18,11 @@ import {
   CheckCircle2, XCircle, AlertTriangle,
   MoreVertical, Edit2, Trash2, Loader2, AlertCircle,
   X, Users as UsersIcon, Sparkles, Clock, RefreshCw,
-  Store, Zap, Award,
+  Store, Zap, Award, Megaphone,
 } from 'lucide-react'
 import { adminService, AdminUser } from '../../lib/services'
 import { useTheme } from '../../lib/theme'
+import { WhatsAppCampaigns } from './WhatsAppCampaigns'
 
 const CHAT_ADMIN_ACCENT = '#06b6d4'
 const FULL_ADMIN_ACCENT = '#8b5cf6'
@@ -55,7 +56,49 @@ function expiryLabel(dateStr: string | null | undefined): { text: string; color:
 
 // ─── Componente principal ─────────────────────────────────────────────────
 
+// ─── Wrapper com abas (somente super_admin) ──────────────────────────────
+//
+// Este painel já é exclusivo do super_admin, então as duas abas herdam essa
+// restrição. Mesmo assim, a edge function send-whatsapp-campaign confere no
+// servidor que quem chama é super_admin — esconder a aba não é a proteção.
+
 export function SuperAdminPanel() {
+  const { theme: t } = useTheme()
+  const [tab, setTab] = useState<'accounts' | 'campaigns'>('accounts')
+
+  const tabBtn = (key: 'accounts' | 'campaigns', label: string, icon: React.ReactNode) => {
+    const on = tab === key
+    return (
+      <button
+        key={key}
+        onClick={() => setTab(key)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          padding: '8px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+          cursor: 'pointer',
+          color: on ? t.accentFg : t.text,
+          background: on ? t.accent : 'transparent',
+          border: `1px solid ${on ? t.accent : t.border}`,
+        }}
+      >
+        {icon}
+        {label}
+      </button>
+    )
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-5">
+        {tabBtn('accounts', 'Administradores', <Shield size={15} />)}
+        {tabBtn('campaigns', 'Campanhas WhatsApp', <Megaphone size={15} />)}
+      </div>
+      {tab === 'accounts' ? <AccountsPanel /> : <WhatsAppCampaigns />}
+    </div>
+  )
+}
+
+function AccountsPanel() {
   const { theme: t } = useTheme()
   const [admins, setAdmins] = useState<AdminUser[]>([])
   const [billingMap, setBillingMap] = useState<Record<string, { openai_mode: string; gemini_mode: string }>>({})
