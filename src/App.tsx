@@ -10,6 +10,7 @@ import { adminService } from './lib/services'
 import { supabase } from './lib/supabase'
 import { ClientSignup } from './components/client/ClientSignup'
 import { LandingPage } from './components/LandingPage'
+import { TermsClientPage, TermsConsultantPage, PrivacyPage } from './components/legal/LegalPages'
 
 // AppRoutes precisa ficar dentro de <Router> para que useNavigate funcione.
 function AppRoutes() {
@@ -82,6 +83,11 @@ function AppRoutes() {
 
       {/* Cadastro via link compartilhado */}
       <Route path="/p/:shareToken" element={<ClientSignup />} />
+
+      {/* Páginas legais (públicas) */}
+      <Route path="/termos/cliente" element={<TermsClientPage />} />
+      <Route path="/termos/consultor" element={<TermsConsultantPage />} />
+      <Route path="/privacidade" element={<PrivacyPage />} />
 
       {/* Admin */}
       <Route

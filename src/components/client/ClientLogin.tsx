@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase'
 import { LanguageProvider, useTranslation } from '../../lib/i18n'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { clientThemeVars } from '../../lib/clientTheme'
+import { LegalLinks } from '../legal/LegalPages'
 
 interface ClientCandidate {
   token: string
@@ -248,6 +249,7 @@ function ClientLoginInner() {
           <p className="text-xs text-gray-400 text-center mt-6">
             {t('common.contactConsultant')}
           </p>
+          <LegalLinks audience="client" className="mt-3" />
         </div>
       </div>
     </div>

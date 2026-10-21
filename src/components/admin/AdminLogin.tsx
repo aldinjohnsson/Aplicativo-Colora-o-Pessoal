@@ -2,6 +2,7 @@
 import React, { useState } from 'react'
 import { Palette, Eye, EyeOff, ArrowLeft, Mail, CheckCircle2 } from 'lucide-react'
 import { adminService } from '../../lib/services'
+import { LegalLinks } from '../legal/LegalPages'
 
 interface Props {
   onLogin: (user: any) => void
@@ -21,6 +22,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <p className="text-gray-500 mt-1">Painel Administrativo</p>
         </div>
         {children}
+        <LegalLinks audience="consultant" className="mt-4" />
       </div>
     </div>
   )

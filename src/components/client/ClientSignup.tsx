@@ -16,6 +16,7 @@ import { getCountryOptions } from '../../lib/i18n/countries'
 import { PhoneInput } from './PhoneInput'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { clientThemeVars } from '../../lib/clientTheme'
+import { LegalLinks } from '../legal/LegalPages'
 
 interface PlanData {
   id: string
@@ -559,6 +560,8 @@ function ClientSignupInner({
                 >
                   {t('signup.startNow')} <ChevronRight className="h-5 w-5" />
                 </button>
+
+                <LegalLinks audience="client" className="mt-3" />
               </div>
             </div>
 
@@ -844,6 +847,8 @@ function ClientSignupInner({
                         ? <><Loader2 className="h-4 w-4 animate-spin" /> {t('signup.saving')}</>
                         : <>{t('signup.continueToContract')} <ChevronRight className="h-4 w-4" /></>}
                     </button>
+
+                    <LegalLinks audience="client" className="mt-1" />
                   </>
                 )}
               </form>
