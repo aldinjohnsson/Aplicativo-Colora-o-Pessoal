@@ -29,7 +29,8 @@ function renderInline(text: string) {
 }
 
 // ── Corpo: blocos separados por linha em branco; "- " vira lista ───────
-function renderBody(body: string) {
+function renderBody(rawBody: string, n: number) {
+  const body = rawBody.replace(/\{n\}/g, String(n))
   return body.split(/\n\s*\n/).map((block, i) => {
     const lines = block.split('\n')
     if (lines.every(l => l.trim().startsWith('- '))) {
@@ -85,7 +86,7 @@ function LegalLayout({ title, subtitle, sections, otherLinks }: {
               <h2 className="text-base font-semibold text-gray-900">
                 {i + 1}. {s.title}
               </h2>
-              {renderBody(s.body)}
+              {renderBody(s.body, i + 1)}
             </section>
           ))}
         </div>

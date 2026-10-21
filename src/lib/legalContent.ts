@@ -176,22 +176,34 @@ A entrega das notificações depende da validade dos dados informados e da dispo
 O usuário deverá acompanhar as informações disponíveis na plataforma e não depender exclusivamente das notificações para observar os prazos contratuais.`,
   },
   exclusao: {
-    title: 'Prazo de download e exclusão automática',
-    body: `O prazo para consulta e download dos resultados será definido pelo consultor e informado ao cliente no contrato, na área de atendimento ou por comunicação apropriada.
+    title: 'Cancelamento do serviço e exclusão dos dados',
+    body: `A exclusão dos dados e arquivos relacionados aos atendimentos realizados pela plataforma MS Color IA poderá ocorrer nas seguintes situações:
 
-**O cliente é responsável por acessar e baixar seus arquivos dentro do prazo informado.**
+**{n}.1. Cancelamento do serviço e reembolso**
 
-Encerrado o período de disponibilização, os arquivos abrangidos pela política de expiração serão automaticamente removidos do ambiente de atendimento, conforme as funcionalidades e os procedimentos técnicos implementados na plataforma.
+Quando o cliente solicitar o cancelamento do serviço e o reembolso dentro do prazo legal aplicável de 7 (sete) dias, nos casos em que houver direito de arrependimento, ou quando houver acordo entre as partes para o cancelamento, os dados e arquivos vinculados ao atendimento poderão ser excluídos, observadas as condições acordadas e as obrigações legais de conservação.
 
-A exclusão poderá abranger os resultados, relatórios, fotografias e demais arquivos sujeitos ao prazo de disponibilização.
+O cancelamento e o reembolso serão processados conforme a modalidade de contratação, as condições aplicáveis e a legislação vigente.
 
-Os registros que precisem ser conservados por obrigação legal, exercício regular de direitos ou outra hipótese legítima poderão ser mantidos separadamente, com acesso restrito e pelo período necessário.
+**{n}.2. Exclusão após a entrega do resultado**
 
-A eliminação de cópias de segurança poderá obedecer a ciclos técnicos próprios de retenção, desde que compatíveis com as obrigações legais e as medidas de segurança aplicáveis.
+Após a conclusão e a entrega do resultado ao cliente, os arquivos relacionados ao atendimento permanecerão disponíveis pelo prazo estipulado no contrato firmado entre o cliente e o consultor responsável.
 
-Após a exclusão, a recuperação dos arquivos não é garantida. O usuário deverá manter suas próprias cópias dos documentos e resultados que deseja conservar.
+Encerrado esse prazo, os arquivos sujeitos à expiração serão automaticamente excluídos do ambiente de atendimento, conforme os procedimentos técnicos implementados na plataforma.
 
-A expiração do prazo de download não elimina direitos legais do cliente nem autoriza a exclusão de registros cuja conservação seja obrigatória.`,
+O cliente deverá realizar o download dos resultados e guardar os arquivos que deseja conservar antes do encerramento do prazo de acesso.
+
+**{n}.3. Exclusão por acordo entre as partes**
+
+A exclusão também poderá ocorrer mediante acordo entre o cliente e o consultor responsável, respeitadas as obrigações legais e as limitações técnicas aplicáveis.
+
+**{n}.4. Registros sujeitos à conservação legal**
+
+A exclusão dos arquivos do atendimento não implica necessariamente a eliminação de todos os registros relacionados à contratação. Contratos, comprovantes de aceite, registros financeiros e outros documentos cuja conservação seja necessária por obrigação legal ou para o exercício regular de direitos poderão ser mantidos pelo período aplicável, com acesso restrito.
+
+**{n}.5. Limites da exclusão**
+
+A exclusão será realizada nos ambientes e sistemas abrangidos pelos procedimentos aplicáveis. Cópias de segurança poderão permanecer temporariamente sujeitas aos ciclos técnicos de retenção, desde que respeitadas as obrigações legais e as medidas de segurança pertinentes.`,
   },
   disponibilidade: {
     title: 'Disponibilidade e manutenção',
@@ -405,36 +417,49 @@ A entrega depende da validade dos dados e da disponibilidade dos serviços utili
 As notificações operacionais não equivalem automaticamente a autorização para publicidade. Comunicações promocionais deverão observar os requisitos legais aplicáveis.`,
   },
   {
-    title: 'Prazo de download e exclusão automática',
-    body: `O prazo de acesso e download dos resultados será definido pelo consultor responsável pelo atendimento e informado ao cliente no contrato, na área de atendimento ou em comunicação apropriada.
+    title: 'Hipóteses de exclusão dos dados',
+    body: `Os dados pessoais e arquivos relacionados aos atendimentos poderão ser excluídos nas seguintes hipóteses:
 
-O cliente será responsável por baixar seus resultados e guardar cópias dos arquivos que deseja conservar antes do vencimento do prazo.
+**{n}.1. Cancelamento com reembolso**
 
-**Encerrado o prazo definido pelo consultor, os arquivos sujeitos à expiração serão automaticamente excluídos do ambiente de atendimento, conforme as regras técnicas implementadas na plataforma.**
+Quando o cliente solicitar o cancelamento e o reembolso dentro do prazo legal aplicável de 7 (sete) dias, nos casos em que houver direito de arrependimento, ou quando o cancelamento decorrer de acordo entre as partes, os arquivos e dados vinculados ao atendimento poderão ser excluídos, conforme as condições acordadas.
 
-A política de exclusão poderá abranger fotografias, formulários, relatórios, resultados e outros arquivos vinculados ao atendimento que estejam sujeitos ao prazo de disponibilização.
+A exclusão será realizada respeitando as obrigações legais de conservação, as necessidades de comprovação da contratação e as demais hipóteses de retenção permitidas pela legislação.
 
-A exclusão dos arquivos de atendimento não implica necessariamente a eliminação imediata de todos os registros relacionados à operação. Contratos, comprovantes de aceite, registros financeiros, documentos e informações que precisem ser conservados por obrigação legal ou para o exercício regular de direitos poderão ser mantidos separadamente, com acesso restrito e pelo período necessário.
+**{n}.2. Após a entrega do resultado**
 
-Cópias de segurança poderão permanecer temporariamente sujeitas aos ciclos técnicos de retenção, desde que isso seja compatível com a legislação e com as medidas de segurança aplicáveis.
+Após a conclusão e a entrega do resultado, os arquivos do atendimento permanecerão disponíveis pelo prazo estabelecido no contrato firmado entre o cliente e o consultor.
 
-Após a exclusão definitiva, a recuperação dos arquivos não é garantida.
+Ao término desse prazo, os arquivos abrangidos pela regra de expiração serão automaticamente excluídos do ambiente de atendimento, conforme os procedimentos técnicos implementados na plataforma.
 
-O prazo de download é distinto do prazo legal de conservação de documentos e registros.`,
+O cliente deverá baixar e guardar os resultados que deseja conservar antes do vencimento do prazo informado.
+
+**{n}.3. Exclusão mediante acordo**
+
+Os dados e arquivos também poderão ser excluídos mediante acordo entre as partes, respeitadas as obrigações legais e as limitações técnicas aplicáveis.
+
+**{n}.4. Dados que precisam ser conservados**
+
+A exclusão dos arquivos do atendimento não implica necessariamente a eliminação de todos os dados pessoais relacionados à contratação.
+
+Contratos, registros de aceite, comprovantes financeiros e outros documentos poderão ser mantidos quando houver fundamento legal para sua conservação, incluindo cumprimento de obrigações legais ou regulatórias e exercício regular de direitos.
+
+Esses registros deverão ter acesso restrito e ser conservados somente pelo período necessário à finalidade correspondente.
+
+**{n}.5. Cópias de segurança**
+
+Cópias de segurança poderão permanecer temporariamente sujeitas aos ciclos técnicos de retenção, desde que sua manutenção seja compatível com a legislação aplicável e que sejam adotadas medidas adequadas de segurança e restrição de acesso.`,
   },
   {
     title: 'Prazos de retenção',
-    body: `Os dados serão mantidos durante o período necessário às finalidades informadas e às obrigações aplicáveis.
+    body: `Os prazos de retenção serão definidos de acordo com a categoria dos dados e a finalidade do tratamento.
 
-Os arquivos de atendimento sujeitos à expiração seguirão o prazo definido pelo consultor.
+- **Arquivos de atendimento:** poderão ser excluídos após o cancelamento nas condições previstas nesta Política ou automaticamente após o término do prazo de acesso definido em contrato.
+- **Contratos e registros de aceite:** poderão ser mantidos pelo período necessário ao cumprimento de obrigações legais e ao exercício regular de direitos.
+- **Dados financeiros e de assinatura:** poderão ser conservados durante a relação contratual e pelo período adicional exigido pela legislação aplicável.
+- **Registros técnicos e de segurança:** poderão ser mantidos pelos prazos legalmente exigidos ou necessários às finalidades legítimas correspondentes.
 
-Os contratos, comprovantes de aceite e demais registros que devam ser preservados poderão ser conservados pelo tempo necessário ao cumprimento de obrigações legais ou ao exercício regular de direitos.
-
-Os dados cadastrais e financeiros relacionados às assinaturas poderão ser conservados durante a relação contratual e pelo período adicional legalmente necessário.
-
-Registros técnicos e de segurança poderão ser mantidos pelo período exigido pela legislação ou necessário às finalidades legítimas correspondentes.
-
-Encerrada a finalidade e inexistindo fundamento para a conservação, os dados deverão ser eliminados ou submetidos a outra medida legalmente adequada.`,
+Encerrada a finalidade do tratamento e inexistindo fundamento legal para conservação, os dados deverão ser eliminados ou submetidos a outra medida legalmente adequada.`,
   },
   {
     title: 'Segurança da informação',
