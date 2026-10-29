@@ -151,6 +151,15 @@ export const driveStorage = {
      * false = acumula (fotos 2..N do mesmo lote).
      */
     clearPrevious?: boolean
+    /** Progresso do envio do corpo da requisição (bytes enviados / total). */
+    onProgress?: (loaded: number, total: number) => void
+    /** Permite cancelar o envio. */
+    signal?: AbortSignal
+    /**
+     * Se nenhum byte sair por este tempo, a tentativa é considerada travada
+     * (internet caiu / sinal muito fraco) e falha como "retryable".
+     */
+    stallTimeoutMs?: number
   }): Promise<DriveUploadResult> {
     const fd = new FormData()
     fd.append('portal_token', opts.portalToken)
@@ -159,13 +168,71 @@ export const driveStorage = {
     fd.append('clear_previous', opts.clearPrevious === false ? '0' : '1')
     fd.append('file', opts.file)
 
-    const r = await fetch(`${FN}/upload`, { method: 'POST', body: fd })
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}))
-      throw new Error(j.error || `Upload falhou: HTTP ${r.status}`)
-    }
-    return r.json()
+    const stallMs = opts.stallTimeoutMs ?? 45_000
+    // Depois que o corpo todo saiu, o servidor ainda manda o arquivo pro Drive.
+    const serverMs = 120_000
+
+    // XMLHttpRequest (e não fetch) porque só o XHR expõe progresso de upload.
+    return new Promise<DriveUploadResult>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${FN}/upload`)
+      xhr.responseType = 'text'
+
+      const fail = (msg: string, status = 0, retryable = true) => {
+        const err: any = new Error(msg)
+        err.status = status
+        err.retryable = retryable
+        reject(err)
+      }
+
+      let timer: ReturnType<typeof setTimeout> | null = null
+      let stalled = false
+      const arm = (ms: number) => {
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(() => { stalled = true; xhr.abort() }, ms)
+      }
+      const disarm = () => { if (timer) clearTimeout(timer); timer = null }
+
+      arm(stallMs)
+      xhr.upload.onprogress = ev => {
+        arm(stallMs) // chegou byte novo → reinicia o relógio
+        if (opts.onProgress && ev.lengthComputable) opts.onProgress(ev.loaded, ev.total)
+      }
+      xhr.upload.onload = () => arm(serverMs)
+
+      xhr.onload = () => {
+        disarm()
+        let json: any = {}
+        try { json = JSON.parse(xhr.responseText || '{}') } catch { /* resposta não-JSON */ }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          opts.onProgress?.(1, 1)
+          resolve(json as DriveUploadResult)
+        } else {
+          const retryable = [408, 425, 429].includes(xhr.status) || xhr.status >= 500
+          fail(json.error || `Upload falhou: HTTP ${xhr.status}`, xhr.status, retryable)
+        }
+      }
+      xhr.onerror = () => { disarm(); fail('Sem conexão com a internet') }
+      xhr.ontimeout = () => { disarm(); fail('Conexão muito lenta') }
+      xhr.onabort = () => {
+        disarm()
+        if (stalled) fail('Conexão travou')
+        else {
+          const err: any = new DOMException('Upload cancelado', 'AbortError')
+          err.retryable = false
+          reject(err)
+        }
+      }
+
+      if (opts.signal) {
+        if (opts.signal.aborted) { xhr.abort(); return }
+        opts.signal.addEventListener('abort', () => xhr.abort(), { once: true })
+      }
+
+      xhr.send(fd)
+    })
   },
+
 
   /**
    * Upload de foto feito pelo admin no painel — autenticado com JWT.

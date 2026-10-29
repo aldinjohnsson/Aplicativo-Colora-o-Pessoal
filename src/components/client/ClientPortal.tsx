@@ -19,6 +19,8 @@ import { LanguageProvider, useTranslation, useLanguage } from '../../lib/i18n'
 import { getCountryOptions } from '../../lib/i18n/countries'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { clientThemeVars } from '../../lib/clientTheme'
+import { useBatchUpload } from './UploadProgressModal'
+import { fileId, compressForUpload } from '../../lib/photoUpload'
 
 // pdf.js precisa de um worker rodando em background pra decodificar o PDF.
 // Aponta pro worker no CDN, usando a MESMA versão instalada localmente —
@@ -1108,37 +1110,10 @@ function getYouTubeEmbed(url: string): string | null {
 }
 
 async function processImage(file: File): Promise<File> {
-  // 10MB: acima disso comprime (redimensiona pro maior lado não passar de
-  // 3000px + reencoda JPEG 85%) antes de enviar. Abaixo disso, envia como está.
-  const MAX = 10 * 1024 * 1024
-  if (file.size < MAX) return file
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = e => {
-      const img = new Image()
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        const max = 3000
-        let { width, height } = img
-        if (width > max || height > max) {
-          if (width > height) { height = (height / width) * max; width = max }
-          else { width = (width / height) * max; height = max }
-        }
-        canvas.width = width; canvas.height = height
-        canvas.getContext('2d')!.drawImage(img, 0, 0, width, height)
-        canvas.toBlob(
-          blob => blob
-            ? resolve(new File([blob], file.name, { type: 'image/jpeg' }))
-            : reject(new Error('Erro ao processar imagem')),
-          'image/jpeg', 0.85,
-        )
-      }
-      img.onerror = reject
-      img.src = e.target?.result as string
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(file)
-  })
+  // Só arquivos grandes (≥10MB) são reduzidos aqui, ao adicionar. O restante
+  // é otimizado na hora do envio (photoUpload.compressForUpload). Usa
+  // createImageBitmap (bem mais leve na memória do celular que FileReader+Image).
+  return compressForUpload(file, { maxDim: 3000, quality: 0.85, skipBelowBytes: 10 * 1024 * 1024 })
 }
 
 // ── PDF instruction (visualizador + tela cheia) ──────────────────────────────
@@ -1995,6 +1970,7 @@ function PhotoStepContent({
   const [removingExisting, setRemovingExisting] = useState<Set<string>>(new Set())
   const [processing, setProcessing] = useState<Record<string, boolean>>({})
   const [finalizing, setFinalizing] = useState(false)
+  const batch = useBatchUpload(token, 'photo')
   const [errors, setErrors]         = useState<Record<string, string>>({})
 
   // Load existing photos from portal data (populated after rejection)
@@ -2055,14 +2031,19 @@ function PhotoStepContent({
     if (!allFilled) return
     setFinalizing(true)
     try {
-      // Only upload brand-new files — existing photos are already in the DB
-      for (const cat of categories) {
-        for (const file of (uploads[cat.id] || [])) {
-          await clientService.uploadPhoto(token, data.client.id, file, cat.id)
-        }
-      }
-      await clientService.finalizePhotos(token)
-      onDone()
+      // Só sobe arquivos novos — as fotos existentes já estão no banco.
+      // Upload paralelo (3 por vez) com compressão e modal de progresso.
+      const items = categories.flatMap(cat =>
+        (uploads[cat.id] || []).map(file => ({
+          id: fileId(file),
+          file,
+          categoryId: cat.id,
+        })),
+      )
+      await batch.run(items, async () => {
+        await clientService.finalizePhotos(token)
+        onDone()
+      })
     } catch (e: any) {
       alert(t('portal.photoStep.uploadPhotosError', { error: e.message }))
     } finally {
@@ -2191,6 +2172,8 @@ function PhotoStepContent({
             </div>
           </div>
         )}
+
+        {batch.modal}
 
         {/* Buttons — enviar é o principal (maior); ajustar é secundário (menor) */}
         <div className="flex gap-2">
@@ -2509,6 +2492,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
   const [uploads, setUploads] = useState<File[]>([])
   const [processing, setProcessing] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const aiBatch = useBatchUpload(token, 'ai_photo')
   const [error, setError] = useState('')
   // Enviou a foto errada / quer trocar antes da consultora revisar? Mesma
   // ideia do ReviewScreen: reabre o formulário de upload por cima do estado
@@ -2570,20 +2554,22 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
     setSubmitting(true)
     setError('')
     try {
-      // Envia uma a uma. Só a PRIMEIRA foto do lote limpa as fotos antigas
-      // da categoria (clearPrevious=true) — cobre o reenvio pós-rejeição.
-      // As demais acumulam (antes, cada upload apagava o anterior e só a
-      // última foto do lote sobrevivia no banco).
-      // submitAiPhoto SÓ faz o upload — não dispara e-mail.
-      for (let i = 0; i < uploads.length; i++) {
-        await clientService.submitAiPhoto(token, data.client.id, aiCat.id, uploads[i], i === 0)
-      }
-      // Notificação ÚNICA pra consultora, só depois que TODAS as fotos
-      // subiram. Antes o e-mail saía por foto (5 fotos = 5 e-mails).
-      await clientService.notifyAiPhotosSubmitted(token)
-      setUploads([])
-      setAdjusting(false)
-      onDone()
+      // Só a PRIMEIRA foto do lote limpa as antigas da categoria
+      // (clearPrevious=true) — cobre o reenvio pós-rejeição. As demais
+      // acumulam. A 1ª sobe sozinha; o resto em paralelo, com progresso.
+      const items = uploads.map((file, i) => ({
+        id: fileId(file),
+        file,
+        categoryId: aiCat.id,
+        clearPrevious: i === 0,
+      }))
+      await aiBatch.run(items, async () => {
+        // Notificação ÚNICA pra consultora, só depois que TODAS subiram.
+        await clientService.notifyAiPhotosSubmitted(token)
+        setUploads([])
+        setAdjusting(false)
+        onDone()
+      })
     } catch (e: any) {
       setError(e?.message || t('portal.aiPhoto.genericSendError'))
     } finally {
@@ -2593,6 +2579,7 @@ function AiPhotoStep({ token, data, onDone }: { token: string; data: ClientPorta
 
   return (
     <div className="space-y-4">
+      {aiBatch.modal}
       {/* 1. Resultado parcial com banner adaptado para esta etapa.
             Quando a foto JÁ FOI enviada, troca o banner para "verificando". */}
       {data.result ? (
