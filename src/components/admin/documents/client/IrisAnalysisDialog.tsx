@@ -7,11 +7,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   X, Download, ChevronLeft, Loader2,
-  Image as ImageIcon, AlertCircle, Save, FolderOpen, Eye,
+  Image as ImageIcon, AlertCircle, Save, FolderOpen, Eye, Languages, Undo2,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { driveStorage } from '../../../../lib/driveStorage'
 import { useTheme } from '../../../../lib/theme'
+import { LANGUAGES } from '../../../../lib/i18n/LanguageContext'
+import { translateIrisText } from './irisTranslate'
 import {
   AVAILABLE_FONTS,
   CARD_HEIGHT,
@@ -182,6 +184,15 @@ export function IrisAnalysisDialog({
   const [showSaveTemplate, setShowSaveTemplate] = useState(false)
   const [newTemplateName, setNewTemplateName]   = useState('')
   const [savingTemplate, setSavingTemplate]     = useState(false)
+
+  // ── Tradução do texto (título + corpo): escolhe o idioma e já substitui ──
+  const [translating, setTranslating]       = useState(false)
+  const [translateError, setTranslateError] = useState<string | null>(null)
+  const [translatedTo, setTranslatedTo]     = useState('')   // código do idioma aplicado ('' = texto original)
+  // Texto escrito pela usuária antes da 1ª tradução ("Voltar ao original")
+  const originalTextRef = useRef<{ title: string; body: string } | null>(null)
+  // Último texto que a tradução colocou no card — pra saber se a usuária editou depois
+  const lastTranslatedRef = useRef<{ title: string; body: string } | null>(null)
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const objectUrlRef     = useRef<string | null>(null)
@@ -437,6 +448,52 @@ export function IrisAnalysisDialog({
     }
   }
 
+  // ── Tradução ───────────────────────────────────────────────────────
+  const handleTranslateTo = async (code: string) => {
+    if (!code) return
+    if (!state.title.trim() && !state.body.trim()) return
+    const lang = LANGUAGES.find(l => l.code === code)
+    if (!lang) return
+
+    // Base da tradução: se o texto ainda é o que a última tradução colocou,
+    // traduz a partir do ORIGINAL (evita tradução de tradução). Se a usuária
+    // editou depois, o texto atual vira o novo original.
+    const last = lastTranslatedRef.current
+    const untouched = !!last && last.title === state.title && last.body === state.body
+    const base = untouched && originalTextRef.current
+      ? originalTextRef.current
+      : { title: state.title, body: state.body }
+
+    setTranslating(true)
+    setTranslateError(null)
+    try {
+      const result = await translateIrisText({
+        title: base.title, body: base.body,
+        targets: [{ code: lang.code, label: lang.label }],
+      })
+      const tr = result[code]
+      if (!tr) throw new Error('Nenhuma tradução retornada. Tente novamente.')
+      originalTextRef.current = base
+      lastTranslatedRef.current = tr
+      setSelectedTemplateId('')
+      patch({ title: tr.title, body: tr.body })
+      setTranslatedTo(code)
+    } catch (e: any) {
+      setTranslateError(e?.message || 'Erro ao traduzir.')
+    } finally {
+      setTranslating(false)
+    }
+  }
+
+  const restoreOriginalText = () => {
+    if (!originalTextRef.current) return
+    patch({ title: originalTextRef.current.title, body: originalTextRef.current.body })
+    originalTextRef.current = null
+    lastTranslatedRef.current = null
+    setTranslatedTo('')
+    setTranslateError(null)
+  }
+
   // ── Download e Save ────────────────────────────────────────────────
   const handleDownload = async () => {
     const dataUrl = await renderIrisCardToPng(state)
@@ -670,6 +727,46 @@ export function IrisAnalysisDialog({
                 className="block w-full resize-y rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
                 style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }} />
             </Field>
+
+            {/* ── Traduzir: escolhe o idioma e o texto já é substituído ── */}
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide" style={{ color: t.text3 }}>
+                  <Languages className="h-3.5 w-3.5" /> Traduzir texto
+                </label>
+                {translatedTo && (
+                  <button type="button" onClick={restoreOriginalText} disabled={translating}
+                    className="inline-flex items-center gap-1 text-[11px] hover:text-rose-600 disabled:opacity-50" style={{ color: t.text3 }}>
+                    <Undo2 className="h-3 w-3" /> Voltar ao original
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <select
+                  value={translatedTo}
+                  onChange={e => handleTranslateTo(e.target.value)}
+                  disabled={translating || (!state.title.trim() && !state.body.trim())}
+                  className="block w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 disabled:opacity-60"
+                  style={{ background: t.surface2, border: `1px solid ${t.border}`, color: t.text }}
+                >
+                  <option value="">— Traduzir para… —</option>
+                  {LANGUAGES.map(l => (
+                    <option key={l.code} value={l.code}>{l.flag} {l.label}</option>
+                  ))}
+                </select>
+                {translating && (
+                  <span className="absolute right-9 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-xs text-rose-600">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Traduzindo…
+                  </span>
+                )}
+              </div>
+              {translateError && (
+                <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-red-700">{translateError}</p>
+                </div>
+              )}
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
