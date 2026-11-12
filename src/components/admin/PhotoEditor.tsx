@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Save, Eye, Plus, Trash2, GripVertical, Camera, AlertCircle, CheckCircle } from 'lucide-react'
 import { PhotoCategoryInstructionsEditor, migrateToInstructionItems } from './PhotoCategoryInstructionsEditor'
 import { supabase } from '@/lib/supabase' // ajuste o path para o seu cliente Supabase
+import { driveStorage } from '@/lib/driveStorage'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -249,20 +250,9 @@ export function PhotoEditor() {
   //   ALTER TABLE photo_categories
   //     ADD COLUMN IF NOT EXISTS instruction_items jsonb NOT NULL DEFAULT '[]'::jsonb;
   const uploadFile = async (file: File): Promise<{ storagePath: string; url: string }> => {
-    const ext = file.name.split('.').pop() ?? 'jpg'
-    const storagePath = `instructions/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`
-
-    const { error: uploadError } = await supabase.storage
-      .from('category-instructions')   // ← nome do bucket; mude se necessário
-      .upload(storagePath, file, { upsert: false, contentType: file.type })
-
-    if (uploadError) throw uploadError
-
-    const { data } = supabase.storage
-      .from('category-instructions')
-      .getPublicUrl(storagePath)
-
-    return { storagePath, url: data.publicUrl }
+    // Novas mídias vão pro Google Drive; as antigas continuam no bucket.
+    const r = await driveStorage.uploadInstructionMedia(file)
+    return { storagePath: r.driveFileId, url: r.url }
   }
 
   const savePhotoConfig = async () => {

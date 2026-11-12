@@ -398,7 +398,7 @@ Deno.serve(async (req: Request) => {
     // ─── POST /upload ──────────────────────────────────────────────────────
     if (req.method === 'POST' && path === '/upload') {
       const form       = await req.formData()
-      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo' | 'composition' | 'ms_color_ia' | 'ms_color_ia_ref'
+      const kind       = String(form.get('kind') ?? 'photo') as 'photo' | 'ai_photo' | 'result_file' | 'form_image' | 'admin_photo' | 'composition' | 'ms_color_ia' | 'ms_color_ia_ref' | 'instruction_media'
       const categoryId = form.get('category_id') ? String(form.get('category_id')) : null
       // Lote de fotos IA: '0' = NAO apagar fotos anteriores da categoria
       // (fotos 2..N do mesmo lote). Ausente ou '1' = apaga (1a foto do lote
@@ -730,6 +730,64 @@ Deno.serve(async (req: Request) => {
           photoName:     safeName,
           url:           `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`,
           downloadUrl:   `https://drive.google.com/uc?export=download&id=${uploaded.id}`,
+        })
+      }
+
+      // ── Caminho mídia de instruções (kind='instruction_media') ─────────────
+      // Imagens/PDFs/vídeos das INSTRUÇÕES das categorias de foto dos planos
+      // (PlansManager / PhotoEditor) e a foto de exemplo. Antes iam pro bucket
+      // Supabase 'category-instructions'; agora vão pro Drive, em
+      // "MS Color IA" > "Instruções dos Planos".
+      //
+      // DIFERENTE das outras refs do admin: essas mídias são exibidas pra
+      // CLIENTE no ClientPortal (sem JWT), então o arquivo precisa ser público
+      // por link (anyone:reader) — igual result_file/form_image.
+      if (kind === 'instruction_media') {
+        const authUser = await getAuthUser(req)
+        if (!authUser) return json({ error: 'Não autenticado' }, 401)
+
+        let accessToken: string, rootFolderId: string | null
+        try {
+          const t = await getAdminToken(sb, authUser.id)
+          accessToken  = t.accessToken
+          rootFolderId = t.rootFolderId
+        } catch (e: any) {
+          return json({ error: e.message }, 412)
+        }
+
+        const iaFolderId   = await findOrCreateFolder(accessToken, 'MS Color IA', rootFolderId, false)
+        const instrFolderId = await findOrCreateFolder(accessToken, 'Instruções dos Planos', iaFolderId, false)
+
+        const mime     = file.type || 'application/octet-stream'
+        const safeName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        const bytes    = new Uint8Array(await file.arrayBuffer())
+        const uploaded = await uploadToDrive(accessToken, {
+          name:     safeName,
+          mimeType: mime,
+          parents:  [instrFolderId],
+          body:     bytes,
+        })
+
+        // Cliente vê sem login → precisa ser público. Se falhar, apaga e erra
+        // (senão o admin salvaria uma instrução que a cliente não consegue abrir).
+        try { await makeAnyoneReader(accessToken, uploaded.id) } catch (e) {
+          try { await deleteFromDrive(accessToken, uploaded.id) } catch {}
+          return json({ error: 'Não foi possível tornar o arquivo público no Drive' }, 500)
+        }
+
+        const downloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`
+        // Imagem → thumbnail (serve em <img>). PDF/vídeo → link direto de download/stream.
+        const viewUrl = mime.startsWith('image/')
+          ? `https://drive.google.com/thumbnail?id=${uploaded.id}&sz=w2000`
+          : downloadUrl
+
+        return json({
+          ok:            true,
+          driveFileId:   uploaded.id,
+          driveFolderId: instrFolderId,
+          photoName:     safeName,
+          url:           viewUrl,
+          downloadUrl,
         })
       }
 

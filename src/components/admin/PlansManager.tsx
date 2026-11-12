@@ -9,6 +9,7 @@ import {
 import { adminService, Plan, PlanContract, PlanForm, PhotoCategory } from '../../lib/services'
 import { PhotoCategoryInstructionsEditor, migrateToInstructionItems, InstructionItem } from './PhotoCategoryInstructionsEditor'
 import { supabase } from '../../lib/supabase'
+import { driveStorage } from '../../lib/driveStorage'
 
 // ── Shared tiny UI ──────────────────────────────────────────
 
@@ -1320,16 +1321,11 @@ function CategoryForm({ title, data, onChange, onSave, onCancel }: {
   onCancel: () => void
 }) {
   const uploadFile = async (file: File): Promise<{ storagePath: string; url: string }> => {
-    const ext = file.name.split('.').pop() ?? 'jpg'
-    const storagePath = `instructions/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`
-    const { error } = await supabase.storage
-      .from('category-instructions')
-      .upload(storagePath, file, { upsert: false, contentType: file.type })
-    if (error) throw error
-    const { data: urlData } = supabase.storage
-      .from('category-instructions')
-      .getPublicUrl(storagePath)
-    return { storagePath, url: urlData.publicUrl }
+    // Novas mídias vão pro Google Drive (Drive > MS Color IA > Instruções dos Planos).
+    // O que já foi enviado antes continua no bucket 'category-instructions' —
+    // as URLs antigas ficam salvas nos itens e seguem funcionando.
+    const r = await driveStorage.uploadInstructionMedia(file)
+    return { storagePath: r.driveFileId, url: r.url }
   }
 
   // A foto de exemplo vive em instruction_items (type 'example'), mas é

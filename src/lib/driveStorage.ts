@@ -396,6 +396,26 @@ export const driveStorage = {
     return r.json()
   },
 
+  /**
+   * Upload de mídia das INSTRUÇÕES das categorias de foto (imagem, PDF, vídeo,
+   * foto de exemplo). Salva em Drive > "MS Color IA" > "Instruções dos Planos"
+   * com permissão pública (a cliente vê no portal sem login).
+   * Retorna driveFileId — o front guarda no campo `storagePath` do item
+   * (sem '/', o que o distingue de paths legados do bucket Supabase).
+   */
+  async uploadInstructionMedia(file: File): Promise<DriveUploadResult> {
+    const fd = new FormData()
+    fd.append('kind', 'instruction_media')
+    fd.append('file', file)
+
+    const r = await authedFetch('/upload', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `Upload falhou: HTTP ${r.status}`)
+    }
+    return r.json()
+  },
+
   // ─── URLs ──────────────────────────────────────────────────────────────
 
   /** URL pra usar em <img src> direto (Drive público). */
