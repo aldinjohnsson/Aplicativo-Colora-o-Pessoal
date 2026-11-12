@@ -2695,9 +2695,10 @@ interface RefPhoto {
 // Modal fullscreen com zoom + pan + download. Usado tanto nas fotos da tela
 // de Resultado quanto nas fotos já enviadas/adicionadas na etapa de Fotos.
 //
-//  • Zoom: botões +/− no canto superior + pinch nativo no mobile (browser
-//    cuida do scaling em <img> com touch-action: pinch-zoom no container).
-//  • Pan: drag com mouse quando zoom > 1, dedo único no mobile.
+//  • Zoom: botões +/−, pinça com 2 dedos no mobile (zoom ancorado no ponto
+//    entre os dedos, de 1x a 5x) e duplo toque (alterna 1x ↔ 2.5x).
+//    Sempre abre no tamanho normal (ajustado à tela).
+//  • Pan: arrastar com 1 dedo/mouse quando zoom > 1, limitado às bordas da imagem.
 //  • Download: usa fetch + blob URL pra forçar download (em vez de window.open).
 //    Drive precisa estar com permission anyone:reader (patch da Edge Function).
 //  • Navegação: setas ← →, ChevronLeft/Right quando há múltiplas fotos.
@@ -2710,12 +2711,47 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
   const [index, setIndex] = useState(initialIndex)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
-  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null)
   const photo = photos[index]
   const [downloading, setDownloading] = useState(false)
 
-  // Reseta zoom/pan ao trocar de foto
-  useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [index])
+  // ── Gestos de toque (pinça / arrastar / duplo toque) ──────────────────────
+  // zoom/pan ficam também em refs pra os handlers de pointer sempre lerem o
+  // valor mais recente (sem closure velha durante o gesto).
+  const MIN_ZOOM = 1
+  const MAX_ZOOM = 5
+  const zoomRef = useRef(1)
+  const panRef = useRef({ x: 0, y: 0 })
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>())
+  const gestureRef = useRef<
+    | { type: 'pinch'; d: number; mx: number; my: number; zoom: number; pan: { x: number; y: number } }
+    | { type: 'pan'; x: number; y: number; pan: { x: number; y: number } }
+    | null
+  >(null)
+  const movedRef = useRef(false)
+  const lastTapRef = useRef(0)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const [gesturing, setGesturing] = useState(false)
+
+  // Aplica zoom+pan respeitando limites (não deixa a imagem "fugir" da tela).
+  const applyView = (z: number, p: { x: number; y: number }) => {
+    const nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+    let np = { x: 0, y: 0 }
+    if (nz > 1) {
+      const wrap = wrapRef.current
+      const img = imgRef.current
+      const maxX = wrap && img ? Math.max(0, (img.offsetWidth * nz - wrap.clientWidth) / 2) : Infinity
+      const maxY = wrap && img ? Math.max(0, (img.offsetHeight * nz - wrap.clientHeight) / 2) : Infinity
+      np = { x: Math.max(-maxX, Math.min(maxX, p.x)), y: Math.max(-maxY, Math.min(maxY, p.y)) }
+    }
+    zoomRef.current = nz
+    panRef.current = np
+    setZoom(nz)
+    setPan(np)
+  }
+
+  // Reseta zoom/pan ao trocar de foto — sempre abre no tamanho normal (ajustado à tela)
+  useEffect(() => { applyView(1, { x: 0, y: 0 }) }, [index])
 
   // Navegação por teclado
   useEffect(() => {
@@ -2723,8 +2759,8 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
       if (e.key === 'Escape') onClose()
       if (e.key === 'ArrowLeft' && photos.length > 1) setIndex(i => (i - 1 + photos.length) % photos.length)
       if (e.key === 'ArrowRight' && photos.length > 1) setIndex(i => (i + 1) % photos.length)
-      if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z * 1.5, 5))
-      if (e.key === '-') setZoom(z => Math.max(z / 1.5, 0.5))
+      if (e.key === '+' || e.key === '=') applyView(zoomRef.current * 1.5, panRef.current)
+      if (e.key === '-') applyView(zoomRef.current / 1.5, panRef.current)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -2759,29 +2795,123 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
     }
   }
 
-  // Drag pra pan quando zoom > 1
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (zoom <= 1) return
-    if ((e.target as HTMLElement).closest('button')) return
-    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
-    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y }
+  const getMid = () => {
+    const pts = [...pointersRef.current.values()]
+    return {
+      x: (pts[0].x + pts[1].x) / 2,
+      y: (pts[0].y + pts[1].y) / 2,
+      d: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+    }
   }
-  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return
-    setPan({
-      x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
-      y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+
+  // (Re)inicia o gesto conforme quantos dedos estão na tela.
+  const startGesture = () => {
+    const n = pointersRef.current.size
+    if (n >= 2) {
+      const m = getMid()
+      gestureRef.current = { type: 'pinch', d: m.d || 1, mx: m.x, my: m.y, zoom: zoomRef.current, pan: { ...panRef.current } }
+    } else if (n === 1) {
+      const p = [...pointersRef.current.values()][0]
+      gestureRef.current = { type: 'pan', x: p.x, y: p.y, pan: { ...panRef.current } }
+    } else {
+      gestureRef.current = null
+    }
+  }
+
+  // Zoom mantendo o ponto (px,py) da tela fixo debaixo dos dedos.
+  const zoomAround = (newZoom: number, px: number, py: number, fromZoom: number, fromPan: { x: number; y: number }, anchorX: number, anchorY: number) => {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    if (!rect) return applyView(newZoom, fromPan)
+    const cx = rect.left + rect.width / 2
+    const cy = rect.top + rect.height / 2
+    const ratio = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newZoom)) / fromZoom
+    applyView(newZoom, {
+      x: (px - cx) - ((anchorX - cx) - fromPan.x) * ratio,
+      y: (py - cy) - ((anchorY - cy) - fromPan.y) * ratio,
     })
   }
-  const onPointerUp = () => { dragRef.current = null }
+
+  // Scroll do mouse (e pinça no trackpad) = zoom ancorado no cursor.
+  // Listener nativo com passive:false — o onWheel do React é passivo e não
+  // deixaria dar preventDefault (a página de trás rolaria junto).
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+      const speed = e.ctrlKey ? 0.01 : 0.0015 // ctrlKey = pinça do trackpad
+      const next = zoomRef.current * Math.exp(-delta * speed)
+      zoomAround(next, e.clientX, e.clientY, zoomRef.current, panRef.current, e.clientX, e.clientY)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [index, photos.length])
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button')) return
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (pointersRef.current.size === 1) movedRef.current = false
+    else movedRef.current = true // 2+ dedos nunca conta como "toque"
+    setGesturing(true)
+    startGesture()
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(e.pointerId)) return
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const g = gestureRef.current
+    if (!g) return
+
+    if (g.type === 'pinch' && pointersRef.current.size >= 2) {
+      const m = getMid()
+      zoomAround(g.zoom * (m.d / g.d), m.x, m.y, g.zoom, g.pan, g.mx, g.my)
+    } else if (g.type === 'pan') {
+      const dx = e.clientX - g.x
+      const dy = e.clientY - g.y
+      if (Math.hypot(dx, dy) > 8) movedRef.current = true
+      if (zoomRef.current > 1) applyView(zoomRef.current, { x: g.pan.x + dx, y: g.pan.y + dy })
+    }
+  }
+
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(e.pointerId)) return
+    pointersRef.current.delete(e.pointerId)
+
+    if (pointersRef.current.size > 0) {
+      // Soltou um dedo da pinça: o que sobrou continua como arrastar
+      startGesture()
+      return
+    }
+
+    gestureRef.current = null
+    setGesturing(false)
+
+    // Toque simples (sem arrastar e sem pinça)
+    if (e.type === 'pointerup' && !movedRef.current) {
+      const now = Date.now()
+      if (now - lastTapRef.current < 300) {
+        // Duplo toque: alterna entre tamanho normal e 2.5x no ponto tocado
+        lastTapRef.current = 0
+        if (zoomRef.current > 1) applyView(1, { x: 0, y: 0 })
+        else zoomAround(2.5, e.clientX, e.clientY, 1, { x: 0, y: 0 }, e.clientX, e.clientY)
+      } else {
+        lastTapRef.current = now
+        // Toque na área escura (fora da imagem) com zoom normal fecha
+        const r = imgRef.current?.getBoundingClientRect()
+        const outside = !r || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom
+        if (outside && zoomRef.current <= 1) onClose()
+      }
+    }
+  }
 
   if (!photo) return null
 
   return (
     <div
       className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center"
-      style={{ touchAction: 'pinch-zoom' }}
-      onClick={onClose}
+      style={{ touchAction: 'none' }}
     >
       {/* Top bar: download + close */}
       <div className="absolute top-4 right-4 flex gap-2 z-10" onClick={e => e.stopPropagation()}>
@@ -2805,9 +2935,9 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
 
       {/* Zoom controls (canto inferior) */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1 z-10 bg-white/10 backdrop-blur-sm rounded-lg p-1" onClick={e => e.stopPropagation()}>
-        <button onClick={() => setZoom(z => Math.max(z / 1.5, 0.5))} className="p-2 text-white hover:bg-white/20 rounded" title={t('portal.common.decrease')}><ZoomOut className="h-4 w-4" /></button>
-        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} className="px-3 py-2 text-xs text-white hover:bg-white/20 rounded font-medium" title={t('portal.common.fitToScreen')}>{Math.round(zoom * 100)}%</button>
-        <button onClick={() => setZoom(z => Math.min(z * 1.5, 5))} className="p-2 text-white hover:bg-white/20 rounded" title={t('portal.common.increase')}><ZoomIn className="h-4 w-4" /></button>
+        <button onClick={() => applyView(zoomRef.current / 1.5, panRef.current)} className="p-2 text-white hover:bg-white/20 rounded" title={t('portal.common.decrease')}><ZoomOut className="h-4 w-4" /></button>
+        <button onClick={() => applyView(1, { x: 0, y: 0 })} className="px-3 py-2 text-xs text-white hover:bg-white/20 rounded font-medium" title={t('portal.common.fitToScreen')}>{Math.round(zoom * 100)}%</button>
+        <button onClick={() => applyView(zoomRef.current * 1.5, panRef.current)} className="p-2 text-white hover:bg-white/20 rounded" title={t('portal.common.increase')}><ZoomIn className="h-4 w-4" /></button>
       </div>
 
       {/* Prev/Next quando há mais de uma foto */}
@@ -2832,22 +2962,25 @@ function PhotoZoomLightbox({ photos, initialIndex, onClose }: {
 
       {/* Container da imagem com pan via pointer events */}
       <div
+        ref={wrapRef}
         className="w-full h-full flex items-center justify-center overflow-hidden select-none"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        style={{ cursor: zoom > 1 ? (dragRef.current ? 'grabbing' : 'grab') : 'default' }}
+        style={{ cursor: zoom > 1 ? (gesturing ? 'grabbing' : 'grab') : 'default', touchAction: 'none' }}
       >
         <img
+          ref={imgRef}
           src={photo.url}
           alt={photo.file_name}
           className="max-w-full max-h-full object-contain"
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-            transition: dragRef.current ? 'none' : 'transform 0.2s',
+            // Sem transição durante o gesto (senão a pinça fica "borrachuda")
+            transition: gesturing ? 'none' : 'transform 0.2s',
             touchAction: 'none',
-            pointerEvents: 'none', // o drag fica no container
+            pointerEvents: 'none', // os gestos ficam no container
           }}
           draggable={false}
         />
