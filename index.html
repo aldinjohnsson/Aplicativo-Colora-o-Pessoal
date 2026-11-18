@@ -22,6 +22,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Portal do Cliente - Análise de Coloração Pessoal</title>
 
+    <!-- DIAGNÓSTICO TEMPORÁRIO: mostra na tela qualquer erro que cause tela
+         branca (JS ou falha ao carregar o script). Sintaxe ES5 de propósito,
+         para rodar até em Safari muito antigo. Remova depois de achar a causa. -->
+    <script>
+      function showErr(msg) {
+        var p = document.createElement('pre');
+        p.style.cssText = 'padding:12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#b00;background:#fff;position:relative;z-index:99999';
+        p.textContent = msg;
+        (document.body || document.documentElement).insertBefore(p, (document.body || document.documentElement).firstChild);
+      }
+      window.addEventListener('error', function (e) {
+        var src = e.filename || (e.target && (e.target.src || e.target.href)) || '';
+        showErr('ERRO: ' + (e.message || 'falha ao carregar recurso') + '\n' + src);
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        showErr('PROMISE: ' + ((e.reason && e.reason.message) || e.reason));
+      });
+    </script>
+
     <!-- Google Fonts usadas pela Ferramenta de Análise da Íris -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
