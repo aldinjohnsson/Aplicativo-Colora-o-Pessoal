@@ -1,3 +1,7 @@
+// Polyfill do Iterator global (iterator helpers). Precisa ser o PRIMEIRO
+// import: o Safari/iOS anterior ao 18.4 não tem `Iterator` e libs como o
+// pdfjs-dist@6 quebram no carregamento com "Can't find variable: Iterator".
+import 'core-js/actual/iterator';
 import { Component, StrictMode } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
