@@ -22,23 +22,148 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Portal do Cliente - Análise de Coloração Pessoal</title>
 
-    <!-- DIAGNÓSTICO TEMPORÁRIO: mostra na tela qualquer erro que cause tela
-         branca (JS ou falha ao carregar o script). Sintaxe ES5 de propósito,
-         para rodar até em Safari muito antigo. Remova depois de achar a causa. -->
+    <!-- ═════════════════════════════════════════════════════════════
+         MONITOR DE ERROS (permanente)
+         - Script clássico em ES5 de propósito: roda mesmo em Safari/iOS
+           antigo e ANTES do bundle do app, então pega erros que derrubam
+           o carregamento (ex.: "Can't find variable: Iterator").
+         - Grava o erro na tabela client_errors do Supabase (só dados
+           técnicos; tokens da URL são removidos).
+         - Se o app não renderizar em 6s, mostra um aviso amigável com
+           "Recarregar" e "Copiar detalhes".
+         - As variáveis %VITE_...% são trocadas pelo Vite no build.
+         ═════════════════════════════════════════════════════════════ -->
     <script>
-      function showErr(msg) {
-        var p = document.createElement('pre');
-        p.style.cssText = 'padding:12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#b00;background:#fff;position:relative;z-index:99999';
-        p.textContent = msg;
-        (document.body || document.documentElement).insertBefore(p, (document.body || document.documentElement).firstChild);
-      }
-      window.addEventListener('error', function (e) {
-        var src = e.filename || (e.target && (e.target.src || e.target.href)) || '';
-        showErr('ERRO: ' + (e.message || 'falha ao carregar recurso') + '\n' + src);
-      }, true);
-      window.addEventListener('unhandledrejection', function (e) {
-        showErr('PROMISE: ' + ((e.reason && e.reason.message) || e.reason));
-      });
+      (function () {
+        var SB_URL = '%VITE_SUPABASE_URL%';
+        var SB_KEY = '%VITE_SUPABASE_ANON_KEY%';
+        var MAX = 5;
+        var sent = 0;
+        var seen = {};
+        var lastError = '';
+
+        function cut(s, n) {
+          s = String(s == null ? '' : s);
+          return s.length > n ? s.slice(0, n) : s;
+        }
+
+        // Remove tokens das rotas /c/:token e /p/:shareToken, e query/hash.
+        function cleanPage() {
+          return cut(location.pathname.replace(/^\/(c|p)\/[^\/]+/, '/$1/:token'), 200);
+        }
+
+        function rootEmpty() {
+          var r = document.getElementById('root');
+          return !r || r.childElementCount === 0;
+        }
+
+        function assetName() {
+          var s = document.querySelector('script[type="module"][src]');
+          return s ? cut(s.getAttribute('src'), 200) : '';
+        }
+
+        function report(message, source, stack, fatal) {
+          try {
+            message = cut(message, 600);
+            if (!message || message === 'Script error.') return;
+            if (/ResizeObserver loop/.test(message)) return;
+            lastError = message + (source ? '\n' + source : '');
+            if (sent >= MAX) return;
+            if (SB_URL.charAt(0) === '%' || SB_KEY.charAt(0) === '%') return; // env não definida
+            var key = message + '|' + source;
+            if (seen[key]) return;
+            seen[key] = 1;
+            sent++;
+            var x = new XMLHttpRequest();
+            x.open('POST', SB_URL + '/rest/v1/client_errors');
+            x.setRequestHeader('Content-Type', 'application/json');
+            x.setRequestHeader('apikey', SB_KEY);
+            x.setRequestHeader('Authorization', 'Bearer ' + SB_KEY);
+            x.setRequestHeader('Prefer', 'return=minimal');
+            x.send(JSON.stringify({
+              message: message,
+              source: cut(source, 300),
+              stack: cut(stack, 1500),
+              page: cleanPage(),
+              user_agent: cut(navigator.userAgent, 400),
+              asset: assetName(),
+              fatal: fatal === true || (fatal === undefined && rootEmpty())
+            }));
+          } catch (e) { /* o monitor nunca pode quebrar a página */ }
+        }
+
+        // Usado pelo ErrorBoundary do React (main.tsx) e útil para testes.
+        window.__reportClientError = function (message, stack) {
+          report(message, 'react', stack, true);
+        };
+
+        // Erros de JS + falha ao carregar <script>
+        window.addEventListener('error', function (e) {
+          var t = e.target;
+          if (t && t !== window && t.tagName === 'SCRIPT') {
+            report('Falha ao carregar script', t.src || '', '', true);
+            return;
+          }
+          if (t && t !== window) return; // outros recursos (fontes, imagens): ignora
+          report(e.message, e.filename, e.error && e.error.stack);
+        }, true);
+
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          report('Promise: ' + ((r && r.message) || r), '', r && r.stack);
+        });
+
+        // ── Aviso de "tela branca" ──
+        function showFallback() {
+          if (document.getElementById('boot-fallback')) return;
+          var details = (lastError || 'Sem erro capturado') +
+            '\n' + cleanPage() + '\n' + navigator.userAgent;
+
+          var d = document.createElement('div');
+          d.id = 'boot-fallback';
+          d.style.cssText = 'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:24px;max-width:480px;margin:0 auto;color:#333';
+          d.innerHTML =
+            '<h1 style="font-size:18px;margin:0 0 8px">Não foi possível abrir a página</h1>' +
+            '<p style="color:#666;font-size:14px;line-height:1.4;margin:0 0 16px">' +
+            'Tente recarregar. Se continuar, atualize o iOS/navegador do seu aparelho ' +
+            'ou envie os detalhes abaixo para o suporte.</p>' +
+            '<button id="bf-reload" style="padding:10px 16px;margin-right:8px;border:0;border-radius:8px;background:#B76E79;color:#fff;font-size:14px">Recarregar</button>' +
+            '<button id="bf-copy" style="padding:10px 16px;border:1px solid #ccc;border-radius:8px;background:#fff;font-size:14px">Copiar detalhes</button>' +
+            '<pre id="bf-details" style="white-space:pre-wrap;word-break:break-all;font-size:11px;color:#a00;margin-top:16px"></pre>';
+          document.body.appendChild(d);
+
+          document.getElementById('bf-details').textContent = details;
+          document.getElementById('bf-reload').addEventListener('click', function () {
+            location.reload();
+          });
+          document.getElementById('bf-copy').addEventListener('click', function () {
+            try {
+              navigator.clipboard.writeText(details).then(function () {
+                alert('Detalhes copiados.');
+              }, function () {
+                alert('Não foi possível copiar. Selecione e copie o texto na tela.');
+              });
+            } catch (e) {
+              alert('Não foi possível copiar. Selecione e copie o texto na tela.');
+            }
+          });
+
+          report(lastError ? 'Tela branca: ' + lastError : 'Tela branca: app não renderizou em 6s (sem erro capturado)', 'watchdog', '', true);
+
+          // Se o app terminar de carregar depois (rede lenta), remove o aviso.
+          var iv = setInterval(function () {
+            if (!rootEmpty()) {
+              var el = document.getElementById('boot-fallback');
+              if (el && el.parentNode) el.parentNode.removeChild(el);
+              clearInterval(iv);
+            }
+          }, 1000);
+        }
+
+        setTimeout(function () {
+          if (rootEmpty()) showFallback();
+        }, 6000);
+      })();
     </script>
 
     <!-- Google Fonts usadas pela Ferramenta de Análise da Íris -->

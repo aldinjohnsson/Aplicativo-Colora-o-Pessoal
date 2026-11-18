@@ -8,12 +8,20 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 
+// Definido pelo monitor de erros no index.html (grava em client_errors).
+declare global {
+  interface Window {
+    __reportClientError?: (message: string, stack?: string) => void;
+  }
+}
+
 // Se um deploy novo aconteceu enquanto essa aba estava aberta, os hashes
 // dos arquivos JS mudaram — um import dinâmico pode tentar buscar um arquivo
 // da build antiga que não existe mais. O Vite dispara 'vite:preloadError'
 // nesse caso. Recarrega UMA vez (trava em sessionStorage para não entrar em
 // loop de reload caso o erro persista).
 window.addEventListener('vite:preloadError', () => {
+  window.__reportClientError?.('vite:preloadError (arquivo de build antiga não encontrado)');
   try {
     if (sessionStorage.getItem('preload-reloaded') === '1') return;
     sessionStorage.setItem('preload-reloaded', '1');
@@ -24,7 +32,8 @@ window.addEventListener('vite:preloadError', () => {
 });
 
 // Evita a "tela branca": se qualquer componente lançar erro ao renderizar,
-// mostra a mensagem em vez de derrubar a árvore inteira do React.
+// mostra a mensagem em vez de derrubar a árvore inteira do React e registra
+// o erro no monitor.
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
 
@@ -34,6 +43,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[ErrorBoundary]', error, info.componentStack);
+    window.__reportClientError?.(
+      String(error.message || error),
+      (error.stack || '') + '\n' + (info.componentStack || '')
+    );
   }
 
   render() {
