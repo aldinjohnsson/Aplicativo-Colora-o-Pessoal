@@ -29,7 +29,7 @@ import { StageController } from './StageController'
 import { THEMES, ThemeName, Theme, useTheme } from '../../lib/theme'
 import { ClientDocumentsTab } from './documents/client/ClientDocumentsTab'
 import { AiCompositionsManager } from './documents/ai-compositions/AiCompositionsManager'
-import { ContrastLayoutDialog, type ContrastLayoutData, formatContrastValue } from './documents/client/ContrastLayoutDialog'
+import { ContrastLayoutDialog, extractFormPhotos, type ContrastLayoutData, formatContrastValue } from './documents/client/ContrastLayoutDialog'
 import { IrisAnalysisSection } from './documents/client/IrisAnalysisSection'
 import { IrisAnalysisDialog } from './documents/client/IrisAnalysisDialog'
 import type { IrisAnalysisRecord } from './documents/client/irisAnalysisTypes'
@@ -6345,6 +6345,8 @@ function ClientDetail({ onOpenNav }: { onOpenNav?: () => void }) {
                   onClose={() => setContrastDialogOpen(false)}
                   onSave={handleSaveContrastLayout}
                   onSaveToResults={file => handleUploadResultFile(file, 'photo')}
+                  formPhotos={extractFormPhotos(formSubmission, planForm)}
+                  onPhotoUploaded={load}
                 />
               )}
 

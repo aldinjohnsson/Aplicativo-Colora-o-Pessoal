@@ -14,11 +14,12 @@ import React, {
 } from 'react'
 import {
   X, Download, ChevronLeft, Loader2,
-  Image as ImageIcon, Check, AlertCircle, Save, FolderOpen,
+  Image as ImageIcon, Check, AlertCircle, Save, FolderOpen, Upload, ClipboardList,
 } from 'lucide-react'
 import { documentsService } from '../lib/documentsService'
 import { formatContrastValue, type ContrastLayoutData } from '../lib/contrastLayout'
 import { driveStorage } from '../../../../lib/driveStorage'
+import { compressForUpload } from '../../../../lib/photoUpload'
 
 // Re-export pra não quebrar imports antigos (ex: ClientsManager.tsx).
 export { formatContrastValue }
@@ -39,7 +40,66 @@ const PHOTO_BOX_H = 660
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-interface ClientPhoto { id: string; url: string; thumb?: string; driveFileId?: string | null; categoryId?: string | null; categoryTitle?: string | null }
+interface ClientPhoto { id: string; url: string; thumb?: string; label?: string; driveFileId?: string | null; categoryId?: string | null; categoryTitle?: string | null }
+
+/** Categoria virtual que agrupa as fotos enviadas pela cliente no formulário. */
+const FORM_CAT = '__form__'
+const FORM_CAT_TITLE = 'Fotos do formulário'
+
+/** Foto de um campo de imagem do formulário da cliente. */
+export interface FormPhoto { id: string; url: string; driveFileId: string | null; label: string }
+
+function formImageUrls(value: any): string[] {
+  const isUrl = (v: any): v is string => typeof v === 'string' && v.startsWith('http')
+  if (!value) return []
+  if (isUrl(value)) return [value]
+  if (Array.isArray(value)) {
+    // Formato novo (ImageUploadFormField): [{ storagePath, url }]
+    if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null && 'url' in value[0]) {
+      return (value as { url: string }[]).map(v => v.url).filter(isUrl)
+    }
+    return value.filter(isUrl) // legado: array de URLs
+  }
+  return []
+}
+
+function driveIdFromUrl(url: string): string | null {
+  if (!url.includes('drive.google.com')) return null
+  const q = url.match(/[?&]id=([^&]+)/)
+  if (q) return q[1]
+  const p = url.match(/\/(?:file\/d|folders)\/([^/?#]+)/)
+  return p ? p[1] : null
+}
+
+/**
+ * Extrai as imagens enviadas no formulário (client_form_submissions.form_data),
+ * na ordem dos campos do plano. Usado pelo ClientsManager pra alimentar
+ * a prop `formPhotos` do ContrastLayoutDialog.
+ */
+export function extractFormPhotos(formSubmission: any, planForm: any): FormPhoto[] {
+  const formData: Record<string, any> = formSubmission?.form_data || {}
+  const fields: any[] = [...(planForm?.fields || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+  const labelOf: Record<string, string> = Object.fromEntries(fields.map(f => [f.id, f.label]))
+  const known = new Set(fields.map(f => f.id))
+  const keys = [
+    ...fields.map(f => f.id).filter(k => k in formData),
+    ...Object.keys(formData).filter(k => !known.has(k)),
+  ]
+  const out: FormPhoto[] = []
+  const seen = new Set<string>()
+  for (const key of keys) {
+    const urls = formImageUrls(formData[key])
+    urls.forEach((url, idx) => {
+      const driveFileId = driveIdFromUrl(url)
+      const id = `form:${driveFileId ?? url}`
+      if (seen.has(id)) return
+      seen.add(id)
+      const base = labelOf[key] ?? key
+      out.push({ id, url, driveFileId, label: urls.length > 1 ? `${base} ${idx + 1}` : base })
+    })
+  }
+  return out
+}
 interface PhotoCategory { id: string | null; title: string; count: number }
 
 interface Props {
@@ -52,6 +112,10 @@ interface Props {
   onSave:     (data: ContrastLayoutData, formatted: string) => Promise<void>
   /** Opcional: envia o PNG gerado direto pra aba Resultado (client_result_files). */
   onSaveToResults?: (file: File) => Promise<void>
+  /** Fotos enviadas pela cliente no formulário (ver extractFormPhotos). */
+  formPhotos?: FormPhoto[]
+  /** Chamado depois de subir uma foto nova por aqui (pra atualizar a aba Fotos). */
+  onPhotoUploaded?: () => void
 }
 
 const LABEL_OPTIONS = ['baixo', 'médio baixo', 'médio', 'médio alto', 'alto'] as const
@@ -255,7 +319,7 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', loading = fa
 // ── Component ──────────────────────────────────────────────────────────
 
 export function ContrastLayoutDialog({
-  clientId, clientName, initial = null, onClose, onSave, onSaveToResults,
+  clientId, clientName, initial = null, onClose, onSave, onSaveToResults, formPhotos = [], onPhotoUploaded,
 }: Props) {
   const [step, setStep]                 = useState<'category' | 'pick' | 'edit'>(initial?.photoId ? 'edit' : 'category')
   const [photos, setPhotos]             = useState<ClientPhoto[]>([])
@@ -283,7 +347,16 @@ export function ContrastLayoutDialog({
 
   const [savingToResults, setSavingToResults] = useState(false)
   const [resultsError, setResultsError]       = useState<string | null>(null)
-  const [savedToResults, setSavedToResults]   = useState(false)
+  // Horário (HH:MM) do último envio pra Resultados. Fica na tela até a pessoa
+  // mexer em algo no layout (ver useEffect abaixo) — não some sozinho.
+  const [savedToResultsAt, setSavedToResultsAt] = useState<string | null>(null)
+
+  const [uploadingNew, setUploadingNew] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // Ref pra o effect de carga inicial enxergar as fotos do formulário sem
+  // depender da identidade do array (o pai recria a cada render).
+  const formPhotosRef = useRef<FormPhoto[]>(formPhotos)
+  formPhotosRef.current = formPhotos
 
   // Ref para o objectURL da foto — evita taint de canvas por CORS
   const objectUrlRef = useRef<string | null>(null)
@@ -305,45 +378,53 @@ export function ContrastLayoutDialog({
   }, [])
 
   // ── Carrega metadados das fotos (sem blobs) ──────────────────────
+  // Junta as fotos da galeria + as fotos do formulário (categoria virtual).
+
+  const fetchPhotoList = useCallback(async (): Promise<ClientPhoto[]> => {
+    const list = await documentsService.listClientPhotos(clientId)
+    const fromGallery: ClientPhoto[] = list.map(p => ({
+      id: p.id,
+      url: p.url,
+      driveFileId: (p as any).drive_file_id ?? null,
+      categoryId: (p as any).category_id ?? null,
+      categoryTitle: (p as any).category_title ?? null,
+    }))
+    const fromForm: ClientPhoto[] = formPhotosRef.current.map(fp => ({
+      id: fp.id,
+      url: fp.url,
+      label: fp.label,
+      driveFileId: fp.driveFileId,
+      categoryId: FORM_CAT,
+      categoryTitle: FORM_CAT_TITLE,
+    }))
+    return [...fromGallery, ...fromForm]
+  }, [clientId])
+
+  const applyPhotoList = useCallback((mapped: ClientPhoto[]) => {
+    setPhotos(mapped)
+    const catMap: Record<string, PhotoCategory> = {}
+    for (const p of mapped) {
+      const key = p.categoryId ?? '__none__'
+      if (!catMap[key]) {
+        catMap[key] = { id: p.categoryId ?? null, title: p.categoryTitle ?? 'Sem categoria', count: 0 }
+      }
+      catMap[key].count++
+    }
+    // Ordem: categorias do plano (A→Z), depois "Fotos do formulário", depois "Sem categoria".
+    const rank = (c: PhotoCategory) => (c.id === null ? 2 : c.id === FORM_CAT ? 1 : 0)
+    setCategories(Object.values(catMap).sort((a, b) =>
+      rank(a) - rank(b) || a.title.localeCompare(b.title)))
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     setPhotoLoading(true)
-    documentsService.listClientPhotos(clientId)
-      .then(list => {
-        if (cancelled) return
-        const mapped: ClientPhoto[] = list.map(p => ({
-          id: p.id,
-          url: p.url,
-          driveFileId: (p as any).drive_file_id ?? null,
-          categoryId: (p as any).category_id ?? null,
-          categoryTitle: (p as any).category_title ?? null,
-        }))
-        setPhotos(mapped)
-
-        // Monta lista de categorias com contagem
-        const catMap: Record<string, PhotoCategory> = {}
-        for (const p of mapped) {
-          const key = p.categoryId ?? '__none__'
-          if (!catMap[key]) {
-            catMap[key] = {
-              id: p.categoryId ?? null,
-              title: p.categoryTitle ?? 'Sem categoria',
-              count: 0,
-            }
-          }
-          catMap[key].count++
-        }
-        setCategories(Object.values(catMap).sort((a, b) => {
-          if (a.id === null) return 1   // "Sem categoria" vai pro final
-          if (b.id === null) return -1
-          return a.title.localeCompare(b.title)
-        }))
-      })
+    fetchPhotoList()
+      .then(mapped => { if (!cancelled) applyPhotoList(mapped) })
       .catch(e => { if (!cancelled) setPhotoError(e?.message || 'Erro ao carregar fotos') })
       .finally(() => { if (!cancelled) setPhotoLoading(false) })
     return () => { cancelled = true }
-  }, [clientId])
+  }, [fetchPhotoList, applyPhotoList])
 
   // ── Quando categoria é selecionada, carrega blobs apenas das fotos dela ──
 
@@ -379,7 +460,7 @@ export function ContrastLayoutDialog({
   // foto automaticamente assim que a lista de fotos chega.
   useEffect(() => {
     if (step !== 'edit' || loadedImg || loadingImg) return
-    if (!selectedPhotoId || photos.length === 0) return
+    if (!selectedPhotoId || photoLoading) return
     const photo = photos.find(p => p.id === selectedPhotoId)
     if (photo) {
       void selectPhoto(photo.url, photo.id, photo.driveFileId)
@@ -388,7 +469,7 @@ export function ContrastLayoutDialog({
       setStep('category')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photos, step])
+  }, [photos, step, photoLoading])
 
   // ── Redesenha ao mudar controles ─────────────────────────────────
 
@@ -481,6 +562,13 @@ export function ContrastLayoutDialog({
     return () => el.removeEventListener('wheel', onWheel)
   }, [step])
 
+  // Qualquer mudança no layout (ou troca de foto) invalida o aviso de
+  // "enviado pra Resultados": o que está na tela deixou de ser o que foi salvo.
+  useEffect(() => {
+    setSavedToResultsAt(null)
+    setResultsError(null)
+  }, [cMin, cMax, zoom, xOff, yOff, label, selectedPhotoId])
+
   // ── Esc fecha ────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -495,13 +583,27 @@ export function ContrastLayoutDialog({
   // pra evitar bloqueio CORS. O blob: URL mantém o canvas sem "taint".
   // Fotos legadas (Storage): fetch direto ainda funciona (URL pública).
 
-  const selectPhoto = async (url: string, photoId: string, driveFileId?: string | null) => {
+  const decodeImage = (blob: Blob) =>
+    new Promise<{ img: HTMLImageElement; objectUrl: string }>((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(blob)
+      const img = new Image()
+      img.onload  = () => resolve({ img, objectUrl })
+      img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('decode')) }
+      img.src = objectUrl
+    })
+
+  const selectPhoto = async (
+    url: string, photoId: string, driveFileId?: string | null, preloadedBlob?: Blob,
+  ) => {
     setLoadingImg(true)
     setPhotoError(null)
     try {
       let blob: Blob
 
-      if (driveFileId) {
+      if (preloadedBlob) {
+        // Foto que acabou de ser enviada por aqui: já está na memória.
+        blob = preloadedBlob
+      } else if (driveFileId) {
         // Foto do Drive: proxy via Edge Function (/drive/photo-proxy)
         blob = await driveStorage.fetchPhotoBlob(driveFileId)
       } else {
@@ -511,21 +613,67 @@ export function ContrastLayoutDialog({
         blob = await res.blob()
       }
 
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-      const objectUrl = URL.createObjectURL(blob)
-      objectUrlRef.current = objectUrl
-
-      const i = new Image()
-      i.onload  = () => {
-        setLoadedImg(i)
-        setGrayCanvas(buildGrayscaleCanvas(i))
-        setLoadingImg(false); setSelectedPhotoId(photoId); setStep('edit')
+      let decoded: { img: HTMLImageElement; objectUrl: string }
+      try {
+        decoded = await decodeImage(blob)
+      } catch {
+        // Provável HEIC (fotos de iPhone enviadas no formulário): converte e tenta de novo.
+        try {
+          const heic2any = (await import('heic2any')).default
+          const out = await heic2any({ blob, toType: 'image/jpeg', quality: 0.92 })
+          blob = (Array.isArray(out) ? out[0] : out) as Blob
+          decoded = await decodeImage(blob)
+        } catch {
+          throw new Error('Não foi possível carregar a foto.')
+        }
       }
-      i.onerror = () => { setLoadingImg(false); setPhotoError('Não foi possível carregar a foto.') }
-      i.src = objectUrl
+
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = decoded.objectUrl
+      setLoadedImg(decoded.img)
+      setGrayCanvas(buildGrayscaleCanvas(decoded.img))
+      setSelectedPhotoId(photoId)
+      setStep('edit')
     } catch (e: any) {
-      setLoadingImg(false)
       setPhotoError(e?.message || 'Erro ao baixar a foto.')
+    } finally {
+      setLoadingImg(false)
+    }
+  }
+
+  // ── Enviar foto nova direto da ferramenta ─────────────────────────
+  //
+  // Mesmo caminho do upload do admin na aba Fotos (adminUploadPhoto), só que
+  // sem sair da ferramenta: sobe, recarrega a lista, acha a foto nova e já
+  // abre ela no editor. Vai pra categoria que estiver aberta; nas telas
+  // "Categorias" e "Fotos do formulário" vai como "Sem categoria".
+
+  const handleUploadNew = async (files: FileList | null) => {
+    const raw = files?.[0]
+    if (!raw) return
+    setUploadingNew(true)
+    setPhotoError(null)
+    try {
+      const file = await compressForUpload(raw)
+      const categoryId =
+        selectedCategory && selectedCategory !== '__none__' && selectedCategory !== FORM_CAT
+          ? selectedCategory
+          : null
+      const prevIds = new Set(photos.map(p => p.id))
+      const result = await driveStorage.adminUploadPhoto({ clientId, file, categoryId })
+
+      const list = await fetchPhotoList()
+      applyPhotoList(list)
+      const fresh =
+        (result.driveFileId ? list.find(p => p.driveFileId === result.driveFileId) : undefined)
+        ?? list.filter(p => !prevIds.has(p.id) && p.categoryId !== FORM_CAT).pop()
+      onPhotoUploaded?.()
+      if (!fresh) throw new Error('Foto enviada, mas não consegui localizá-la na lista. Escolha-a manualmente.')
+      await selectPhoto(fresh.url, fresh.id, fresh.driveFileId, file)
+    } catch (e: any) {
+      setPhotoError(e?.message || 'Erro ao enviar a foto.')
+    } finally {
+      setUploadingNew(false)
     }
   }
 
@@ -580,6 +728,7 @@ export function ContrastLayoutDialog({
     if (!canvasRef.current || !onSaveToResults) return
     setSavingToResults(true)
     setResultsError(null)
+    setSavedToResultsAt(null)
     try {
       const blob: Blob = await new Promise((resolve, reject) => {
         canvasRef.current!.toBlob(
@@ -593,8 +742,8 @@ export function ContrastLayoutDialog({
         { type: 'image/png' },
       )
       await onSaveToResults(file)
-      setSavedToResults(true)
-      setTimeout(() => setSavedToResults(false), 2500)
+      // Fica visível até a pessoa alterar algo no layout (sem timeout).
+      setSavedToResultsAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
     } catch (e: any) {
       setResultsError(e?.message || 'Erro ao salvar em Resultados.')
     } finally {
@@ -629,6 +778,28 @@ export function ContrastLayoutDialog({
     }
   }
 
+  const renderUploadButton = (compact = false) => (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={e => { void handleUploadNew(e.target.files); e.target.value = '' }}
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={uploadingNew || loadingImg}
+        className={`inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-rose-300 bg-rose-50/40 text-rose-700 font-medium hover:bg-rose-50 disabled:opacity-50 ${compact ? 'px-3 py-1.5 text-xs' : 'w-full px-4 py-3 text-sm'}`}
+      >
+        {uploadingNew
+          ? <><Loader2 className="h-4 w-4 animate-spin" /> Enviando foto…</>
+          : <><Upload className="h-4 w-4" /> Enviar foto nova (celular ou computador)</>}
+      </button>
+    </>
+  )
+
   // ── Step: category ───────────────────────────────────────────────
 
   const handleSelectCategory = (catId: string | null) => {
@@ -648,14 +819,18 @@ export function ContrastLayoutDialog({
           <p className="text-sm text-red-700">{photoError}</p>
         </div>
       ) : categories.length === 0 ? (
-        <div className="border border-dashed border-gray-300 rounded-xl p-10 text-center">
-          <ImageIcon className="h-6 w-6 text-gray-400 mx-auto mb-2" />
-          <p className="text-sm font-medium text-gray-700">Nenhuma foto encontrada</p>
-          <p className="text-xs text-gray-500 mt-1">Adicione fotos ao perfil da cliente primeiro.</p>
+        <div className="border border-dashed border-gray-300 rounded-xl p-10 text-center space-y-4">
+          <div>
+            <ImageIcon className="h-6 w-6 text-gray-400 mx-auto mb-2" />
+            <p className="text-sm font-medium text-gray-700">Nenhuma foto encontrada</p>
+            <p className="text-xs text-gray-500 mt-1">Envie uma foto agora mesmo:</p>
+          </div>
+          {renderUploadButton()}
         </div>
       ) : (
         <>
-          <p className="text-xs text-gray-500 mb-3">De qual categoria você quer escolher a foto?</p>
+          <div className="mb-4">{renderUploadButton()}</div>
+          <p className="text-xs text-gray-500 mb-3">Ou escolha uma foto já existente. De qual categoria?</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {categories.map(cat => (
               <button
@@ -664,7 +839,7 @@ export function ContrastLayoutDialog({
                 className="flex items-center gap-3 px-4 py-3.5 rounded-xl border border-gray-200 bg-white hover:border-rose-300 hover:bg-rose-50/40 transition-colors text-left group"
               >
                 <div className="h-9 w-9 rounded-lg bg-rose-50 text-rose-400 flex items-center justify-center flex-shrink-0 group-hover:bg-rose-100">
-                  <FolderOpen className="h-4.5 w-4.5" />
+                  {cat.id === FORM_CAT ? <ClipboardList className="h-4.5 w-4.5" /> : <FolderOpen className="h-4.5 w-4.5" />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate group-hover:text-rose-700">
@@ -712,10 +887,17 @@ export function ContrastLayoutDialog({
           <p className="text-sm text-red-700">{photoError}</p>
         </div>
       )}
+      <div className="mb-3">{renderUploadButton()}</div>
       {visiblePhotos.length === 0 && !blobLoading ? (
         <div className="border border-dashed border-gray-300 rounded-xl p-10 text-center">
           <ImageIcon className="h-6 w-6 text-gray-400 mx-auto mb-2" />
           <p className="text-sm font-medium text-gray-700">Nenhuma foto nesta categoria</p>
+          <button
+            onClick={() => setStep('category')}
+            className="mt-2 text-xs text-gray-400 hover:text-rose-600 inline-flex items-center gap-1"
+          >
+            <ChevronLeft className="h-3 w-3" /> Categorias
+          </button>
         </div>
       ) : (
         <>
@@ -730,7 +912,7 @@ export function ContrastLayoutDialog({
           </div>
           <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
             {visiblePhotos.map(p => (
-              <button key={p.id} onClick={() => selectPhoto(p.url, p.id, p.driveFileId)} disabled={loadingImg}
+              <button key={p.id} title={p.label} onClick={() => selectPhoto(p.url, p.id, p.driveFileId)} disabled={loadingImg || uploadingNew}
                 className="aspect-square rounded-xl overflow-hidden border-2 border-transparent hover:border-rose-400 transition-colors relative group disabled:opacity-50">
                 <img src={blobUrls[p.id] || p.thumb || p.url} alt="" className="w-full h-full object-cover" />
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
@@ -855,36 +1037,39 @@ export function ContrastLayoutDialog({
           </div>
         )}
 
-        {resultsError && (
-          <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-red-700">{resultsError}</p>
-          </div>
-        )}
-
-        {savedToResults && (
-          <div className="mt-3 bg-green-50 border border-green-200 rounded-xl px-4 py-2 flex items-center gap-2">
-            <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
-            <p className="text-sm text-green-700">Imagem enviada para a aba Resultado.</p>
-          </div>
-        )}
       </div>
     </>
   )
 
   const renderFooter = () => step === 'edit' && (
-    <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex gap-2 justify-end flex-wrap">
-      <Btn variant="outline" onClick={handleDownload} disabled={saving}>
-        <Download className="h-3.5 w-3.5" /> Baixar PNG
-      </Btn>
-      {onSaveToResults && (
-        <Btn variant="outline" onClick={handleSaveToResults} loading={savingToResults} disabled={savingToResults}>
-          <ImageIcon className="h-3.5 w-3.5" /> {savedToResults ? 'Enviado' : 'Salvar em Resultados'}
-        </Btn>
+    <div className="border-t border-gray-100 bg-gray-50 flex-shrink-0">
+      {resultsError && (
+        <div className="mx-5 mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-red-700">{resultsError}</p>
+        </div>
       )}
-      <Btn variant="primary" onClick={handleSave} loading={saving} disabled={saving || saved}>
-        <Save className="h-3.5 w-3.5" /> {saved ? 'Salvo' : 'Salvar'}
-      </Btn>
+      {savedToResultsAt && (
+        <div className="mx-5 mt-3 bg-green-50 border border-green-200 rounded-xl px-4 py-2 flex items-center gap-2">
+          <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+          <p className="text-sm text-green-700">
+            Imagem enviada para a aba Resultado às {savedToResultsAt}.
+          </p>
+        </div>
+      )}
+      <div className="px-5 py-3 flex gap-2 justify-end flex-wrap">
+        <Btn variant="outline" onClick={handleDownload} disabled={saving}>
+          <Download className="h-3.5 w-3.5" /> Baixar PNG
+        </Btn>
+        {onSaveToResults && (
+          <Btn variant="outline" onClick={handleSaveToResults} loading={savingToResults} disabled={savingToResults}>
+            <ImageIcon className="h-3.5 w-3.5" /> {savedToResultsAt ? 'Enviado ✓ · reenviar' : 'Salvar em Resultados'}
+          </Btn>
+        )}
+        <Btn variant="primary" onClick={handleSave} loading={saving} disabled={saving || saved}>
+          <Save className="h-3.5 w-3.5" /> {saved ? 'Salvo' : 'Salvar'}
+        </Btn>
+      </div>
     </div>
   )
 
@@ -899,7 +1084,7 @@ export function ContrastLayoutDialog({
               {step === 'category'
                 ? `Escolha a categoria de fotos de ${clientName}`
                 : step === 'pick'
-                ? `Escolha uma foto de ${clientName} para começar`
+                ? `Escolha uma foto de ${clientName} ou envie uma nova`
                 : 'Ajuste a faixa de contraste e salve. O valor vira tag pra usar em prompts.'}
             </p>
           </div>
