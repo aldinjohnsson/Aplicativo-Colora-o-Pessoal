@@ -1255,6 +1255,27 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     setPdfPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
   }
 
+  // Trava a rolagem da página de fundo enquanto o modal de PDF (ou o
+  // visualizador) está aberto. Sem isso, no iOS, arrastar o dedo no modal
+  // "puxa" o chat/página de trás.
+  useEffect(() => {
+    if (!showPdfModal && !pdfPreviewUrl) return
+    const y = window.scrollY
+    const b = document.body
+    const prev = { position: b.style.position, top: b.style.top, width: b.style.width, overflow: b.style.overflow }
+    b.style.position = 'fixed'
+    b.style.top = `-${y}px`
+    b.style.width = '100%'
+    b.style.overflow = 'hidden'
+    return () => {
+      b.style.position = prev.position
+      b.style.top = prev.top
+      b.style.width = prev.width
+      b.style.overflow = prev.overflow
+      window.scrollTo(0, y)
+    }
+  }, [showPdfModal, !!pdfPreviewUrl])
+
   const handleDownloadPdf = async () => {
     if (!pdfBlob) return
     // Mobile: folha de compartilhar do sistema ("Salvar em Arquivos", WhatsApp…)
@@ -1706,7 +1727,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         (ícone de check/uncheck), sem tocar no scroll container.
       */}
       {showPdfModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 overscroll-contain" style={{ touchAction: 'none' }}>
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90dvh] flex flex-col">
             <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div>
@@ -1719,7 +1740,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                 <button onClick={() => setShowPdfModal(false)}><X className="h-5 w-5 text-gray-400" /></button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
+            <div className="flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-4 space-y-4" style={{ touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}>
               {Object.entries(pdfBySection).map(([section, msgs]) => (
                 <div key={section}>
                   <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">{section}</p>

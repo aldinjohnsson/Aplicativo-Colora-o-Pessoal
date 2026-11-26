@@ -9,7 +9,7 @@
 // botões Baixar e Fechar.
 //
 // Dependência: npm i pdfjs-dist
-import { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, X, ZoomIn, ZoomOut, Loader2 } from 'lucide-react'
 
@@ -108,6 +108,30 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
     setCurrent(page)
   }
 
+  // Pinça com dois dedos: muda só o zoom do PDF (não o zoom da página do app).
+  const pinch = useRef<{ d: number; z: number } | null>(null)
+  const dist = (t: React.TouchList) =>
+    Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) pinch.current = { d: dist(e.touches), z: zoom }
+  }
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (pinch.current && e.touches.length < 2) {
+      const last = pinch.current
+      pinch.current = null
+      const ratio = lastRatio.current
+      lastRatio.current = 1
+      if (Math.abs(ratio - 1) > 0.08) {
+        const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(last.z * ratio * 4) / 4))
+        setZoom(z)
+      }
+    }
+  }
+  const lastRatio = useRef(1)
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (pinch.current && e.touches.length === 2) lastRatio.current = dist(e.touches) / pinch.current.d
+  }
+
   const goTo = (n: number) => {
     const host = pagesRef.current, sc = scrollRef.current
     const el = host?.children[n - 1] as HTMLElement | undefined
@@ -116,8 +140,8 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[9999] bg-gray-800 flex flex-col"
-      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+      className="fixed inset-0 z-[9999] bg-gray-800 flex flex-col overscroll-contain"
+      style={{ touchAction: 'none', paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       {/* Barra superior */}
       <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-white border-b border-gray-200 flex-shrink-0">
@@ -138,8 +162,11 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
       <div
         ref={scrollRef}
         onScroll={onScroll}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
         className="flex-1 overflow-auto py-3 px-3 relative"
-        style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y pinch-zoom' }}
+        style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y', overscrollBehavior: 'contain' }}
       >
         {error && <p className="text-white text-sm text-center mt-10">{error}</p>}
         {loading && !error && (
