@@ -10,7 +10,7 @@ import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
   FileText, CheckSquare, Square, Save, CheckCircle2, ListChecks, ChevronDown, ChevronUp,
-  ZoomIn, ZoomOut, Maximize2, Menu, Globe, ImagePlus, ChevronRight,
+  ZoomIn, ZoomOut, Maximize2, Menu, Globe, ImagePlus, ChevronRight, Eye,
 } from 'lucide-react'
 import {
   chatWithGemini, getGeminiApiKey, fileToBase64, urlToBase64, translateText, translateTexts,
@@ -264,6 +264,25 @@ async function downloadImage(url: string, fileName: string): Promise<void> {
   }
 }
 
+/**
+ * Celular/tablet ou PWA instalado ("Adicionar à tela inicial").
+ * Nesses casos window.open(blobUrl, '_blank') NÃO abre uma aba separada:
+ * navega a própria tela do app pro PDF, sem botão de voltar — o usuário
+ * perde o chat e o app recarrega. Por isso o PDF fica dentro do app.
+ */
+function isMobileLike(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return (
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as any).standalone === true
+    )
+  } catch {
+    return false
+  }
+}
+
 const WELCOME_TEXTS: Record<string, (name: string) => string> = {
   'pt-BR': (name) => `Olá! Eu sou a **MS Color IA**, sua assistente virtual de coloração pessoal 🌈\n\nFui treinada com base na metodologia e na expertise da especialista **Marília Santos**, referência em coloração pessoal e análise de imagem.\n\nTodas as minhas recomendações são **personalizadas exclusivamente para você**, utilizando as informações da sua análise feita pela Marília.\n\nAqui, você poderá:\n• Visualizar simulações de cabelos, maquiagens, roupas, acessórios.\n• Tirar dúvidas sobre sua análise.\n\nSempre que precisar, estarei aqui para te guiar 🌈`,
   'en-US': (name) => `Hello! I'm **MS Color IA**, your personal color consultant assistant 🌈\n\nI was trained based on the methodology and expertise of specialist **Marília Santos**, a reference in personal coloring and image analysis.\n\nAll my recommendations are **personalized exclusively for you**, using information from your analysis by Marília.\n\nHere, you can:\n• View simulations of hair, makeup, outfits, and accessories.\n• Ask questions about your analysis.\n\nWhenever you need, I'll be here to guide you 🌈`,
@@ -413,6 +432,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   // final do PDF. Valor `null` = nada em andamento (estado limpo).
   const [pdfProgress, setPdfProgress] = useState<{ done: number; total: number } | null>(null)
   const [pdfBlob, setPdfBlob] = useState<Blob | null>(null)
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
   // Idioma (code) sem PDF modelo cadastrado → abre o modal de aviso.
   const [missingTemplateLang, setMissingTemplateLang] = useState<string | null>(null)
   const [pdfSaving, setPdfSaving] = useState(false)
@@ -1199,14 +1219,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       setPdfBlob(blob)
       const url = URL.createObjectURL(blob)
       pdfUrlsRef.current.push(url)
-      const win = window.open(url, '_blank')
-      if (!win) {
-        // Popup bloqueado — dispara download como fallback
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `${clientName} - Simulações IA.pdf`
-        document.body.appendChild(a); a.click()
-        document.body.removeChild(a)
+      // Desktop: abre em nova aba (comportamento original).
+      // Mobile/PWA: NÃO abre — window.open navegaria o próprio app pro PDF
+      // (sem voltar). O usuário usa os botões Visualizar / Baixar abaixo.
+      if (!isMobileLike()) {
+        const win = window.open(url, '_blank')
+        if (!win) {
+          // Popup bloqueado — dispara download como fallback
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `${clientName} - Simulações IA.pdf`
+          document.body.appendChild(a); a.click()
+          document.body.removeChild(a)
+        }
       }
     } catch (e: any) {
       if (e instanceof MissingPdfTemplateError) { setMissingTemplateLang(e.language); return }
@@ -1218,8 +1243,34 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   }
 
   // Etapa 2a — baixa o PDF já gerado (sem rebuildar). Reusa o blob em memória.
-  const handleDownloadPdf = () => {
+  // Visualizar dentro do app (modal com botão fechar) — usado no mobile.
+  const handleOpenPdfPreview = () => {
     if (!pdfBlob) return
+    const url = URL.createObjectURL(pdfBlob)
+    pdfUrlsRef.current.push(url)
+    setPdfPreviewUrl(url)
+  }
+  const handleClosePdfPreview = () => {
+    setPdfPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+  }
+
+  const handleDownloadPdf = async () => {
+    if (!pdfBlob) return
+    // Mobile: folha de compartilhar do sistema ("Salvar em Arquivos", WhatsApp…)
+    // — não navega o app, então o chat continua onde estava.
+    if (isMobileLike()) {
+      try {
+        const file = new File([pdfBlob], `${clientName} - Simulações IA.pdf`, { type: 'application/pdf' })
+        const nav = navigator as any
+        if (nav.canShare?.({ files: [file] })) {
+          await nav.share({ files: [file], title: file.name })
+          return
+        }
+      } catch (e: any) {
+        if (e?.name === 'AbortError') return   // usuário fechou a folha
+        // qualquer outro erro → cai pro download normal abaixo
+      }
+    }
     const url = URL.createObjectURL(pdfBlob)
     const a = document.createElement('a')
     a.href = url
@@ -1716,7 +1767,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                   <div className="bg-violet-50 border border-violet-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
                     <CheckCircle2 className="h-4 w-4 text-violet-600 mt-0.5 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-violet-800">PDF gerado! Confira em uma nova aba.</p>
+                      <p className="text-xs font-medium text-violet-800">{isMobileLike() ? 'PDF gerado! Toque em Visualizar para conferir.' : 'PDF gerado! Confira em uma nova aba.'}</p>
                       <p className="text-[11px] text-violet-700 mt-0.5">
                         {onSavePdf ? 'Se ficou bom, salve nos Resultados ou baixe.' : 'Clique em Baixar pra salvar o arquivo.'}
                       </p>
@@ -1771,6 +1822,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               {/* ── Etapa 2: PDF gerado, mostra ações ──────────────────────── */}
               {pdfBlob && (
                 <div className="flex gap-2">
+                  {isMobileLike() && (
+                    <button
+                      onClick={handleOpenPdfPreview}
+                      disabled={pdfSaving}
+                      className="flex-1 py-2.5 border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      <Eye className="h-4 w-4" /> Visualizar
+                    </button>
+                  )}
                   <button
                     onClick={handleDownloadPdf}
                     disabled={pdfSaving}
@@ -2162,6 +2222,36 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           </div>
         )
       })()}
+
+      {pdfPreviewUrl && createPortal(
+        <div
+          className="fixed inset-0 z-[9999] bg-black/80 flex flex-col"
+          style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+        >
+          <div className="flex items-center justify-between gap-2 px-4 py-3 bg-white border-b border-gray-200 flex-shrink-0">
+            <p className="text-sm font-semibold text-gray-900 truncate">Pré-visualização do PDF</p>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                className="flex items-center gap-1.5 bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold rounded-full px-3.5 py-2"
+              >
+                <Download className="h-3.5 w-3.5" /> Baixar
+              </button>
+              <button
+                type="button"
+                onClick={handleClosePdfPreview}
+                aria-label="Fechar pré-visualização"
+                className="bg-gray-900 text-white rounded-full p-2.5"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+          <iframe src={pdfPreviewUrl} title="Pré-visualização do PDF" className="flex-1 w-full bg-white" />
+        </div>,
+        document.body,
+      )}
 
       {lightbox && (
         <ImageLightbox
