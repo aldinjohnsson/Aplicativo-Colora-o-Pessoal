@@ -12,6 +12,7 @@
 import React, {
   useCallback, useEffect, useRef, useState,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   X, Download, ChevronLeft, Loader2,
   Image as ImageIcon, Check, AlertCircle, Save, FolderOpen, Upload, ClipboardList,
@@ -1073,12 +1074,24 @@ export function ContrastLayoutDialog({
     </div>
   )
 
-  return (
-    <div className="fixed inset-0 z-[70] bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full shadow-2xl overflow-hidden flex flex-col"
-        style={{ maxWidth: 860, maxHeight: '92vh' }} onClick={e => e.stopPropagation()}>
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
-          <div>
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      style={{
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+      onClick={onClose}
+    >
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full shadow-2xl overflow-hidden flex flex-col"
+        style={{
+          maxWidth: 860,
+          // dvh = altura visível real no mobile (100vh ignora a barra do navegador)
+          maxHeight: 'calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 8px)',
+        }}
+        onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0 bg-white">
+          <div className="min-w-0">
             <p className="font-semibold text-gray-900">Ferramenta de Contraste</p>
             <p className="text-xs text-gray-500 mt-0.5">
               {step === 'category'
@@ -1088,13 +1101,13 @@ export function ContrastLayoutDialog({
                 : 'Ajuste a faixa de contraste e salve. O valor vira tag pra usar em prompts.'}
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
-            <X className="h-4 w-4" />
+          <button type="button" onClick={onClose} aria-label="Fechar" className="text-gray-500 hover:text-gray-700 p-2 -m-1 ml-2 rounded-lg hover:bg-gray-100 flex-shrink-0">
+            <X className="h-5 w-5" />
           </button>
         </div>
         {step === 'category' ? renderCategory() : step === 'pick' ? renderPick() : renderEdit()}
         {renderFooter()}
       </div>
     </div>
-  )
+    , document.body)
 }

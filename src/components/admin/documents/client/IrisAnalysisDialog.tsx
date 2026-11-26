@@ -5,6 +5,7 @@
 // Nenhum upload avulso: as fotos vêm do Drive via driveStorage.fetchPhotoBlob.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   X, Download, ChevronLeft, Loader2,
   Image as ImageIcon, AlertCircle, Save, FolderOpen, Eye, Languages, Undo2,
@@ -870,21 +871,33 @@ export function IrisAnalysisDialog({
     : 'Ajuste a análise e salve. O card vira variável {{AnaliseIris}} nos prompts.'
 
   // ── Render ────────────────────────────────────────────────────────
-  return (
-    <div className="fixed inset-0 z-[70] bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full shadow-2xl overflow-hidden flex flex-col"
-        style={{ maxWidth: 900, maxHeight: '92vh' }} onClick={e => e.stopPropagation()}>
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      style={{
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+      onClick={onClose}
+    >
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full shadow-2xl overflow-hidden flex flex-col"
+        style={{
+          maxWidth: 900,
+          // dvh = altura visível real no mobile (100vh ignora a barra do navegador)
+          maxHeight: 'calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 8px)',
+        }}
+        onClick={e => e.stopPropagation()}>
 
         {/* Header */}
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
-          <div>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0 bg-white">
+          <div className="min-w-0">
             <p className="font-semibold text-gray-900 flex items-center gap-2">
               <Eye className="h-4 w-4 text-rose-500" /> Ferramenta de Análise da Íris
             </p>
             <p className="text-xs text-gray-500 mt-0.5">{stepLabel}</p>
           </div>
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
-            <X className="h-4 w-4" />
+          <button type="button" onClick={onClose} aria-label="Fechar" className="text-gray-500 hover:text-gray-700 p-2 -m-1 ml-2 rounded-lg hover:bg-gray-100 flex-shrink-0">
+            <X className="h-5 w-5" />
           </button>
         </div>
 
@@ -909,5 +922,5 @@ export function IrisAnalysisDialog({
         )}
       </div>
     </div>
-  )
+    , document.body)
 }
