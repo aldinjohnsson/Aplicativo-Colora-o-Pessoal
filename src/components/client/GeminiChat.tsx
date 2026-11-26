@@ -5,6 +5,7 @@
 //   • Nav grid adapts better on narrow screens
 //   • Header info compresses gracefully
 import React, { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
@@ -2321,7 +2322,13 @@ function PromptImagePickerModal({
 }
 
 // ─── ImageLightbox ─────────────────────────────────────────────────────────
-// Foto em tela cheia com zoom por scroll/botões e arraste para mover.
+// Foto em tela cheia com zoom (scroll/botões/pinça/toque duplo) e arraste.
+//
+// Mobile: os handlers de toque são NATIVOS e não-passivos (React registra
+// touchmove como passivo, então preventDefault() lá não funciona e o
+// navegador acabava dando zoom na PÁGINA inteira — o que empurrava o botão
+// fechar pra fora da tela). Com touch-action:none + preventDefault o zoom
+// fica só na imagem e a barra superior (com o X) nunca sai do lugar.
 
 function ImageLightbox({
   src,
@@ -2332,11 +2339,38 @@ function ImageLightbox({
   mimeType?: string
   onClose: () => void
 }) {
-  const [scale, setScale]   = useState(1)
-  const [pos,   setPos]     = useState({ x: 0, y: 0 })
+  const MIN_SCALE = 1
+  const MAX_SCALE = 5
+
+  const [scale, setScale] = useState(1)
+  const [pos,   setPos]   = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
-  const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  // Refs espelham o estado pra os listeners nativos não ficarem com valor velho.
+  const scaleRef = useRef(1)
+  const posRef   = useRef({ x: 0, y: 0 })
+  const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+
+  const clamp = (n: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, n))
+
+  const applyView = (s: number, p: { x: number; y: number }) => {
+    const ns = clamp(s)
+    const np = ns <= 1 ? { x: 0, y: 0 } : p
+    scaleRef.current = ns
+    posRef.current = np
+    setScale(ns)
+    setPos(np)
+  }
+
+  const resetZoom = () => applyView(1, { x: 0, y: 0 })
+
+  // Trava o scroll do fundo enquanto o lightbox está aberto.
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [])
 
   // Zoom via scroll do mouse
   useEffect(() => {
@@ -2344,10 +2378,97 @@ function ImageLightbox({
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      setScale(s => Math.min(5, Math.max(0.5, s * (1 - e.deltaY * 0.001))))
+      applyView(scaleRef.current * (1 - e.deltaY * 0.001), posRef.current)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // Touch nativo: pinça (2 dedos), arrastar (1 dedo com zoom) e toque duplo.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    let pinch: { dist: number; scale: number } | null = null
+    let pan: { x: number; y: number; px: number; py: number } | null = null
+    let moved = false
+    let lastTap = 0
+
+    const dist = (t: TouchList) =>
+      Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+
+    const startPan = (t: Touch) => {
+      pan = { x: t.clientX, y: t.clientY, px: posRef.current.x, py: posRef.current.y }
+    }
+
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        pinch = { dist: dist(e.touches), scale: scaleRef.current }
+        pan = null
+        moved = true
+        setDragging(false)
+      } else if (e.touches.length === 1) {
+        moved = false
+        if (scaleRef.current > 1) { startPan(e.touches[0]); setDragging(true) }
+      }
+    }
+
+    const onMove = (e: TouchEvent) => {
+      // Sem isso o navegador faz zoom/scroll da página (e o X some).
+      e.preventDefault()
+      if (e.touches.length === 2 && pinch) {
+        const next = pinch.scale * (dist(e.touches) / pinch.dist)
+        applyView(next, posRef.current)
+      } else if (e.touches.length === 1 && pan) {
+        const t = e.touches[0]
+        if (Math.hypot(t.clientX - pan.x, t.clientY - pan.y) > 4) moved = true
+        applyView(scaleRef.current, {
+          x: pan.px + (t.clientX - pan.x),
+          y: pan.py + (t.clientY - pan.y),
+        })
+      } else if (e.touches.length === 1) {
+        moved = true
+      }
+    }
+
+    const onEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinch = null
+      if (e.touches.length === 1 && scaleRef.current > 1) {
+        startPan(e.touches[0])            // levantou um dedo da pinça → continua arrastando
+      } else if (e.touches.length === 0) {
+        pan = null
+        setDragging(false)
+        // Toque duplo: alterna 1× ↔ 2.5×
+        if (!moved) {
+          const now = Date.now()
+          if (now - lastTap < 300) {
+            if (scaleRef.current > 1) resetZoom()
+            else applyView(2.5, { x: 0, y: 0 })
+            lastTap = 0
+          } else {
+            lastTap = now
+          }
+        }
+      }
+    }
+
+    // Safari iOS: bloqueia o gesto nativo de pinça da página.
+    const onGesture = (e: Event) => e.preventDefault()
+
+    el.addEventListener('touchstart', onStart, { passive: true })
+    el.addEventListener('touchmove', onMove, { passive: false })
+    el.addEventListener('touchend', onEnd, { passive: true })
+    el.addEventListener('touchcancel', onEnd, { passive: true })
+    el.addEventListener('gesturestart', onGesture as EventListener)
+    el.addEventListener('gesturechange', onGesture as EventListener)
+    return () => {
+      el.removeEventListener('touchstart', onStart)
+      el.removeEventListener('touchmove', onMove)
+      el.removeEventListener('touchend', onEnd)
+      el.removeEventListener('touchcancel', onEnd)
+      el.removeEventListener('gesturestart', onGesture as EventListener)
+      el.removeEventListener('gesturechange', onGesture as EventListener)
+    }
   }, [])
 
   // Fecha com Escape
@@ -2357,7 +2478,7 @@ function ImageLightbox({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Arraste para mover (só quando zoom > 1)
+  // Arraste com mouse (desktop, só quando zoom > 1)
   const handleMouseDown = (e: React.MouseEvent) => {
     if (scale <= 1) return
     e.preventDefault()
@@ -2366,34 +2487,12 @@ function ImageLightbox({
   }
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!dragging || !dragStart.current) return
-    setPos({
+    applyView(scaleRef.current, {
       x: dragStart.current.px + (e.clientX - dragStart.current.mx),
       y: dragStart.current.py + (e.clientY - dragStart.current.my),
     })
   }
   const handleMouseUp = () => { setDragging(false); dragStart.current = null }
-
-  // Touch: pinch-to-zoom + drag simples
-  const lastTouch = useRef<{ dist: number; scale: number } | null>(null)
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX
-      const dy = e.touches[0].clientY - e.touches[1].clientY
-      lastTouch.current = { dist: Math.hypot(dx, dy), scale }
-    }
-  }
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (e.touches.length === 2 && lastTouch.current) {
-      e.preventDefault()
-      const dx = e.touches[0].clientX - e.touches[1].clientX
-      const dy = e.touches[0].clientY - e.touches[1].clientY
-      const dist = Math.hypot(dx, dy)
-      const next = Math.min(5, Math.max(0.5, lastTouch.current.scale * (dist / lastTouch.current.dist)))
-      setScale(next)
-    }
-  }
-
-  const resetZoom = () => { setScale(1); setPos({ x: 0, y: 0 }) }
 
   const handleDownload = () => {
     const ext = mimeType?.includes('png') ? 'png' : 'jpg'
@@ -2409,46 +2508,21 @@ function ImageLightbox({
     }
   }
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-black/92 flex items-center justify-center"
+      className="fixed inset-0 z-[9999] bg-black/92 flex items-center justify-center overflow-hidden"
+      style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
       onClick={onClose}
       ref={containerRef}
     >
-      {/* ── Barra superior ────────────────────────────────────────────── */}
+      {/* ── Imagem (camada de baixo; o zoom nunca passa por cima das barras) ── */}
       <div
-        className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3 z-10"
-        onClick={e => e.stopPropagation()}
-      >
-        <span className="text-white/60 text-xs select-none">✨ Simulação IA</span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleDownload}
-            className="flex items-center gap-1.5 bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold rounded-full px-3.5 py-1.5 shadow-lg shadow-violet-900/40 transition-colors"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Baixar
-          </button>
-          <button
-            onClick={onClose}
-            className="bg-violet-500 hover:bg-violet-400 text-white rounded-full p-1.5 shadow-lg shadow-violet-900/40 transition-colors"
-            title="Fechar (Esc)"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-      </div>
-
-      {/* ── Imagem ────────────────────────────────────────────────────── */}
-      <div
-        className="relative select-none"
+        className="relative z-0 select-none"
         style={{ cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
         onClick={e => e.stopPropagation()}
       >
         <DriveProxyImg
@@ -2459,27 +2533,58 @@ function ImageLightbox({
             transform: `scale(${scale}) translate(${pos.x / scale}px, ${pos.y / scale}px)`,
             transition: dragging ? 'none' : 'transform 0.12s ease',
             maxWidth:  '92vw',
-            maxHeight: '82vh',
+            maxHeight: '82dvh',
             objectFit: 'contain',
           }}
           className="rounded-xl shadow-2xl"
         />
       </div>
 
+      {/* ── Barra superior: sempre visível, com fundo e safe-area (notch) ── */}
+      <div
+        className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 pb-6 bg-gradient-to-b from-black/80 to-transparent"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 12px)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <span className="text-white/70 text-xs select-none">✨ Simulação IA</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold rounded-full px-3.5 py-2 shadow-lg shadow-violet-900/40 transition-colors"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Baixar
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fechar"
+            className="bg-white text-gray-900 hover:bg-gray-200 rounded-full p-2.5 shadow-lg ring-2 ring-violet-500 transition-colors"
+            title="Fechar (Esc)"
+          >
+            <X className="h-6 w-6" />
+          </button>
+        </div>
+      </div>
+
       {/* ── Barra inferior de zoom ─────────────────────────────────────── */}
       <div
-        className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/50 backdrop-blur-md border border-white/10 rounded-full px-4 py-2 z-10"
+        className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-black/50 backdrop-blur-md border border-white/10 rounded-full px-4 py-2"
+        style={{ bottom: 'calc(env(safe-area-inset-bottom) + 20px)' }}
         onClick={e => e.stopPropagation()}
       >
         <button
-          onClick={() => setScale(s => Math.max(0.5, +(s - 0.25).toFixed(2)))}
-          className="text-white/70 hover:text-white transition-colors"
+          type="button"
+          onClick={() => applyView(+(scaleRef.current - 0.25).toFixed(2), posRef.current)}
+          className="text-white/70 hover:text-white transition-colors p-1"
           title="Diminuir zoom"
         >
-          <ZoomOut className="h-4 w-4" />
+          <ZoomOut className="h-5 w-5" />
         </button>
 
         <button
+          type="button"
           onClick={resetZoom}
           className="text-white text-xs font-mono min-w-[3rem] text-center hover:text-white/70 transition-colors"
           title="Resetar zoom"
@@ -2488,26 +2593,31 @@ function ImageLightbox({
         </button>
 
         <button
-          onClick={() => setScale(s => Math.min(5, +(s + 0.25).toFixed(2)))}
-          className="text-white/70 hover:text-white transition-colors"
+          type="button"
+          onClick={() => applyView(+(scaleRef.current + 0.25).toFixed(2), posRef.current)}
+          className="text-white/70 hover:text-white transition-colors p-1"
           title="Aumentar zoom"
         >
-          <ZoomIn className="h-4 w-4" />
+          <ZoomIn className="h-5 w-5" />
         </button>
       </div>
 
       {/* ── Dica (desaparece após 3s via CSS) ───────────────────────── */}
       <p
-        className="absolute bottom-14 left-1/2 -translate-x-1/2 text-white/30 text-[11px] whitespace-nowrap pointer-events-none select-none"
-        style={{ animation: 'fadeOutHint 0.5s ease 2.5s forwards' }}
+        className="absolute left-1/2 -translate-x-1/2 z-10 text-white/40 text-[11px] whitespace-nowrap pointer-events-none select-none"
+        style={{
+          bottom: 'calc(env(safe-area-inset-bottom) + 68px)',
+          animation: 'fadeOutHint 0.5s ease 2.5s forwards',
+        }}
       >
-        Scroll para zoom · Arraste para mover · Esc para fechar
+        Pinça ou toque duplo para zoom · Esc para fechar
       </p>
 
       <style>{`
         @keyframes fadeOutHint { to { opacity: 0 } }
       `}</style>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
