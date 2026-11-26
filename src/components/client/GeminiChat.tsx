@@ -455,6 +455,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   })
   const [showLangMenu, setShowLangMenu] = useState(false)
   const [showSideMenu, setShowSideMenu] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)   // chat em tela cheia
 
   useEffect(() => {
     try { localStorage.setItem(languageStorageKey, selectedLanguage) } catch {}
@@ -1259,7 +1260,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
   // visualizador) está aberto. Sem isso, no iOS, arrastar o dedo no modal
   // "puxa" o chat/página de trás.
   useEffect(() => {
-    if (!showPdfModal && !pdfPreviewUrl) return
+    if (!showPdfModal && !pdfPreviewUrl && !fullscreen) return
     const y = window.scrollY
     const b = document.body
     const prev = { position: b.style.position, top: b.style.top, width: b.style.width, overflow: b.style.overflow }
@@ -1274,7 +1275,17 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       b.style.overflow = prev.overflow
       window.scrollTo(0, y)
     }
-  }, [showPdfModal, !!pdfPreviewUrl])
+  }, [showPdfModal, !!pdfPreviewUrl, fullscreen])
+
+  // Esc sai da tela cheia (desktop) — só quando nenhum modal está aberto por cima.
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !showPdfModal && !pdfPreviewUrl && !showSideMenu) setFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullscreen, showPdfModal, pdfPreviewUrl, showSideMenu])
 
   const handleDownloadPdf = async () => {
     if (!pdfBlob) return
@@ -1727,7 +1738,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         (ícone de check/uncheck), sem tocar no scroll container.
       */}
       {showPdfModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 overscroll-contain" style={{ touchAction: 'none' }}>
+        <div className="fixed inset-0 z-[160] bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 overscroll-contain" style={{ touchAction: 'none' }}>
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90dvh] flex flex-col">
             <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div>
@@ -1891,7 +1902,15 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           vaza em laptops com tela pequena.
       */}
       <div
-        className="relative flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-[75dvh] min-h-[480px] max-h-[720px] sm:h-[780px] sm:max-h-[calc(100dvh_-_120px)]"
+        className={fullscreen
+          ? 'fixed inset-0 z-[150] flex flex-col bg-white overflow-hidden'
+          : 'relative flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-[75dvh] min-h-[480px] max-h-[720px] sm:h-[780px] sm:max-h-[calc(100dvh_-_120px)]'}
+        style={fullscreen ? {
+          // respeita o notch/barra do iPhone; a faixa de cima fica na cor do cabeçalho
+          paddingTop: 'env(safe-area-inset-top)',
+          paddingBottom: 'env(safe-area-inset-bottom)',
+          background: 'linear-gradient(#8b5cf6,#8b5cf6) top / 100% env(safe-area-inset-top) no-repeat, #fff',
+        } : undefined}
       >
         {/* ── Drawer lateral mobile ─────────────────────────────────────── */}
         {showSideMenu && (
@@ -2017,6 +2036,18 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           >
             <Menu className="h-5 w-5" />
           </button>
+          {/* Tela cheia (por último) */}
+          <button
+            onClick={() => setFullscreen(f => !f)}
+            aria-label={fullscreen ? 'Sair da tela cheia' : 'Deixar em tela cheia'}
+            className={fullscreen
+              ? 'flex items-center gap-1.5 bg-white text-violet-700 rounded-full px-3 py-1.5 text-xs font-bold flex-shrink-0 whitespace-nowrap active:bg-violet-50'
+              : 'flex items-center gap-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 rounded-full px-3 py-1.5 text-xs font-semibold flex-shrink-0 whitespace-nowrap transition-colors'}
+          >
+            {fullscreen
+              ? <><X className="h-3.5 w-3.5" /><span>Sair</span></>
+              : <><Maximize2 className="h-3.5 w-3.5" /><span>Tela cheia</span></>}
+          </button>
         </div>
 
         {/* ── Desktop ─────────────────────────────────────────────────────── */}
@@ -2073,6 +2104,19 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
+          {/* Tela cheia (por último) */}
+          <button
+            onClick={() => setFullscreen(f => !f)}
+            title={fullscreen ? 'Sair da tela cheia (Esc)' : 'Deixar em tela cheia'}
+            aria-label={fullscreen ? 'Sair da tela cheia' : 'Deixar em tela cheia'}
+            className={fullscreen
+              ? 'inline-flex items-center gap-1 bg-white text-violet-700 rounded-full px-2.5 py-1 text-xs font-bold flex-shrink-0 whitespace-nowrap'
+              : 'inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-full px-2.5 py-1 text-xs font-medium transition-colors flex-shrink-0 whitespace-nowrap'}
+          >
+            {fullscreen
+              ? <><X className="h-3.5 w-3.5" /><span>Sair</span></>
+              : <><Maximize2 className="h-3.5 w-3.5" /><span>Tela cheia</span></>}
+          </button>
         </div>
 
         {/* Medidor do plano (admin pré-pago) — barra bonita */}
@@ -2216,7 +2260,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         const langLabel = SUPPORTED_LANGUAGES.find(l => l.code === missingTemplateLang)?.label ?? missingTemplateLang
         const isAdmin = !!onSavePdf // hoje só o ClientsManager (painel admin) passa onSavePdf
         return (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setMissingTemplateLang(null)}>
+          <div className="fixed inset-0 z-[180] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setMissingTemplateLang(null)}>
             <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 text-center" onClick={e => e.stopPropagation()}>
               <div className="mx-auto mb-4 w-12 h-12 rounded-full bg-violet-100 flex items-center justify-center">
                 <AlertCircle className="h-6 w-6 text-violet-600" />
@@ -2324,7 +2368,7 @@ function PromptImagePickerModal({
     const autoFolder = folders?.find(f => f.id === autoLocation.folderId)
     const autoCat = autoFolder?.config?.categories?.find((c: any) => c.id === autoLocation.catId)
     return (
-      <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="fixed inset-0 z-[170] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
         <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
           <div className="flex items-center gap-2 px-4 py-3 border-b">
             <h3 className="font-semibold text-sm text-gray-800 flex-1">Usar como referência</h3>
@@ -2358,7 +2402,7 @@ function PromptImagePickerModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[170] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 px-4 py-3 border-b">
           {(folderId) && (
