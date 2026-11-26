@@ -756,6 +756,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     if (container) container.scrollTop = container.scrollHeight
   }, [messages])
 
+  useEffect(() => {
+    const end = endRef.current
+    const container = end?.parentElement
+    if (container) container.scrollTop = container.scrollHeight
+  }, [fullscreen])
+
   const loadImages = async (images: PromptImage[]): Promise<MaterialData[]> => {
     if (!images.length) return []
     const results = await Promise.all(images.map(async img => {
@@ -1722,7 +1728,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     )
   }
 
-  return (
+  const tree = (
     <>
       {/*
         ── Modal de exportação PDF ───────────────────────────────────────────────
@@ -1738,7 +1744,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         (ícone de check/uncheck), sem tocar no scroll container.
       */}
       {showPdfModal && (
-        <div className="fixed inset-0 z-[160] bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 overscroll-contain" style={{ touchAction: 'none' }}>
+        <div className="fixed inset-0 z-[9100] bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 overscroll-contain" style={{ touchAction: 'none' }}>
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90dvh] flex flex-col">
             <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div>
@@ -1903,7 +1909,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       */}
       <div
         className={fullscreen
-          ? 'fixed inset-0 z-[150] flex flex-col bg-white overflow-hidden'
+          ? 'fixed inset-0 z-[9000] flex flex-col bg-white overflow-hidden'
           : 'relative flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-[75dvh] min-h-[480px] max-h-[720px] sm:h-[780px] sm:max-h-[calc(100dvh_-_120px)]'}
         style={fullscreen ? {
           // respeita o notch/barra do iPhone; a faixa de cima fica na cor do cabeçalho
@@ -2260,7 +2266,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         const langLabel = SUPPORTED_LANGUAGES.find(l => l.code === missingTemplateLang)?.label ?? missingTemplateLang
         const isAdmin = !!onSavePdf // hoje só o ClientsManager (painel admin) passa onSavePdf
         return (
-          <div className="fixed inset-0 z-[180] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setMissingTemplateLang(null)}>
+          <div className="fixed inset-0 z-[9300] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setMissingTemplateLang(null)}>
             <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 text-center" onClick={e => e.stopPropagation()}>
               <div className="mx-auto mb-4 w-12 h-12 rounded-full bg-violet-100 flex items-center justify-center">
                 <AlertCircle className="h-6 w-6 text-violet-600" />
@@ -2330,6 +2336,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
       )}
     </>
   )
+
+  // Em tela cheia o chat é renderizado direto no <body>. Assim ele fica acima
+  // do cabeçalho/menu do app, que antes sobrepunha o topo do chat.
+  return fullscreen ? createPortal(tree, document.body) : tree
 }
 
 // ─── PromptImagePickerModal ─────────────────────────────────────────────────
@@ -2368,7 +2378,7 @@ function PromptImagePickerModal({
     const autoFolder = folders?.find(f => f.id === autoLocation.folderId)
     const autoCat = autoFolder?.config?.categories?.find((c: any) => c.id === autoLocation.catId)
     return (
-      <div className="fixed inset-0 z-[170] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="fixed inset-0 z-[9200] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
         <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
           <div className="flex items-center gap-2 px-4 py-3 border-b">
             <h3 className="font-semibold text-sm text-gray-800 flex-1">Usar como referência</h3>
@@ -2402,7 +2412,7 @@ function PromptImagePickerModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[170] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[9200] bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 px-4 py-3 border-b">
           {(folderId) && (
