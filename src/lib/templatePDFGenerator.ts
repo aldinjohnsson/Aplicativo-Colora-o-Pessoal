@@ -472,8 +472,9 @@ async function renderCollageSinglePage(
     if (imgEntry) {
       const { image, width: iw, height: ih } = imgEntry
 
-      // Cover scale: foto preenche a célula em ambas dimensões (overflow é cortado)
-      const coverScale = Math.max(cellW / iw, imgH / ih)
+      // Contain: a foto inteira cabe na célula (sem cortar cabeça/cabelo).
+      // Sobra de espaço nas laterais/topo fica em branco, centralizada.
+      const coverScale = Math.min(cellW / iw, imgH / ih)
       const rw = iw * coverScale
       const rh = ih * coverScale
 

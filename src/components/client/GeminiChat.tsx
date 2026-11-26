@@ -6,6 +6,7 @@
 //   • Header info compresses gracefully
 import React, { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { PdfPreviewModal } from './PdfPreviewModal'
 import {
   Send, X, Loader2, AlertCircle, Bot, User, Download,
   Wand2, RefreshCw, ArrowLeft, Scissors, Palette, Shirt, Gem, FolderOpen, Trash2,
@@ -1738,7 +1739,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
                           })}
                           className={`relative rounded-xl overflow-hidden border-2 text-left transition-all ${sel ? 'border-violet-500 ring-2 ring-violet-200' : 'border-gray-200'}`}
                         >
-                          {imgSrc && <DriveProxyImg src={imgSrc} alt="" className="w-full aspect-square object-cover" />}
+                          {imgSrc && <DriveProxyImg src={imgSrc} alt="" className="w-full aspect-[3/4] object-contain bg-gray-100" />}
                           <div className={`absolute top-2 right-2 ${sel ? 'text-violet-600' : 'text-gray-400'}`}>
                             {sel ? <CheckSquare className="h-5 w-5 bg-white rounded" /> : <Square className="h-5 w-5 bg-white/80 rounded" />}
                           </div>
@@ -1821,30 +1822,32 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
               {/* ── Etapa 2: PDF gerado, mostra ações ──────────────────────── */}
               {pdfBlob && (
-                <div className="flex gap-2">
-                  {isMobileLike() && (
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    {isMobileLike() && (
+                      <button
+                        onClick={handleOpenPdfPreview}
+                        disabled={pdfSaving}
+                        className="flex-1 min-w-0 py-2.5 px-3 border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
+                      >
+                        <Eye className="h-4 w-4 flex-shrink-0" /> Visualizar
+                      </button>
+                    )}
                     <button
-                      onClick={handleOpenPdfPreview}
+                      onClick={handleDownloadPdf}
                       disabled={pdfSaving}
-                      className="flex-1 py-2.5 border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                      className="flex-1 min-w-0 py-2.5 px-3 border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
                     >
-                      <Eye className="h-4 w-4" /> Visualizar
+                      <Download className="h-4 w-4 flex-shrink-0" /> Baixar
                     </button>
-                  )}
-                  <button
-                    onClick={handleDownloadPdf}
-                    disabled={pdfSaving}
-                    className="flex-1 py-2.5 border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    <Download className="h-4 w-4" /> Baixar
-                  </button>
+                  </div>
                   {onSavePdf && !pdfSaveSuccess && (
                     <button
                       onClick={handleSavePdfToResult}
                       disabled={pdfSaving}
-                      className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                      className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
                     >
-                      {pdfSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                      {pdfSaving ? <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" /> : <Save className="h-4 w-4 flex-shrink-0" />}
                       {pdfSaving ? 'Salvando...' : 'Salvar em Resultado'}
                     </button>
                   )}
@@ -2223,34 +2226,12 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
         )
       })()}
 
-      {pdfPreviewUrl && createPortal(
-        <div
-          className="fixed inset-0 z-[9999] bg-black/80 flex flex-col"
-          style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
-        >
-          <div className="flex items-center justify-between gap-2 px-4 py-3 bg-white border-b border-gray-200 flex-shrink-0">
-            <p className="text-sm font-semibold text-gray-900 truncate">Pré-visualização do PDF</p>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                type="button"
-                onClick={handleDownloadPdf}
-                className="flex items-center gap-1.5 bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold rounded-full px-3.5 py-2"
-              >
-                <Download className="h-3.5 w-3.5" /> Baixar
-              </button>
-              <button
-                type="button"
-                onClick={handleClosePdfPreview}
-                aria-label="Fechar pré-visualização"
-                className="bg-gray-900 text-white rounded-full p-2.5"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-          </div>
-          <iframe src={pdfPreviewUrl} title="Pré-visualização do PDF" className="flex-1 w-full bg-white" />
-        </div>,
-        document.body,
+      {pdfPreviewUrl && pdfBlob && (
+        <PdfPreviewModal
+          blob={pdfBlob}
+          onClose={handleClosePdfPreview}
+          onDownload={handleDownloadPdf}
+        />
       )}
 
       {lightbox && (
