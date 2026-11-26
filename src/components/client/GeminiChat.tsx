@@ -1624,13 +1624,17 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
     )
   }
 
+  // Fecha o painel de opções (mesmo estado 'hidden' usado após gerar uma imagem;
+  // o botão "Voltar ao menu" reabre).
+  const closeNav = () => { setNavState('hidden'); setSelectedCat(null); setSelectedPrompt(null); setSelectedLength(null) }
+
   const renderNav = () => {
     if (navState === 'hidden' || !categories.length) return null
     return (
       <div className="border-t border-gray-100 bg-white px-3 sm:px-4 py-3 max-h-72 overflow-y-auto">
         {navState === 'categories' && (
           <div className="space-y-2">
-            <p className="text-xs font-semibold text-gray-600 text-center">Escolha o que deseja explorar:</p>
+            <div className="flex items-center"><p className="flex-1 text-xs font-semibold text-gray-600 text-center pl-5">Escolha o que deseja explorar:</p><button onClick={closeNav} title="Fechar" aria-label="Fechar opções" className="flex-shrink-0 p-1.5 -m-1 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100"><X className="h-4 w-4" /></button></div>
             <div className="grid grid-cols-2 gap-2">
               {categories.map(cat => { const Icon = ICONS[cat.icon] || FolderOpen; return <button key={cat.id} onClick={() => handleCatClick(cat)} disabled={loading} className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-br from-violet-50 to-purple-50 border border-violet-200 rounded-xl text-xs sm:text-sm font-medium text-violet-700 hover:from-violet-100 hover:to-purple-100 disabled:opacity-50 text-left"><Icon className="h-4 w-4 flex-shrink-0" /><span className="truncate">{cat.name}</span></button> })}
             </div>
@@ -1640,7 +1644,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
-              <p className="text-xs font-semibold text-gray-600 truncate">{selectedCat.name} — Escolha a cor:</p>
+              <p className="text-xs font-semibold text-gray-600 truncate flex-1 min-w-0">{selectedCat.name} — Escolha a cor:</p>
+              <button onClick={closeNav} title="Fechar" aria-label="Fechar opções" className="ml-auto flex-shrink-0 p-1.5 -m-1 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100"><X className="h-4 w-4" /></button>
             </div>
             <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
               {selectedCat.prompts.map(p => (
@@ -1663,9 +1668,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div className="flex items-center gap-2">
               <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold text-gray-600 truncate">{selectedPrompt.name} — Comprimento:</p>
+                <p className="text-xs font-semibold text-gray-600 truncate flex-1 min-w-0">{selectedPrompt.name} — Comprimento:</p>
                 <div className="flex items-center gap-1 mt-0.5"><span className="w-4 h-1 bg-violet-500 rounded-full" /><span className={`w-4 h-1 rounded-full ${(selectedPrompt.textures || []).length > 0 ? 'bg-gray-200' : 'bg-violet-500'}`} /></div>
               </div>
+              <button onClick={closeNav} title="Fechar" aria-label="Fechar opções" className="ml-auto flex-shrink-0 p-1.5 -m-1 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100"><X className="h-4 w-4" /></button>
             </div>
             <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
               {(selectedPrompt.lengths || []).map(length => (
@@ -1688,9 +1694,10 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             <div className="flex items-center gap-2">
               <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold text-gray-600 truncate">{[selectedPrompt.name, selectedLength?.name].filter(Boolean).join(' — ')} — Textura:</p>
+                <p className="text-xs font-semibold text-gray-600 truncate flex-1 min-w-0">{[selectedPrompt.name, selectedLength?.name].filter(Boolean).join(' — ')} — Textura:</p>
                 <div className="flex items-center gap-1 mt-0.5"><span className="w-4 h-1 bg-violet-500 rounded-full" />{(selectedPrompt.lengths || []).length > 0 && <span className="w-4 h-1 bg-violet-500 rounded-full" />}<span className="w-4 h-1 bg-violet-500 rounded-full" /></div>
               </div>
+              <button onClick={closeNav} title="Fechar" aria-label="Fechar opções" className="ml-auto flex-shrink-0 p-1.5 -m-1 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100"><X className="h-4 w-4" /></button>
             </div>
             <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
               {(selectedPrompt.textures || []).map(texture => (
@@ -1714,7 +1721,8 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <button onClick={goBack} className="text-gray-400 hover:text-gray-600"><ArrowLeft className="h-4 w-4" /></button>
-              <p className="text-xs font-semibold text-gray-600 truncate">{selectedPrompt.name} — Comprimento:</p>
+              <p className="text-xs font-semibold text-gray-600 truncate flex-1 min-w-0">{selectedPrompt.name} — Comprimento:</p>
+              <button onClick={closeNav} title="Fechar" aria-label="Fechar opções" className="ml-auto flex-shrink-0 p-1.5 -m-1 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100"><X className="h-4 w-4" /></button>
             </div>
             {(selectedPrompt.thumbnail?.url || selectedPrompt.images?.[0]?.url) && (
               <div className="flex justify-center"><CachedThumb src={selectedPrompt.thumbnail?.url || selectedPrompt.images[0].url} alt="" size={400} className="w-20 h-20 sm:w-24 sm:h-24 object-cover rounded-xl border" /></div>
@@ -2008,7 +2016,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
 
         {/* Header */}
         {/* ── Mobile ─────────────────────────────────────────────────────── */}
-        <div className="sm:hidden flex items-center gap-3 px-3 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
+        <div className="sm:hidden flex items-center gap-2 px-3 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white flex-shrink-0">
           {/* Avatar / ícone */}
           {refBase64 && referencePhotoUrl
             ? <div className="w-9 h-9 rounded-full overflow-hidden border-2 border-white/50 flex-shrink-0 shadow-md"><DriveProxyImg src={referencePhotoUrl} alt="" className="w-full h-full object-cover" /></div>
@@ -2016,7 +2024,7 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
           }
           {/* Nome + status */}
           <div className="flex-1 min-w-0">
-            <p className="font-bold text-sm leading-tight">MS Color IA</p>
+            <p className="font-bold text-sm leading-tight whitespace-nowrap truncate">MS Color IA</p>
             <p className="text-white/70 text-xs truncate leading-tight mt-0.5">
               {loadingRef || loadingResults
                 ? 'Carregando...'
@@ -2048,11 +2056,11 @@ export function GeminiChat({ clientName, systemPrompt, referencePhotoUrl, refere
             aria-label={fullscreen ? 'Sair da tela cheia' : 'Deixar em tela cheia'}
             className={fullscreen
               ? 'flex items-center gap-1.5 bg-white text-violet-700 rounded-full px-3 py-1.5 text-xs font-bold flex-shrink-0 whitespace-nowrap active:bg-violet-50'
-              : 'flex items-center gap-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 rounded-full px-3 py-1.5 text-xs font-semibold flex-shrink-0 whitespace-nowrap transition-colors'}
+              : 'w-9 h-9 rounded-xl bg-white/20 hover:bg-white/30 active:bg-white/40 flex items-center justify-center flex-shrink-0 transition-colors'}
           >
             {fullscreen
               ? <><X className="h-3.5 w-3.5" /><span>Sair</span></>
-              : <><Maximize2 className="h-3.5 w-3.5" /><span>Tela cheia</span></>}
+              : <Maximize2 className="h-4 w-4" />}
           </button>
         </div>
 

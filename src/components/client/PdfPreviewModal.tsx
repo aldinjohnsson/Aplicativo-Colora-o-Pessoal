@@ -5,11 +5,11 @@
 // 1ª página e não permite zoom nem troca de página.
 //
 // Recursos: todas as páginas em rolagem vertical, zoom (+ / − / 100%),
-// pinça nativa (quando o viewport permite), contador "X de N" com setas,
-// botões Baixar e Fechar.
+// pinça com dois dedos acompanhando o gesto em tempo real, contador "X de N"
+// com setas, botões Baixar e Fechar.
 //
 // Dependência: npm i pdfjs-dist
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, X, ZoomIn, ZoomOut, Loader2 } from 'lucide-react'
 
@@ -21,20 +21,29 @@ interface Props {
 }
 
 const MIN_ZOOM = 1
-const MAX_ZOOM = 3
+const MAX_ZOOM = 4
 const STEP = 0.5
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+
+// Ponto (em coordenadas do conteúdo, sem zoom) que deve ficar parado na tela
+// quando o zoom muda, e a posição dele dentro da área visível.
+interface Anchor { x: number; y: number; vx: number; vy: number; k: number }
 
 export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', onClose, onDownload }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pagesRef  = useRef<HTMLDivElement>(null)
   const pdfRef    = useRef<any>(null)
   const renderId  = useRef(0)
+  const zoomRef   = useRef(1)
+  const anchorRef = useRef<Anchor | null>(null)
 
   const [numPages, setNumPages] = useState(0)
   const [current, setCurrent]   = useState(1)
   const [zoom, setZoom]         = useState(1)
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState<string | null>(null)
+
+  useEffect(() => { zoomRef.current = zoom }, [zoom])
 
   // Carrega o documento
   useEffect(() => {
@@ -58,20 +67,25 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
     return () => { cancelled = true; renderId.current++; pdfRef.current?.destroy?.(); pdfRef.current = null }
   }, [blob])
 
-  // Renderiza todas as páginas (de novo a cada mudança de zoom)
+  // Renderiza todas as páginas no zoom atual.
+  // 1ª vez: vai aparecendo página a página. Nas trocas de zoom: renderiza num
+  // contêiner fora da tela e só troca no final — a versão antiga (esticada pelo
+  // gesto) continua visível até a nova ficar pronta, sem "piscar" em branco.
   const renderPages = useCallback(async () => {
     const doc = pdfRef.current
     const host = pagesRef.current
     const scroller = scrollRef.current
     if (!doc || !host || !scroller) return
     const myId = ++renderId.current
-    setLoading(true)
+
+    const first = host.childElementCount === 0
+    if (first) setLoading(true)
 
     const fitW = scroller.clientWidth - 24            // 12px de respiro de cada lado
     const cssW = fitW * zoom
     const dpr  = Math.min(window.devicePixelRatio || 1, 2)
 
-    host.innerHTML = ''
+    const buffer: HTMLCanvasElement[] = []
     for (let n = 1; n <= doc.numPages; n++) {
       if (myId !== renderId.current) return
       const page = await doc.getPage(n)
@@ -84,16 +98,121 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
       canvas.style.width  = `${cssW}px`
       canvas.style.height = `${(cssW / base.width) * base.height}px`
       canvas.className = 'bg-white shadow-md mx-auto mb-3 block'
-      host.appendChild(canvas)
 
       const ctx = canvas.getContext('2d')!
       await page.render({ canvasContext: ctx, canvas, viewport }).promise
-      if (n === 1 && myId === renderId.current) setLoading(false)
+      if (myId !== renderId.current) return
+
+      if (first) {
+        host.appendChild(canvas)
+        if (n === 1) setLoading(false)
+      } else {
+        buffer.push(canvas)
+      }
     }
-    if (myId === renderId.current) setLoading(false)
+    if (myId !== renderId.current) return
+
+    if (!first) {
+      host.replaceChildren(...buffer)
+      host.style.transform = ''
+      host.style.transformOrigin = ''
+    }
+
+    // Mantém na tela o ponto que o usuário estava olhando (foco da pinça ou centro)
+    const a = anchorRef.current
+    anchorRef.current = null
+    if (a) {
+      scroller.scrollLeft = host.offsetLeft + a.x * a.k - a.vx
+      scroller.scrollTop  = host.offsetTop  + a.y * a.k - a.vy
+    }
+    setLoading(false)
   }, [zoom])
 
   useEffect(() => { if (numPages) renderPages() }, [numPages, renderPages])
+
+  // Troca de zoom pelos botões: ancora no centro da área visível
+  const zoomTo = (next: number) => {
+    const sc = scrollRef.current, host = pagesRef.current
+    const z = clampZoom(next)
+    if (!sc || !host || z === zoomRef.current) return
+    const vx = sc.clientWidth / 2, vy = sc.clientHeight / 2
+    anchorRef.current = {
+      x: sc.scrollLeft + vx - host.offsetLeft,
+      y: sc.scrollTop  + vy - host.offsetTop,
+      vx, vy, k: z / zoomRef.current,
+    }
+    setZoom(z)
+  }
+
+  // Pinça com dois dedos — ouvintes nativos (precisam ser não-passivos para o
+  // preventDefault funcionar). Durante o gesto o conteúdo é esticado com CSS
+  // transform (instantâneo, acompanha o dedo); ao soltar, re-renderiza nítido.
+  useEffect(() => {
+    const sc = scrollRef.current
+    if (!sc) return
+    let start: { d: number; z: number; ox: number; oy: number } | null = null
+    let ratio = 1
+    let mid = { x: 0, y: 0 }
+
+    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+    const midpoint = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 })
+
+    const onStart = (e: TouchEvent) => {
+      const host = pagesRef.current
+      if (e.touches.length !== 2 || !host) return
+      const m = midpoint(e.touches)
+      const r = host.getBoundingClientRect()
+      // foco em coordenadas locais do conteúdo (sem zoom aplicado)
+      start = { d: dist(e.touches), z: zoomRef.current, ox: m.x - r.left, oy: m.y - r.top }
+      mid = m
+      ratio = 1
+      host.style.transformOrigin = `${start.ox}px ${start.oy}px`
+    }
+
+    const onMove = (e: TouchEvent) => {
+      const host = pagesRef.current
+      if (!start || e.touches.length !== 2 || !host) return
+      e.preventDefault()
+      // limita para não passar de MIN/MAX
+      ratio = Math.min(MAX_ZOOM / start.z, Math.max(MIN_ZOOM / start.z, dist(e.touches) / start.d))
+      mid = midpoint(e.touches)
+      host.style.transform = `scale(${ratio})`
+    }
+
+    const onEnd = (e: TouchEvent) => {
+      if (!start || e.touches.length >= 2) return
+      const host = pagesRef.current
+      const s = start
+      start = null
+      if (!host) return
+      if (Math.abs(ratio - 1) < 0.03) {            // gesto mínimo: desfaz
+        host.style.transform = ''
+        host.style.transformOrigin = ''
+        return
+      }
+      const z = clampZoom(Math.round(s.z * ratio * 100) / 100)
+      if (z === s.z) {                              // já no limite: nada a re-renderizar
+        host.style.transform = ''
+        host.style.transformOrigin = ''
+        return
+      }
+      const rect = sc.getBoundingClientRect()
+      anchorRef.current = { x: s.ox, y: s.oy, vx: mid.x - rect.left, vy: mid.y - rect.top, k: z / s.z }
+      // a versão esticada continua na tela até a nova ficar pronta (ver renderPages)
+      setZoom(z)
+    }
+
+    sc.addEventListener('touchstart', onStart, { passive: true })
+    sc.addEventListener('touchmove', onMove, { passive: false })
+    sc.addEventListener('touchend', onEnd, { passive: true })
+    sc.addEventListener('touchcancel', onEnd, { passive: true })
+    return () => {
+      sc.removeEventListener('touchstart', onStart)
+      sc.removeEventListener('touchmove', onMove)
+      sc.removeEventListener('touchend', onEnd)
+      sc.removeEventListener('touchcancel', onEnd)
+    }
+  }, [])
 
   // Atualiza "X de N" conforme a rolagem
   const onScroll = () => {
@@ -106,30 +225,6 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
       if (kids[i].offsetTop - host.offsetTop <= mid) page = i + 1
     }
     setCurrent(page)
-  }
-
-  // Pinça com dois dedos: muda só o zoom do PDF (não o zoom da página do app).
-  const pinch = useRef<{ d: number; z: number } | null>(null)
-  const dist = (t: React.TouchList) =>
-    Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
-  const onTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 2) pinch.current = { d: dist(e.touches), z: zoom }
-  }
-  const onTouchEnd = (e: React.TouchEvent) => {
-    if (pinch.current && e.touches.length < 2) {
-      const last = pinch.current
-      pinch.current = null
-      const ratio = lastRatio.current
-      lastRatio.current = 1
-      if (Math.abs(ratio - 1) > 0.08) {
-        const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(last.z * ratio * 4) / 4))
-        setZoom(z)
-      }
-    }
-  }
-  const lastRatio = useRef(1)
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (pinch.current && e.touches.length === 2) lastRatio.current = dist(e.touches) / pinch.current.d
   }
 
   const goTo = (n: number) => {
@@ -162,9 +257,6 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
         className="flex-1 overflow-auto py-3 px-3 relative"
         style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y', overscrollBehavior: 'contain' }}
       >
@@ -174,7 +266,7 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
             <Loader2 className="h-8 w-8 text-white animate-spin" />
           </div>
         )}
-        <div ref={pagesRef} style={{ width: 'max-content', minWidth: '100%' }} />
+        <div ref={pagesRef} style={{ width: 'max-content', minWidth: '100%', willChange: 'transform' }} />
       </div>
 
       {/* Barra inferior: páginas + zoom */}
@@ -187,13 +279,13 @@ export function PdfPreviewModal({ blob, title = 'Pré-visualização do PDF', on
             aria-label="Próxima página" className="px-3 py-1.5 rounded-lg border border-gray-200 disabled:opacity-40">›</button>
         </div>
         <div className="flex items-center gap-1.5">
-          <button type="button" disabled={zoom <= MIN_ZOOM} onClick={() => setZoom(z => Math.max(MIN_ZOOM, z - STEP))}
+          <button type="button" disabled={zoom <= MIN_ZOOM} onClick={() => zoomTo(zoom - STEP)}
             aria-label="Diminuir zoom" className="p-2 rounded-lg border border-gray-200 text-gray-700 disabled:opacity-40">
             <ZoomOut className="h-4 w-4" />
           </button>
-          <button type="button" onClick={() => setZoom(1)}
+          <button type="button" onClick={() => zoomTo(1)}
             className="px-2 py-1.5 text-xs font-medium text-gray-700 min-w-[48px]">{Math.round(zoom * 100)}%</button>
-          <button type="button" disabled={zoom >= MAX_ZOOM} onClick={() => setZoom(z => Math.min(MAX_ZOOM, z + STEP))}
+          <button type="button" disabled={zoom >= MAX_ZOOM} onClick={() => zoomTo(zoom + STEP)}
             aria-label="Aumentar zoom" className="p-2 rounded-lg border border-gray-200 text-gray-700 disabled:opacity-40">
             <ZoomIn className="h-4 w-4" />
           </button>
